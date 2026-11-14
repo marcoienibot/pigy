@@ -315,6 +315,8 @@ Each phase ends with something that works and is covered by tests. Sizes are rel
 | 10 | Engagement stats | S | Stats collected and shown on sent posts |
 | 11 | Hardening and launch | M | Deployment from CI, security review, reconnect flows, logging and alerts, backups checked, setup guide, friends invited |
 
+Until deployment is set up in phase 11, every phase is built and verified locally against the simulated networks. Connecting real networks and installing on a phone need the deployed address.
+
 Usable milestones:
 
 - After phase 3: cross-posting text from your phone.
