@@ -37,7 +37,7 @@ One package: `pnpm --filter @pigy/worker test`. One file: `pnpm --filter @pigy/w
 Imports:
 
 - `apps/web` and `apps/worker` import `@pigy/core`. They never import each other.
-- `packages/core` imports nothing from the apps and uses no DOM, Node or Workers APIs, because it runs in the browser and in the Worker.
+- `packages/core` imports nothing from the apps. It runs in the browser and in the Worker, so it uses only the web-standard APIs that both have, such as `URL`, `crypto` and `TextEncoder`, and no browser-only, Node or Workers APIs. Biome rejects `window`, `document`, `localStorage`, `process` and `Buffer` there.
 - `e2e` imports no application code.
 
 ## Rules
