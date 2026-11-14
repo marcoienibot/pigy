@@ -47,6 +47,23 @@
           }
         }
       }
+    },
+    {
+      "includes": ["e2e/tests/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "paths": {
+                  "@playwright/test": "Import test and expect from ../fixtures.ts. Only that test fails a test whose page reaches a host other than the app."
+                }
+              }
+            }
+          }
+        }
+      }
     }
   ]
 }
