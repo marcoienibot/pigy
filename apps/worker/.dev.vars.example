@@ -1,0 +1,14 @@
+# Local settings of the Worker for `pnpm dev` and `pnpm preview`. Optional:
+# without a .dev.vars file, sign-in is simulated and the admin is
+# admin@example.com. To change that, copy this file to .dev.vars, which git
+# ignores. `pnpm e2e` and `pnpm preview:e2e` never read it.
+
+# Who can always sign in, as an admin. Comma-separated.
+ADMIN_EMAILS=admin@example.com
+
+# The OAuth client of a Google Cloud project. With both set, sign-in goes to
+# the real Google instead of the simulated one. The client needs the redirect
+# address http://localhost:5173/api/auth/google/callback, and for
+# `pnpm preview` the same on port 4173.
+#GOOGLE_CLIENT_ID=
+#GOOGLE_CLIENT_SECRET=

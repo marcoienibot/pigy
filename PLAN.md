@@ -27,6 +27,7 @@ pigy is an invite-only web app for writing a post once and publishing it to Link
 | Area | Decision | Why |
 | --- | --- | --- |
 | Sign-in | Google only | The allowlist is keyed on a verified email. Bluesky gives no email, and a second provider adds a second identity to reconcile. LinkedIn sign-in can be added later in a few lines |
+| Sign-in code | `oauth4webapi` for the OpenID Connect flow, and sessions of our own on D1. Not Better Auth, which an earlier draft of this plan named | Code that talks to external services gets `fetch` and the clock as parameters (section 6), so that tests and local development run against simulators and never reach a real host. Better Auth has no way to pass a `fetch` to the requests it makes to the provider: discovery, token exchange and signing keys. `oauth4webapi` takes one. Sessions are a small, well-documented pattern (section 11) |
 | Invite-only | Email allowlist stored in the database, managed from an admin page | No redeploy to invite a friend. Removing an email signs that person out |
 | Frontend | React, Vite, TanStack Router, TanStack DB, Tailwind, shadcn/ui | The local-first libraries are best supported on React. The speed comes from reading local data, not from the framework |
 | Data | One Durable Object with SQLite per user and environment, D1 for sign-in and global data | Local-first sync needs ordered, transactional writes per user, which a Durable Object gives for free |
@@ -47,12 +48,13 @@ pigy is an invite-only web app for writing a post once and publishing it to Link
  Browser / installed PWA                      Cloudflare Worker "pigy"
 ┌──────────────────────────────┐          ┌─────────────────────────────────────────┐
 │ React UI                     │  HTTPS   │ Hono router                             │
-│ TanStack DB (rows in memory) │◄────────►│  /api/auth/*   sign-in (Better Auth)    │
-│ IndexedDB (rows + outbox)    │          │  /api/v1/*     public REST API          │
+│ TanStack DB (rows in memory) │◄────────►│  /api/auth/*   sign-in with Google      │
+│ IndexedDB (rows + outbox)    │          │  /api/admin/*  the allowlist            │
+│                              │          │  /api/v1/*     public REST API          │
 │ Service worker (shell, push) │◄────────►│  /sync         WebSocket to WorkspaceDO │
 └──────────────────────────────┘ WebSocket│  /connect/*    OAuth to the networks    │
                                           │  /m/*          signed media URLs        │
-                                          │  /sim/*        simulated networks       │
+                                          │  /sim/*        simulated services       │
                                           └────┬─────────────┬──────────────┬───────┘
                                                │             │              │
                                    ┌───────────▼───┐   ┌─────▼──────┐  ┌────▼─────┐
@@ -116,7 +118,8 @@ The UI never waits for the network. It reads from memory, writes locally first, 
 
 | Table | Purpose |
 | --- | --- |
-| `user`, `session`, `account`, `verification` | Managed by Better Auth |
+| `user` | Google account ID, which is the identity, and the email and name as of the last sign-in |
+| `session` | ID, SHA-256 of the session secret, user, expiry |
 | `allowed_email` | Email, role (admin or member), who invited them |
 | `workspace` | ID, owner, environment (live or sandbox) |
 | `api_key` | Workspace, name, visible prefix, SHA-256 hash, scopes, last used, expiry, revoked |
@@ -186,6 +189,13 @@ Each simulator:
 
 Adapters keep calling the real hostnames. The injected `fetch` decides whether the request leaves the Worker or is handled in-process by a simulator. The adapter code that runs in tests is the code that runs in production.
 
+The Google simulator is the first one, built in phase 1, and differs from the others in two ways:
+
+- It is not part of the production build, because it signs anybody in as anybody. The Worker's entry point builds it in only for development, tests and the build that the end-to-end tests run against. The production build is checked for it, and it answers only on `localhost`.
+- It keeps almost no state. Sign-in happens before there is a user whose `SimWorldDO` could hold any, so its authorization codes carry what is needed to redeem them, signed. Only which codes were redeemed is remembered, in memory.
+
+Its consent page is served by the Worker under `/sim/google/*`. Without Google credentials, development and the end-to-end build use it and make `admin@example.com` the admin, so that a fresh clone needs no setup.
+
 ### Sandbox in the app
 
 - A **Live / Sandbox** switch in the header. The sandbox has a visible banner.
@@ -233,10 +243,15 @@ Avoiding duplicates when a retry follows an uncertain result:
 
 ## 11. Sign-in and access
 
-- Better Auth with the Google provider, on D1 through Drizzle. Cookie sessions that last 30 days and renew on use, so the installed PWA stays signed in.
-- Sign-up is refused unless the Google email is verified and present in `allowed_email`. The check also runs on every new session, and removing an email revokes that user's sessions.
-- The first admin comes from an `ADMIN_EMAILS` variable. Admins manage the allowlist from a settings page.
-- A person who is not invited sees a plain "pigy is invite-only" page.
+- Sign-in with Google is the OpenID Connect authorization code flow with PKCE, state and nonce, done with `oauth4webapi`, which also validates the ID token. State, nonce and the PKCE verifier live in a cookie for the ten minutes a sign-in may take, not in the database. Section 1 says why this is not Better Auth.
+- The Google account ID is the identity of a user. The email address is what the allowlist is matched against, trimmed and lowercased, and only if Google has verified it.
+- Sessions are our own, on D1 through Drizzle, after the guides at https://lucia-auth.com and https://auth.pilcrowonpaper.com/sessions. The cookie holds a random token, the database a SHA-256 of its secret half, and a session ends when its row is deleted. Sessions last 30 days and renew on use, at most once a day, so the installed PWA stays signed in. The cookie is `HttpOnly`, `SameSite=Lax` and, over HTTPS, `Secure` with the `__Host-` prefix.
+- Sign-in is refused unless the email is in `allowed_email` or in the `ADMIN_EMAILS` variable. The check runs for every new session and again on every request, so a change of role applies to the next request. Removing an email also deletes that user's sessions.
+- The first admin comes from `ADMIN_EMAILS`. The addresses in it are always admins and cannot be changed from the settings page, where admins manage the rest of the allowlist. Nobody can change their own entry.
+- A person who is not invited sees a plain "pigy is invite-only" page. Nothing is stored about them.
+- A request that changes something and is authenticated by the cookie must carry the app's own `Origin`.
+- The address Google redirects back to is built from the address the app is reached at, so it works unchanged on `localhost`, on `workers.dev` and on a custom domain. Each has to be registered with the Google client.
+- Without Google credentials nobody can sign in: the production build has no other way in. Section 7 covers the simulated Google of development and tests.
 
 ## 12. Public API
 
@@ -256,6 +271,7 @@ REST under `/api/v1`, described by an OpenAPI document generated from the same Z
 
 - **Copied from Buffer**: camelCase fields (`text`, `assets`, `dueAt`, `saveToDraft`, `metadata`), `mode` values (`addToQueue`, `shareNext`, `shareNow`, `customScheduled`), status values, the `assets` shape with `altText`, per-service `metadata` including `thread`, cursor pagination with `pageInfo`, and error names (`InvalidInputError`, `NotFoundError`, `UnauthorizedError`, `LimitReachedError`, `UnexpectedError`).
 - **Different from Buffer**: `channelIds` is a list, because a pigy post is cross-network, and the response carries `targets[]` with per-channel status, link, error and metrics. `schedulingType` is dropped, since pigy always publishes automatically.
+- **Errors**: every error response is `{ "error": name, "message": text }`. The name follows from the status: `UnauthorizedError` for 401 and 403, `NotFoundError` for 404, `LimitReachedError` for 429, `InvalidInputError` for every other 4xx, `UnexpectedError` for 5xx. The app's own routes outside `/api/v1` answer the same way.
 - **Keys**: created in settings, shown once, stored hashed. Prefix `pigy_live_` or `pigy_test_`. Scopes: `posts:read`, `posts:write`, `channels:read`, `media:write`. Sent as `Authorization: Bearer`.
 - **Safety**: `Idempotency-Key` header on writes, and per-key rate limits using the Workers rate limiting binding.
 
@@ -279,7 +295,7 @@ REST under `/api/v1`, described by an OpenAPI document generated from the same Z
 | Adapter conformance | Vitest in the Workers runtime | One spec per network: connect, publish text, images, video and threads, refresh tokens, map every error class. Runs against the simulator |
 | Pipeline | Vitest in the Workers runtime with local D1, Durable Objects, R2 and Workflows | API call to alarm to workflow to simulator. Asserts final statuses, sync messages and the push notification. Injects faults, including the lost-response case, and asserts no duplicate post |
 | Sync | Vitest in the Workers runtime | Two clients converge, the offline outbox replays once, snapshot fallback works, one user cannot reach another's workspace, credentials never appear in sync messages |
-| End to end | Playwright against the local Worker | Simulated Google sign-in, allowlist refusal, sandbox onboarding, connecting four simulated accounts, cross-post with override, thread and image, schedule and fast-forward, offline draft then sync, installability checks, phone viewports |
+| End to end | Playwright against the local Worker, built as for production except that sign-in is simulated | Simulated Google sign-in, allowlist refusal, sandbox onboarding, connecting four simulated accounts, cross-post with override, thread and image, schedule and fast-forward, offline draft then sync, installability checks, phone viewports |
 
 **No real network in CI.** In test runs, any outbound request to a host that is not simulated throws, so a test that reaches for a real service fails.
 
@@ -332,7 +348,8 @@ Each network in phase 3 is built in the same order: conformance spec, simulator,
 | --- | --- |
 | Cloudflare account | Workers, D1, R2, Durable Objects, Workflows. R2 needs a payment method on file. Budget for the Workers Paid plan |
 | Address | `https://pigy.<your-subdomain>.workers.dev`, free and with HTTPS. The subdomain is set once per Cloudflare account, under Workers in the dashboard. The address is a single setting, `APP_URL` |
-| Google Cloud OAuth client | Set the consent screen to "In production". In "Testing", only listed test users can sign in. Basic scopes need no review |
+| Google Cloud OAuth client | Set the consent screen to "In production". In "Testing", only listed test users can sign in. Basic scopes need no review. The redirect address is `<address>/api/auth/google/callback`. Client ID and secret become the Worker secrets `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` |
+| First admin | Your Google email address, as the Worker secret `ADMIN_EMAILS` |
 | LinkedIn developer app | Must be linked to a LinkedIn Page. A placeholder page is enough |
 | Meta developer app | Threads use case. Add each friend as a Threads tester. They accept the invite in their Threads settings |
 | Test accounts | One per network for the live conformance run |
@@ -387,7 +404,9 @@ Posts, drafts, schedules and stats are unaffected.
 - atproto OAuth: https://atproto.com/guides/oauth and https://docs.bsky.app/docs/advanced-guides/oauth-client
 - Bluesky video: https://docs.bsky.app/docs/tutorials/video
 - LinkedIn access tiers: https://learn.microsoft.com/en-us/linkedin/marketing/increasing-access
-- Better Auth on Cloudflare: https://better-auth.com/docs/guides/cloudflare
+- Google OpenID Connect: https://developers.google.com/identity/openid-connect/openid-connect
+- oauth4webapi: https://github.com/panva/oauth4webapi
+- Sessions: https://lucia-auth.com and https://auth.pilcrowonpaper.com/sessions
 - TanStack DB: https://tanstack.com/db/latest/docs/overview and https://tanstack.com/db/latest/docs/guides/offline-transactions
 - Durable Object sync with TanStack DB, as a reference design: https://github.com/grrowl/tanstack-durable-object-sync
 - Cloudflare limits: https://developers.cloudflare.com/workers/platform/limits and https://developers.cloudflare.com/durable-objects/platform/limits

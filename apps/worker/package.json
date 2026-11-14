@@ -11,8 +11,11 @@
   },
   "dependencies": {
     "@pigy/core": "workspace:*",
+    "@pigy/simulators": "workspace:*",
     "drizzle-orm": "^0.45.4",
-    "hono": "^4.13.18"
+    "hono": "^4.13.18",
+    "oauth4webapi": "^3.8.8",
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.8.2",

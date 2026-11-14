@@ -1,29 +1,20 @@
-import { type ErrorResponse, healthResponseSchema } from "@pigy/core";
-import { Hono } from "hono";
+import { createApp } from "./app.ts";
+import { createSimulatedGoogle } from "./simulated-google.ts";
 
-const notFound: ErrorResponse = {
-  error: "NotFoundError",
-  message: "Not found",
-};
-const unexpected: ErrorResponse = {
-  error: "UnexpectedError",
-  message: "Something went wrong",
-};
+const now = () => new Date();
 
-const app = new Hono<{ Bindings: Env }>();
+// Vite replaces `import.meta.env.MODE` when it builds the Worker. The modes
+// are listed rather than "not production", so that a build in a mode nobody
+// thought of gets no simulated sign-in. In a production build the condition
+// is a constant `false`, and the bundler drops the simulated Google with it:
+// apps/web/scripts/check-build.mjs fails the build if it ever does not.
+const simulated =
+  import.meta.env.MODE === "development" ||
+  import.meta.env.MODE === "test" ||
+  import.meta.env.MODE === "e2e";
 
-app.get("/api/health", (c) =>
-  c.json(
-    healthResponseSchema.parse({ status: "ok", version: c.env.VERSION.id }),
-  ),
-);
-
-app.notFound((c) => c.json(notFound, 404));
-
-app.onError((error, c) => {
-  // The exception goes to the logs, never to the client.
-  console.error(error);
-  return c.json(unexpected, 500);
+export default createApp({
+  fetch: (input, init) => fetch(input, init),
+  now,
+  simulatedGoogle: simulated ? createSimulatedGoogle(now) : undefined,
 });
-
-export default app;

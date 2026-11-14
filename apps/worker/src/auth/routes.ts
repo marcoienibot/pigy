@@ -1,0 +1,184 @@
+import {
+  meResponseSchema,
+  normalizeEmail,
+  type SignInError,
+  safeReturnTo,
+} from "@pigy/core";
+import { drizzle } from "drizzle-orm/d1";
+import { type Context, Hono } from "hono";
+import { deleteCookie, getCookie, setCookie } from "hono/cookie";
+import { z } from "zod";
+import { users } from "../db/schema.ts";
+import type { AppDependencies, AppEnv } from "../env.ts";
+import { roleOf } from "./access.ts";
+import { accessConfig } from "./config.ts";
+import { beginSignIn, completeSignIn, signInFlowSchema } from "./google.ts";
+import { requireSameOrigin, requireUser } from "./guards.ts";
+import {
+  clearSessionCookie,
+  cookieName,
+  createSession,
+  deleteExpiredSessions,
+  isSecure,
+  readSessionCookie,
+  revokeSession,
+  writeSessionCookie,
+} from "./session.ts";
+
+// How long somebody may take at Google before the sign-in has to be started
+// again.
+const signInMinutes = 10;
+
+// A cookie holds about 4000 characters. An address longer than this is not
+// one of pigy's, and would leave no room for the other values.
+const maxReturnToLength = 1000;
+
+const signInCookieSchema = signInFlowSchema.extend({
+  returnTo: z.string(),
+});
+
+type SignInCookie = z.infer<typeof signInCookieSchema>;
+
+/**
+ * The state, nonce and PKCE verifier of a sign-in live in a cookie, so that
+ * the callback is only accepted in the browser that started the sign-in.
+ */
+function writeSignInCookie(c: Context<AppEnv>, value: SignInCookie): void {
+  setCookie(c, cookieName(c, "pigy_sign_in"), JSON.stringify(value), {
+    httpOnly: true,
+    // Google sends the browser back with a navigation from another site,
+    // which "Strict" would strip of this cookie.
+    sameSite: "Lax",
+    secure: isSecure(c),
+    path: "/",
+    maxAge: signInMinutes * 60,
+  });
+}
+
+/** Reads the cookie and removes it: a sign-in can be finished only once. */
+function takeSignInCookie(c: Context<AppEnv>): SignInCookie | undefined {
+  const name = cookieName(c, "pigy_sign_in");
+  const value = getCookie(c, name);
+  deleteCookie(c, name, { secure: isSecure(c), path: "/" });
+  if (!value) return undefined;
+  try {
+    return signInCookieSchema.parse(JSON.parse(value));
+  } catch {
+    return undefined;
+  }
+}
+
+function signInFailed(c: Context<AppEnv>, error: SignInError): Response {
+  return c.redirect(`/sign-in?error=${error}`);
+}
+
+export function authRoutes(dependencies: AppDependencies): Hono<AppEnv> {
+  const { fetch, now, simulatedGoogle } = dependencies;
+  const app = new Hono<AppEnv>();
+
+  const configFor = (c: Context<AppEnv>) => {
+    const { origin } = new URL(c.req.url);
+    return {
+      ...accessConfig(c.env, fetch, simulatedGoogle, origin),
+      // Has to be registered with the Google client, character by character.
+      redirectUri: `${origin}/api/auth/google/callback`,
+    };
+  };
+
+  app.get("/auth/google/start", async (c) => {
+    const { google, redirectUri } = configFor(c);
+    if (!google) {
+      console.error(
+        "Sign-in is refused: GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are not set.",
+      );
+      return signInFailed(c, "not_configured");
+    }
+    const returnTo = c.req.query("returnTo") ?? "/";
+
+    const begun = await beginSignIn(google, redirectUri).catch(
+      (error: unknown) => {
+        // Google could not be reached, or did not answer as expected.
+        console.error("Sign-in could not start", error);
+      },
+    );
+    if (!begun) return signInFailed(c, "failed");
+    writeSignInCookie(c, {
+      ...begun.flow,
+      returnTo: returnTo.length > maxReturnToLength ? "/" : returnTo,
+    });
+    return c.redirect(google.browserUrl(begun.url).href);
+  });
+
+  app.get("/auth/google/callback", async (c) => {
+    const { google, adminEmails, redirectUri } = configFor(c);
+    const flow = takeSignInCookie(c);
+    if (!google || !flow) return signInFailed(c, "failed");
+
+    const identity = await completeSignIn(
+      google,
+      redirectUri,
+      new URL(c.req.url),
+      flow,
+      now,
+    ).catch((error: unknown) => {
+      // Somebody cancelled at Google, took too long, or sent a callback that
+      // does not belong to their sign-in. The reason goes to the logs only.
+      console.warn("Sign-in did not complete", error);
+    });
+    if (!identity) return signInFailed(c, "failed");
+    // An address that Google has not verified proves nothing about who is
+    // signing in, so it cannot be matched against the invitations.
+    if (!identity.emailVerified) return signInFailed(c, "email_not_verified");
+
+    const db = drizzle(c.env.DB);
+    const email = normalizeEmail(identity.email);
+    // Checked on every sign-in, not only the first: an invitation can end.
+    // Nothing is stored about somebody who is not invited.
+    if (!(await roleOf(db, adminEmails, email))) {
+      return c.redirect("/invite-only");
+    }
+
+    const time = now();
+    const name = identity.name?.trim() || email;
+    const [user] = await db
+      .insert(users)
+      .values({
+        id: crypto.randomUUID(),
+        googleSub: identity.sub,
+        email,
+        name,
+        createdAt: time,
+      })
+      // The account is known by its Google ID. Its email address and name
+      // are whatever Google says today.
+      .onConflictDoUpdate({ target: users.googleSub, set: { email, name } })
+      .returning({ id: users.id });
+    if (!user) throw new Error("The user was not stored");
+
+    // The session a browser had before this sign-in ends here. The new one
+    // gets a token that never left the server before, so nobody can have
+    // planted it in this browser in advance.
+    const previous = readSessionCookie(c);
+    if (previous) await revokeSession(db, previous);
+    await deleteExpiredSessions(db, user.id, time);
+    const session = await createSession(db, user.id, time);
+    writeSessionCookie(c, session.token, session.expiresAt, time);
+    // Checked here, where it is used, and not before it went into the
+    // cookie: what comes back in a cookie is the browser's word.
+    return c.redirect(safeReturnTo(flow.returnTo));
+  });
+
+  app.post("/auth/sign-out", async (c) => {
+    requireSameOrigin(c);
+    const token = readSessionCookie(c);
+    if (token) await revokeSession(drizzle(c.env.DB), token);
+    clearSessionCookie(c);
+    return c.body(null, 204);
+  });
+
+  app.get("/me", requireUser(dependencies), (c) =>
+    c.json(meResponseSchema.parse(c.var.auth)),
+  );
+
+  return app;
+}
