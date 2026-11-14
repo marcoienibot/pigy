@@ -22,6 +22,8 @@ export default defineConfig({
     command: `pnpm build && pnpm preview --port ${port} --strictPort`,
     cwd: "..",
     url: `http://localhost:${port}/api/health`,
-    reuseExistingServer: !process.env.CI,
+    // Always build: a server that is already running could serve a stale
+    // build.
+    reuseExistingServer: false,
   },
 });

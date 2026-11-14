@@ -32,6 +32,9 @@ test("navigation is a sidebar on desktop and a bottom bar on phones", async ({
   isMobile,
 }) => {
   await page.goto("/");
+  // The screen has rendered once its heading is there. Without this wait the
+  // overflow check below could measure a page that has no content yet.
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Drafts");
 
   // Both layouts are in the DOM; only the one for this viewport is visible.
   const nav = page.getByRole("navigation", { name: "Main" });
@@ -59,7 +62,6 @@ test("navigation is a sidebar on desktop and a bottom bar on phones", async ({
 
 test("deep links and unknown paths get the app, unknown API paths do not", async ({
   page,
-  request,
 }) => {
   // Served by the single-page-app fallback of the static assets.
   await page.goto("/queue");
@@ -71,10 +73,12 @@ test("deep links and unknown paths get the app, unknown API paths do not", async
   ).toBeVisible();
 
   // /api/* always reaches the Worker, so a typo in an API path is a JSON
-  // 404 rather than a 200 with the app shell.
-  const response = await request.get("/api/no-such-route");
-  expect(response.status()).toBe(404);
-  expect(response.headers()["content-type"]).toContain("application/json");
+  // 404 rather than a 200 with the app shell. It has to be a navigation:
+  // only navigations fall back to the app shell, so only a navigation shows
+  // that `run_worker_first` in wrangler.jsonc is in effect.
+  const response = await page.goto("/api/no-such-route");
+  expect(response?.status()).toBe(404);
+  expect(response?.headers()["content-type"]).toContain("application/json");
 });
 
 test("theme follows the system until it is set by hand", async ({ page }) => {

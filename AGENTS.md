@@ -21,7 +21,7 @@ Run from the repository root.
 | `pnpm format` | Biome fixes for the above |
 | `pnpm typecheck` | `tsc` in every package |
 | `pnpm test` | All Vitest suites |
-| `pnpm e2e` | Builds, then runs Playwright against the production build |
+| `pnpm e2e` | Builds, then runs Playwright against the production build. Port 4173 must be free |
 
 One package: `pnpm --filter @pigy/worker test`. One file: `pnpm --filter @pigy/worker test test/health.test.ts`. Watch mode: `pnpm --filter @pigy/core exec vitest`.
 
