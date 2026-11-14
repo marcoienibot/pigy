@@ -285,7 +285,7 @@ REST under `/api/v1`, described by an OpenAPI document generated from the same Z
 
 **Keeping the simulators honest.** The adapter conformance spec can also run against the real services with dedicated test accounts. That run is manual or nightly, never part of pull request CI, and it deletes what it posts. If the real service and the simulator disagree, the simulator is fixed.
 
-**CI (GitHub Actions)**: lint, typecheck, unit and Workers-runtime tests, Playwright with traces on failure, build. Merges to `main` apply D1 migrations and deploy.
+**CI (GitHub Actions)**: lint, typecheck, unit and Workers-runtime tests, Playwright with traces on failure, build. From phase 11, merges to `main` also apply D1 migrations and deploy.
 
 ## 16. Security
 
@@ -302,7 +302,7 @@ Each phase ends with something that works and is covered by tests. Sizes are rel
 
 | # | Phase | Size | Done when |
 | --- | --- | --- | --- |
-| 0 | Foundations | S | Monorepo, a deployed hello-world Worker with the React shell, CI green on lint, typecheck, tests and a Playwright smoke test |
+| 0 | Foundations | S | Monorepo, a hello-world Worker with the React shell running in the local Workers runtime, CI green on lint, typecheck, tests, build and a Playwright smoke test |
 | 1 | Sign-in and invite-only access | M | Google sign-in works, a non-invited email is refused, admins manage the allowlist, simulated Google sign-in drives the tests |
 | 2 | Local-first core | L | Sync spike passed. Drafts can be created and edited offline, sync across tabs and devices, and the app installs as a PWA |
 | 3 | Networks, simulators, sandbox | L | All four simulators and adapters exist. A text post publishes now to all four, in the sandbox and for real. Conformance and pipeline tests pass |
@@ -313,7 +313,7 @@ Each phase ends with something that works and is covered by tests. Sizes are rel
 | 8 | Video | L | Chunked upload, client-side checks, each network's upload and processing flow |
 | 9 | Phone features | M | Push notifications, in-app inbox, share target, install prompts |
 | 10 | Engagement stats | S | Stats collected and shown on sent posts |
-| 11 | Hardening and launch | M | Security review, reconnect flows, logging and alerts, backups checked, setup guide, friends invited |
+| 11 | Hardening and launch | M | Deployment from CI, security review, reconnect flows, logging and alerts, backups checked, setup guide, friends invited |
 
 Usable milestones:
 
