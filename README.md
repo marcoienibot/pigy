@@ -17,12 +17,17 @@ pnpm dev
 
 `pnpm dev` serves the web app and the Worker together on http://localhost:5173. The Worker runs in the local Workers runtime, so no Cloudflare account is needed.
 
+Sign-in needs no setup either. Locally a simulated Google stands in for the real one: "Sign in with Google" opens a page, labelled as a simulation, where you choose who to be. Choose `admin@example.com`, the local admin, and invite other addresses under Settings → Access. To change the admins or to sign in with the real Google, see `apps/worker/.dev.vars.example`.
+
 ```sh
-pnpm lint        # Biome lint and format check
-pnpm typecheck   # TypeScript in every package
-pnpm test        # unit tests and Worker tests in the Workers runtime
-pnpm e2e         # Playwright against the production build
-pnpm build       # production build into apps/web/dist
+pnpm lint          # Biome lint and format check
+pnpm typecheck     # TypeScript in every package
+pnpm test          # unit tests and Worker tests in the Workers runtime
+pnpm e2e           # Playwright against a build with simulated sign-in
+pnpm build         # production build into apps/web/dist
+pnpm preview:e2e   # the build that pnpm e2e tests, on http://localhost:4173
 ```
+
+`pnpm preview:e2e` is the way to try a built app by hand: it is the production build in everything but sign-in, which is simulated as under `pnpm dev`, and it starts from an empty database. `pnpm preview` serves the real production build, where signing in takes Google credentials.
 
 The end-to-end tests need Chromium once: `pnpm --filter @pigy/e2e exec playwright install chromium`.
