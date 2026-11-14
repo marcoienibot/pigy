@@ -1,3 +1,7 @@
+// Imported for its side effect: it keeps the runtime's own `fetch` for
+// network-guard.test.ts before the global is replaced below.
+import "./runtime-fetch.ts";
+
 // Tests must never reach a real network host. Code that talks to external
 // services takes `fetch` as a parameter, so any call to the global `fetch`
 // during a test is a bug and fails loudly here.

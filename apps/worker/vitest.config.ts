@@ -6,13 +6,18 @@ export default defineConfig({
     cloudflareTest({
       wrangler: { configPath: "./wrangler.jsonc" },
       miniflare: {
-        // Second line of defence behind test/setup.ts: a request that gets
-        // past the guard there still cannot leave the local runtime.
-        outboundService(request) {
-          return new Response(`Blocked outbound request to ${request.url}`, {
-            status: 502,
-          });
-        },
+        // Second line of defence behind test/setup.ts: what gets past the
+        // guard there reaches this Worker, never the network. It has to be a
+        // Worker: with a function here, Miniflare lets TCP connections pass
+        // through to the real network.
+        outboundService: "deny-outbound",
+        workers: [
+          {
+            name: "deny-outbound",
+            modules: true,
+            scriptPath: "./test/deny-outbound.js",
+          },
+        ],
       },
     }),
   ],
