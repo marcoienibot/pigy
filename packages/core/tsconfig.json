@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // Runs in the browser and in the Workers runtime: no DOM, Node or Workers types.
+    "lib": ["ES2023"],
+    "types": []
+  },
+  "include": ["src"]
+}
