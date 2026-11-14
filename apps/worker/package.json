@@ -1,0 +1,21 @@
+{
+  "name": "@pigy/worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "postinstall": "wrangler types",
+    "typecheck": "wrangler types && tsc -b",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@pigy/core": "workspace:*",
+    "hono": "^4.13.18"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.8.2",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "wrangler": "^4.162.0"
+  }
+}
