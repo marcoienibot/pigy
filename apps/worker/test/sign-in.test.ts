@@ -242,6 +242,9 @@ it("signs an account out everywhere when its address moves to another Google acc
     email: "ada@example.com",
     sub: "1001",
   });
+  // A second sign-in of the same account leaves its other devices signed in:
+  // only accounts other than the one signing in lose their sessions.
+  expect(await me(phone)).not.toBeNull();
   const bob = await signedIn(test, { email: "bob@example.com", sub: "3003" });
 
   // Another Google account now has the address, as when an organization
