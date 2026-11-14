@@ -37,13 +37,13 @@ Sign-in is with Google. Without Google credentials, a simulated Google stands in
 - `pnpm preview:e2e` always simulates, with `admin@example.com` as the admin, and starts from an empty database every time. It ignores `.dev.vars`.
 - `pnpm preview` serves the production build, which has no simulated sign-in. Without Google credentials in `.dev.vars` its sign-in page says that sign-in is not set up.
 
-Which Google is used is decided per request, in `accessConfig` in `apps/worker/src/auth/config.ts`: the real one if `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` are set. Otherwise the simulated one, if the build has it and the app is reached on `localhost`. Otherwise sign-in is refused.
+Which Google is used is decided per request, in `accessConfig` in `apps/worker/src/auth/config.ts`: the real one if `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` are set. Otherwise the simulated one, if the build has it and the request names a local host, as described below. Otherwise sign-in is refused.
 
 The simulated sign-in signs anybody in as anybody, so it must never be deployed:
 
 - `apps/worker/src/index.ts` builds it in only when the Vite mode is `development`, `test` or `e2e`. In a production build the bundler drops it.
 - `pnpm build` runs `apps/web/scripts/check-build.mjs`, which fails if the production build contains it. `pnpm preview:e2e` runs the same script the other way round, to prove that the check still knows what to look for. If you rename something in the simulated sign-in, that run tells you to update the script.
-- It answers only on `localhost`.
+- It answers only a request whose URL has a local hostname: `localhost`, a name that ends in `.localhost`, `127.0.0.1` or `[::1]`. That is `isLocal` in `apps/worker/src/auth/config.ts`. The Worker reads the hostname from the URL of the request, which comes from its `Host` header: it says what the client asked for, not where the client is. So a dev or e2e build that is exposed to a network, for example with `vite --host` or through a tunnel, lets anyone who sends a local `Host` header sign in as anybody. Keep those builds on the local machine.
 
 ## Layout
 

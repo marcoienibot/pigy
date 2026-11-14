@@ -63,9 +63,13 @@ function parseAdminEmails(value: string): Set<string> {
 }
 
 /**
- * Whether `origin` is this machine. The simulated Google answers nowhere
+ * Whether `origin` names this machine. The simulated Google answers nowhere
  * else, so that it stays out of reach even if a build that contains it were
- * ever deployed.
+ * ever deployed: Cloudflare routes a request to a Worker by its hostname.
+ *
+ * The origin is that of the request's URL, which comes from the `Host`
+ * header. It says what the client asked for, not where the client is, so
+ * this does not protect a local server that is exposed to a network.
  */
 function isLocal(origin: string): boolean {
   const { hostname } = new URL(origin);

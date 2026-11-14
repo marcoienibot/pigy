@@ -191,7 +191,7 @@ Adapters keep calling the real hostnames. The injected `fetch` decides whether t
 
 The Google simulator is the first one, built in phase 1, and differs from the others in two ways:
 
-- It is not part of the production build, because it signs anybody in as anybody. The Worker's entry point builds it in only for development, tests and the build that the end-to-end tests run against. The production build is checked for it, and it answers only on `localhost`.
+- It is not part of the production build, because it signs anybody in as anybody. The Worker's entry point builds it in only for development, tests and the build that the end-to-end tests run against. The production build is checked for it, and it answers only requests that name a local host such as `localhost`. That is a property of the request, not of where it comes from, so a build that contains it must not be exposed to a network.
 - It keeps almost no state. Sign-in happens before there is a user whose `SimWorldDO` could hold any, so its authorization codes carry what is needed to redeem them, signed. Only which codes were redeemed is remembered, in memory.
 
 Its consent page is served by the Worker under `/sim/google/*`. Without Google credentials, development and the end-to-end build use it and make `admin@example.com` the admin, so that a fresh clone needs no setup.
