@@ -1,5 +1,12 @@
 import { type Clock, type Fetch, normalizeEmail } from "@pigy/core";
-import { errors, importJWK, jwtVerify, SignJWT } from "jose";
+import {
+  decodeJwt,
+  errors,
+  importJWK,
+  type JWTPayload,
+  jwtVerify,
+  SignJWT,
+} from "jose";
 import { consentPage, errorPage } from "./pages.ts";
 import { signingKey } from "./signing-key.ts";
 
@@ -138,6 +145,22 @@ function oauthError(status: number, error: string, description: string) {
   return json(status, { error, error_description: description });
 }
 
+/**
+ * `idToken` with `claims` changed, signed again with the key of the
+ * simulated Google. The simulator only issues tokens that are right, so this
+ * is how a test gets one that a client has to refuse for a single claim,
+ * such as its audience.
+ */
+export async function resignIdToken(
+  idToken: string,
+  claims: JWTPayload,
+): Promise<string> {
+  const { kid, alg } = signingKey;
+  return new SignJWT({ ...decodeJwt(idToken), ...claims })
+    .setProtectedHeader({ alg, kid, typ: "JWT" })
+    .sign(await importJWK(signingKey, alg));
+}
+
 export function createGoogleSimulator({
   now,
   client,
@@ -239,6 +262,18 @@ export function createGoogleSimulator({
     // The form RFC 7636 gives a challenge.
     if (challenge !== null && !/^[A-Za-z0-9._~-]{43,128}$/.test(challenge)) {
       return fail(400, "invalid_request", "Invalid code_challenge.");
+    }
+    // A space-delimited, case-sensitive list of the three values that Google
+    // documents.
+    for (const prompt of params.get("prompt")?.split(" ") ?? []) {
+      if (prompt === "none") {
+        // It asks for an answer without any page. Nobody is ever signed in
+        // at the simulated Google, which always asks who to sign in as.
+        return fail(400, "invalid_request", "prompt=none is not simulated.");
+      }
+      if (prompt !== "consent" && prompt !== "select_account") {
+        return fail(400, "invalid_request", `Invalid prompt: ${prompt}`);
+      }
     }
     return undefined;
   }
@@ -390,11 +425,7 @@ export function createGoogleSimulator({
     if (code === "malformed") {
       return oauthError(400, "invalid_grant", "Malformed auth code.");
     }
-    if (
-      code === "expired" ||
-      code.client_id !== client.clientId ||
-      redeemed.has(code.jti)
-    ) {
+    if (code === "expired" || code.client_id !== client.clientId) {
       return oauthError(400, "invalid_grant", "Bad Request");
     }
     if (field(form, "redirect_uri") !== code.redirect_uri) {
@@ -425,6 +456,13 @@ export function createGoogleSimulator({
     for (const [id, expiresAt] of redeemed) {
       // An expired code is refused for its age, so it can be forgotten.
       if (expiresAt <= issuedAt) redeemed.delete(id);
+    }
+    // Looked up and noted in one step, with no `await` in between, so that
+    // of two requests that arrive together only one gets past this point.
+    // It comes after everything that can refuse the request, because a
+    // request that is refused must not use the code up.
+    if (redeemed.has(code.jti)) {
+      return oauthError(400, "invalid_grant", "Bad Request");
     }
     redeemed.set(code.jti, issuedAt + codeLifetimeSeconds);
 

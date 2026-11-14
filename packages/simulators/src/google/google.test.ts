@@ -1,3 +1,4 @@
+import { createLocalJWKSet, jwtVerify } from "jose";
 import * as oauth from "oauth4webapi";
 import { expect, it } from "vitest";
 import {
@@ -5,6 +6,7 @@ import {
   type GoogleSimulatorOptions,
   googleAuthorizationEndpoint,
   googleIssuer,
+  resignIdToken,
 } from "./index.ts";
 
 const client = {
@@ -298,6 +300,33 @@ it.each([
     400,
     "invalid_request",
   ],
+  [
+    // A typo of "select_account", which Google refuses.
+    "an unknown prompt",
+    { prompt: "select-account" },
+    400,
+    "invalid_request",
+  ],
+  [
+    "an unknown prompt among known ones",
+    { prompt: "consent login" },
+    400,
+    "invalid_request",
+  ],
+  [
+    // The list is case-sensitive.
+    "a prompt in another case",
+    { prompt: "Select_Account" },
+    400,
+    "invalid_request",
+  ],
+  [
+    // Google would answer without showing a page. The simulator cannot.
+    "the prompt it does not simulate",
+    { prompt: "none" },
+    400,
+    "invalid_request",
+  ],
 ] as const)(
   "refuses an authorization request with %s",
   async (_name, overrides, status, error) => {
@@ -316,6 +345,19 @@ it.each([
       expect(response.headers.has("Location")).toBe(false);
       expect(await response.text()).toContain(`Error ${status}: ${error}`);
     }
+  },
+);
+
+it.each(["consent", "select_account", "select_account consent"])(
+  "accepts the prompt %j, which Google documents",
+  async (prompt) => {
+    // The counterpart of the refusals above: the check on the prompt must not
+    // refuse what a client is right to send.
+    const { simulator } = setup();
+
+    const response = await simulator.fetch(authorizationUrl({ prompt }));
+
+    expect(response.status).toBe(200);
   },
 );
 
@@ -395,6 +437,24 @@ it("refuses a code the second time", async () => {
   expect(await second.json()).toMatchObject({ error: "invalid_grant" });
 });
 
+it("redeems a code once when two requests for it arrive together", async () => {
+  const { simulator } = setup();
+  const redirect = await consent(simulator);
+  const code = redirect.searchParams.get("code");
+
+  // Neither request is answered before the other is under way. Each has to
+  // wait for the code and the verifier to be checked, and if the code were
+  // only looked up as used before that wait, both would find it unused.
+  const responses = await Promise.all([
+    tokenRequest(simulator, code),
+    tokenRequest(simulator, code),
+  ]);
+
+  expect(responses.map(({ status }) => status).sort()).toEqual([200, 400]);
+  const refused = responses.find(({ status }) => status === 400);
+  expect(await refused?.json()).toMatchObject({ error: "invalid_grant" });
+});
+
 it("refuses a code after ten minutes", async () => {
   const { simulator, clock } = setup();
   const redirect = await consent(simulator);
@@ -457,6 +517,35 @@ it("does not take an ID token for a code", async () => {
 
   expect(second.status).toBe(400);
   expect(await second.json()).toMatchObject({ error: "invalid_grant" });
+});
+
+it("signs an ID token again with a claim changed, for tests of a client", async () => {
+  const { simulator, clock } = setup();
+  const redirect = await consent(simulator);
+  const response = await tokenRequest(
+    simulator,
+    redirect.searchParams.get("code"),
+  );
+  const body = await response.json();
+
+  const changed = await resignIdToken(body.id_token, { aud: "another-client" });
+
+  // Verified with the keys that the simulator publishes, which is what a
+  // client does. The signature must hold, or a client would refuse the token
+  // for that and a test would learn nothing about the claim.
+  const keys = await simulator.fetch(
+    "https://www.googleapis.com/oauth2/v3/certs",
+  );
+  const { payload, protectedHeader } = await jwtVerify(
+    changed,
+    createLocalJWKSet(await keys.json()),
+    { currentDate: clock.time },
+  );
+  // Nothing but the one claim differs from the token Google issued.
+  expect(payload).toEqual({ ...decodeIdToken(body), aud: "another-client" });
+  expect(protectedHeader).toEqual(
+    JSON.parse(atob(body.id_token.split(".")[0])),
+  );
 });
 
 it("refuses a verifier for a code that was issued without a challenge", async () => {
