@@ -53,7 +53,7 @@ Imports:
 
 **Add a screen.** Create `apps/web/src/routes/<name>.tsx` with `createFileRoute` and wrap the content in `<Page title="…">`. The dev server and the build regenerate `src/routeTree.gen.ts`: commit it, never edit it. Add the route to `navItems` in `src/components/app-shell.tsx` if it belongs in the navigation.
 
-**Add a shadcn/ui component.** In `apps/web`, run `pnpm dlx shadcn@latest add <name>`, then `pnpm format` from the root. Components land in `src/components/ui`. Theme tokens are in `src/styles.css`.
+**Add a shadcn/ui component.** Run `pnpm --filter @pigy/web exec shadcn add <name>`, then `pnpm format` from the root. This runs the `shadcn` version that `apps/web` depends on, the same one whose CSS its styles import. Components land in `apps/web/src/components/ui`. Theme tokens are in `apps/web/src/styles.css`.
 
 **Add an API route.** Add it to the Hono app in `apps/worker/src` under `/api/`. Put the request and response schemas in `packages/core` and parse with them on both sides. Error responses follow `errorResponseSchema`, and an uncaught exception becomes a JSON 500. Only `/api/*` reaches the Worker. Every other path is a static asset or the app shell, so a new prefix such as `/sync` must be added to `assets.run_worker_first` in `wrangler.jsonc`.
 
@@ -70,4 +70,4 @@ Imports:
 - The Workers test integration is `@cloudflare/vitest-plugin`, the renamed `@cloudflare/vitest-pool-workers`. It supports Vitest 4.1 and 5. This repository uses Vitest 5.
 - `@playwright/test` is pinned to an exact version because each version needs its own browser build. After changing it, run `pnpm --filter @pigy/e2e exec playwright install chromium`.
 - Versions shared by several packages are in the `catalog` of `pnpm-workspace.yaml`.
-- pnpm refuses install scripts and agent skills from dependencies unless `pnpm-workspace.yaml` allows them. If `pnpm install` reports a package awaiting approval, decide there.
+- pnpm refuses install scripts and agent skills from dependencies unless `permissions` in `pnpm-workspace.yaml` allows them. If `pnpm install` reports a package awaiting approval, decide there. Do not add `allowBuilds`: `permissions` overrides it.
