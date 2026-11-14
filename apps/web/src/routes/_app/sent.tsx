@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { EmptyState, Page } from "@/components/page";
 
-export const Route = createFileRoute("/sent")({
+export const Route = createFileRoute("/_app/sent")({
   component: Sent,
 });
 

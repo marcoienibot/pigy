@@ -1,16 +1,19 @@
 import { expect, test } from "../fixtures.ts";
 
-test("home shows the health reported by the Worker", async ({ page }) => {
-  await page.goto("/");
+test("settings show the health reported by the Worker", async ({
+  signedInPage: page,
+}) => {
+  await page.goto("/settings/about");
 
-  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Drafts");
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Settings");
   // The first row is the API status. "ok" comes from GET /api/health, so
   // this fails if the web app and the Worker are not served together.
   await expect(page.getByRole("definition").first()).toHaveText("ok");
 });
 
-test("navigates between screens without a page load", async ({ page }) => {
-  await page.goto("/");
+test("navigates between screens without a page load", async ({
+  signedInPage: page,
+}) => {
   // Set a marker that a full page load would wipe, to tell client-side
   // routing apart from the server answering /queue with the app shell.
   await page.evaluate(() => {
@@ -28,10 +31,9 @@ test("navigates between screens without a page load", async ({ page }) => {
 });
 
 test("navigation is a sidebar on desktop and a bottom bar on phones", async ({
-  page,
+  signedInPage: page,
   isMobile,
 }) => {
-  await page.goto("/");
   // The screen has rendered once its heading is there. Without this wait the
   // overflow check below could measure a page that has no content yet.
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Drafts");
@@ -61,7 +63,7 @@ test("navigation is a sidebar on desktop and a bottom bar on phones", async ({
 });
 
 test("deep links and unknown paths get the app, unknown API paths do not", async ({
-  page,
+  signedInPage: page,
 }) => {
   // Served by the single-page-app fallback of the static assets.
   await page.goto("/queue");
@@ -81,7 +83,9 @@ test("deep links and unknown paths get the app, unknown API paths do not", async
   expect(response?.headers()["content-type"]).toContain("application/json");
 });
 
-test("theme follows the system until it is set by hand", async ({ page }) => {
+test("theme follows the system until it is set by hand", async ({
+  signedInPage: page,
+}) => {
   const html = page.locator("html");
   await page.emulateMedia({ colorScheme: "dark" });
   await page.goto("/settings");

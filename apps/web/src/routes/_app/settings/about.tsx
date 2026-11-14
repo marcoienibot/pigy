@@ -4,44 +4,37 @@ import {
   useRouter,
 } from "@tanstack/react-router";
 import type { ReactNode } from "react";
-import { EmptyState, Page } from "@/components/page";
 import { Button } from "@/components/ui/button";
 import { fetchHealth } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-export const Route = createFileRoute("/")({
+export const Route = createFileRoute("/_app/settings/about")({
   loader: ({ abortController }) => fetchHealth(abortController.signal),
-  component: Drafts,
-  errorComponent: DraftsError,
+  component: About,
+  errorComponent: AboutError,
 });
 
-function Drafts() {
+function About() {
   const health = Route.useLoaderData();
 
   return (
-    <Page title="Drafts">
-      <EmptyState
-        title="No drafts yet"
-        description="Posts you are still writing will appear here."
-      />
-      <Status>
-        <StatusRow label="API">
-          <Dot className="bg-emerald-500" />
-          {health.status}
-        </StatusRow>
-        <StatusRow label="Version">
-          <span className="font-mono text-xs">{health.version}</span>
-        </StatusRow>
-      </Status>
-    </Page>
+    <Status>
+      <StatusRow label="API">
+        <Dot className="bg-emerald-500" />
+        {health.status}
+      </StatusRow>
+      <StatusRow label="Version">
+        <span className="font-mono text-xs">{health.version}</span>
+      </StatusRow>
+    </Status>
   );
 }
 
-function DraftsError({ error }: ErrorComponentProps) {
+function AboutError({ error }: ErrorComponentProps) {
   const router = useRouter();
 
   return (
-    <Page title="Drafts">
+    <>
       <Status>
         <StatusRow label="API">
           <Dot className="bg-destructive" />
@@ -51,18 +44,24 @@ function DraftsError({ error }: ErrorComponentProps) {
           {error instanceof Error ? error.message : String(error)}
         </StatusRow>
       </Status>
-      <div className="mx-auto mt-3 max-w-sm">
-        <Button variant="outline" size="sm" onClick={() => router.invalidate()}>
-          Retry
-        </Button>
-      </div>
-    </Page>
+      <Button
+        variant="outline"
+        size="sm"
+        className="mt-3"
+        onClick={() => router.invalidate()}
+      >
+        Retry
+      </Button>
+    </>
   );
 }
 
 function Status({ children }: { children: ReactNode }) {
   return (
-    <dl className="mx-auto max-w-sm divide-y rounded-lg border">{children}</dl>
+    <section>
+      <h2 className="font-medium">About</h2>
+      <dl className="mt-3 divide-y rounded-lg border">{children}</dl>
+    </section>
   );
 }
 

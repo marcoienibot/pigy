@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { EmptyState, Page } from "@/components/page";
 
-export const Route = createFileRoute("/queue")({
+export const Route = createFileRoute("/_app/queue")({
   component: Queue,
 });
 

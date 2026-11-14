@@ -9,122 +9,296 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as IndexRouteImport } from './routes/index'
-import { Route as ChannelsRouteImport } from './routes/channels'
-import { Route as QueueRouteImport } from './routes/queue'
-import { Route as SentRouteImport } from './routes/sent'
-import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as AppRouteImport } from './routes/_app'
+import { Route as InviteOnlyRouteImport } from './routes/invite-only'
+import { Route as SignInRouteImport } from './routes/sign-in'
+import { Route as AppIndexRouteImport } from './routes/_app/index'
+import { Route as AppSplatRouteImport } from './routes/_app/$'
+import { Route as AppChannelsRouteImport } from './routes/_app/channels'
+import { Route as AppQueueRouteImport } from './routes/_app/queue'
+import { Route as AppSentRouteImport } from './routes/_app/sent'
+import { Route as AppSettingsRouteImport } from './routes/_app/settings'
+import { Route as AppSettingsIndexRouteImport } from './routes/_app/settings/index'
+import { Route as AppSettingsAboutRouteImport } from './routes/_app/settings/about'
+import { Route as AppSettingsAccessRouteImport } from './routes/_app/settings/access'
 
-const IndexRoute = IndexRouteImport.update({
+const AppRoute = AppRouteImport.update({
+  id: '/_app',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const InviteOnlyRoute = InviteOnlyRouteImport.update({
+  id: '/invite-only',
+  path: '/invite-only',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SignInRoute = SignInRouteImport.update({
+  id: '/sign-in',
+  path: '/sign-in',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AppIndexRoute = AppIndexRouteImport.update({
   id: '/',
   path: '/',
-  getParentRoute: () => rootRouteImport,
+  getParentRoute: () => AppRoute,
 } as any)
-const ChannelsRoute = ChannelsRouteImport.update({
+const AppSplatRoute = AppSplatRouteImport.update({
+  id: '/$',
+  path: '/$',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppChannelsRoute = AppChannelsRouteImport.update({
   id: '/channels',
   path: '/channels',
-  getParentRoute: () => rootRouteImport,
+  getParentRoute: () => AppRoute,
 } as any)
-const QueueRoute = QueueRouteImport.update({
+const AppQueueRoute = AppQueueRouteImport.update({
   id: '/queue',
   path: '/queue',
-  getParentRoute: () => rootRouteImport,
+  getParentRoute: () => AppRoute,
 } as any)
-const SentRoute = SentRouteImport.update({
+const AppSentRoute = AppSentRouteImport.update({
   id: '/sent',
   path: '/sent',
-  getParentRoute: () => rootRouteImport,
+  getParentRoute: () => AppRoute,
 } as any)
-const SettingsRoute = SettingsRouteImport.update({
+const AppSettingsRoute = AppSettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
-  getParentRoute: () => rootRouteImport,
+  getParentRoute: () => AppRoute,
+} as any)
+const AppSettingsIndexRoute = AppSettingsIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => AppSettingsRoute,
+} as any)
+const AppSettingsAboutRoute = AppSettingsAboutRouteImport.update({
+  id: '/about',
+  path: '/about',
+  getParentRoute: () => AppSettingsRoute,
+} as any)
+const AppSettingsAccessRoute = AppSettingsAccessRouteImport.update({
+  id: '/access',
+  path: '/access',
+  getParentRoute: () => AppSettingsRoute,
 } as any)
 
 export interface FileRoutesByFullPath {
-  '/': typeof IndexRoute
-  '/channels': typeof ChannelsRoute
-  '/queue': typeof QueueRoute
-  '/sent': typeof SentRoute
-  '/settings': typeof SettingsRoute
+  '/': typeof AppIndexRoute
+  '/invite-only': typeof InviteOnlyRoute
+  '/sign-in': typeof SignInRoute
+  '/$': typeof AppSplatRoute
+  '/channels': typeof AppChannelsRoute
+  '/queue': typeof AppQueueRoute
+  '/sent': typeof AppSentRoute
+  '/settings': typeof AppSettingsRouteWithChildren
+  '/settings/about': typeof AppSettingsAboutRoute
+  '/settings/access': typeof AppSettingsAccessRoute
+  '/settings/': typeof AppSettingsIndexRoute
 }
 export interface FileRoutesByTo {
-  '/': typeof IndexRoute
-  '/channels': typeof ChannelsRoute
-  '/queue': typeof QueueRoute
-  '/sent': typeof SentRoute
-  '/settings': typeof SettingsRoute
+  '/invite-only': typeof InviteOnlyRoute
+  '/sign-in': typeof SignInRoute
+  '/$': typeof AppSplatRoute
+  '/channels': typeof AppChannelsRoute
+  '/queue': typeof AppQueueRoute
+  '/sent': typeof AppSentRoute
+  '/': typeof AppIndexRoute
+  '/settings/about': typeof AppSettingsAboutRoute
+  '/settings/access': typeof AppSettingsAccessRoute
+  '/settings': typeof AppSettingsIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
-  '/': typeof IndexRoute
-  '/channels': typeof ChannelsRoute
-  '/queue': typeof QueueRoute
-  '/sent': typeof SentRoute
-  '/settings': typeof SettingsRoute
+  '/_app': typeof AppRouteWithChildren
+  '/invite-only': typeof InviteOnlyRoute
+  '/sign-in': typeof SignInRoute
+  '/_app/$': typeof AppSplatRoute
+  '/_app/channels': typeof AppChannelsRoute
+  '/_app/queue': typeof AppQueueRoute
+  '/_app/sent': typeof AppSentRoute
+  '/_app/settings': typeof AppSettingsRouteWithChildren
+  '/_app/': typeof AppIndexRoute
+  '/_app/settings/about': typeof AppSettingsAboutRoute
+  '/_app/settings/access': typeof AppSettingsAccessRoute
+  '/_app/settings/': typeof AppSettingsIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/channels' | '/queue' | '/sent' | '/settings'
+  fullPaths:
+    | '/'
+    | '/invite-only'
+    | '/sign-in'
+    | '/$'
+    | '/channels'
+    | '/queue'
+    | '/sent'
+    | '/settings'
+    | '/settings/about'
+    | '/settings/access'
+    | '/settings/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/channels' | '/queue' | '/sent' | '/settings'
-  id: '__root__' | '/' | '/channels' | '/queue' | '/sent' | '/settings'
+  to:
+    | '/invite-only'
+    | '/sign-in'
+    | '/$'
+    | '/channels'
+    | '/queue'
+    | '/sent'
+    | '/'
+    | '/settings/about'
+    | '/settings/access'
+    | '/settings'
+  id:
+    | '__root__'
+    | '/_app'
+    | '/invite-only'
+    | '/sign-in'
+    | '/_app/$'
+    | '/_app/channels'
+    | '/_app/queue'
+    | '/_app/sent'
+    | '/_app/settings'
+    | '/_app/'
+    | '/_app/settings/about'
+    | '/_app/settings/access'
+    | '/_app/settings/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
-  IndexRoute: typeof IndexRoute
-  ChannelsRoute: typeof ChannelsRoute
-  QueueRoute: typeof QueueRoute
-  SentRoute: typeof SentRoute
-  SettingsRoute: typeof SettingsRoute
+  AppRoute: typeof AppRouteWithChildren
+  InviteOnlyRoute: typeof InviteOnlyRoute
+  SignInRoute: typeof SignInRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/': {
-      id: '/'
+    '/_app': {
+      id: '/_app'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof AppRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/invite-only': {
+      id: '/invite-only'
+      path: '/invite-only'
+      fullPath: '/invite-only'
+      preLoaderRoute: typeof InviteOnlyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/sign-in': {
+      id: '/sign-in'
+      path: '/sign-in'
+      fullPath: '/sign-in'
+      preLoaderRoute: typeof SignInRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_app/': {
+      id: '/_app/'
       path: '/'
       fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
-      parentRoute: typeof rootRouteImport
+      preLoaderRoute: typeof AppIndexRouteImport
+      parentRoute: typeof AppRoute
     }
-    '/channels': {
-      id: '/channels'
+    '/_app/$': {
+      id: '/_app/$'
+      path: '/$'
+      fullPath: '/$'
+      preLoaderRoute: typeof AppSplatRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/channels': {
+      id: '/_app/channels'
       path: '/channels'
       fullPath: '/channels'
-      preLoaderRoute: typeof ChannelsRouteImport
-      parentRoute: typeof rootRouteImport
+      preLoaderRoute: typeof AppChannelsRouteImport
+      parentRoute: typeof AppRoute
     }
-    '/queue': {
-      id: '/queue'
+    '/_app/queue': {
+      id: '/_app/queue'
       path: '/queue'
       fullPath: '/queue'
-      preLoaderRoute: typeof QueueRouteImport
-      parentRoute: typeof rootRouteImport
+      preLoaderRoute: typeof AppQueueRouteImport
+      parentRoute: typeof AppRoute
     }
-    '/sent': {
-      id: '/sent'
+    '/_app/sent': {
+      id: '/_app/sent'
       path: '/sent'
       fullPath: '/sent'
-      preLoaderRoute: typeof SentRouteImport
-      parentRoute: typeof rootRouteImport
+      preLoaderRoute: typeof AppSentRouteImport
+      parentRoute: typeof AppRoute
     }
-    '/settings': {
-      id: '/settings'
+    '/_app/settings': {
+      id: '/_app/settings'
       path: '/settings'
       fullPath: '/settings'
-      preLoaderRoute: typeof SettingsRouteImport
-      parentRoute: typeof rootRouteImport
+      preLoaderRoute: typeof AppSettingsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/settings/': {
+      id: '/_app/settings/'
+      path: '/'
+      fullPath: '/settings/'
+      preLoaderRoute: typeof AppSettingsIndexRouteImport
+      parentRoute: typeof AppSettingsRoute
+    }
+    '/_app/settings/about': {
+      id: '/_app/settings/about'
+      path: '/about'
+      fullPath: '/settings/about'
+      preLoaderRoute: typeof AppSettingsAboutRouteImport
+      parentRoute: typeof AppSettingsRoute
+    }
+    '/_app/settings/access': {
+      id: '/_app/settings/access'
+      path: '/access'
+      fullPath: '/settings/access'
+      preLoaderRoute: typeof AppSettingsAccessRouteImport
+      parentRoute: typeof AppSettingsRoute
     }
   }
 }
 
+interface AppSettingsRouteChildren {
+  AppSettingsAboutRoute: typeof AppSettingsAboutRoute
+  AppSettingsAccessRoute: typeof AppSettingsAccessRoute
+  AppSettingsIndexRoute: typeof AppSettingsIndexRoute
+}
+
+const AppSettingsRouteChildren: AppSettingsRouteChildren = {
+  AppSettingsAboutRoute: AppSettingsAboutRoute,
+  AppSettingsAccessRoute: AppSettingsAccessRoute,
+  AppSettingsIndexRoute: AppSettingsIndexRoute,
+}
+
+const AppSettingsRouteWithChildren = AppSettingsRoute._addFileChildren(
+  AppSettingsRouteChildren,
+)
+
+interface AppRouteChildren {
+  AppSplatRoute: typeof AppSplatRoute
+  AppChannelsRoute: typeof AppChannelsRoute
+  AppQueueRoute: typeof AppQueueRoute
+  AppSentRoute: typeof AppSentRoute
+  AppSettingsRoute: typeof AppSettingsRouteWithChildren
+  AppIndexRoute: typeof AppIndexRoute
+}
+
+const AppRouteChildren: AppRouteChildren = {
+  AppSplatRoute: AppSplatRoute,
+  AppChannelsRoute: AppChannelsRoute,
+  AppQueueRoute: AppQueueRoute,
+  AppSentRoute: AppSentRoute,
+  AppSettingsRoute: AppSettingsRouteWithChildren,
+  AppIndexRoute: AppIndexRoute,
+}
+
+const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
-  IndexRoute: IndexRoute,
-  ChannelsRoute: ChannelsRoute,
-  QueueRoute: QueueRoute,
-  SentRoute: SentRoute,
-  SettingsRoute: SettingsRoute,
+  AppRoute: AppRouteWithChildren,
+  InviteOnlyRoute: InviteOnlyRoute,
+  SignInRoute: SignInRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

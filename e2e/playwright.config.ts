@@ -26,10 +26,13 @@ export default defineConfig({
     { name: "desktop", use: { ...devices["Desktop Chrome"] } },
     { name: "phone", use: { ...devices["Pixel 7"] } },
   ],
-  // Tests run against the production build, served by the Workers runtime
-  // the same way it is deployed: static assets plus the Worker.
+  // Tests run against a build, served by the Workers runtime the same way
+  // it is deployed: static assets plus the Worker. It is the production
+  // build in everything but sign-in, where a simulated Google stands in for
+  // the real one. `pnpm preview:e2e` builds it and serves it on this port,
+  // with an empty database.
   webServer: {
-    command: `pnpm build && pnpm preview --port ${port} --strictPort`,
+    command: "pnpm preview:e2e",
     cwd: "..",
     url: `http://localhost:${port}/api/health`,
     // Always build: a server that is already running could serve a stale

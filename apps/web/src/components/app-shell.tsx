@@ -1,6 +1,7 @@
 import { Link, linkOptions } from "@tanstack/react-router";
 import { CalendarClock, PenLine, Send, Settings, Share2 } from "lucide-react";
 import type { ReactNode } from "react";
+import { UserMenu } from "@/components/user-menu";
 import { cn } from "@/lib/utils";
 
 const navItems = linkOptions([
@@ -20,7 +21,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           <img src="/icon.svg" alt="" className="size-5 rounded-sm" />
           <span className="font-semibold tracking-tight">pigy</span>
         </div>
-        <nav aria-label="Main" className="flex flex-col gap-0.5 px-2">
+        <nav aria-label="Main" className="flex flex-1 flex-col gap-0.5 px-2">
           {navItems.map(({ label, icon: Icon, ...link }) => (
             <Link
               key={link.to}
@@ -37,6 +38,9 @@ export function AppShell({ children }: { children: ReactNode }) {
             </Link>
           ))}
         </nav>
+        <div className="p-2">
+          <UserMenu placement="sidebar" />
+        </div>
       </aside>
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">{children}</div>
