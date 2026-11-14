@@ -117,3 +117,36 @@ test("the user menu shows who is signed in and signs out", async ({
   await page.goto("/queue");
   await expect(page).toHaveURL("/sign-in?returnTo=%2Fqueue");
 });
+
+test("a sign-out that fails says so and can be tried again", async ({
+  signedInPage: page,
+}) => {
+  // The connection is gone: no request to the API gets through. That is the
+  // case in which the sign-in page could not tell either that the session is
+  // still good, and would look like the proof of having signed out.
+  await page.route("**/api/**", (route) => route.abort());
+
+  await page
+    .getByRole("button", { name: "Account" })
+    .filter({ visible: true })
+    .click();
+  await page.getByRole("menuitem", { name: "Sign out" }).click();
+
+  const dialog = page.getByRole("alertdialog");
+  await expect(dialog).toContainText("Signing out could not be confirmed");
+  await expect(dialog).toContainText("You may still be signed in");
+  // The app is still there, and not the sign-in page.
+  await expect(page).toHaveURL("/");
+
+  // The connection is back. The warning was right: the session is still
+  // good, so whoever had walked away would have left it to the next person.
+  await page.unroute("**/api/**");
+  expect((await page.request.get("/api/me")).status()).toBe(200);
+
+  await dialog.getByRole("button", { name: "Try again" }).click();
+
+  await expect(page).toHaveURL("/sign-in");
+  // This time the session is gone.
+  await page.goto("/queue");
+  await expect(page).toHaveURL("/sign-in?returnTo=%2Fqueue");
+});
