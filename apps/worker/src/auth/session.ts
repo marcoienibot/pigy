@@ -1,4 +1,4 @@
-import { and, eq, lte } from "drizzle-orm";
+import { and, eq, inArray, lte } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import type { Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
@@ -103,6 +103,27 @@ export async function revokeSession(
 ): Promise<void> {
   const session = await verifiedSession(db, token);
   if (session) await deleteSession(db, session.id);
+}
+
+/**
+ * Ends every session of the Google account `googleSub`, on all devices. Does
+ * nothing for an account that has never signed in.
+ */
+export async function revokeSessionsOfAccount(
+  db: DrizzleD1Database,
+  googleSub: string,
+): Promise<void> {
+  await db
+    .delete(sessions)
+    .where(
+      inArray(
+        sessions.userId,
+        db
+          .select({ id: users.id })
+          .from(users)
+          .where(eq(users.googleSub, googleSub)),
+      ),
+    );
 }
 
 /**

@@ -15,7 +15,7 @@ export const users = sqliteTable(
      * address can change or move to another account, this cannot.
      */
     googleSub: text("google_sub").notNull().unique(),
-    /** As of the last sign-in, trimmed and lowercased. */
+    /** As of the last sign-in that succeeded, trimmed and lowercased. */
     email: text("email").notNull(),
     name: text("name").notNull(),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),

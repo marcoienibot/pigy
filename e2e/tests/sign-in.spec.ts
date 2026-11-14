@@ -69,8 +69,11 @@ test("somebody who is not invited sees the invite-only page", async ({
 
 test("the sign-in page says why an unverified email address was refused", async ({
   page,
-}) => {
-  await signIn(page, adminEmail, { verified: false });
+}, testInfo) => {
+  // An address of its own, not the admin's: a refused sign-in ends the
+  // sessions that its Google account has, and the other tests are signed in
+  // as the admin at the same time.
+  await signIn(page, uniqueEmail(testInfo, "unverified"), { verified: false });
 
   await expect(page).toHaveURL("/sign-in?error=email_not_verified");
   await expect(page.getByRole("alert")).toContainText(

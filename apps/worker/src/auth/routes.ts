@@ -1,6 +1,6 @@
 import {
+  emailSchema,
   meResponseSchema,
-  normalizeEmail,
   type SignInError,
   safeReturnTo,
 } from "@pigy/core";
@@ -22,6 +22,7 @@ import {
   isSecure,
   readSessionCookie,
   revokeSession,
+  revokeSessionsOfAccount,
   writeSessionCookie,
 } from "./session.ts";
 
@@ -126,16 +127,36 @@ export function authRoutes(dependencies: AppDependencies): Hono<AppEnv> {
       console.warn("Sign-in did not complete", error);
     });
     if (!identity) return signInFailed(c, "failed");
-    // An address that Google has not verified proves nothing about who is
-    // signing in, so it cannot be matched against the invitations.
-    if (!identity.emailVerified) return signInFailed(c, "email_not_verified");
 
     const db = drizzle(c.env.DB);
-    const email = normalizeEmail(identity.email);
+    // The address to look for among the invitations, if this identity has
+    // one that counts. An address that Google has not verified proves
+    // nothing about who is signing in. One that the schema refuses cannot
+    // have been invited, and normalizing it regardless could turn it into
+    // one that was.
+    const email = identity.emailVerified
+      ? emailSchema.safeParse(identity.email).data
+      : undefined;
     // Checked on every sign-in, not only the first: an invitation can end.
-    // Nothing is stored about somebody who is not invited.
-    if (!(await roleOf(db, adminEmails, email))) {
-      return c.redirect("/invite-only");
+    const role = email ? await roleOf(db, adminEmails, email) : null;
+    if (!email || !role) {
+      // Google has just said who this account is today, and that is nobody
+      // who may sign in. If the account was let in before, with an address
+      // that it has lost since or that is no longer verified, its sessions
+      // end here, on every device. They are matched against the address of
+      // that earlier sign-in, and would go on working with the role that
+      // address has.
+      //
+      // The stored address stays as it is. Nothing is stored about somebody
+      // who is not invited, which is what the address Google reports now
+      // would be, and an unverified one proves nothing. The old address
+      // gives no access any more either: with the sessions gone, only a
+      // sign-in that succeeds starts one, and it stores the address of that
+      // day first.
+      await revokeSessionsOfAccount(db, identity.sub);
+      return identity.emailVerified
+        ? c.redirect("/invite-only")
+        : signInFailed(c, "email_not_verified");
     }
 
     const time = now();

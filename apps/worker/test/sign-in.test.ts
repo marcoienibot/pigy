@@ -1,3 +1,4 @@
+import { resignIdToken } from "@pigy/simulators/google";
 import * as oauth from "oauth4webapi";
 import { expect, it } from "vitest";
 import { sessions, users } from "../src/db/schema.ts";
@@ -144,6 +145,28 @@ it("matches invitations without regard to case", async () => {
   });
 });
 
+it("refuses an address that only lowercasing turns into an invited one", async () => {
+  const test = setup();
+  await invite(test, "kate@example.com");
+  const browser = test.browser();
+
+  // U+212A, the Kelvin sign, lowercases to "k". An address with it is
+  // another address than Kate's, whoever it belongs to, and must not be
+  // matched with her invitation.
+  const response = await signIn(test, browser, {
+    email: "\u212aate@example.com",
+  });
+
+  expect(locationOf(response)).toBe("/invite-only");
+  expect(await me(browser)).toBeNull();
+  expect(await test.db.select().from(users)).toEqual([]);
+  // Kate herself gets in, so the refusal above was not for a missing
+  // invitation.
+  expect(
+    locationOf(await signIn(test, browser, { email: "Kate@example.com" })),
+  ).toBe("/");
+});
+
 it("knows an account by its Google ID, not by its email address", async () => {
   const test = setup();
   await invite(test, "old@example.com");
@@ -161,6 +184,54 @@ it("knows an account by its Google ID, not by its email address", async () => {
   expect(after?.user.id).toBe(before?.user.id);
   expect(await test.db.select().from(users)).toHaveLength(1);
 });
+
+it.each([
+  [
+    "its address is now one that is not invited",
+    { email: "moved@example.com" },
+    "/invite-only",
+  ],
+  [
+    "Google no longer vouches for its address",
+    { email: adminEmail, verified: false },
+    "/sign-in?error=email_not_verified",
+  ],
+])(
+  "signs a known account out everywhere when %s",
+  async (_name, today, refusal) => {
+    const test = setup();
+    await invite(test, "ada@example.com");
+    const phone = await signedIn(test, { email: adminEmail, sub: "1001" });
+    const laptop = await signedIn(test, { email: adminEmail, sub: "1001" });
+    const ada = await signedIn(test, { email: "ada@example.com" });
+
+    // The same Google account signs in again, as what Google says it is
+    // today. In a third browser, so that the two above are not signed out
+    // through anything this one sends.
+    const response = await signIn(test, test.browser(), {
+      ...today,
+      sub: "1001",
+    });
+
+    expect(locationOf(response)).toBe(refusal);
+    // Looked up in the database before the app is asked: the sessions are
+    // gone at once, not when they are next used. Ada's is the one left.
+    expect(await test.db.select().from(sessions)).toHaveLength(1);
+    // Left alone, both would still be signed in as the admin: a session goes
+    // by the address its account was let in with.
+    expect(await me(phone)).toBeNull();
+    expect(await me(laptop)).toBeNull();
+    // Nobody else is affected.
+    expect(await me(ada)).not.toBeNull();
+    // The refused address is not stored, like that of anybody who is not
+    // invited. The account keeps the one it was last let in with.
+    const stored = await test.db.select({ email: users.email }).from(users);
+    expect(stored.map(({ email }) => email).sort()).toEqual([
+      "ada@example.com",
+      adminEmail,
+    ]);
+  },
+);
 
 it("returns to the page the sign-in was started for", async () => {
   const test = setup();
@@ -397,6 +468,54 @@ it("refuses an ID token that is not signed with one of Google's keys", async () 
   // With Google's own keys the same sign-in succeeds, so it was the
   // signature that failed above.
   swapKeys = false;
+  expect(locationOf(await signIn(test, browser, { email: adminEmail }))).toBe(
+    "/",
+  );
+});
+
+it.each([
+  [
+    // What a token looks like that Google issued to another app. Whoever
+    // runs that app, or reads its traffic, could present it to pigy.
+    "was issued to another client",
+    { aud: "another-app.apps.googleusercontent.com" },
+    '"aud"',
+  ],
+  [
+    "was not issued by Google",
+    { iss: "https://accounts.example.com" },
+    '"iss"',
+  ],
+])("refuses an ID token that %s", async (_name, changes, claim) => {
+  const warn = expectWarnings();
+  let changed = true;
+  const test = setup({
+    intercept: (google) => async (input, init) => {
+      const response = await google(input, init);
+      if (!String(input).endsWith("/token") || !response.ok) return response;
+      // Google's answer with one claim of the ID token changed. The token is
+      // signed again with Google's key, so its signature is good.
+      const body = await response.json<{ id_token: string }>();
+      return Response.json({
+        ...body,
+        id_token: await resignIdToken(body.id_token, changed ? changes : {}),
+      });
+    },
+  });
+  const browser = test.browser();
+
+  const response = await signIn(test, browser, { email: adminEmail });
+
+  expect(locationOf(response)).toBe("/sign-in?error=failed");
+  expect(await me(browser)).toBeNull();
+  expect(await test.db.select().from(sessions)).toEqual([]);
+  // The reason that was logged names the claim.
+  expect(String(warn.mock.calls[0]?.[1])).toContain(claim);
+
+  // Signed again with nothing changed, the token is accepted. So it was the
+  // one claim that was refused above, not a token that went through
+  // `resignIdToken`.
+  changed = false;
   expect(locationOf(await signIn(test, browser, { email: adminEmail }))).toBe(
     "/",
   );
