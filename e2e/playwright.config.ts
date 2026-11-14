@@ -11,6 +11,16 @@ export default defineConfig({
   use: {
     baseURL: `http://localhost:${port}`,
     trace: "retain-on-failure",
+    launchOptions: {
+      // Tests must never reach a real network host. With this rule the
+      // browser resolves no host but "localhost", addresses such as 127.0.0.1
+      // included, so it has nowhere else to connect to. That stops what
+      // fixtures.ts cannot: a redirect to another host, and a WebSocket
+      // opened in a worker, where Playwright does not route them. The app
+      // must therefore be addressed as "localhost". The switch is Chromium's
+      // own, so every project has to run a Chromium browser.
+      args: ["--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost"],
+    },
   },
   projects: [
     { name: "desktop", use: { ...devices["Desktop Chrome"] } },
