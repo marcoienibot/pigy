@@ -31,6 +31,19 @@ it.each([
   ["a control character", "ada\u0000@example.com"],
   ["more than 254 characters", `${"a".repeat(243)}@example.com`],
   ["something that is not text", 42],
+  ["a letter that is not ASCII", "ad\u00e4@example.com"],
 ])("rejects %s", (_name, value) => {
   expect(emailSchema.safeParse(value).success).toBe(false);
+});
+
+it("rejects a character that lowercasing would turn into an ASCII letter", () => {
+  // U+212A, the Kelvin sign, looks like "K" and lowercases to "k". Were the
+  // address checked after it is normalized, this one would pass as
+  // "kate@example.com", which belongs to somebody else.
+  const address = "\u212aate@example.com";
+  // The address is one that normalizing does turn into an ASCII one. If it
+  // were not, the rejection below would say nothing about the order.
+  expect(normalizeEmail(address)).toBe("kate@example.com");
+
+  expect(emailSchema.safeParse(address).success).toBe(false);
 });
