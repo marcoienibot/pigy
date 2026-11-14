@@ -55,7 +55,7 @@ Imports:
 
 **Add a shadcn/ui component.** In `apps/web`, run `pnpm dlx shadcn@latest add <name>`, then `pnpm format` from the root. Components land in `src/components/ui`. Theme tokens are in `src/styles.css`.
 
-**Add an API route.** Add it to the Hono app in `apps/worker/src` under `/api/`. Put the request and response schemas in `packages/core` and parse with them on both sides. Only `/api/*` reaches the Worker. Every other path is a static asset or the app shell, so a new prefix such as `/sync` must be added to `assets.run_worker_first` in `wrangler.jsonc`.
+**Add an API route.** Add it to the Hono app in `apps/worker/src` under `/api/`. Put the request and response schemas in `packages/core` and parse with them on both sides. Error responses follow `errorResponseSchema`, and an uncaught exception becomes a JSON 500. Only `/api/*` reaches the Worker. Every other path is a static asset or the app shell, so a new prefix such as `/sync` must be added to `assets.run_worker_first` in `wrangler.jsonc`.
 
 **Add a binding or variable.** Edit `apps/worker/wrangler.jsonc`, then run `pnpm typecheck`. It runs `wrangler types`, which regenerates the git-ignored `worker-configuration.d.ts` that declares `Env` and the runtime types. `pnpm install` generates it too.
 

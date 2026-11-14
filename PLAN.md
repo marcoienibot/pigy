@@ -254,7 +254,7 @@ REST under `/api/v1`, described by an OpenAPI document generated from the same Z
 | `GET /posting-schedule`, `PUT /posting-schedule` | `Channel.postingSchedule` |
 | `POST /media` | None. Buffer accepts URLs only |
 
-- **Copied from Buffer**: camelCase fields (`text`, `assets`, `dueAt`, `saveToDraft`, `metadata`), `mode` values (`addToQueue`, `shareNext`, `shareNow`, `customScheduled`), status values, the `assets` shape with `altText`, per-service `metadata` including `thread`, cursor pagination with `pageInfo`, and error names (`InvalidInputError`, `NotFoundError`, `UnauthorizedError`, `LimitReachedError`).
+- **Copied from Buffer**: camelCase fields (`text`, `assets`, `dueAt`, `saveToDraft`, `metadata`), `mode` values (`addToQueue`, `shareNext`, `shareNow`, `customScheduled`), status values, the `assets` shape with `altText`, per-service `metadata` including `thread`, cursor pagination with `pageInfo`, and error names (`InvalidInputError`, `NotFoundError`, `UnauthorizedError`, `LimitReachedError`, `UnexpectedError`).
 - **Different from Buffer**: `channelIds` is a list, because a pigy post is cross-network, and the response carries `targets[]` with per-channel status, link, error and metrics. `schedulingType` is dropped, since pigy always publishes automatically.
 - **Keys**: created in settings, shown once, stored hashed. Prefix `pigy_live_` or `pigy_test_`. Scopes: `posts:read`, `posts:write`, `channels:read`, `media:write`. Sent as `Authorization: Bearer`.
 - **Safety**: `Idempotency-Key` header on writes, and per-key rate limits using the Workers rate limiting binding.

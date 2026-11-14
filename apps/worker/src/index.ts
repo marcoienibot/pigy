@@ -1,5 +1,14 @@
-import { healthResponseSchema } from "@pigy/core";
+import { type ErrorResponse, healthResponseSchema } from "@pigy/core";
 import { Hono } from "hono";
+
+const notFound: ErrorResponse = {
+  error: "NotFoundError",
+  message: "Not found",
+};
+const unexpected: ErrorResponse = {
+  error: "UnexpectedError",
+  message: "Something went wrong",
+};
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -9,8 +18,12 @@ app.get("/api/health", (c) =>
   ),
 );
 
-app.notFound((c) =>
-  c.json({ error: "NotFoundError", message: "Not found" }, 404),
-);
+app.notFound((c) => c.json(notFound, 404));
+
+app.onError((error, c) => {
+  // The exception goes to the logs, never to the client.
+  console.error(error);
+  return c.json(unexpected, 500);
+});
 
 export default app;
