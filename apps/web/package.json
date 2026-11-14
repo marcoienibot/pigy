@@ -4,8 +4,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build && node scripts/check-build.mjs dist absent",
+    "build:e2e": "vite build --mode e2e && node scripts/check-build.mjs dist-e2e present",
     "preview": "vite preview",
+    "preview:e2e": "vite preview --mode e2e --port 4173 --strictPort",
     "typecheck": "tsc -b"
   },
   "dependencies": {
