@@ -1,0 +1,22 @@
+packages:
+  - apps/*
+  - packages/*
+  - e2e
+
+# Versions shared by several packages. Reference them with "catalog:".
+catalog:
+  "@types/node": ^22.20.5
+  typescript: ^7.0.2
+  vitest: ^5.1.0
+
+# Dependencies that may run install scripts.
+allowBuilds:
+  esbuild: true
+  workerd: true
+
+# These packages ship agent skills. They are not installed.
+permissions:
+  "@tanstack/react-router":
+    skills: false
+  "@tanstack/router-plugin":
+    skills: false
