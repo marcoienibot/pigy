@@ -18,7 +18,7 @@
   },
   "overrides": [
     {
-      "includes": ["packages/core/**"],
+      "includes": ["packages/**"],
       "linter": {
         "rules": {
           "style": {
@@ -26,11 +26,11 @@
               "level": "error",
               "options": {
                 "deniedGlobals": {
-                  "window": "Browser only. @pigy/core also runs in the Workers runtime.",
-                  "document": "Browser only. @pigy/core also runs in the Workers runtime.",
-                  "localStorage": "Browser only. @pigy/core also runs in the Workers runtime.",
-                  "process": "Node only. @pigy/core runs in the browser and in the Workers runtime.",
-                  "Buffer": "Node only. @pigy/core runs in the browser and in the Workers runtime."
+                  "window": "Browser only. The packages also run in the Workers runtime.",
+                  "document": "Browser only. The packages also run in the Workers runtime.",
+                  "localStorage": "Browser only. The packages also run in the Workers runtime.",
+                  "process": "Node only. The packages run in the Workers runtime, and @pigy/core in the browser too.",
+                  "Buffer": "Node only. The packages run in the Workers runtime, and @pigy/core in the browser too."
                 }
               }
             }
@@ -39,7 +39,7 @@
       }
     },
     {
-      "includes": ["packages/core/src/**", "!packages/core/src/**/*.test.ts"],
+      "includes": ["packages/*/src/**", "!packages/*/src/**/*.test.ts"],
       "linter": {
         "rules": {
           "correctness": {

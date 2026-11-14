@@ -1,0 +1,22 @@
+{
+  "name": "@pigy/simulators",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    "./google": "./src/google/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -b",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@pigy/core": "workspace:*",
+    "jose": "^6.2.17"
+  },
+  "devDependencies": {
+    "oauth4webapi": "^3.8.8",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}
