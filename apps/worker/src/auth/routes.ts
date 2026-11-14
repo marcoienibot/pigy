@@ -23,6 +23,7 @@ import {
   readSessionCookie,
   revokeSession,
   revokeSessionsOfAccount,
+  revokeSessionsOfOtherAccountsWith,
   writeSessionCookie,
 } from "./session.ts";
 
@@ -175,6 +176,13 @@ export function authRoutes(dependencies: AppDependencies): Hono<AppEnv> {
       .onConflictDoUpdate({ target: users.googleSub, set: { email, name } })
       .returning({ id: users.id });
     if (!user) throw new Error("The user was not stored");
+
+    // An address can move from one Google account to another, for example
+    // when an organization gives it to somebody new. The account that had
+    // it before is still stored with it, and its sessions are matched
+    // against that address, so they would go on working with the role of
+    // the address without that account ever signing in again.
+    await revokeSessionsOfOtherAccountsWith(db, email, identity.sub);
 
     // The session a browser had before this sign-in ends here. The new one
     // gets a token that never left the server before, so nobody can have

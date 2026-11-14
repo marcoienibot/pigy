@@ -1,4 +1,4 @@
-import { and, eq, inArray, lte } from "drizzle-orm";
+import { and, eq, inArray, lte, ne } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import type { Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
@@ -124,6 +124,28 @@ export async function revokeSessionsOfAccount(
           .where(eq(users.googleSub, googleSub)),
       ),
     );
+}
+
+/**
+ * Ends every session of the accounts that are stored with `email` and are
+ * not the Google account `googleSub`. Google has just said that the address
+ * belongs to `googleSub` today, so an account that was let in with it
+ * earlier has lost it since.
+ */
+export async function revokeSessionsOfOtherAccountsWith(
+  db: DrizzleD1Database,
+  email: string,
+  googleSub: string,
+): Promise<void> {
+  await db.delete(sessions).where(
+    inArray(
+      sessions.userId,
+      db
+        .select({ id: users.id })
+        .from(users)
+        .where(and(eq(users.email, email), ne(users.googleSub, googleSub))),
+    ),
+  );
 }
 
 /**

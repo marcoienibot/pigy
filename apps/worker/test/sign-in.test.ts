@@ -233,6 +233,36 @@ it.each([
   },
 );
 
+it("signs an account out everywhere when its address moves to another Google account", async () => {
+  const test = setup();
+  await invite(test, "ada@example.com");
+  await invite(test, "bob@example.com");
+  const phone = await signedIn(test, { email: "ada@example.com", sub: "1001" });
+  const laptop = await signedIn(test, {
+    email: "ada@example.com",
+    sub: "1001",
+  });
+  const bob = await signedIn(test, { email: "bob@example.com", sub: "3003" });
+
+  // Another Google account now has the address, as when an organization
+  // gives the address of somebody who left to somebody new. The account
+  // that had it never signs in again, so nothing is refused.
+  const successor = await signedIn(test, {
+    email: "ada@example.com",
+    sub: "2002",
+  });
+
+  // The successor is in, as a user of their own.
+  expect((await me(successor))?.user.email).toBe("ada@example.com");
+  expect(await test.db.select().from(users)).toHaveLength(3);
+  // Left alone, both would still be signed in as ada@example.com: a session
+  // goes by the address its account was last let in with.
+  expect(await me(phone)).toBeNull();
+  expect(await me(laptop)).toBeNull();
+  // Only accounts stored with that address are affected.
+  expect(await me(bob)).not.toBeNull();
+});
+
 it("returns to the page the sign-in was started for", async () => {
   const test = setup();
   const browser = test.browser();
