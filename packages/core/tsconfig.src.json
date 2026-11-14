@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.src.tsbuildinfo",
+    // Runs in the browser and in the Workers runtime. The DOM lib is here for
+    // the web-standard APIs both have, such as URL, crypto and TextEncoder.
+    // It also declares browser-only globals: biome.json rejects the common
+    // ones in this package. No Node or Workers types. The tests are excluded
+    // because importing Vitest brings in Node's types: tsconfig.test.json
+    // checks them.
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": []
+  },
+  "include": ["src"],
+  "exclude": ["src/**/*.test.ts"]
+}

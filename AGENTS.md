@@ -37,7 +37,7 @@ One package: `pnpm --filter @pigy/worker test`. One file: `pnpm --filter @pigy/w
 Imports:
 
 - `apps/web` and `apps/worker` import `@pigy/core`. They never import each other.
-- `packages/core` imports nothing from the apps. It runs in the browser and in the Worker, so it uses only the web-standard APIs that both have, such as `URL`, `crypto` and `TextEncoder`, and no browser-only, Node or Workers APIs. Biome rejects `window`, `document`, `localStorage`, `process` and `Buffer` there.
+- `packages/core` imports nothing from the apps. It runs in the browser and in the Worker, so it uses only the web-standard APIs that both have, such as `URL`, `crypto` and `TextEncoder`, and no browser-only, Node or Workers APIs. Biome rejects `window`, `document`, `localStorage`, `process` and `Buffer` there, and Node modules in its source. The source is type-checked without Node types (`tsconfig.src.json`), the tests with them (`tsconfig.test.json`).
 - `e2e` imports no application code.
 
 ## Rules
@@ -61,7 +61,7 @@ Imports:
 
 **Add a test.**
 
-- `packages/core`: `src/**/*.test.ts` next to the code. Runs in Node. `test/setup.ts` makes the global `fetch` throw.
+- `packages/core`: `src/**/*.test.ts` next to the code. Runs in Node, so a test may import Node modules, which the code under test may not. `test/setup.ts` makes the global `fetch` throw.
 - `apps/worker`: `test/*.test.ts`. Runs inside the Workers runtime. Call the Worker with `exports.default.fetch()` and read bindings from `env`, both from `cloudflare:workers`. `test/setup.ts` makes the global `fetch` throw, and `vitest.config.ts` sends anything that gets past it, TCP connections included, to a Worker that refuses it. Extend `test/setup.ts` when a simulated host has to be reachable through the global `fetch`.
 - `e2e`: `tests/*.spec.ts`. Import `test` and `expect` from `e2e/fixtures.ts`, never from `@playwright/test`: that `test` fails a test whose page requests a host other than the app or opens a WebSocket to one, and blocks both. It cannot block a request that a redirect leads to, so `playwright.config.ts` also starts the browser with a rule that lets it resolve no host but `localhost`. The app must stay addressed as `localhost`, and the rule is a Chromium switch: a project on another browser would run without it. The Worker process under e2e is not guarded yet: it becomes guardable in phase 3, when outbound calls go through an injected `fetch`. Every test runs twice, in the `desktop` and `phone` projects. Traces of failed tests are kept in `e2e/test-results`. The tests in `network-guard.spec.ts` are expected to fail, so the list reporter marks them with a cross in a run that passes.
 

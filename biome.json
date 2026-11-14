@@ -37,6 +37,16 @@
           }
         }
       }
+    },
+    {
+      "includes": ["packages/core/src/**", "!packages/core/src/**/*.test.ts"],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "noNodejsModules": "error"
+          }
+        }
+      }
     }
   ]
 }

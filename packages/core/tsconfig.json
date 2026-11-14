@@ -1,12 +1,7 @@
 {
-  "extends": "../../tsconfig.base.json",
-  "compilerOptions": {
-    // Runs in the browser and in the Workers runtime. The DOM lib is here for
-    // the web-standard APIs both have, such as URL, crypto and TextEncoder.
-    // It also declares browser-only globals: biome.json rejects the common
-    // ones in this package. No Node or Workers types.
-    "lib": ["ES2023", "DOM", "DOM.Iterable"],
-    "types": []
-  },
-  "include": ["src", "test", "vitest.config.ts"]
+  "files": [],
+  "references": [
+    { "path": "./tsconfig.src.json" },
+    { "path": "./tsconfig.test.json" }
+  ]
 }
