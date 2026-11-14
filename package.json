@@ -7,9 +7,9 @@
     "node": ">=22.12"
   },
   "scripts": {
-    "dev": "pnpm --filter @pigy/web dev",
+    "dev": "pnpm --filter @pigy/worker db:migrate && pnpm --filter @pigy/web dev",
     "build": "pnpm --filter @pigy/web build",
-    "preview": "pnpm --filter @pigy/web preview",
+    "preview": "pnpm --filter @pigy/worker db:migrate && pnpm build && pnpm --filter @pigy/web preview",
     "lint": "biome check",
     "format": "biome check --write",
     "typecheck": "pnpm -r typecheck",

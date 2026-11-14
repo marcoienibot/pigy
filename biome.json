@@ -6,7 +6,13 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!**/routeTree.gen.ts", "!**/*.md", "!**/*.svg"]
+    "includes": [
+      "**",
+      "!**/routeTree.gen.ts",
+      "!**/migrations/meta",
+      "!**/*.md",
+      "!**/*.svg"
+    ]
   },
   "formatter": {
     "indentStyle": "space"

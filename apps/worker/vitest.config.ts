@@ -1,11 +1,14 @@
-import { cloudflareTest } from "@cloudflare/vitest-plugin";
+import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
 
-export default defineConfig({
+export default defineConfig(async () => ({
   plugins: [
     cloudflareTest({
       wrangler: { configPath: "./wrangler.jsonc" },
       miniflare: {
+        // Read here, in Node, because the Workers runtime has no file system.
+        // test/setup.ts applies them.
+        bindings: { TEST_MIGRATIONS: await readD1Migrations("./migrations") },
         // Second line of defence behind test/setup.ts: what gets past the
         // guard there reaches this Worker, never the network. It has to be a
         // Worker: with a function here, Miniflare lets TCP connections pass
@@ -24,4 +27,4 @@ export default defineConfig({
   test: {
     setupFiles: ["./test/setup.ts"],
   },
-});
+}));

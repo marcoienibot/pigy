@@ -5,15 +5,19 @@
   "scripts": {
     "postinstall": "wrangler types",
     "typecheck": "wrangler types && tsc -b",
-    "test": "vitest run"
+    "test": "vitest run",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "node scripts/migrate-local.mjs"
   },
   "dependencies": {
     "@pigy/core": "workspace:*",
+    "drizzle-orm": "^0.45.4",
     "hono": "^4.13.18"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.8.2",
     "@types/node": "catalog:",
+    "drizzle-kit": "^0.31.11",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "wrangler": "^4.162.0"
