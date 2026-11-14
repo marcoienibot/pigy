@@ -3,7 +3,8 @@
 # admin@example.com. To change that, copy this file to .dev.vars, which git
 # ignores. `pnpm e2e` and `pnpm preview:e2e` never read it.
 
-# Who can always sign in, as an admin. Comma-separated.
+# Who can always sign in, as an admin. Comma-separated, each entry a bare
+# email address. Any other entry is ignored, with an error in the log.
 ADMIN_EMAILS=admin@example.com
 
 # The OAuth client of a Google Cloud project. With both set, sign-in goes to

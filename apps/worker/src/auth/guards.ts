@@ -2,7 +2,7 @@ import { drizzle } from "drizzle-orm/d1";
 import type { Context, MiddlewareHandler } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { AppDependencies, AppEnv, Auth } from "../env.ts";
-import { accessConfig } from "./config.ts";
+import { readAdminEmails } from "./config.ts";
 import {
   clearSessionCookie,
   findSession,
@@ -33,15 +33,14 @@ export function requireSameOrigin(c: Context): void {
  */
 async function authenticateWithCookie(
   c: Context<AppEnv>,
-  { fetch, now, simulatedGoogle }: AppDependencies,
+  { now, simulatedGoogle }: AppDependencies,
 ): Promise<Auth | null> {
   const token = readSessionCookie(c);
   if (!token) return null;
   requireSameOrigin(c);
 
-  const { adminEmails } = accessConfig(
+  const adminEmails = readAdminEmails(
     c.env,
-    fetch,
     simulatedGoogle,
     new URL(c.req.url).origin,
   );

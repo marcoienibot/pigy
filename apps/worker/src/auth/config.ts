@@ -1,4 +1,4 @@
-import { type Fetch, normalizeEmail } from "@pigy/core";
+import { emailSchema, type Fetch } from "@pigy/core";
 import type { Bindings } from "../env.ts";
 
 /** How this deployment reaches Google. */
@@ -31,7 +31,7 @@ export type SimulatedGoogle = {
 };
 
 type AccessConfig = {
-  /** Always allowed and always admins. Normalized like every stored email. */
+  /** What `readAdminEmails` returns. */
   adminEmails: ReadonlySet<string>;
   /** Undefined when nobody can sign in: sign-in is refused, not skipped. */
   google: GoogleConnection | undefined;
@@ -39,8 +39,27 @@ type AccessConfig = {
   simulatedGoogle: SimulatedGoogle | undefined;
 };
 
+/**
+ * The addresses in `value`, which is what `ADMIN_EMAILS` holds. An entry
+ * that is not an email address is left out and reported. Unreported, a value
+ * such as "a@example.com; b@example.com" would name no admin and lock
+ * everybody out without a word in the logs.
+ */
 function parseAdminEmails(value: string): Set<string> {
-  return new Set(value.split(",").map(normalizeEmail).filter(Boolean));
+  const emails = new Set<string>();
+  for (const entry of value.split(",")) {
+    // The variable is typed by hand. A stray comma is not worth a report.
+    if (!entry.trim()) continue;
+    const email = emailSchema.safeParse(entry);
+    if (email.success) {
+      emails.add(email.data);
+    } else {
+      console.error(
+        `ADMIN_EMAILS has an entry that is not an email address and is ignored: ${JSON.stringify(entry.trim())}`,
+      );
+    }
+  }
+  return emails;
 }
 
 /**
@@ -59,10 +78,43 @@ function isLocal(origin: string): boolean {
 }
 
 /**
- * Reads who the admins are and how to reach Google for one request. Google
- * is the real one whenever its credentials are configured. Without them it
- * is the stand-in, if this build has one and the app is reached locally, at
- * `origin`.
+ * The stand-in for Google, if it is the Google of this request: no
+ * credentials for the real one are configured, this build has a stand-in,
+ * and the app is reached locally, at `origin`.
+ */
+function simulatedFor<Simulated>(
+  env: Bindings,
+  simulatedGoogle: Simulated | undefined,
+  origin: string,
+): Simulated | undefined {
+  if (env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) return undefined;
+  return isLocal(origin) ? simulatedGoogle : undefined;
+}
+
+/**
+ * Reads who the admins are for one request: they are always allowed and
+ * always admins, and normalized like every stored email. This is all that
+ * most requests need of the configuration, so it takes no `fetch` and only
+ * the one property of the stand-in that it reads. It cannot make a request
+ * or start a simulation.
+ */
+export function readAdminEmails(
+  env: Bindings,
+  simulatedGoogle: Pick<SimulatedGoogle, "defaultAdminEmails"> | undefined,
+  origin: string,
+): ReadonlySet<string> {
+  return parseAdminEmails(
+    env.ADMIN_EMAILS ??
+      simulatedFor(env, simulatedGoogle, origin)?.defaultAdminEmails ??
+      "",
+  );
+}
+
+/**
+ * Reads who the admins are and how to reach Google for one request, for the
+ * routes that sign somebody in. Google is the real one whenever its
+ * credentials are configured. Without them it is the stand-in, if this build
+ * has one and the app is reached locally, at `origin`.
  */
 export function accessConfig(
   env: Bindings,
@@ -70,9 +122,10 @@ export function accessConfig(
   simulatedGoogle: SimulatedGoogle | undefined,
   origin: string,
 ): AccessConfig {
+  const adminEmails = readAdminEmails(env, simulatedGoogle, origin);
   if (env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) {
     return {
-      adminEmails: parseAdminEmails(env.ADMIN_EMAILS ?? ""),
+      adminEmails,
       google: {
         clientId: env.GOOGLE_CLIENT_ID,
         clientSecret: env.GOOGLE_CLIENT_SECRET,
@@ -82,10 +135,7 @@ export function accessConfig(
       simulatedGoogle: undefined,
     };
   }
-  const simulated = isLocal(origin) ? simulatedGoogle : undefined;
-  const adminEmails = parseAdminEmails(
-    env.ADMIN_EMAILS ?? simulated?.defaultAdminEmails ?? "",
-  );
+  const simulated = simulatedFor(env, simulatedGoogle, origin);
   return {
     adminEmails,
     google: simulated?.connection(origin, adminEmails),

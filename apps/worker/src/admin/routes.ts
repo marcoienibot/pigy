@@ -9,7 +9,7 @@ import { eq, inArray } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { type Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
-import { accessConfig } from "../auth/config.ts";
+import { readAdminEmails } from "../auth/config.ts";
 import { requireAdmin, requireUser } from "../auth/guards.ts";
 import { allowedEmails, sessions, users } from "../db/schema.ts";
 import type { AppDependencies, AppEnv } from "../env.ts";
@@ -17,13 +17,12 @@ import { parseJsonBody } from "../errors.ts";
 
 /** The allowlist: who may sign in, and as what. Admins only. */
 export function adminRoutes(dependencies: AppDependencies): Hono<AppEnv> {
-  const { fetch, simulatedGoogle, now } = dependencies;
+  const { simulatedGoogle, now } = dependencies;
   const app = new Hono<AppEnv>();
   app.use(requireUser(dependencies), requireAdmin);
 
   const adminEmailsFor = (c: Context<AppEnv>) =>
-    accessConfig(c.env, fetch, simulatedGoogle, new URL(c.req.url).origin)
-      .adminEmails;
+    readAdminEmails(c.env, simulatedGoogle, new URL(c.req.url).origin);
 
   /**
    * The address in the path, if the admin making the request may change it.

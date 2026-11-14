@@ -3,7 +3,7 @@ import {
   allowedEmailListResponseSchema,
   errorResponseSchema,
 } from "@pigy/core";
-import { expect, it } from "vitest";
+import { expect, it, onTestFinished, vi } from "vitest";
 import { allowedEmails, sessions } from "../src/db/schema.ts";
 import {
   adminEmail,
@@ -43,6 +43,42 @@ it("makes the people in ADMIN_EMAILS admins without an invitation", async () => 
   expect((await me(first))?.role).toBe("admin");
   expect((await me(second))?.role).toBe("admin");
   expect(await test.db.select().from(allowedEmails)).toEqual([]);
+});
+
+it("ignores and reports the entries of ADMIN_EMAILS that are not email addresses", async () => {
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  onTestFinished(() => error.mockRestore());
+  // Two ways to get the variable wrong: a semicolon for a comma, and an
+  // address copied with the name around it.
+  const test = setup({
+    env: {
+      ADMIN_EMAILS:
+        "first@example.com; second@example.com,Third <third@example.com>,fourth@example.com",
+    },
+  });
+
+  const fourth = await signedIn(test, { email: "fourth@example.com" });
+
+  expect((await me(fourth))?.role).toBe("admin");
+  // Nobody is made an admin by a guess at what an entry was meant to say.
+  for (const email of [
+    "first@example.com",
+    "second@example.com",
+    "third@example.com",
+  ]) {
+    const response = await signIn(test, test.browser(), { email });
+    expect(locationOf(response)).toBe("/invite-only");
+  }
+  // Whoever set the variable finds the entries in the logs. Before, they
+  // found nothing, and with these as the only entries nobody could sign in.
+  for (const entry of [
+    '"first@example.com; second@example.com"',
+    '"Third <third@example.com>"',
+  ]) {
+    expect(error).toHaveBeenCalledWith(expect.stringContaining(entry));
+  }
+  // Only those entries are logged, not the variable as a whole.
+  expect(JSON.stringify(error.mock.calls)).not.toContain("fourth@example.com");
 });
 
 it("lets nobody in when there are no admins and no invitations", async () => {
