@@ -1,5 +1,6 @@
 import type { Fetch } from "@pigy/core";
 import { ProviderError } from "./errors.ts";
+import { publicUrl } from "./host.ts";
 
 /**
  * How adapters send a request. Whatever the network, they need the same
@@ -52,6 +53,11 @@ async function boundedText(
   }
 }
 
+/** Whether `status` is that of a redirect. */
+const redirects = (status: number) =>
+  // 0 is what a redirect looks like where the runtime hides it.
+  status === 0 || (status >= 300 && status < 400);
+
 /**
  * Sends a request to `url` and returns the answer, whatever its status.
  * `host` is how the messages name the other side.
@@ -67,6 +73,64 @@ async function boundedText(
  * reached would hide it.
  */
 export async function send(
+  fetch: Fetch,
+  host: string,
+  url: string,
+  init: RequestInit,
+  limits: HttpLimits,
+): Promise<HttpAnswer> {
+  const answer = await exchange(fetch, host, url, init, limits);
+  if (redirects(answer.status)) {
+    throw new ProviderError(
+      "fail",
+      `${host} sends pigy on to another address. Enter the address of the server itself.`,
+      { status: answer.status },
+    );
+  }
+  return answer;
+}
+
+/**
+ * `send`, for the one request that is followed where its answer sends it
+ * on: the file in which the host of a Bluesky handle says the DID of the
+ * handle, which atproto lets a host send on "up to a reasonable number of
+ * redirect hops". It carries nothing secret, and nothing that a host
+ * answers on the way is taken for anything but the way. Each address that
+ * it is sent on to has to be one that pigy may ask, `publicUrl`, and there
+ * are at most `hops` of them.
+ */
+export async function sendFollowing(
+  fetch: Fetch,
+  url: string,
+  init: RequestInit,
+  limits: HttpLimits,
+  hops: number,
+): Promise<HttpAnswer> {
+  let at = url;
+  for (let hop = 0; ; hop++) {
+    const { host } = new URL(at);
+    const answer = await exchange(fetch, host, at, init, limits);
+    if (!redirects(answer.status)) return answer;
+    const location = answer.headers.get("Location");
+    let next: string | null = null;
+    try {
+      next = location === null ? null : publicUrl(new URL(location, at).href);
+    } catch {
+      next = null;
+    }
+    if (next === null || hop >= hops) {
+      throw new ProviderError(
+        "fail",
+        `${host} sends pigy on to an address that it does not follow.`,
+        { status: answer.status },
+      );
+    }
+    at = next;
+  }
+}
+
+/** `send`, with the answer of a redirect returned as it is. */
+async function exchange(
   fetch: Fetch,
   host: string,
   url: string,
@@ -104,14 +168,6 @@ export async function send(
     throw new ProviderError(
       "fail",
       `${host} answered with more than pigy is willing to read.`,
-      { status },
-    );
-  }
-  // 0 is what a redirect looks like where the runtime hides it.
-  if (status === 0 || (status >= 300 && status < 400)) {
-    throw new ProviderError(
-      "fail",
-      `${host} sends pigy on to another address. Enter the address of the server itself.`,
       { status },
     );
   }

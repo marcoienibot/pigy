@@ -8,7 +8,13 @@ import {
 import { z } from "zod";
 import { ProviderError, quotable } from "../errors.ts";
 import { publicOrigin, publicUrl } from "../host.ts";
-import { type HttpAnswer, randomToken, retryAfter, send } from "../http.ts";
+import {
+  type HttpAnswer,
+  randomToken,
+  retryAfter,
+  send,
+  sendFollowing,
+} from "../http.ts";
 import {
   type Json,
   type Provider,
@@ -306,6 +312,12 @@ const maxBytes = 256 * 1024;
  * that finds it ended is refused, and asks for a refresh then.
  */
 const refreshAfterMs = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * How often the host of a handle may send the request for its DID on:
+ * "up to a reasonable number of redirect hops", says the specification.
+ */
+const handleHops = 5;
 
 const sortable = "234567abcdefghijklmnopqrstuvwxyz";
 
@@ -658,23 +670,31 @@ export function createBlueskyProvider({
     }
     if (viaDns[0]) return viaDns[0];
     // Then by the file that the host of the handle serves: the DID, and
-    // nothing else.
-    const notFound = (options: { status?: number; cause?: unknown }) =>
+    // nothing else. A host may send the request on, which no other request
+    // of an adapter is: it carries nothing secret.
+    const notFound = (options: {
+      status?: number | undefined;
+      cause?: unknown;
+    }) =>
       new ProviderError(
         "fail",
         `pigy found no Bluesky account with the handle ${handle}.`,
         options,
       );
-    const file = await request(
+    const file = await sendFollowing(
+      fetch,
       `https://${handle}/.well-known/atproto-did`,
-      {},
-      { Accept: "text/plain" },
+      { method: "GET", headers: { Accept: "text/plain" } },
+      { timeoutMs, maxBytes },
+      handleHops,
     ).catch((error: unknown) => {
-      // No answer. With nothing in the DNS either, the handle is most
-      // likely mistyped. The cause stays, for a caller to tell a host that
-      // cannot exist from one that is down.
-      if (error instanceof ProviderError && error.kind === "retry") {
-        throw notFound({ cause: error });
+      // No answer, one that pigy cannot read, or a way to it that pigy
+      // does not follow. With nothing in the DNS either, the handle is
+      // most likely mistyped, and what the person is told is about the
+      // handle that they typed. The cause stays, for a caller to tell a
+      // host that cannot exist from one that is down.
+      if (error instanceof ProviderError) {
+        throw notFound({ status: error.status, cause: error });
       }
       throw error;
     });

@@ -269,6 +269,55 @@ describe("connecting", () => {
     );
   });
 
+  it("follows the host of a handle where it sends pigy for the DID, to a public host", async () => {
+    const test = await setup({ account: { resolution: "https" } });
+    const file = "https://ada.bsky.test/.well-known/atproto-did";
+    /** Has the host of the handle send pigy on along `hops`, the last of which answers with the DID. */
+    const redirecting = (...hops: string[]) =>
+      test.intercept(async (request, simulator) => {
+        const at = [file, ...hops].indexOf(request.url);
+        if (at < 0) return simulator(request);
+        const next = hops[at];
+        return next === undefined
+          ? new Response(test.ada.id, {
+              headers: { "Content-Type": "text/plain" },
+            })
+          : new Response(null, { status: 302, headers: { Location: next } });
+      });
+
+    // atproto lets the host of a handle send the request on, "up to a
+    // reasonable number of redirect hops".
+    redirecting(
+      "https://handles.example.com/ada",
+      "https://handles.example.com/ada/did",
+    );
+    expect((await connected(test)).account.id).toBe(test.ada.id);
+    expect(test.requests.slice(1, 4)).toEqual([
+      `GET ${file}`,
+      "GET https://handles.example.com/ada",
+      "GET https://handles.example.com/ada/did",
+    ]);
+
+    // Not to a host that nobody on the internet may make pigy ask, and not
+    // for ever.
+    const refused = [
+      ...privateAddresses.map((address) => [`${address}/did`]),
+      Array.from({ length: 6 }, (_, hop) => `https://handles.example.com/${hop}`),
+    ];
+    for (const hops of refused) {
+      redirecting(...hops);
+      test.requests.length = 0;
+      const error = await failure(() =>
+        test.provider.beginConnect({ redirectUri, identifier: "ada.bsky.test" }),
+      );
+      // Said of the handle that the person typed, and not of a server.
+      expect(error.message, hops.join()).toBe(
+        "pigy found no Bluesky account with the handle ada.bsky.test.",
+      );
+      expect(test.requests, hops.join()).not.toContain(`GET ${hops.at(-1)}`);
+    }
+  });
+
   it("finds an account of a did:web", async () => {
     const test = await setup({ account: { did: "web" } });
     const { account } = await connected(test);
