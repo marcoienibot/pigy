@@ -1,9 +1,14 @@
 import type { PostContent } from "@pigy/core";
 import type { Json, Provider, PublishProgress } from "./provider.ts";
 
-/** What a post is published with. The same for all of its steps. */
+/** What a post is published with. */
 export type PublishJob = {
-  credentials: Json;
+  /**
+   * The credentials of the account as they are now. They are asked for
+   * every time a step is run, also when it is run again: a post can take
+   * longer than credentials last, and a refresh replaces them.
+   */
+  credentials: () => Promise<Json>;
   content: PostContent;
   /** See `PublishRequest.key`. */
   key: string;
@@ -49,8 +54,13 @@ export async function publish(
       await runner.sleep(`wait-${step}`, progress.waitSeconds);
     }
     const before = progress;
-    progress = await runner.run(`publish-${step}`, () =>
-      provider.publishStep({ ...job, progress: before }),
+    progress = await runner.run(`publish-${step}`, async () =>
+      provider.publishStep({
+        credentials: await job.credentials(),
+        content: job.content,
+        key: job.key,
+        progress: before,
+      }),
     );
   }
   return progress;

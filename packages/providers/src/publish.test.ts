@@ -3,9 +3,10 @@ import { ProviderError } from "./errors.ts";
 import type { Provider, PublishProgress, PublishRequest } from "./provider.ts";
 import { type PublishRunner, publish } from "./publish.ts";
 
+const content = { parts: [{ text: "one" }, { text: "two" }] };
 const job = {
-  credentials: { token: "t" },
-  content: { parts: [{ text: "one" }, { text: "two" }] },
+  credentials: async () => ({ token: "t" }),
+  content,
   key: "target-1",
 };
 
@@ -96,7 +97,39 @@ describe("publish", () => {
         state: "prepared",
       },
     ]);
-    for (const request of requests) expect(request).toMatchObject(job);
+    for (const request of requests) {
+      expect(request).toMatchObject({
+        credentials: { token: "t" },
+        content,
+        key: "target-1",
+      });
+    }
+  });
+
+  it("asks for the credentials every time a step is run", async () => {
+    // Credentials are refreshed while a post is on its way, and a step
+    // that is run again must not use the ones that have been replaced.
+    const { provider, requests } = twoStepProvider();
+    let issued = 0;
+    await publish(
+      provider,
+      { ...job, credentials: async () => ({ token: `t${++issued}` }) },
+      {
+        // Runs the first step twice, as after a failure.
+        run: async (name, step) => {
+          if (name === "publish-1") await step();
+          return step();
+        },
+        sleep: async () => {},
+      },
+    );
+    expect(requests.map(({ credentials }) => credentials)).toEqual([
+      { token: "t1" },
+      { token: "t2" },
+      { token: "t3" },
+      { token: "t4" },
+      { token: "t5" },
+    ]);
   });
 
   it("uses what the runner returns, not what the step returned", async () => {

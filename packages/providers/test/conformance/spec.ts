@@ -147,7 +147,7 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
       const key = options.key ?? `${harness.tag}-${++keys}`;
       const progress = await publish(
         provider,
-        { credentials, content, key },
+        { credentials: async () => credentials, content, key },
         runner,
         options.from ?? null,
       );
