@@ -18,6 +18,7 @@
 
 import { readFileSync } from "node:fs";
 import { request } from "node:http";
+import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
 
 /** Where the server has the ID of its build. */
@@ -48,6 +49,40 @@ export function portFromEnvironment(): number | undefined {
     throw new Error(`PIGY_E2E_PORT is "${value}", which is not a port`);
   }
   return port;
+}
+
+/**
+ * A port that nothing listens on, at either address of `localhost`. The
+ * system chooses it, from the range that it gives out to whoever asks for
+ * any port, so it is one that nothing has asked for by its number.
+ */
+export async function freePort(): Promise<number> {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const port = await listenOn(loopback[0], 0);
+    if (port !== undefined && (await listenOn(loopback[1], port)) !== undefined)
+      return port;
+  }
+  throw new Error("Found no port that is free at 127.0.0.1 and ::1");
+}
+
+/**
+ * Listens on `port` at `address` for a moment, and returns the port that
+ * it listened on, or undefined if the port is taken. A machine without
+ * IPv6 has nothing at ::1 to take a port from, so every port is free there.
+ */
+function listenOn(address: string, port: number): Promise<number | undefined> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once("error", (error: NodeJS.ErrnoException) => {
+      if (error.code === "EADDRINUSE") resolve(undefined);
+      else if (error.code === "EADDRNOTAVAIL") resolve(port);
+      else reject(error);
+    });
+    server.listen(port, address, () => {
+      const { port: listened } = server.address() as { port: number };
+      server.close(() => resolve(listened));
+    });
+  });
 }
 
 /** The ID of this checkout's e2e build, or undefined if it has none. */

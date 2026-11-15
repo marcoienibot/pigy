@@ -1,9 +1,16 @@
 import { defineConfig, devices } from "@playwright/test";
-import { portFromEnvironment } from "./server.ts";
+import { freePort, portFromEnvironment } from "./server.ts";
 
-// The port of the server that the run starts: `PIGY_E2E_PORT`, or 4173.
-// A run whose server is not the one on its port fails, see server.ts.
-const port = portFromEnvironment() ?? 4173;
+// The port of the server that the run starts: `PIGY_E2E_PORT`, or one that
+// nothing listens on. Several checkouts on a machine run these tests, and
+// a port of their own keeps the runs apart without anybody choosing one:
+// a run whose server finds its port taken fails, see server.ts.
+//
+// Playwright loads this file in its runner and again in every worker. The
+// runner starts the server and the workers with its environment, so the
+// port that it chooses goes into the environment, and a worker that loads
+// this file finds it there and chooses none of its own.
+const port = portFromEnvironment() ?? (await freePort());
 process.env.PIGY_E2E_PORT = String(port);
 
 export default defineConfig({
