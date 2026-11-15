@@ -12,3 +12,13 @@
  */
 export const developmentCredentialKeys =
   "0:cGlneS1kZXZlbG9wbWVudC1rZXktbm90LXNlY3JldCE=";
+
+/**
+ * The key that a build for development and tests signs with as a client of
+ * Bluesky when `BLUESKY_CLIENT_KEYS` is not set, for the sandbox of a pigy
+ * that runs on somebody's machine. A private key of P-256 in PKCS #8, for
+ * everybody to read, under the same rules as the key above: never in a
+ * production build, which apps/web/scripts/check-build.mjs checks.
+ */
+export const developmentBlueskyClientKeys =
+  "0:MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgCj+9E/o0LdQG8E+Rihsa7GEbjQ7zSIaFoQ51knoAAgGhRANCAATKD3QJ85MhWIEglaVAztVqWPYx+He7d07jTs5peuVOm1SxxgUDDtXC/jWxSy3EJQe+8xdLna01e6MHdXCridoY";

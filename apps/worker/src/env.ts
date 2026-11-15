@@ -23,6 +23,17 @@ type Secrets = {
    * can be connected.
    */
   CREDENTIAL_KEYS?: string;
+  /**
+   * The keys that pigy signs with as a client of Bluesky, see
+   * src/network/bluesky-client.ts: a comma-separated list of
+   * "<version>:<key>", each key a private key of ECDSA on P-256 in PKCS #8,
+   * in base64. The key with the highest version signs the connections that
+   * begin, and the public halves of all of them are in pigy's client
+   * metadata. A connection is bound to the key that it began with, so a key
+   * stays for as long as a connection that began with it is to last.
+   * Without this variable no Bluesky account can be connected.
+   */
+  BLUESKY_CLIENT_KEYS?: string;
 };
 
 export type Bindings = Omit<Env, keyof Secrets> & Secrets;
@@ -42,6 +53,11 @@ export type AppDependencies = {
    * Only builds for development and tests pass one: it is no secret.
    */
   developmentCredentialKeys: string | undefined;
+  /**
+   * Stands in for `BLUESKY_CLIENT_KEYS` when it is not set, in the same
+   * form. Only builds for development and tests pass one: it is no secret.
+   */
+  developmentBlueskyClientKeys: string | undefined;
 };
 
 /** Who is making the request. */

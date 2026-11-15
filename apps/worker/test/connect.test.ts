@@ -312,8 +312,7 @@ describe("starting a connection", () => {
     const { test, browser, workspaces } = await start();
 
     const refusal = await refused(test, browser, workspaces.live, {
-      network: "bluesky",
-      identifier: "ada.bsky.social",
+      network: "linkedin",
     });
 
     // Not about what was typed: a form shows it where the network is
@@ -321,7 +320,7 @@ describe("starting a connection", () => {
     expect(refusal).toEqual({
       status: 400,
       error: "InvalidInputError",
-      message: "pigy cannot connect accounts of bluesky yet.",
+      message: "pigy cannot connect accounts of linkedin yet.",
       field: "network",
     });
   });

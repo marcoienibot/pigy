@@ -4,7 +4,7 @@ import {
   maxConnectIdentifierLength,
   type Network,
   networkSchema,
-  sandboxServers,
+  sandboxIdentifiers,
   type Workspace,
 } from "@pigy/core";
 import { createFileRoute, redirect, useRouter } from "@tanstack/react-router";
@@ -622,11 +622,14 @@ function ConnectForm({
 }) {
   const { label, connect } = networkInfo[network];
   const asked = connect?.identifier;
-  // In a sandbox there is nothing to guess: it has one simulated server.
+  // In a sandbox there is nothing to guess: its simulated world has what
+  // it has.
   const simulated =
-    workspace.environment === "sandbox" ? sandboxServers[network] : undefined;
+    workspace.environment === "sandbox"
+      ? sandboxIdentifiers[network]
+      : undefined;
   const [identifier, setIdentifier] = useState(
-    again && asked ? asked.of(again) : (simulated ?? ""),
+    again && asked ? asked.of(again) : (simulated?.value ?? ""),
   );
   const [refusal, setRefusal] = useState<Refusal | null>(null);
   // From the click until the browser has left for the network.
@@ -726,9 +729,7 @@ function ConnectForm({
             </p>
           )}
           <p id={`${id}-hint`} className="text-xs text-muted-foreground">
-            {simulated
-              ? `${simulated} is the simulated server of the sandbox, and the only one it has.`
-              : asked.hint}
+            {simulated ? simulated.hint : asked.hint}
           </p>
         </div>
       )}

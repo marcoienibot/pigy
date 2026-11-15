@@ -14,13 +14,53 @@ import { type Network, networkSchema } from "./network/network.ts";
 export const sandboxMastodonDomain = "mastodon.example";
 
 /**
- * The simulated server of a sandbox for each network that asks a person
- * where their account lives: what to enter as the `identifier` of a
- * `ConnectRequest` there. A sandbox reaches no other server, whatever the
- * internet has.
+ * The handles of the simulated Bluesky accounts of a sandbox. What a person
+ * enters to connect one of them there. They are under `.test`, which
+ * atproto sets aside for development and no real account can have.
  */
-export const sandboxServers: { readonly [Name in Network]?: string } = {
-  mastodon: sandboxMastodonDomain,
+export const sandboxBlueskyHandles = [
+  "ada.bsky.test",
+  "grace.bsky.test",
+  "alan.bsky.test",
+] as const;
+
+/** What a person enters in a sandbox, on a network that asks for something. */
+export type SandboxIdentifier = {
+  /** What the form has filled in. */
+  value: string;
+  /** What to enter, said next to the field. */
+  hint: string;
+  /**
+   * What to tell a person who entered something that leads to `host`,
+   * which the simulated world of the sandbox does not have.
+   */
+  elsewhere(host: string): string;
+};
+
+const blueskyHandles = sandboxBlueskyHandles
+  .join(", ")
+  .replace(/, ([^,]*)$/, " and $1");
+
+/**
+ * What to enter in a sandbox as the `identifier` of a `ConnectRequest`, for
+ * each network that asks a person where their account lives. A sandbox
+ * reaches nothing but its simulated world, whatever the internet has.
+ */
+export const sandboxIdentifiers: {
+  readonly [Name in Network]?: SandboxIdentifier;
+} = {
+  mastodon: {
+    value: sandboxMastodonDomain,
+    hint: `${sandboxMastodonDomain} is the simulated server of the sandbox, and the only one it has.`,
+    elsewhere: (host) =>
+      `The sandbox has no server ${host}. Enter ${sandboxMastodonDomain}, its simulated server.`,
+  },
+  bluesky: {
+    value: sandboxBlueskyHandles[0],
+    hint: `The sandbox has three simulated accounts: ${blueskyHandles}.`,
+    elsewhere: (host) =>
+      `The sandbox has no account ${host}. Enter the handle of one of its simulated accounts: ${blueskyHandles}.`,
+  },
 };
 
 /**

@@ -1,5 +1,8 @@
 import { createApp } from "./app.ts";
-import { developmentCredentialKeys } from "./development-keys.ts";
+import {
+  developmentBlueskyClientKeys,
+  developmentCredentialKeys,
+} from "./development-keys.ts";
 import { providerOf } from "./network/providers.ts";
 import { outboundFetch } from "./outbound.ts";
 import { publishWorkflow } from "./publish/workflow.ts";
@@ -25,6 +28,9 @@ const dependencies = {
   now,
   simulatedGoogle: simulated ? createSimulatedGoogle(now) : undefined,
   developmentCredentialKeys: simulated ? developmentCredentialKeys : undefined,
+  developmentBlueskyClientKeys: simulated
+    ? developmentBlueskyClientKeys
+    : undefined,
 };
 
 export default createApp(dependencies);
@@ -41,7 +47,10 @@ export class WorkspaceDO extends workspaceObject({ now }) {}
  * `SIM_WORLD`. It is part of every build: the sandbox is a feature of the
  * app, not a tool for its development.
  */
-export class SimWorldDO extends simWorldObject({ now }) {}
+export class SimWorldDO extends simWorldObject({
+  now,
+  developmentBlueskyClientKeys: dependencies.developmentBlueskyClientKeys,
+}) {}
 
 /**
  * The workflow that publishes a post to a channel, bound as `PUBLISH`. It

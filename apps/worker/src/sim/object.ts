@@ -4,8 +4,14 @@ import {
   type Network,
   type SandboxFault,
   type SandboxFaults,
+  sandboxBlueskyHandles,
   sandboxMastodonDomain,
 } from "@pigy/core";
+import {
+  blueskyFaultKinds,
+  blueskyOperations,
+  createBlueskySimulator,
+} from "@pigy/simulators/bluesky";
 import {
   createMastodonSimulator,
   mastodonFaultKinds,
@@ -19,6 +25,11 @@ import {
   type SimPost,
 } from "@pigy/simulators/world";
 import type { Bindings } from "../env.ts";
+import {
+  blueskyClientMetadataPath,
+  blueskyKeysWithoutRequest,
+  pigyClientMetadata,
+} from "../network/bluesky-client.ts";
 import {
   type WorkspaceIdentity,
   workspaceIdentitySchema,
@@ -67,6 +78,7 @@ const simulated: {
     operations: readonly string[];
   };
 } = {
+  bluesky: { kinds: blueskyFaultKinds, operations: blueskyOperations },
   mastodon: { kinds: mastodonFaultKinds, operations: mastodonOperations },
 };
 
@@ -79,10 +91,18 @@ const seedAccounts = [
   ["alan", "Alan Turing"],
 ] as const;
 
+// The PDS of the simulated Bluesky of a sandbox, behind the simulated
+// entryway, as most accounts of Bluesky are.
+const sandboxBlueskyPds = "pds.bsky.test";
+
 // Where the object keeps what is its own, next to the keys of the world.
 // No network has this name, so no key of the world begins like these.
 const workspaceKey = "object/workspace";
+// Mastodon's, from before there was another network.
 const seededKey = "object/seeded";
+// Each network that came later has its own, so that a world from before it
+// gets its accounts the first time it is used.
+const seededBlueskyKey = "object/seeded/bluesky";
 
 /**
  * The Durable Object of a simulated world: the networks as one person's
@@ -98,7 +118,14 @@ const seededKey = "object/seeded";
  * A function that returns the class, because the runtime constructs the
  * object and there is no other way to hand it what it is built with.
  */
-export function simWorldObject({ now }: { now: Clock }) {
+export function simWorldObject({
+  now,
+  developmentBlueskyClientKeys,
+}: {
+  now: Clock;
+  /** See `AppDependencies`. */
+  developmentBlueskyClientKeys: string | undefined;
+}) {
   return class SimWorldObject extends DurableObject<Bindings> {
     /**
      * Answers `request`, which is addressed to a host of a simulated
@@ -113,13 +140,13 @@ export function simWorldObject({ now }: { now: Clock }) {
       if (!this.#bind(workspaceIdentitySchema.parse(workspace))) {
         return undefined;
       }
-      const { mastodon } = this.#world();
+      const { mastodon, bluesky } = this.#world();
       // The simulators of the networks. Each says which hosts are its own,
       // and the one that owns the host of the request answers it. They are
       // not tried in turn: a simulator fails for a host that is not its own
       // the same way as for an answer that a fault loses, so going on to
       // the next would take a fault of one network for a host of another.
-      const simulators = [mastodon];
+      const simulators = [mastodon, bluesky];
       const { host } = new URL(url);
       const simulator = simulators.find((candidate) => candidate.owns(host));
       if (!simulator) return { noSuchHost: host };
@@ -242,16 +269,48 @@ export function simWorldObject({ now }: { now: Clock }) {
      * what every sandbox starts with.
      */
     #world() {
-      const world = createWorld({ storage: this.ctx.storage.kv, now });
+      const { kv } = this.ctx.storage;
+      const world = createWorld({ storage: kv, now });
       const mastodon = createMastodonSimulator(world);
-      if (!this.ctx.storage.kv.get(seededKey)) {
+      if (!kv.get(seededKey)) {
         mastodon.addInstance(sandboxMastodonDomain);
         for (const [username, name] of seedAccounts) {
           mastodon.addAccount(sandboxMastodonDomain, username, name);
         }
-        this.ctx.storage.kv.put(seededKey, true);
+        kv.put(seededKey, true);
       }
-      return { world, mastodon };
+      const bluesky = createBlueskySimulator(world, {
+        // What the web has at the address of a client, which a real
+        // authorization server reads and a simulator cannot. The one client
+        // of a sandbox is pigy, and pigy knows what it serves at its
+        // address: its client metadata, with the keys that it has.
+        clients: async (clientId) => {
+          const url = new URL(clientId);
+          const keys = blueskyKeysWithoutRequest(
+            this.env,
+            developmentBlueskyClientKeys,
+          );
+          return url.pathname === blueskyClientMetadataPath && keys
+            ? pigyClientMetadata(url.origin, keys)
+            : undefined;
+        },
+        // pigy on somebody's machine is reached at http://localhost, which
+        // a real server does not take as the address of a client. Its
+        // sandbox takes it, or it could not be tried there.
+        localClients: true,
+      });
+      if (!kv.get(seededBlueskyKey)) {
+        bluesky.addPds(sandboxBlueskyPds);
+        for (const [index, handle] of sandboxBlueskyHandles.entries()) {
+          bluesky.addAccount({
+            handle,
+            pds: sandboxBlueskyPds,
+            name: seedAccounts[index]?.[1] ?? handle,
+          });
+        }
+        kv.put(seededBlueskyKey, true);
+      }
+      return { world, mastodon, bluesky };
     }
 
     /**

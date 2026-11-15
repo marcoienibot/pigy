@@ -65,6 +65,28 @@ it("lists the accounts of a new sandbox, which have posted nothing", async () =>
   // have connected anything: the page of the feeds has something to show.
   expect(await feedOf(browser)).toEqual({
     accounts: [
+      // By network, then by handle.
+      {
+        network: "bluesky",
+        id: expect.stringMatching(/^did:plc:/),
+        handle: "@ada.bsky.test",
+        name: "Ada Lovelace",
+        posts: [],
+      },
+      {
+        network: "bluesky",
+        id: expect.stringMatching(/^did:plc:/),
+        handle: "@alan.bsky.test",
+        name: "Alan Turing",
+        posts: [],
+      },
+      {
+        network: "bluesky",
+        id: expect.stringMatching(/^did:plc:/),
+        handle: "@grace.bsky.test",
+        name: "Grace Hopper",
+        posts: [],
+      },
       {
         network: "mastodon",
         id: expect.any(String),
@@ -113,7 +135,9 @@ it("shows what a sandbox has published, by account, with a thread as a chain of 
 
   const { accounts } = await feedOf(browser);
 
-  const [ada, alan, hopper] = accounts;
+  const [ada, alan, hopper] = accounts.filter(
+    ({ network }) => network === "mastodon",
+  );
   expect(alan?.posts).toEqual([]);
   // The thread went to two accounts, and stands on each as a chain: the
   // first part at the top, and each reply beneath the part before it.
@@ -229,6 +253,28 @@ it("says how each simulated network can be made to fail", async () => {
   expect(await faultsOf(browser)).toEqual({
     networks: [
       {
+        network: "bluesky",
+        kinds: [
+          "rate-limit",
+          "server-error",
+          "lost-response",
+          "token-revoked",
+          "token-expired",
+        ],
+        operations: [
+          "identity",
+          "server",
+          "authorize",
+          "token",
+          "revoke",
+          "profile",
+          "publish",
+          "read",
+          "delete",
+        ],
+        armed: [],
+      },
+      {
         network: "mastodon",
         kinds: ["rate-limit", "server-error", "lost-response", "token-revoked"],
         operations: ["instance", "account", "publish", "read", "delete"],
@@ -251,7 +297,9 @@ it("makes the next request of a kind fail in the sandbox, once", async () => {
   // The answer is the faults as they are now, for the panel to show.
   expect(armed.status).toBe(200);
   expect(
-    sandboxFaultsSchema.parse(await armed.json()).networks[0]?.armed,
+    sandboxFaultsSchema
+      .parse(await armed.json())
+      .networks.find(({ network }) => network === "mastodon")?.armed,
   ).toEqual([{ kind: "rate-limit", operation: "publish" }]);
 
   const draft = await writeDraft(client, workspace, "Limited");
@@ -323,7 +371,7 @@ it.each([
   // refused with the field that it is about, and arms nothing.
   [
     "a network that the sandbox does not simulate",
-    { network: "bluesky", kind: "rate-limit" },
+    { network: "linkedin", kind: "rate-limit" },
     "network",
   ],
   [

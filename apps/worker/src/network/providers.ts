@@ -1,10 +1,15 @@
 import type { Clock, Fetch, Network } from "@pigy/core";
 import type { Provider } from "@pigy/providers";
+import { createBlueskyProvider } from "@pigy/providers/bluesky";
 import { createMastodonProvider } from "@pigy/providers/mastodon";
 import { drizzle } from "drizzle-orm/d1";
 import type { Bindings } from "../env.ts";
 import type { Vault } from "../vault.ts";
 import type { WorkspaceIdentity } from "../workspace/store.ts";
+import {
+  blueskyClientIdFor,
+  parseBlueskyClientKeys,
+} from "./bluesky-client.ts";
 import { mastodonAppStore } from "./mastodon-apps.ts";
 import { type Reach, reachOf } from "./reach.ts";
 
@@ -15,6 +20,13 @@ export type ProviderContext = {
   fetch: Fetch;
   now: Clock;
   vault: Vault;
+  /**
+   * The keys that pigy signs with as a client of Bluesky, as configured,
+   * or undefined if this pigy has none: `blueskyKeysFor` of
+   * bluesky-client.ts for a request, `blueskyKeysWithoutRequest` for work
+   * that no request stands behind.
+   */
+  blueskyClientKeys: string | undefined;
 };
 
 // What pigy is called on the consent page of a network.
@@ -27,6 +39,18 @@ const clientName = "pigy";
 const adapters: {
   [Name in Network]?: (reach: Reach, context: ProviderContext) => Provider;
 } = {
+  bluesky: (reach, { now, blueskyClientKeys }) =>
+    createBlueskyProvider({
+      fetch: reach.fetch,
+      now,
+      clientIdFor: blueskyClientIdFor,
+      // Read when they are needed: a post goes on without them, for as
+      // long as its access is good.
+      keys: async () =>
+        blueskyClientKeys === undefined
+          ? []
+          : parseBlueskyClientKeys(blueskyClientKeys),
+    }),
   mastodon: (reach, { env, now, vault }) =>
     createMastodonProvider({
       fetch: reach.fetch,
@@ -51,4 +75,19 @@ export function providerOf(
   if (!adapter) return undefined;
   const reach = reachOf(workspace, context.env, context.fetch);
   return { provider: adapter(reach, context), reach };
+}
+
+/**
+ * Why this pigy cannot connect accounts of `network`, which has an
+ * adapter, or undefined if it can: a secret that the network needs is
+ * not set. A network that needs one says so here.
+ */
+export function cannotConnect(
+  network: Network,
+  { blueskyClientKeys }: ProviderContext,
+): string | undefined {
+  if (network === "bluesky" && blueskyClientKeys === undefined) {
+    return "This pigy is not set up to connect Bluesky accounts: it has no key to sign its requests with.";
+  }
+  return undefined;
 }

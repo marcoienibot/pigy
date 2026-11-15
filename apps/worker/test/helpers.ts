@@ -1,6 +1,7 @@
 import { createExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { type Fetch, type MeResponse, meResponseSchema } from "@pigy/core";
+import { createBlueskySimulator } from "@pigy/simulators/bluesky";
 import { createGoogleSimulator } from "@pigy/simulators/google";
 import { createMastodonSimulator } from "@pigy/simulators/mastodon";
 import { createWorld } from "@pigy/simulators/world";
@@ -8,7 +9,10 @@ import { drizzle } from "drizzle-orm/d1";
 import { expect, onTestFinished, vi } from "vitest";
 import { createApp } from "../src/app.ts";
 import { allowedEmails } from "../src/db/schema.ts";
-import { developmentCredentialKeys } from "../src/development-keys.ts";
+import {
+  developmentBlueskyClientKeys,
+  developmentCredentialKeys,
+} from "../src/development-keys.ts";
 import type { Bindings } from "../src/env.ts";
 import { createSimulatedGoogle } from "../src/simulated-google.ts";
 import { clock, deployment } from "./clock.ts";
@@ -26,7 +30,8 @@ type Secrets =
   | "ADMIN_EMAILS"
   | "GOOGLE_CLIENT_ID"
   | "GOOGLE_CLIENT_SECRET"
-  | "CREDENTIAL_KEYS";
+  | "CREDENTIAL_KEYS"
+  | "BLUESKY_CLIENT_KEYS";
 
 /**
  * A key for `CREDENTIAL_KEYS`, as a deployment has one: 32 bytes in
@@ -40,6 +45,16 @@ export function credentialKey(fill: number): string {
 export const credentialKeys = `1:${credentialKey(1)}`;
 
 /**
+ * The key that pigy signs with as a client of Bluesky in the tests, as a
+ * deployment has one: a private key of P-256 in PKCS #8, in base64.
+ */
+export const blueskyClientKey =
+  "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgLKTOP/n55STmTVUO6OHIiB6tk/s5+qnJQd2wtiLBq7ChRANCAARCS0Vke+s9u6zO22Dlw7lXDGhSwhaYfBdSYOMPykLs0B96UK5egNuaG2d78w+ETNIDlUWj9z6uOicvqcDaHh9R";
+
+/** `BLUESKY_CLIENT_KEYS` of the tests, unless they say otherwise. */
+export const blueskyClientKeys = `1:${blueskyClientKey}`;
+
+/**
  * The Mastodon server that stands for a real one in the tests. It is in a
  * world of its own, behind the `fetch` that the app is given, which is
  * where the internet is in production. Its name is not that of the
@@ -47,6 +62,14 @@ export const credentialKeys = `1:${credentialKey(1)}`;
  * has answered.
  */
 export const realMastodonDomain = "mastodon.test";
+
+/**
+ * The Bluesky account that stands for a real one, on a PDS of its own.
+ * Bluesky's other hosts are the real ones, in a sandbox as here: its
+ * accounts and its PDS have other names.
+ */
+export const realBlueskyHandle = "rosalind.bsky.test";
+export const realBlueskyPds = "morel.host.bsky.test";
 
 // Google's addresses. The simulated Google has the last word on which of
 // them exist.
@@ -66,7 +89,7 @@ export function setup(
     env?: { [Name in Secrets]?: string | undefined };
     /** Builds in a simulated Google, as in development. */
     simulatedGoogle?: boolean;
-    /** Builds in the development key, as in development. */
+    /** Builds in the development keys, as in development. */
     developmentCredentialKeys?: boolean;
     /** Stands between the app and Google, to change what Google answers. */
     intercept?: (google: Fetch) => Fetch;
@@ -84,10 +107,25 @@ export function setup(
   const googleFetch = options.intercept?.(google.fetch) ?? google.fetch;
 
   // What stands for the real networks: one Mastodon server with one
-  // account, and a record of every request that the app made to a network.
+  // account, Bluesky with one account, and a record of every request that
+  // the app made to a network.
   const world = createWorld({ now });
   const mastodon = createMastodonSimulator(world);
   mastodon.addInstance(realMastodonDomain);
+  const bluesky = createBlueskySimulator(world, {
+    // What Bluesky reads at the address of a client: here, what the app
+    // serves there, as it would be read from the internet.
+    clients: async (clientId) => {
+      const response = await app.request(
+        clientId,
+        undefined,
+        bindings,
+        executionContext(),
+      );
+      return response.ok ? response.json() : undefined;
+    },
+  });
+  bluesky.addPds(realBlueskyPds);
   const network = {
     world,
     mastodon,
@@ -96,11 +134,21 @@ export function setup(
       "rosalind",
       "Rosalind Franklin",
     ),
+    bluesky,
+    blueskyAccount: bluesky.addAccount({
+      handle: realBlueskyHandle,
+      pds: realBlueskyPds,
+      name: "Rosalind Franklin",
+    }),
     /** The requests that left the app for a network, as "METHOD address". */
     requests: [] as string[],
   };
-  const networkFetch =
-    options.interceptNetwork?.(mastodon.fetch) ?? mastodon.fetch;
+  // Each network answers on its own hosts, as on the internet.
+  const networks: Fetch = (input, init) =>
+    bluesky.owns(new URL(urlOf(input)).host)
+      ? bluesky.fetch(input, init)
+      : mastodon.fetch(input, init);
+  const networkFetch = options.interceptNetwork?.(networks) ?? networks;
 
   const appFetch: Fetch = async (input, init) => {
     const url = urlOf(input);
@@ -121,12 +169,16 @@ export function setup(
     developmentCredentialKeys: options.developmentCredentialKeys
       ? developmentCredentialKeys
       : undefined,
+    developmentBlueskyClientKeys: options.developmentCredentialKeys
+      ? developmentBlueskyClientKeys
+      : undefined,
   });
   const secrets = {
     ADMIN_EMAILS: adminEmail,
     GOOGLE_CLIENT_ID: googleClient.clientId,
     GOOGLE_CLIENT_SECRET: googleClient.clientSecret,
     CREDENTIAL_KEYS: credentialKeys,
+    BLUESKY_CLIENT_KEYS: blueskyClientKeys,
     ...options.env,
   };
   const bindings: Bindings = {

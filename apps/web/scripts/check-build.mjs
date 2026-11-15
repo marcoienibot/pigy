@@ -1,7 +1,8 @@
 // Checks whether a build contains what is for development and tests only and
 // must never be deployed: the simulated Google sign-in, which signs anybody
-// in as anybody, and the development key, which seals the credentials of
-// the channels with a key that is in the repository.
+// in as anybody, and the development keys: the one that seals the
+// credentials of the channels, and the one that pigy signs with as a client
+// of Bluesky, both in the repository.
 //
 //   node scripts/check-build.mjs <build directory> <absent|present>
 //
@@ -17,7 +18,7 @@ if (!directory || !["absent", "present"].includes(expectation)) {
   process.exit(2);
 }
 
-// One text from each part of the simulated sign-in, and the development key.
+// One text from each part of the simulated sign-in, and the development keys.
 // A bundler can rename identifiers, not the contents of strings.
 const markers = [
   // The consent page, packages/simulators/src/google/pages.ts.
@@ -26,8 +27,9 @@ const markers = [
   "simulated-google-key-1",
   // The Worker's wiring, apps/worker/src/simulated-google.ts.
   "pigy-simulated.apps.googleusercontent.com",
-  // The development key, apps/worker/src/development-keys.ts.
+  // The development keys, apps/worker/src/development-keys.ts.
   "cGlneS1kZXZlbG9wbWVudC1rZXktbm90LXNlY3JldCE=",
+  "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgCj+9E/o0LdQG8E+Rihsa7GEbjQ7zSIaFoQ51knoAAgGhRANCAATKD3QJ85MhWIEglaVAztVqWPYx+He7d07jTs5peuVOm1SxxgUDDtXC/jWxSy3EJQe+8xdLna01e6MHdXCridoY",
 ];
 
 const files = readdirSync(directory, { recursive: true, withFileTypes: true })
@@ -52,7 +54,7 @@ for (const [marker, places] of found) {
   if (expectation === "present" && places.length === 0) {
     failed = true;
     console.error(
-      `"${marker}" is not in the e2e build. If the simulated Google sign-in or the development key was changed, update the markers in apps/web/scripts/check-build.mjs.`,
+      `"${marker}" is not in the e2e build. If the simulated Google sign-in or a development key was changed, update the markers in apps/web/scripts/check-build.mjs.`,
     );
   }
 }

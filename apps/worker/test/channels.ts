@@ -6,7 +6,9 @@ import {
   connectResponseSchemaFor,
   connectReturnPath,
   disconnectResponseSchema,
+  type Network,
   type Row,
+  sandboxBlueskyHandles,
   sandboxMastodonDomain,
 } from "@pigy/core";
 import { answerConsent } from "@pigy/simulators/world";
@@ -14,6 +16,7 @@ import { expect } from "vitest";
 import {
   type Browser,
   locationOf,
+  realBlueskyHandle,
   realMastodonDomain,
   type TestSetup,
 } from "./helpers.ts";
@@ -41,9 +44,10 @@ export async function consentUrl(
   browser: Browser,
   workspaceId: string,
   identifier: string,
+  network: Network = "mastodon",
 ): Promise<string> {
   const response = await startConnect(browser, workspaceId, {
-    network: "mastodon",
+    network,
     identifier,
   });
   expect(response.status).toBe(200);
@@ -220,4 +224,42 @@ export function worldEntries<Entry>(
   return runInDurableObject(env.SIM_WORLD.getByName(workspaceId), (_, state) =>
     Array.from(state.storage.kv.list<Entry>({ prefix }), ([, entry]) => entry),
   );
+}
+
+/**
+ * Connects the account with the handle `handle` of the simulated Bluesky
+ * to a sandbox workspace, all the way, and returns how the app says it
+ * ended.
+ */
+export async function connectBlueskyInSandbox(
+  browser: Browser,
+  workspaceId: string,
+  handle: string = sandboxBlueskyHandles[0],
+): Promise<ConnectOutcome> {
+  const url = await consentUrl(browser, workspaceId, handle, "bluesky");
+  const callback = await consentInSandbox(browser, url, {
+    handle: `@${handle}`,
+  });
+  return outcomeOf(await browser.fetch(pathOf(callback)));
+}
+
+/**
+ * Connects the Bluesky account that stands for a real one to a live
+ * workspace, all the way, and returns how the app says it ended.
+ */
+export async function connectBlueskyLive(
+  { network }: Pick<TestSetup, "network">,
+  browser: Browser,
+  workspaceId: string,
+): Promise<ConnectOutcome> {
+  const url = await consentUrl(
+    browser,
+    workspaceId,
+    realBlueskyHandle,
+    "bluesky",
+  );
+  const callback = await answerConsent(network.bluesky.fetch, url, {
+    account: network.blueskyAccount.id,
+  });
+  return outcomeOf(await browser.fetch(pathOf(callback)));
 }

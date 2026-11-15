@@ -18,15 +18,37 @@ export { default } from "../src/index.ts";
 
 const now = () => clock.time;
 
+/** The bindings of the runtime, without the secrets of this machine. */
+function withoutSecrets({
+  DB,
+  VERSION,
+  WORKSPACE,
+  SIM_WORLD,
+  PUBLISH,
+}: Bindings): Bindings {
+  return { DB, VERSION, WORKSPACE, SIM_WORLD, PUBLISH };
+}
+
 export class WorkspaceDO extends workspaceObject({ now }) {}
 
-export class SimWorldDO extends simWorldObject({ now }) {}
+export class SimWorldDO extends simWorldObject({
+  now,
+  // A test that wants the development key deploys it as a secret.
+  developmentBlueskyClientKeys: undefined,
+}) {
+  constructor(ctx: DurableObjectState, env: Bindings) {
+    // With the secrets of the test, as the workflow below: the world of a
+    // sandbox describes pigy with the keys that the app signs with.
+    super(ctx, { ...withoutSecrets(env), ...deployment.secrets });
+  }
+}
 
 export class PublishWorkflow extends publishWorkflow({
   fetch: (input, init) => deployment.fetch(input, init),
   now,
-  // A test that wants the development key deploys it as a secret.
+  // A test that wants the development keys deploys them as secrets.
   developmentCredentialKeys: undefined,
+  developmentBlueskyClientKeys: undefined,
   providerOf: (...args) => (deployment.providerOf ?? providerOf)(...args),
   // A pause within a step is over at once: no test waits for one. What
   // was asked for is kept, for a test to look at.
@@ -37,14 +59,6 @@ export class PublishWorkflow extends publishWorkflow({
   constructor(ctx: ExecutionContext, env: Bindings) {
     // The bindings of the runtime with the secrets of the test, and none
     // of this machine's: `setup()` does the same for the app.
-    const { DB, VERSION, WORKSPACE, SIM_WORLD, PUBLISH } = env;
-    super(ctx, {
-      DB,
-      VERSION,
-      WORKSPACE,
-      SIM_WORLD,
-      PUBLISH,
-      ...deployment.secrets,
-    });
+    super(ctx, { ...withoutSecrets(env), ...deployment.secrets });
   }
 }

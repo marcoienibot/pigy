@@ -24,6 +24,7 @@ import {
 import { openCredentials, sealCredentials } from "../channels/credentials.ts";
 import type { AppDependencies, Bindings } from "../env.ts";
 import { loggable } from "../errors.ts";
+import { blueskyKeysWithoutRequest } from "../network/bluesky-client.ts";
 import type { providerOf } from "../network/providers.ts";
 import type { Reach } from "../network/reach.ts";
 import { clipped } from "../text.ts";
@@ -75,7 +76,7 @@ import { retryWaitSeconds } from "./retry.ts";
 /** What the workflow takes from outside instead of from globals. */
 export type PublishDependencies = Pick<
   AppDependencies,
-  "fetch" | "now" | "developmentCredentialKeys"
+  "fetch" | "now" | "developmentCredentialKeys" | "developmentBlueskyClientKeys"
 > & {
   /** Makes the adapter of a network for a workspace. */
   providerOf: typeof providerOf;
@@ -326,6 +327,7 @@ export async function deliver(
     fetch,
     now,
     developmentCredentialKeys,
+    developmentBlueskyClientKeys,
     providerOf,
     pause,
   }: PublishDependencies,
@@ -381,6 +383,11 @@ export async function deliver(
       fetch,
       now,
       vault,
+      // Renewing an access is signed with them.
+      blueskyClientKeys: blueskyKeysWithoutRequest(
+        env,
+        developmentBlueskyClientKeys,
+      ),
     });
     if (!connection) throw refused(`pigy cannot post to ${network} yet.`);
     return { ...connection, vault };

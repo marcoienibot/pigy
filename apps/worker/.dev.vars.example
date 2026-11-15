@@ -25,3 +25,19 @@ ADMIN_EMAILS=admin@example.com
 # one, which still opens what it sealed. Whatever was stored under other
 # keys can no longer be read: connect those accounts again.
 #CREDENTIAL_KEYS=1:
+
+# The keys that pigy signs with as a client of Bluesky. Bluesky reads pigy's
+# description, with the public halves of these keys, from
+# <address>/connect/bluesky/client-metadata.json. Without this line,
+# `pnpm dev` uses a key from the repository where it is reached at
+# localhost, which is enough for the sandbox. A real Bluesky account cannot
+# be connected from localhost at all: Bluesky's servers cannot read pigy's
+# description there. `pnpm preview` has no such key, and without this line
+# it cannot connect Bluesky accounts, in the sandbox either. A
+# comma-separated list of "<version>:<key>", each key a private key of P-256
+# in PKCS #8 and base64: make one with
+#   openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 | openssl pkcs8 -topk8 -nocrypt -outform DER | openssl base64 -A
+# The highest version signs new connections. A connection stays bound to the
+# key that it began with: keep a key for as long as such a connection is to
+# last, or connect those accounts again.
+#BLUESKY_CLIENT_KEYS=1:

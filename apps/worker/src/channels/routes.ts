@@ -10,7 +10,7 @@ import {
   idSchema,
   type Network,
   networkSchema,
-  sandboxServers,
+  sandboxIdentifiers,
   uuidv7,
 } from "@pigy/core";
 import {
@@ -25,7 +25,12 @@ import { HTTPException } from "hono/http-exception";
 import { authenticateWithCookie, requireUser } from "../auth/guards.ts";
 import type { AppDependencies, AppEnv } from "../env.ts";
 import { InvalidField, loggable, parseJsonBody } from "../errors.ts";
-import { type ProviderContext, providerOf } from "../network/providers.ts";
+import { blueskyKeysFor } from "../network/bluesky-client.ts";
+import {
+  cannotConnect,
+  type ProviderContext,
+  providerOf,
+} from "../network/providers.ts";
 import type { Reach } from "../network/reach.ts";
 import { WorldHostMissing } from "../sim/world.ts";
 import { clipped } from "../text.ts";
@@ -84,20 +89,39 @@ function channelOf(
 }
 
 /**
- * What to tell a person who named a server that the simulated world of
- * their sandbox does not have: which one it has, where the network has one
- * to name.
+ * What to tell a person who entered something that leads to `host`, which
+ * the simulated world of their sandbox does not have: what to enter there
+ * instead, where the network has something to enter.
  */
 function notInSandbox(network: Network, host: string): string {
-  const server = sandboxServers[network];
-  return server
-    ? `The sandbox has no server ${host}. Enter ${server}, its simulated server.`
-    : `The sandbox has no server ${host}.`;
+  return (
+    sandboxIdentifiers[network]?.elsewhere(host) ??
+    `The sandbox has no server ${host}.`
+  );
+}
+
+/**
+ * The host that the simulated world of a sandbox does not have, if that is
+ * what `error` comes down to. An adapter may say more about it than that a
+ * host could not be reached, such as that it found no account, and keeps
+ * what it was among the causes of its error.
+ */
+function hostMissing(error: Error): WorldHostMissing | undefined {
+  for (let cause: unknown = error.cause; cause; ) {
+    if (cause instanceof WorldHostMissing) return cause;
+    cause = cause instanceof Error ? cause.cause : undefined;
+  }
+  return undefined;
 }
 
 /** Under `/api`: starting a connection, and disconnecting. */
 export function channelRoutes(dependencies: AppDependencies): Hono<AppEnv> {
-  const { fetch, now, developmentCredentialKeys } = dependencies;
+  const {
+    fetch,
+    now,
+    developmentCredentialKeys,
+    developmentBlueskyClientKeys,
+  } = dependencies;
   const app = new Hono<AppEnv>();
   const signedIn = requireUser(dependencies);
 
@@ -129,18 +153,28 @@ export function channelRoutes(dependencies: AppDependencies): Hono<AppEnv> {
         message: "This pigy is not set up to connect accounts.",
       });
     }
-    const connection = providerOf(network, workspace, {
+    const context: ProviderContext = {
       env: c.env,
       fetch,
       now,
       vault,
-    });
+      blueskyClientKeys: blueskyKeysFor(
+        c.env,
+        developmentBlueskyClientKeys,
+        origin,
+      ),
+    };
+    const connection = providerOf(network, workspace, context);
     if (!connection) {
       throw new InvalidField(
         "network",
         `pigy cannot connect accounts of ${network} yet.`,
       );
     }
+    // A network that needs a secret of this pigy's, which it has not
+    // been given.
+    const missing = cannotConnect(network, context);
+    if (missing) throw new HTTPException(503, { message: missing });
 
     const start = await connection.provider
       .beginConnect({
@@ -156,10 +190,11 @@ export function channelRoutes(dependencies: AppDependencies): Hono<AppEnv> {
         // that the world does not have will never answer there, whatever
         // the adapter makes of it, so this is about what the person
         // entered and not something to try again later.
-        if (error.cause instanceof WorldHostMissing) {
+        const missing = hostMissing(error);
+        if (missing) {
           throw new InvalidField(
             "identifier",
-            notInSandbox(network, error.cause.host),
+            notInSandbox(network, missing.host),
           );
         }
         // `fail` is about what the person entered: no such server, not one
@@ -237,6 +272,11 @@ export function channelRoutes(dependencies: AppDependencies): Hono<AppEnv> {
             fetch,
             now,
             vault,
+            blueskyClientKeys: blueskyKeysFor(
+              c.env,
+              developmentBlueskyClientKeys,
+              origin,
+            ),
           }));
         return { ok: true as const, revoked };
       })();
@@ -357,7 +397,12 @@ async function limitsOf(provider: Provider, credentials: Json) {
 export function connectCallbackRoutes(
   dependencies: AppDependencies,
 ): Hono<AppEnv> {
-  const { fetch, now, developmentCredentialKeys } = dependencies;
+  const {
+    fetch,
+    now,
+    developmentCredentialKeys,
+    developmentBlueskyClientKeys,
+  } = dependencies;
   const app = new Hono<AppEnv>();
 
   app.get("/:network/callback", async (c) => {
@@ -414,6 +459,11 @@ export function connectCallbackRoutes(
         fetch,
         now,
         vault,
+        blueskyClientKeys: blueskyKeysFor(
+          c.env,
+          developmentBlueskyClientKeys,
+          url.origin,
+        ),
       });
       if (!connection) return back("failed");
 
