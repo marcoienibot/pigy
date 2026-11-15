@@ -204,10 +204,12 @@ function Channels() {
     router.history.back();
   };
   const connectButton = useRef<HTMLButtonElement>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
 
   return (
     <Page
       title="Channels"
+      heading={heading}
       actions={
         <Button
           ref={connectButton}
@@ -289,6 +291,7 @@ function Channels() {
         workspace={workspace}
         offline={offline}
         focusAfter={connectButton}
+        focusOtherwise={heading}
         onClose={() => setRemoving(null)}
         onDisconnected={(channel, revoked) => {
           setGone((before) => new Set(before).add(channel.id));
@@ -821,6 +824,7 @@ function DisconnectDialog({
   workspace,
   offline,
   focusAfter,
+  focusOtherwise,
   onClose,
   onDisconnected,
 }: {
@@ -828,7 +832,9 @@ function DisconnectDialog({
   workspace: Workspace;
   offline: boolean;
   /** Where the keyboard goes when the channel has been disconnected. */
-  focusAfter: RefObject<HTMLElement | null>;
+  focusAfter: RefObject<HTMLButtonElement | null>;
+  /** Where it goes when that button is disabled, and can take no focus. */
+  focusOtherwise: RefObject<HTMLElement | null>;
   onClose: () => void;
   onDisconnected: (channel: Channel, revoked: boolean | undefined) => void;
 }) {
@@ -901,11 +907,16 @@ function DisconnectDialog({
         // A dialog that closes gives the keyboard back to the button that
         // opened it. After a disconnect that button is gone, with the row
         // of the channel, and the keyboard would be on nothing: it goes to
-        // the button that connects an account.
+        // the button that connects an account. That button is disabled
+        // when the connection was lost while the request was on its way,
+        // and a disabled button takes no focus: the keyboard goes to the
+        // heading of the screen then.
         finalFocus={() => {
           const gone = disconnected.current === asked?.id;
           disconnected.current = null;
-          return gone ? focusAfter.current : true;
+          if (!gone) return true;
+          const button = focusAfter.current;
+          return button && !button.disabled ? button : focusOtherwise.current;
         }}
       >
         <AlertDialogHeader>

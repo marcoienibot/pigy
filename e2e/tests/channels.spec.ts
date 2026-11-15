@@ -542,6 +542,42 @@ test("disconnecting says what to do when the network did not take the access bac
   await expect(channelRows(page)).toHaveCount(0);
 });
 
+test("the keyboard goes to the heading after a disconnect that ends without a connection", async ({
+  ownPage: page,
+}) => {
+  // In place before the page is loaded again, which connecting an account
+  // does: the sockets that are opened from then on can be cut.
+  const connection = await connectionOf(page);
+  await openScreen(page, "Channels");
+  await connectSimulated(page, grace);
+  await expectSync(page, "Synced");
+  const release = await holdDisconnect(page);
+  await page.getByRole("button", { name: `Disconnect ${grace}` }).click();
+  const dialog = page.getByRole("alertdialog");
+  await dialog.getByRole("button", { name: "Disconnect" }).click();
+  await expect(
+    dialog.getByRole("button", { name: "Disconnecting…" }),
+  ).toBeDisabled();
+
+  // The connection goes while the request is on its way. Only the socket
+  // of the sync does: the answer to the request still comes.
+  await connection.cut({ api: true });
+  await expect(dialog.getByRole("status")).toContainText("You are offline");
+  release();
+
+  // The channel is disconnected, and the screen says so.
+  await expect(alert(page)).toContainText(`${grace} is disconnected`);
+  await expect(dialog).toBeHidden();
+  // After a disconnect the keyboard goes to the button that connects an
+  // account. Without a connection that button is disabled, and a disabled
+  // button takes no focus: the keyboard would be on nothing, and a screen
+  // reader at the top of the page. It is on the heading of the screen.
+  await expect(
+    page.getByRole("button", { name: "Connect account" }),
+  ).toBeDisabled();
+  await expect(page.getByRole("heading", { level: 1 })).toBeFocused();
+});
+
 test("a disconnect that is on its way keeps the commands away, and says how it went to somebody who has left the screen", async ({
   ownPage: page,
 }) => {

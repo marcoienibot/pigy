@@ -1,5 +1,5 @@
 import { useRouteContext } from "@tanstack/react-router";
-import { type ReactNode, useEffect } from "react";
+import { type ReactNode, type Ref, useEffect } from "react";
 import { SyncIndicator } from "@/components/sync-indicator";
 import { UserMenu } from "@/components/user-menu";
 import { WorkspaceSwitch } from "@/components/workspace-switch";
@@ -15,14 +15,20 @@ function useTitle(title: string) {
  * Header and body shared by every screen of the app. `actions` go to the
  * right of the title. The body scrolls and has a margin, unless the screen
  * asks to `fill` it and lays it out itself.
+ *
+ * A screen that asks for the `heading` can send the keyboard to it: the
+ * title can take the focus then, from code and not with Tab. That is where
+ * the focus goes when what had it is gone and nothing else can take it.
  */
 export function Page({
   title,
+  heading,
   actions,
   fill = false,
   children,
 }: {
   title: string;
+  heading?: Ref<HTMLHeadingElement>;
   actions?: ReactNode;
   fill?: boolean;
   children: ReactNode;
@@ -34,7 +40,13 @@ export function Page({
   return (
     <>
       <header className="flex h-11 shrink-0 items-center gap-2 border-b px-4">
-        <h1 className="font-medium">{title}</h1>
+        <h1
+          ref={heading}
+          tabIndex={heading ? -1 : undefined}
+          className="rounded-sm font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {title}
+        </h1>
         <div className="ml-auto flex items-center gap-1">
           {actions}
           {/* On desktop these are in the sidebar. */}
