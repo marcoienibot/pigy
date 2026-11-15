@@ -1,6 +1,7 @@
 import type { Fetch } from "@pigy/core";
 import { createBlueskySimulator } from "@pigy/simulators/bluesky";
 import { answerConsent, createWorld, feed } from "@pigy/simulators/world";
+import { describe, expect, it } from "vitest";
 import {
   type BlueskyClientKey,
   type BlueskyCredentials,
@@ -8,8 +9,8 @@ import {
   createBlueskyProvider,
 } from "../../src/bluesky/index.ts";
 import { newClientKey } from "../bluesky-keys.ts";
-import { blueskyLiveHarness } from "./bluesky-live.ts";
-import { describeProvider, type Simulation } from "./spec.ts";
+import { blueskyLiveRun } from "./bluesky-live.ts";
+import { accessOf, describeProvider, type Simulation } from "./spec.ts";
 
 const origin = "https://pigy.example";
 const redirectUri = `${origin}/connect/bluesky/callback`;
@@ -185,7 +186,23 @@ describeProvider(
   "Bluesky, simulated, with the harness of a live run",
   async () => {
     const { world, simulator, key, connect } = await simulated();
-    return blueskyLiveHarness({
+    return blueskyLiveRun({
+      fetch: simulator.fetch,
+      now: world.now,
+      clientId,
+      keys: [key],
+      handle,
+      credentials: await connect(),
+      tag: "pigy conformance",
+      sleep: async (seconds) => world.advance(seconds * 1000),
+    })();
+  },
+);
+
+describe("the harness of a live run", () => {
+  it("begins each test with the credentials that the tests before it renewed", async () => {
+    const { world, simulator, key, connect } = await simulated();
+    const setup = blueskyLiveRun({
       fetch: simulator.fetch,
       now: world.now,
       clientId,
@@ -195,5 +212,30 @@ describeProvider(
       tag: "pigy conformance",
       sleep: async (seconds) => world.advance(seconds * 1000),
     });
-  },
-);
+    const first = await setup();
+    // A test renews the access, as the specification does when Bluesky
+    // refuses the access token in the middle of a test, which a live run
+    // meets when a test takes longer than an access token lasts.
+    const source = accessOf(first);
+    await source.refresh(await source.credentials());
+    // The next test renews what that refresh returned. A refresh of the
+    // credentials from before it would end the session, with Bluesky as
+    // in the simulation.
+    const second = await setup();
+    const progress = await second.provider.publishStep({
+      credentials: second.credentials,
+      content: { parts: [{ text: "pigy conformance" }] },
+      key: "next",
+      progress: await second.provider.publishStep({
+        credentials: second.credentials,
+        content: { parts: [{ text: "pigy conformance" }] },
+        key: "next",
+        progress: null,
+      }),
+    });
+    expect(progress.done).toBe(true);
+    expect(feed(world, ["bluesky"]).map(({ post }) => post.text)).toEqual([
+      "pigy conformance",
+    ]);
+  });
+});

@@ -348,7 +348,7 @@ pnpm --filter @pigy/providers conformance:live bluesky
 ```
 
 - Nothing in pigy hands out the credentials of a connection: they are sealed in the workspace. The first run has to add a way to get them, `PLAN.md` section 19.
-- A run renews the credentials before every test, and spends the ones it is given: Bluesky replaces the refresh token with every refresh. The next run needs a new connection.
+- A run renews the credentials before every test, and spends the ones it is given: Bluesky replaces the refresh token with every refresh, and ends the session when an old one comes again. So the run keeps one copy of them, which every refresh replaces, also one that a test makes in its middle: `blueskyLiveRun` in `test/conformance/bluesky-live.ts`, and `Harness.renewed` of the specification. The next run needs a new connection.
 - Bluesky has no posts that only their author sees. What the run posts is public until the test that made it deletes it.
 
 As of phase 3c nobody has made either run: there was no test account. Whoever makes the first one should expect to fix things, and to go through the lists in `PLAN.md` section 19.

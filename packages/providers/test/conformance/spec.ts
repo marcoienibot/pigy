@@ -95,12 +95,51 @@ export type Harness = {
   sleep(seconds: number): Promise<void>;
   /** Undefined in a live run. */
   simulation: Simulation | undefined;
+  /**
+   * Hears of every refresh that a test makes, with what it returned. A
+   * live run renews the credentials that it is given, and a network that
+   * replaces the refresh token, as Bluesky does, ends the session when the
+   * old one comes again: the next test has to begin with these.
+   */
+  renewed?(credentials: Json): void;
 };
 
 // Between two steps of a post, a workflow records the progress. This is
 // what that does to it, and it must survive it.
 const recorded = <Value>(value: Value): Value =>
   JSON.parse(JSON.stringify(value)) as Value;
+
+const sources = new WeakMap<Harness, CredentialSource>();
+
+/**
+ * The credentials of the test account as a caller keeps them: what a
+ * refresh returns takes the place of what it started from, and is used
+ * from then on, also by whoever made the harness: `Harness.renewed`. A
+ * network that renews by replacing the refresh token, as Bluesky does,
+ * refuses the old one for good.
+ */
+export function accessOf(harness: Harness): CredentialSource {
+  const known = sources.get(harness);
+  if (known) return known;
+  let current = harness.credentials;
+  const source: CredentialSource = {
+    credentials: async () => current,
+    refresh: async (refused) => {
+      // Another refresh has replaced them.
+      if (refused !== current) return current;
+      if (!harness.provider.refresh) {
+        throw new Error(
+          "A provider that cannot refresh has asked for a refresh",
+        );
+      }
+      current = (await harness.provider.refresh(refused)).credentials;
+      harness.renewed?.(current);
+      return current;
+    },
+  };
+  sources.set(harness, source);
+  return source;
+}
 
 /** The error that `action` fails with, which must be a ProviderError. */
 async function failure(action: () => Promise<unknown>): Promise<ProviderError> {
@@ -148,35 +187,6 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
     // leave anything behind, and here the deleting is tested in CI too.
     const cleanup: Leftover[] = [];
     let keys = 0;
-    const sources = new WeakMap<Harness, CredentialSource>();
-
-    /**
-     * The credentials of the test account as a caller keeps them: what a
-     * refresh returns takes the place of what it started from, and is
-     * used from then on. A network that renews by replacing the refresh
-     * token, as Bluesky does, refuses the old one for good.
-     */
-    function accessOf(harness: Harness): CredentialSource {
-      const known = sources.get(harness);
-      if (known) return known;
-      let current = harness.credentials;
-      const source: CredentialSource = {
-        credentials: async () => current,
-        refresh: async (refused) => {
-          // Another refresh has replaced them.
-          if (refused !== current) return current;
-          if (!harness.provider.refresh) {
-            throw new Error(
-              "A provider that cannot refresh has asked for a refresh",
-            );
-          }
-          current = (await harness.provider.refresh(refused)).credentials;
-          return current;
-        },
-      };
-      sources.set(harness, source);
-      return source;
-    }
 
     /** Calls `call` with the credentials of the test account. */
     const withAccess = <Result>(

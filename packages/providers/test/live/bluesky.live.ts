@@ -3,11 +3,10 @@ import { setTimeout as wait } from "node:timers/promises";
 import { z } from "zod";
 import {
   type BlueskyCredentials,
-  createBlueskyProvider,
   parseHandle,
 } from "../../src/bluesky/index.ts";
 import { privateJwkSchema } from "../../src/bluesky/jwt.ts";
-import { blueskyLiveHarness } from "../conformance/bluesky-live.ts";
+import { blueskyLiveRun } from "../conformance/bluesky-live.ts";
 import { describeProvider } from "../conformance/spec.ts";
 
 /**
@@ -29,7 +28,8 @@ import { describeProvider } from "../conformance/spec.ts";
  * A refresh replaces the refresh token, and the one it was given is
  * worthless afterwards. So a run spends the credentials that it is given:
  * the next run needs new ones. Within the run, the credentials are
- * renewed before each test, and the newest are kept for the next.
+ * renewed before each test, and the newest are kept for the next, also
+ * those that a test renewed: `blueskyLiveRun`.
  *
  * Bluesky has no posts that only their author sees. What the run posts is
  * public until the test that made it deletes it. If a run is cut short,
@@ -55,32 +55,22 @@ const keys = [{ id: kid, privateKey }];
 const fetch: typeof globalThis.fetch = (input, init) =>
   globalThis.fetch(input, init);
 const now = () => new Date();
-const provider = createBlueskyProvider({
-  fetch,
-  now,
-  clientIdFor: () => clientId,
-  keys: async () => keys,
-});
 
 // The posts of this run are unlike those of any other run.
 const tag = `pigy conformance ${new Date().toISOString()} ${crypto.randomUUID().slice(0, 8)}`;
 
-let current = JSON.parse(given) as BlueskyCredentials;
-
-describeProvider(`Bluesky, live as ${handle}`, async () => {
-  // Renewed for every test: an access token lasts minutes.
-  current = (await provider.refresh?.(current))
-    ?.credentials as BlueskyCredentials;
-  return blueskyLiveHarness({
+describeProvider(
+  `Bluesky, live as ${handle}`,
+  blueskyLiveRun({
     fetch,
     now,
     clientId,
     keys,
     handle,
-    credentials: current,
+    credentials: JSON.parse(given) as BlueskyCredentials,
     tag,
     sleep: async (seconds) => {
       await wait(seconds * 1000);
     },
-  });
-});
+  }),
+);
