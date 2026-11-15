@@ -69,7 +69,7 @@ Imports:
 
 In `packages/providers/src`: `provider.ts` is the contract, `errors.ts` the one error that every adapter fails with, `publish.ts` the loop that publishes a post step by step, `http.ts` how adapters send a request. Each network has a directory. `test/conformance` holds the specification that every adapter passes.
 
-In `packages/simulators/src`: `world/` is what the simulated networks share: the storage, the world with its accounts, tokens and posts, the clock, the faults and the consent page. Each service has a directory. `google/` is on its own: it is not part of a production build and keeps nothing in a world.
+In `packages/simulators/src`: `world/` is what the simulated networks share: the storage, the world with its accounts, tokens and posts, the clock, the faults and the consent page. It also has what every simulation is made with, such as the frame of a page in `pages.ts`. Each service has a directory. `google/` is not part of a production build and keeps nothing in a world. It may import from `world/`. Nothing in `world/` or in the directory of a network imports from `google/`: that would carry the simulated sign-in into a production build.
 
 In `apps/worker/src`: `index.ts` is the entry point and only chooses what the app and the Durable Object are built with. `app.ts` puts the routes together. `auth/` holds sign-in, sessions and the guards for routes, `admin/` the allowlist API, `db/schema.ts` the schema of D1.
 

@@ -1,10 +1,13 @@
 /**
- * The pages of the simulated networks: what a person sees where the real
- * network would ask them to sign in and to consent. They are plain HTML
- * without scripts, and every one says that it is a simulation.
+ * The pages of the simulations: what a person sees where the real service
+ * would ask them to sign in and to consent. They are plain HTML without
+ * scripts, and every one says that it is a simulation.
  *
- * This is not the page of the simulated Google, which is not part of a
- * production build. These pages are: the sandbox shows them.
+ * `simulationPage` is what all of them are made with. The pages of the
+ * simulated networks are here too, because the sandbox shows them: they are
+ * part of a production build. The simulated Google is not. It keeps its
+ * pages and their texts to itself and takes from here what they are made
+ * with, never the other way round.
  */
 
 /** The text that marks every page of a simulated network. */
@@ -20,7 +23,25 @@ export function escapeHtml(text: string): string {
     .replaceAll("'", "&#39;");
 }
 
-function page(title: string, body: string): string {
+/** What a page of a simulation is made of. */
+export type SimulationPage = {
+  /** Text. */
+  title: string;
+  /** What the page stands in for, shown at its top. HTML. */
+  notice: string;
+  /** Rules for what only this page has, added to the common ones. CSS. */
+  styles?: string;
+  /** HTML. */
+  body: string;
+};
+
+/** A page of a simulation: the same frame and the same look for all. */
+export function simulationPage({
+  title,
+  notice,
+  styles,
+  body,
+}: SimulationPage): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -33,17 +54,23 @@ function page(title: string, body: string): string {
   body { margin: 0; padding: 16px; }
   main { margin: 0 auto; max-width: 400px; }
   h1 { font-size: 18px; margin: 24px 0 4px; }
-  p, ul { margin: 0 0 16px; }
+  p { margin: 0 0 16px; }
   .notice { border: 2px dashed #d97706; border-radius: 6px; padding: 8px 12px; }
   .notice strong { color: #d97706; text-transform: uppercase; letter-spacing: 0.05em; }
+  label { display: block; margin: 12px 0 0; }
+  input:not([type=checkbox]) { box-sizing: border-box; display: block; font: inherit; margin-top: 4px; padding: 6px 8px; width: 100%; }
   button { cursor: pointer; font: inherit; padding: 6px 12px; }
   .account { display: block; margin: 0 0 8px; text-align: left; width: 100%; }
   .account span { display: block; opacity: 0.7; }
-</style>
+  .actions { display: flex; gap: 8px; margin-top: 16px; }
+  details { margin-top: 12px; }
+  summary { cursor: pointer; }
+  small { display: block; margin-top: 4px; opacity: 0.7; }
+${styles ? `  ${styles}\n` : ""}</style>
 </head>
 <body>
 <main>
-<p class="notice"><strong>Simulation</strong><br>${simulationNotice}</p>
+<p class="notice"><strong>Simulation</strong><br>${notice}</p>
 ${body}
 </main>
 </body>
@@ -86,9 +113,11 @@ export function consentPage({
         `<button class="account" name="account" value="${escapeHtml(id)}">${escapeHtml(name)}<span>${escapeHtml(handle)}</span></button>`,
     )
     .join("\n");
-  return page(
-    `Simulated ${service}`,
-    `<h1>${escapeHtml(client)} wants to use your account</h1>
+  return simulationPage({
+    title: `Simulated ${service}`,
+    notice: simulationNotice,
+    styles: "ul { margin: 0 0 16px; }",
+    body: `<h1>${escapeHtml(client)} wants to use your account</h1>
 <p>${escapeHtml(service)}. It asks for:</p>
 <ul>
 ${scopes.map((scope) => `<li>${escapeHtml(scope)}</li>`).join("\n")}
@@ -98,14 +127,15 @@ ${accounts.length > 0 ? "<p>Choose the account to connect.</p>" : "<p>There is n
 ${buttons}
 <button name="action" value="deny">Cancel</button>
 </form>`,
-  );
+  });
 }
 
 /** What a network shows when it will not send the browser back. */
 export function errorPage(service: string, description: string): string {
-  return page(
-    `Simulated ${service}`,
-    `<h1>${escapeHtml(service)} cannot continue</h1>
+  return simulationPage({
+    title: `Simulated ${service}`,
+    notice: simulationNotice,
+    body: `<h1>${escapeHtml(service)} cannot continue</h1>
 <p>${escapeHtml(description)}</p>`,
-  );
+  });
 }

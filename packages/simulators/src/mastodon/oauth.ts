@@ -1,3 +1,4 @@
+import { base64Url } from "../world/encoding.ts";
 import {
   consentPage,
   errorPage,
@@ -50,13 +51,6 @@ const outOfBand = "urn:ietf:wg:oauth:2.0:oob";
 
 // GUESS: Doorkeeper's default, which Mastodon does not change.
 const codeLifetimeMs = 10 * 60 * 1000;
-
-function base64Url(bytes: ArrayBuffer): string {
-  return btoa(String.fromCharCode(...new Uint8Array(bytes)))
-    .replaceAll("+", "-")
-    .replaceAll("/", "_")
-    .replaceAll("=", "");
-}
 
 /** The client with this ID on this instance, or undefined. */
 function findApp(

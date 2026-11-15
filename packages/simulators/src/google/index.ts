@@ -7,6 +7,7 @@ import {
   jwtVerify,
   SignJWT,
 } from "jose";
+import { base64Url } from "../world/encoding.ts";
 import { consentPage, errorPage } from "./pages.ts";
 import { signingKey } from "./signing-key.ts";
 
@@ -88,14 +89,6 @@ type CodeClaims = {
 };
 
 const encoder = new TextEncoder();
-
-function base64Url(bytes: ArrayBuffer | Uint8Array): string {
-  const binary = String.fromCharCode(...new Uint8Array(bytes));
-  return btoa(binary)
-    .replaceAll("+", "-")
-    .replaceAll("/", "_")
-    .replaceAll("=", "");
-}
 
 async function sha256(text: string): Promise<ArrayBuffer> {
   return crypto.subtle.digest("SHA-256", encoder.encode(text));
