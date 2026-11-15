@@ -172,7 +172,14 @@ it("keeps only the last of the texts typed into one part", () => {
   copy = append(copy, setText(partId, "He", 2), setText(partId, "Hey", 3));
 
   expect(copy.head.outbox).toEqual([
-    { id: 1, name: "part.setText", args: { id: partId, text: "Hey" }, at: 3 },
+    {
+      id: 1,
+      name: "part.setText",
+      args: { id: partId, text: "Hey" },
+      at: 3,
+      // Of the app that made it.
+      schemaVersion: syncSchemaVersion,
+    },
   ]);
   // No ID was used up by the texts in between.
   expect(copy.head.meta.madeMutationId).toBe(1);
@@ -197,6 +204,66 @@ it("does not replace a mutation that may have been sent", () => {
     [2, { id: partId, text: "Hey" }],
   ]);
 });
+
+it.each([
+  // This tab is too old for the copy, and still stores what is done in it.
+  ["a newer", syncSchemaVersion + 1],
+  // The mutation was in the outbox when the copy was brought to this schema,
+  // or a tab that is too old for the copy has made it since.
+  ["an older", syncSchemaVersion - 1],
+])(
+  "does not replace a mutation that was made under %s schema",
+  (_, theirSchema) => {
+    const partId = newId();
+    const copy = newCopy();
+    // The text of a part, not sent yet, as another version of the app has
+    // left it in the outbox that the tabs share. That version's mutator of
+    // this name may take other arguments, or do something else with them.
+    const theirs = {
+      id: 1,
+      name: "part.setText",
+      args: { id: partId, text: "Theirs" },
+      at: 1,
+      schemaVersion: theirSchema,
+    };
+    const shared: Copy = {
+      ...copy,
+      head: {
+        ...copy.head,
+        meta: {
+          ...copy.head.meta,
+          madeMutationId: 1,
+          schemaVersion: Math.max(theirSchema, syncSchemaVersion),
+        },
+        outbox: [theirs],
+      },
+    };
+
+    let after = append(shared, setText(partId, "Ours", 2));
+
+    // The same name and the same part, which is all that the rule of this
+    // version looks at. Theirs is still there, as it was: taking its place
+    // would have dropped a change that the server may treat differently from
+    // this one, with nothing to tell the person.
+    expect(after.head.outbox).toEqual([
+      theirs,
+      {
+        id: 2,
+        name: "part.setText",
+        args: { id: partId, text: "Ours" },
+        at: 2,
+        schemaVersion: syncSchemaVersion,
+      },
+    ]);
+
+    // What this app makes next does replace its own.
+    after = append(after, setText(partId, "Ours, again", 3));
+    expect(after.head.outbox.map(({ id, args }) => [id, args])).toEqual([
+      [1, { id: partId, text: "Theirs" }],
+      [2, { id: partId, text: "Ours, again" }],
+    ]);
+  },
+);
 
 it("replaces only the mutation right before, and only for the same part", () => {
   const first = newId();
@@ -546,7 +613,7 @@ it("starts over, and numbers its mutations again, when the one the server expect
   });
   // The server has processed none of the mutations that are left, so they
   // are kept, in their order, as the first two of the new client.
-  expect(after.head.outbox).toEqual([
+  expect(after.head.outbox.map(({ schemaVersion, ...rest }) => rest)).toEqual([
     { id: 1, name: "part.setText", args: { id: first, text: "C" }, at: 3 },
     { id: 2, name: "part.setText", args: { id: second, text: "D" }, at: 4 },
   ]);

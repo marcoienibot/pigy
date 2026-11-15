@@ -72,10 +72,17 @@ export type PendingMutation = Mutation & {
    * run for display.
    */
   at: number;
+  /**
+   * The `syncSchemaVersion` of the app that made it, which says what its
+   * name and its arguments mean. Tabs that run different versions of the
+   * app add to one outbox, and the mutations of an older schema stay in it
+   * when the copy is brought to a newer one.
+   */
+  schemaVersion: number;
 };
 
 /** A mutation as the app makes it: it has no ID yet. */
-export type MutationCall = Omit<PendingMutation, "id">;
+export type MutationCall = Omit<PendingMutation, "id" | "schemaVersion">;
 
 /** A rejected mutation that the person has yet to be told of. */
 export type StoredRejection = {
@@ -241,7 +248,13 @@ const supersedes: {
   "part.setText": (earlier, later) => earlier.id === later.id,
 };
 
-function replaces(later: MutationCall, earlier: PendingMutation): boolean {
+/**
+ * Whether `later` makes `earlier`, the mutation made right before it,
+ * pointless. Both are mutations that this version of the app has made: the
+ * rules are about its mutators, and say nothing of what a name and its
+ * arguments mean in another schema.
+ */
+export function replaces(later: MutationCall, earlier: MutationCall): boolean {
   if (later.name !== earlier.name || !Object.hasOwn(supersedes, later.name)) {
     return false;
   }
@@ -261,6 +274,16 @@ function replaces(later: MutationCall, earlier: PendingMutation): boolean {
  * A mutation takes the place of the one before it, and its ID, if it makes
  * that one pointless and that one cannot have been sent: the server may
  * have run a mutation that was sent, and would skip another under its ID.
+ *
+ * And only if both were made under the same schema, which every mutation
+ * records. Tabs that run different versions of the app share the outbox: a
+ * tab that is too old for the copy still stores what the person does in
+ * it, and a tab of the new version finds the mutations that were made
+ * before the update. The rules above are those of this version, and the
+ * server may reject a mutation of another schema: replacing one by the
+ * other would drop a change without a word. Comparing the version of the
+ * last mutation with this one's is enough, because only the last mutation
+ * of the outbox is ever replaced, and only by one that this app has made.
  */
 export function appendMutations(
   head: Head,
@@ -270,11 +293,17 @@ export function appendMutations(
   let last = head.outbox.at(-1);
   const put = new Map<number, PendingMutation>();
   for (const call of calls) {
-    if (last && last.id > head.meta.sentMutationId && replaces(call, last)) {
-      last = { ...call, id: last.id };
+    const made = { ...call, schemaVersion: syncSchemaVersion };
+    if (
+      last &&
+      last.id > head.meta.sentMutationId &&
+      last.schemaVersion === syncSchemaVersion &&
+      replaces(call, last)
+    ) {
+      last = { ...made, id: last.id };
     } else {
       madeMutationId += 1;
-      last = { ...call, id: madeMutationId };
+      last = { ...made, id: madeMutationId };
     }
     put.set(last.id, last);
   }
