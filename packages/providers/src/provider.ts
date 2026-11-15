@@ -12,7 +12,25 @@ import { z } from "zod";
  * nothing between calls. What has to last is handed to the caller, as JSON
  * that only the adapter understands, and comes back as an argument.
  *
- * Every method fails with a `ProviderError`, which says what to do next.
+ * Every failure that is a provider's to report is a `ProviderError`, which
+ * says what to do next: what a network answered, a network that did not
+ * answer, input that a method cannot work with.
+ *
+ * One thing more can come out of every method, unchanged: what the `fetch`
+ * that the adapter was made with throws that is no failure of a network.
+ * A `fetch` fails with a TypeError when no answer comes. `send` of http.ts
+ * takes that, and a request whose time is up, for a network out of reach,
+ * which is a `retry`. Whatever else `fetch` throws it passes on as it is:
+ * a bug in what stands behind `fetch`, or a check there that refused, such
+ * as the simulated world of a sandbox that turns out to be another
+ * workspace's. The same goes for whatever else an adapter was made with,
+ * such as the store of Mastodon's registrations: what that throws comes
+ * back to the caller as it is.
+ *
+ * Such a failure is pigy's own. It is no `ProviderError` and has none of
+ * the kinds, so a caller must not take it for an answer of the network, to
+ * try again or to give up on. A caller logs it, and treats the call as one
+ * that was cut off: whether a request went out is not known.
  */
 
 /** A value that `JSON.stringify` and `JSON.parse` give back unchanged. */
@@ -204,12 +222,17 @@ export type Provider = {
    *
    * It is called once for a callback and cannot be tried again: the code
    * in the callback is good for one exchange, and a call that failed may
-   * have spent it. So it fails with `fail` whatever went wrong, also when
-   * the network was only out of reach. The caller then drops `pending`,
-   * and whoever wants the account connected after all begins again, with
-   * `beginConnect`. It fails the same way if the callback is not the answer
-   * to `pending`, and if the person declined: that error has `declined`
-   * set, so that the caller can tell a change of mind from a failure.
+   * have spent it. So its `ProviderError` is a `fail` whatever went wrong,
+   * also when the network was only out of reach. The caller then drops
+   * `pending`, and whoever wants the account connected after all begins
+   * again, with `beginConnect`. It fails the same way if the callback is
+   * not the answer to `pending`, and if the person declined: that error
+   * has `declined` set, so that the caller can tell a change of mind from
+   * a failure.
+   *
+   * What is no failure of a network, but one of what the adapter was made
+   * with, comes out of it as out of every method: as it is, and not as a
+   * `fail`. The connection is over then too.
    */
   completeConnect(
     callback: ConnectCallback,

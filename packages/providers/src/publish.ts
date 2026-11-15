@@ -35,6 +35,11 @@ export type PublishRunner = {
    * `ProviderError`: whether the step is run again, and after how long.
    * `Provider.publishStep` says what it has to keep to. A `refresh` never
    * gets this far: `publish` sees to it.
+   *
+   * A step can also fail with what is no `ProviderError`, which `publish`
+   * passes on as it is: a bug, in pigy or in what the adapter was made
+   * with. It has no kind to go by. The runner logs it, and the step is one
+   * whose outcome is not known, like a step that was cut off.
    */
   run: (
     name: string,
