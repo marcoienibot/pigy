@@ -168,12 +168,14 @@ function Channels() {
     void navigate({ search, replace: true });
   const close = () => step({});
   const again = channels.find(({ id }) => id === reconnect);
+  const connectButton = useRef<HTMLButtonElement>(null);
 
   return (
     <Page
       title="Channels"
       actions={
         <Button
+          ref={connectButton}
           variant="outline"
           size="sm"
           disabled={offline}
@@ -251,6 +253,7 @@ function Channels() {
         channel={removing}
         workspace={workspace}
         offline={offline}
+        focusAfter={connectButton}
         onClose={() => setRemoving(null)}
         onDisconnected={(channel, revoked) => {
           setGone((before) => new Set(before).add(channel.id));
@@ -768,12 +771,15 @@ function DisconnectDialog({
   channel,
   workspace,
   offline,
+  focusAfter,
   onClose,
   onDisconnected,
 }: {
   channel: Channel | null;
   workspace: Workspace;
   offline: boolean;
+  /** Where the keyboard goes when the channel has been disconnected. */
+  focusAfter: RefObject<HTMLElement | null>;
   onClose: () => void;
   onDisconnected: (channel: Channel, revoked: boolean | undefined) => void;
 }) {
@@ -794,6 +800,9 @@ function DisconnectDialog({
       here.current = false;
     };
   }, []);
+  // The ID of the channel that this has just disconnected, until the
+  // dialog has closed over it.
+  const disconnected = useRef<string>(null);
 
   const disconnect = async (target: Channel) => {
     setBusy(true);
@@ -821,8 +830,12 @@ function DisconnectDialog({
       return;
     }
     setBusy(false);
-    if ("failed" in outcome) setError(outcome.failed);
-    else onDisconnected(target, outcome.revoked);
+    if ("failed" in outcome) {
+      setError(outcome.failed);
+    } else {
+      disconnected.current = target.id;
+      onDisconnected(target, outcome.revoked);
+    }
   };
 
   return (
@@ -835,7 +848,17 @@ function DisconnectDialog({
         onClose();
       }}
     >
-      <AlertDialogContent>
+      <AlertDialogContent
+        // A dialog that closes gives the keyboard back to the button that
+        // opened it. After a disconnect that button is gone, with the row
+        // of the channel, and the keyboard would be on nothing: it goes to
+        // the button that connects an account.
+        finalFocus={() => {
+          const gone = disconnected.current === asked?.id;
+          disconnected.current = null;
+          return gone ? focusAfter.current : true;
+        }}
+      >
         <AlertDialogHeader>
           <AlertDialogTitle>Disconnect {asked?.handle}?</AlertDialogTitle>
           <AlertDialogDescription>

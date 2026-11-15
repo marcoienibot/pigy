@@ -384,8 +384,11 @@ test("disconnecting asks first, and says that the network took the access back",
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await expect(dialog).toBeHidden();
   await expect(channelRows(page)).toHaveCount(1);
+  // The keyboard is back on the button that asked, which opens the
+  // question again.
+  await expect(disconnect).toBeFocused();
 
-  await disconnect.click();
+  await page.keyboard.press("Enter");
   await dialog.getByRole("button", { name: "Disconnect" }).click();
 
   await expect(notice(page)).toHaveText(
@@ -394,6 +397,17 @@ test("disconnecting asks first, and says that the network took the access back",
   await expect(
     page.getByRole("heading", { name: "No accounts connected" }),
   ).toBeVisible();
+  // That button is gone now, with the row of the channel. The keyboard is
+  // not left on nothing: it is on the button that connects an account,
+  // and goes on from there.
+  await expect(
+    page.getByRole("button", { name: "Connect account" }),
+  ).toBeFocused();
+  await page.keyboard.press("Enter");
+  const connect = page.getByRole("dialog", { name: "Connect an account" });
+  await expect(connect).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(connect).toBeHidden();
   // It is gone for good, not only from this screen: the copy of the
   // workspace has heard of it by the time the app has synced again.
   await page.reload();
