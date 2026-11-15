@@ -201,6 +201,16 @@ test("a window that is too old for the server loads the new version when it is r
   const reload = page
     .getByRole("dialog")
     .getByRole("button", { name: "Reload" });
+  await expect(reload).toBeVisible();
+  // The button gives the server ten seconds to come up with a newer
+  // version, and loads the page again without one when they are over:
+  // rightly so, and as the older version. The test holds the newer one for
+  // as long as its next steps take, which is longer than that on a machine
+  // that is busy enough. So the clock of the page stands still while the
+  // newer version is held, and the ten seconds do not pass.
+  const now = Date.now();
+  await page.clock.install({ time: now });
+  await page.clock.pauseAt(now + 1_000);
   await reload.click();
 
   // The button has the window wait for the newer version: it is the page
@@ -211,6 +221,9 @@ test("a window that is too old for the server loads the new version when it is r
   expect(await markOf(page)).toEqual({ sameLoad: true, leaving: false });
 
   installNewer();
+  // The clock runs again, for the page that starts: it gives the newer
+  // version a time to take over, too.
+  await page.clock.resume();
 
   // Now there is a newer version to start as, and the reload that waited
   // for it does.
