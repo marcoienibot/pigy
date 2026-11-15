@@ -28,6 +28,16 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       const dark =
         theme === "dark" || (theme === "system" && systemDark.matches);
       document.documentElement.classList.toggle("dark", dark);
+      // What the browser draws around the page follows: the status bar of
+      // a phone, the title bar of the installed app. index.html has the
+      // colour of each theme.
+      const color = document.querySelector<HTMLMetaElement>(
+        'meta[name="theme-color"]',
+      );
+      const { light: lightColor, dark: darkColor } = color?.dataset ?? {};
+      if (color && lightColor && darkColor) {
+        color.content = dark ? darkColor : lightColor;
+      }
     };
     apply();
     systemDark.addEventListener("change", apply);

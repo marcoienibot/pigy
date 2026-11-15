@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "e2e": "playwright test",
+    "icons": "node scripts/generate-icons.mjs",
     "typecheck": "tsc"
   },
   "devDependencies": {

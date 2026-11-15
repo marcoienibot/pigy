@@ -15,7 +15,8 @@
     "format": "biome check --write",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
-    "e2e": "pnpm --filter @pigy/e2e e2e"
+    "e2e": "pnpm --filter @pigy/e2e e2e",
+    "icons": "pnpm --filter @pigy/e2e icons"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.7"
