@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { errorResponseSchema } from "./error.ts";
 import { type Network, networkSchema } from "./network/network.ts";
 
 /**
@@ -9,6 +10,7 @@ import { type Network, networkSchema } from "./network/network.ts";
  *
  * 1. `POST /api/workspaces/<workspace ID>/connect` with a `ConnectRequest`
  *    answers with a `ConnectResponse`: the address to send the browser to.
+ *    A refusal is a `ConnectError`.
  * 2. There the person consents, or not, and the network sends the browser
  *    back to pigy, which sends it on to `connectReturnPath` with the
  *    outcome in the query: `connectOutcomeSchema` describes it. That is
@@ -37,15 +39,35 @@ export const connectRequestSchema = z.strictObject({
 export type ConnectRequest = z.infer<typeof connectRequestSchema>;
 
 /**
- * The answer to a `ConnectRequest`. What it is refused with is an error
- * response whose message is written for the person:
+ * What a `ConnectRequest` is refused with: an error response whose message
+ * is written for the person, and whose `field` says which input of a form
+ * the message belongs to.
  *
- * - 400: what they typed leads to no server that pigy can connect to. The
- *   message belongs next to the field.
+ * - 400 with the field `identifier`: what they typed leads to no server
+ *   that pigy can connect to. It is not a domain, the server is not one
+ *   that pigy can post to, or, in a sandbox, it is not the simulated server
+ *   of the sandbox: the message names that one. Trying again with the same
+ *   text gives the same answer. The message goes next to the field. A
+ *   network that asks for nothing has no such field, and a form shows the
+ *   message with the form as a whole.
+ * - 400 with the field `network`: pigy does not know the network, or
+ *   cannot connect its accounts yet.
+ * - 400 without a field: the request is not one that pigy's own pages make.
  * - 502: the server of the network cannot be reached, or is in trouble.
- *   Trying again later can work. The message names the server.
+ *   Trying again later can work. The message names the server, and goes
+ *   with the form as a whole.
  * - 503: this pigy is not set up to connect accounts.
+ *
+ * And the answers of every route: 401 for somebody who is not signed in,
+ * 404 for a workspace that is not theirs.
  */
+export const connectErrorSchema = errorResponseSchema.extend({
+  field: connectRequestSchema.keyof().optional(),
+});
+
+export type ConnectError = z.infer<typeof connectErrorSchema>;
+
+/** The answer to a `ConnectRequest`. */
 export const connectResponseSchema = z.object({
   /**
    * Where to send the browser, as a navigation of the whole page: the

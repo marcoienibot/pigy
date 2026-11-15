@@ -19,6 +19,19 @@ const defaultMessages: Record<ErrorName, string> = {
   UnexpectedError: "Something went wrong",
 };
 
+/**
+ * A 400 that is about one field of the request. The answer names the field,
+ * for a form to show the message next to it.
+ */
+export class InvalidField extends HTTPException {
+  constructor(
+    readonly field: string,
+    message: string,
+  ) {
+    super(400, { message });
+  }
+}
+
 export const handleNotFound: NotFoundHandler = (c) =>
   c.json<ErrorResponse>(
     { error: "NotFoundError", message: defaultMessages.NotFoundError },
@@ -35,7 +48,11 @@ export const handleError: ErrorHandler = (error, c) => {
     if (error.status >= 500) console.error(error);
     const name = errorName(error.status);
     return c.json<ErrorResponse>(
-      { error: name, message: error.message || defaultMessages[name] },
+      {
+        error: name,
+        message: error.message || defaultMessages[name],
+        ...(error instanceof InvalidField && { field: error.field }),
+      },
       error.status,
     );
   }
@@ -46,7 +63,10 @@ export const handleError: ErrorHandler = (error, c) => {
   );
 };
 
-/** The JSON body of a request, or a 400 that says what is wrong with it. */
+/**
+ * The JSON body of a request, or a 400 that says what is wrong with it, and
+ * with which of its fields if it is one.
+ */
 export async function parseJsonBody<T>(
   c: Context,
   schema: z.ZodType<T>,
@@ -62,9 +82,8 @@ export async function parseJsonBody<T>(
     const [issue] = parsed.error.issues;
     const path = issue?.path.join(".");
     const message = issue?.message ?? "The body is invalid";
-    throw new HTTPException(400, {
-      message: path ? `${path}: ${message}` : message,
-    });
+    if (path) throw new InvalidField(path, `${path}: ${message}`);
+    throw new HTTPException(400, { message });
   }
   return parsed.data;
 }

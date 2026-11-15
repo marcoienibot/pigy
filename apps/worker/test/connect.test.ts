@@ -1,6 +1,6 @@
 import { runInDurableObject } from "cloudflare:test";
 import {
-  errorResponseSchema,
+  connectErrorSchema,
   maxConnectIdentifierLength,
   sandboxMastodonDomain,
 } from "@pigy/core";
@@ -148,10 +148,12 @@ describe("starting a connection", () => {
     body: unknown,
   ) {
     const response = await startConnect(browser, workspaceId, body);
-    const { error, message } = errorResponseSchema.parse(await response.json());
+    // As a form reads it: with the field that the message belongs to, if
+    // the answer names one.
+    const refusal = connectErrorSchema.parse(await response.json());
     // Nothing is kept of a connection that did not begin.
     expect(await test.db.select().from(oauthStates)).toEqual([]);
-    return { status: response.status, error, message };
+    return { status: response.status, ...refusal };
   }
 
   it.each([
@@ -172,12 +174,13 @@ describe("starting a connection", () => {
         ...(identifier !== undefined && { identifier }),
       });
 
-      // The message goes next to the field.
+      // The message goes next to the field, which the answer names.
       expect(refusal).toEqual({
         status: 400,
         error: "InvalidInputError",
         message:
           "Enter the address of your Mastodon server, such as mastodon.social.",
+        field: "identifier",
       });
       // What a person types decides where pigy sends requests. Nothing was
       // sent anywhere for these.
@@ -196,7 +199,7 @@ describe("starting a connection", () => {
     });
 
     // Not the fault of what was entered, as far as pigy can tell: the
-    // server may be back later.
+    // server may be back later. So the answer names no field.
     expect(refusal).toEqual({
       status: 502,
       error: "UnexpectedError",
@@ -241,10 +244,12 @@ describe("starting a connection", () => {
       identifier: realMastodonDomain,
     });
 
+    // About the server that the person named, so about what they entered.
     expect(refusal).toEqual({
       status: 400,
       error: "InvalidInputError",
       message,
+      field: "identifier",
     });
     // pigy did not go where the server pointed, and registered nothing.
     expect(test.network.requests).toEqual([
@@ -284,16 +289,45 @@ describe("starting a connection", () => {
       identifier: "ada.bsky.social",
     });
 
-    expect(refusal).toMatchObject({ status: 400, error: "InvalidInputError" });
-    expect(refusal.message).toContain("bluesky");
+    // Not about what was typed: a form shows it where the network is
+    // chosen.
+    expect(refusal).toEqual({
+      status: 400,
+      error: "InvalidInputError",
+      message: "pigy cannot connect accounts of bluesky yet.",
+      field: "network",
+    });
+  });
+
+  it("tells a person in a sandbox which server the sandbox has", async () => {
+    const { test, browser, workspaces } = await start();
+
+    const refusal = await refused(test, browser, workspaces.sandbox, {
+      network: "mastodon",
+      // A real server, which a person may well enter. The world of a
+      // sandbox does not have it, and never will.
+      identifier: "mastodon.social",
+    });
+
+    // Not the 502 of a server that may be back later: entering the same
+    // again will not work. The message says what will.
+    expect(refusal).toEqual({
+      status: 400,
+      error: "InvalidInputError",
+      message: `The sandbox has no server mastodon.social. Enter ${sandboxMastodonDomain}, its simulated server.`,
+      field: "identifier",
+    });
+    expect(test.network.requests).toEqual([]);
   });
 
   it.each([
-    ["a network that pigy does not know", { network: "myspace" }],
-    ["no network", { identifier: realMastodonDomain }],
+    ["a network that pigy does not know", { network: "myspace" }, "network"],
+    ["no network", { identifier: realMastodonDomain }, "network"],
     [
+      // Not a field of a form, so the answer names none.
       "a field that the request does not have",
       { network: "mastodon", identifier: realMastodonDomain, workspace: "x" },
+      undefined,
     ],
     [
       "an identifier that is too long",
@@ -301,14 +335,20 @@ describe("starting a connection", () => {
         network: "mastodon",
         identifier: "a".repeat(maxConnectIdentifierLength + 1),
       },
+      "identifier",
     ],
-    ["an identifier that is not text", { network: "mastodon", identifier: 5 }],
-  ])("refuses a request with %s", async (_name, body) => {
+    [
+      "an identifier that is not text",
+      { network: "mastodon", identifier: 5 },
+      "identifier",
+    ],
+  ])("refuses a request with %s", async (_name, body, field) => {
     const { test, browser, workspaces } = await start();
 
     const refusal = await refused(test, browser, workspaces.live, body);
 
     expect(refusal).toMatchObject({ status: 400, error: "InvalidInputError" });
+    expect(refusal.field).toBe(field);
     expect(test.network.requests).toEqual([]);
   });
 

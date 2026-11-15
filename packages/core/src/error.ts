@@ -20,6 +20,13 @@ export const errorResponseSchema = z.object({
   error: errorNameSchema,
   /** Explanation for people. It never carries internal details. */
   message: z.string().min(1),
+  /**
+   * With `InvalidInputError`, if the message is about one field of the
+   * request: the name of that field, for a form to show the message next to
+   * it. The parts of a nested field are joined with dots. Left out when the
+   * message is about the request as a whole.
+   */
+  field: z.string().min(1).optional(),
 });
 
 export type ErrorResponse = z.infer<typeof errorResponseSchema>;

@@ -155,7 +155,6 @@ describe("where a workspace reaches the networks", () => {
 
   it("cannot reach a real server from a sandbox", async () => {
     const { test, admin, ofAdmin } = await start();
-    expectErrors();
 
     // The name of a server that is there, where the real networks are.
     const response = await startConnect(admin, ofAdmin.sandbox, {
@@ -164,11 +163,14 @@ describe("where a workspace reaches the networks", () => {
     });
 
     // The simulated world has no such server, and the request went nowhere
-    // else.
-    expect(response.status).toBe(502);
-    expect(errorResponseSchema.parse(await response.json()).message).toBe(
-      `${realMastodonDomain} could not be reached.`,
-    );
+    // else. The answer is about what was entered, not about a server that
+    // may be back later: it never will be, in a sandbox.
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: "InvalidInputError",
+      message: `The sandbox has no server ${realMastodonDomain}. Enter ${sandboxMastodonDomain}, its simulated server.`,
+      field: "identifier",
+    });
     expect(test.network.requests).toEqual([]);
   });
 

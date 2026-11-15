@@ -8,7 +8,9 @@ import {
   connectReturnPath,
   disconnectResponseSchema,
   idSchema,
+  type Network,
   networkSchema,
+  sandboxServers,
   uuidv7,
 } from "@pigy/core";
 import { type Account, type Json, ProviderError } from "@pigy/providers";
@@ -18,9 +20,10 @@ import { type Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { authenticateWithCookie, requireUser } from "../auth/guards.ts";
 import type { AppDependencies, AppEnv } from "../env.ts";
-import { parseJsonBody } from "../errors.ts";
+import { InvalidField, parseJsonBody } from "../errors.ts";
 import { type ProviderContext, providerOf } from "../network/providers.ts";
 import type { Reach } from "../network/reach.ts";
+import { WorldHostMissing } from "../sim/world.ts";
 import { VaultError, vaultFor } from "../vault.ts";
 import type {
   StoredChannelAccess,
@@ -95,6 +98,18 @@ function channelOf(
   };
 }
 
+/**
+ * What to tell a person who named a server that the simulated world of
+ * their sandbox does not have: which one it has, where the network has one
+ * to name.
+ */
+function notInSandbox(network: Network, host: string): string {
+  const server = sandboxServers[network];
+  return server
+    ? `The sandbox has no server ${host}. Enter ${server}, its simulated server.`
+    : `The sandbox has no server ${host}.`;
+}
+
 /** Under `/api`: starting a connection, and disconnecting. */
 export function channelRoutes(dependencies: AppDependencies): Hono<AppEnv> {
   const { fetch, now, developmentCredentialKeys } = dependencies;
@@ -136,9 +151,10 @@ export function channelRoutes(dependencies: AppDependencies): Hono<AppEnv> {
       vault,
     });
     if (!connection) {
-      throw new HTTPException(400, {
-        message: `pigy cannot connect accounts of ${network} yet.`,
-      });
+      throw new InvalidField(
+        "network",
+        `pigy cannot connect accounts of ${network} yet.`,
+      );
     }
 
     const start = await connection.provider
@@ -151,13 +167,24 @@ export function channelRoutes(dependencies: AppDependencies): Hono<AppEnv> {
       })
       .catch((error: unknown) => {
         if (!(error instanceof ProviderError)) throw error;
+        // A sandbox reaches its simulated world and nothing else. A server
+        // that the world does not have will never answer there, whatever
+        // the adapter makes of it, so this is about what the person
+        // entered and not something to try again later.
+        if (error.cause instanceof WorldHostMissing) {
+          throw new InvalidField(
+            "identifier",
+            notInSandbox(network, error.cause.host),
+          );
+        }
         // `fail` is about what the person entered: no such server, not one
-        // that pigy can post to. Anything else is the trouble of a server
-        // that may be fine later. The message is written for the person,
+        // that pigy can post to. The message is written for the person,
         // and holds no secret.
-        throw new HTTPException(error.kind === "fail" ? 400 : 502, {
-          message: error.message,
-        });
+        if (error.kind === "fail") {
+          throw new InvalidField("identifier", error.message);
+        }
+        // Anything else is the trouble of a server that may be fine later.
+        throw new HTTPException(502, { message: error.message });
       });
     await keepPending(
       drizzle(c.env.DB),
