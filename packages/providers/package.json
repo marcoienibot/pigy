@@ -1,0 +1,23 @@
+{
+  "name": "@pigy/providers",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -b",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@pigy/core": "workspace:*",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@pigy/simulators": "workspace:*",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

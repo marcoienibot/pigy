@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.src.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.test.tsbuildinfo",
+    // The live run reads its settings from the environment.
+    "types": ["node"]
+  },
+  // What runs in Node, where Node's types are welcome.
+  "include": [
+    "src/**/*.test.ts",
+    "test",
+    "vitest.config.ts",
+    "vitest.live.config.ts"
+  ],
+  // tsconfig.src.json excludes the tests, and that would be inherited.
+  "exclude": []
+}

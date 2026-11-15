@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.src.tsbuildinfo",
+    // Runs in the Workers runtime, and in Node for its own tests. The DOM lib
+    // is here for the web-standard APIs both have, such as Request, Response
+    // and crypto. No Node or Workers types. The tests are excluded because
+    // importing Vitest brings in Node's types: tsconfig.test.json checks
+    // them.
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": []
+  },
+  "include": ["src"],
+  "exclude": ["src/**/*.test.ts"]
+}

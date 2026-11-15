@@ -1,0 +1,59 @@
+/**
+ * What to do about a failure. It is all a caller needs to decide on:
+ *
+ * - `retry`: nothing is wrong with the request. The network was busy, down
+ *   or out of reach. Try again later, with the same input.
+ * - `fail`: trying again would fail again. Give up and tell the person why.
+ * - `reconnect`: the network no longer accepts the credentials. The person
+ *   has to connect the account again.
+ */
+export type ProviderErrorKind = "retry" | "fail" | "reconnect";
+
+/**
+ * Every failure of a provider. Anything else that a provider throws is a
+ * bug in it.
+ *
+ * The message is for the person whose post or connection it is about. It
+ * may quote what the network answered, cut to a sensible length and with
+ * the secrets of the request removed, so it is safe to store, show and log.
+ */
+export class ProviderError extends Error {
+  /** With `retry`: not before this time, if the network named one. */
+  readonly retryAt: Date | undefined;
+  /** The HTTP status of the answer, if the network gave one. */
+  readonly status: number | undefined;
+
+  constructor(
+    readonly kind: ProviderErrorKind,
+    message: string,
+    options: {
+      retryAt?: Date | undefined;
+      status?: number | undefined;
+      cause?: unknown;
+    } = {},
+  ) {
+    super(message, { cause: options.cause });
+    this.name = "ProviderError";
+    this.retryAt = options.retryAt;
+    this.status = options.status;
+  }
+}
+
+// What stands in for a secret in a message.
+const redacted = "[removed]";
+
+/**
+ * `text` as it may appear in a message: without the `secrets`, without
+ * control characters and no longer than a sentence or two. Networks, and
+ * the proxies in front of them, sometimes repeat a request in their answer.
+ */
+export function quotable(text: string, secrets: readonly string[]): string {
+  let safe = text;
+  for (const secret of secrets) {
+    if (secret) safe = safe.replaceAll(secret, redacted);
+  }
+  // Control characters could forge lines in a log.
+  safe = safe.replace(/\p{Cc}+/gu, " ").trim();
+  // Cut after the secrets are out, so that no half of one is left behind.
+  return safe.length > 300 ? `${safe.slice(0, 300)}…` : safe;
+}
