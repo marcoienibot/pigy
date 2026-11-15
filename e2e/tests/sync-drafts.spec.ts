@@ -119,6 +119,38 @@ test("the drafts are listed from the local copy when the server cannot be reache
   await expectSync(page, "Offline · 2 changes");
 });
 
+test("a draft is listed where it will stay before the server has confirmed it, on a device whose clock is behind", async ({
+  ownPage: page,
+  isMobile,
+}) => {
+  const connection = await connectionOf(page);
+  // From here on the clock of the page says that it is an hour earlier
+  // than the server takes it for, and goes on running. The app starts
+  // again under that clock, and with the route above, which only applies
+  // to sockets that are opened after it.
+  await page.clock.install({ time: Date.now() - 3_600_000 });
+  await page.reload();
+  await writeDraft(page, isMobile, "Confirmed");
+  // The server has said when that draft was written, by its own clock.
+  await expectSync(page, "Synced");
+
+  // The next draft is held back on its way to the server, so that the
+  // moment lasts in which only the device knows of it. By the clock of the
+  // device it was written an hour before the other one.
+  connection.hold();
+  await writeDraft(page, isMobile, "Not confirmed yet");
+  await expectSync(page, "Syncing 2 changes");
+  // It was written last all the same, and that is where the server will
+  // put it: at the top.
+  await expect(draftRows(page).first()).toContainText("Not confirmed yet");
+
+  // The confirmation moves nothing.
+  connection.release();
+  await expectSync(page, "Synced");
+  await expect(draftRows(page).first()).toContainText("Not confirmed yet");
+  await expect(draftRows(page)).toHaveCount(2);
+});
+
 test("two tabs stay in step, and only one of them holds a socket", async ({
   ownPage: first,
   context,
