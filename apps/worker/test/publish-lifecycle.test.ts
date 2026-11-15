@@ -145,16 +145,22 @@ it("goes on after the parts that are published when a delivery is tried again", 
  * A network that carries out the first request to post and loses the
  * answer, and is out of reach from then on, until the test brings it back.
  */
-function losingTheFirstPost() {
+const losingTheFirstPost = () => losingThePost(1);
+
+/** The same for the `nth` request to post: the ones before it go through. */
+function losingThePost(nth: number) {
   const network = { state: "up" as "up" | "down" };
-  let lost = false;
+  let posts = 0;
   const intercept =
     (reach: Fetch): Fetch =>
     async (input, init) => {
       if (network.state === "down") throw new TypeError("The network is down");
       const response = await reach(input, init);
-      if (!lost && init?.method === "POST" && String(input) === statuses) {
-        lost = true;
+      if (
+        init?.method === "POST" &&
+        String(input) === statuses &&
+        ++posts === nth
+      ) {
         network.state = "down";
         throw new TypeError("The answer was lost");
       }
@@ -349,6 +355,71 @@ it("finds a first part that landed unseen after a delivery to its account that s
   expect(publishedOf(client, targetId, draft)).toEqual(
     posts().map(({ id }) => id),
   );
+});
+
+it("leaves what a failed delivery recorded alone when one with nothing left to send is tried again", async () => {
+  // The second request to post is the one whose answer is lost.
+  const { network, intercept } = losingThePost(2);
+  const context = await ready({ interceptNetwork: intercept });
+  const { test, browser, workflows, workspace, channel, client, posts } =
+    context;
+  expectErrors();
+  // Every workflow of this test fails for good where it tells the
+  // workspace how it ended, so each delivery is ended by the object when it
+  // looks: nobody knows how far it got, and a person may try it again.
+  await workflows.modifyAll(async (modifier) => {
+    await modifier.mockStepError({ name: "end" }, new Error("Stopped"));
+    await modifier.disableRetryDelays();
+  });
+  /**
+   * Waits for the delivery that a target has just been put on to begin and
+   * for its run to be over, and has the object look at it, which ends it.
+   */
+  const lookedAfter = async (targetId: string, postId: string) => {
+    await follow(client, () => targetOf(client, targetId).status === "sending");
+    await eventsOf(workspace, targetId);
+    expect(await runDurableObjectAlarm(objectOf(workspace))).toBe(true);
+    await ended(client, postId);
+    expect(targetOf(client, targetId).status).toBe("uncertain");
+  };
+
+  // The first post goes out whole, and only its end is lost.
+  const whole = await writeDraft(client, workspace, "Whole");
+  const [wholeTarget = ""] = await publishTo(client, whole.postId, channel);
+  await lookedAfter(wholeTarget, whole.postId);
+  expect(publishedOf(client, wholeTarget, whole)).toHaveLength(1);
+
+  // The first part of the second lands on the network, and pigy does not
+  // know. What it recorded before it sent is how a later attempt finds it.
+  const lost = await writeDraft(client, workspace, "Lost", "Its reply");
+  const [lostTarget = ""] = await publishTo(client, lost.postId, channel);
+  await lookedAfter(lostTarget, lost.postId);
+  expect(publishedOf(client, lostTarget, lost)).toEqual([]);
+  expect(posts().map(({ text }) => text)).toEqual(["Whole", "Lost"]);
+  expect(await progressOf(workspace, lostTarget)).toContain('"after"');
+  network.state = "up";
+
+  // The first post is tried again. It has nothing left to send, so it puts
+  // nothing on the account that the other could take for its own.
+  await retry(client, wholeTarget);
+  await lookedAfter(wholeTarget, whole.postId);
+  // Without this, the next attempt of the second post would begin anew.
+  expect(await progressOf(workspace, lostTarget)).toContain('"after"');
+
+  // Hours later, when Mastodon no longer remembers the request of the
+  // first attempt: only looking can spare a second post now.
+  test.advance(2 * 60 * 60 * 1000);
+  await client.connect(browser, workspace);
+  await retry(client, lostTarget);
+  await lookedAfter(lostTarget, lost.postId);
+
+  // It found its first part and posted the reply: "Lost" is there once.
+  expect(posts().map(({ text }) => text)).toEqual([
+    "Whole",
+    "Lost",
+    "Its reply",
+  ]);
+  expect(publishedOf(client, lostTarget, lost)).toHaveLength(2);
 });
 
 it("refuses to delete a post while it is being sent, and deletes it afterwards", async () => {

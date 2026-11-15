@@ -558,6 +558,12 @@ export class WorkspaceStore {
    * one. A delivery that has published a part is not concerned: its next
    * part is a reply to the one before, which no other delivery has.
    *
+   * A delivery that only has replies left to send drops what the others
+   * have recorded too, on purpose, though on Mastodon no other delivery
+   * could take a reply for its first part: the rule does not rest on what
+   * the later parts of a post are on a network. Only a delivery that has
+   * nothing left to send at all does not get here: see the workflow.
+   *
    * Not before this point: a delivery that ends without having asked the
    * network for anything, because its post does not pass the checks, say,
    * has put nothing on the account that another could take for its own.

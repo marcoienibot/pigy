@@ -56,7 +56,8 @@ import { retryWaitSeconds } from "./retry.ts";
  * 2. `about-to-send` tells the workspace that the delivery has passed its
  *    checks and will ask the network to publish. From then on the other
  *    deliveries to the channel that have published nothing begin anew when
- *    they are tried again: see `aboutToSend` in src/workspace/store.ts.
+ *    they are tried again: see `aboutToSend` in src/workspace/store.ts. A
+ *    delivery that has nothing left to send skips this step.
  * 3. `publish` of @pigy/providers drives the adapter of the network: each
  *    of its steps is a step here, `publish-1`, `publish-2` and so on, with
  *    at most one request that changes something on the network. After
@@ -608,10 +609,16 @@ export async function deliver(
     // Nothing has been asked of the network that could publish, and from
     // here on it is. Not earlier: a delivery that ends before this point
     // must leave what the others to its channel have recorded alone.
-    const underWay = await step.do("about-to-send", bookkeepingStep, () =>
-      aboutToSend(env.WORKSPACE, workspace, run),
-    );
-    if (!underWay) throw superseded();
+    //
+    // Nor does a delivery that has nothing left to send: an attempt before
+    // this one recorded every part and only its end was lost. `publish`
+    // asks nothing of the network then.
+    if (!prepared.progress?.done) {
+      const underWay = await step.do("about-to-send", bookkeepingStep, () =>
+        aboutToSend(env.WORKSPACE, workspace, run),
+      );
+      if (!underWay) throw superseded();
+    }
     await publish(
       provider,
       {
