@@ -28,10 +28,16 @@ export const deployment: {
    * another adapter in the place of one. Undefined leaves them as they are.
    */
   providerOf: typeof providerOf | undefined;
+  /**
+   * The pauses that the workflow has asked for within its steps, in
+   * milliseconds and in their order. None of them takes any time in a test.
+   */
+  pauses: number[];
 } = {
   fetch: async () => {
     throw new Error("No test has set up a deployment");
   },
   secrets: {},
   providerOf: undefined,
+  pauses: [],
 };

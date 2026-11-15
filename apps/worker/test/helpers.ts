@@ -141,6 +141,7 @@ export function setup(
   deployment.fetch = appFetch;
   deployment.secrets = {};
   deployment.providerOf = undefined;
+  deployment.pauses = [];
   const configure = (values: { [Name in Secrets]?: string | undefined }) => {
     for (const name of Object.keys(values) as Secrets[]) {
       const value = values[name];

@@ -610,6 +610,10 @@ it("goes on with renewed credentials that it could not store", async () => {
         message === "The renewed credentials of a channel were not stored",
     ),
   ).toHaveLength(1);
+  // Between the tries it waited, longer every time: a workspace that is
+  // being restarted is back within seconds, and tries that follow each
+  // other at once would all meet the same restart.
+  expect(deployment.pauses).toEqual(renewalWaitsMs);
   // The next step asked the workspace for the credentials again, found the
   // old ones and renewed them once more, which this network allows. The
   // channel holds new ones in the end.
