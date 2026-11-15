@@ -754,6 +754,7 @@ export function createMastodonProvider({
         throw new ProviderError(
           "fail",
           `The connection was declined at ${domain}.`,
+          { declined: true },
         );
       }
       const code = params.get("code");

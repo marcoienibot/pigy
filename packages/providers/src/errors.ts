@@ -39,6 +39,13 @@ export class ProviderError extends Error {
   readonly retryAt: Date | undefined;
   /** The HTTP status of the answer, if the network gave one. */
   readonly status: number | undefined;
+  /**
+   * True when a connection was not completed because the person said no
+   * at the network. Nothing went wrong then, and a caller says so instead
+   * of reporting a failure. Only `completeConnect` fails this way, with
+   * `fail`.
+   */
+  readonly declined: boolean;
 
   constructor(
     readonly kind: ProviderErrorKind,
@@ -46,6 +53,7 @@ export class ProviderError extends Error {
     options: {
       retryAt?: Date | undefined;
       status?: number | undefined;
+      declined?: boolean;
       cause?: unknown;
     } = {},
   ) {
@@ -53,6 +61,7 @@ export class ProviderError extends Error {
     this.name = "ProviderError";
     this.retryAt = options.retryAt;
     this.status = options.status;
+    this.declined = options.declined ?? false;
   }
 }
 

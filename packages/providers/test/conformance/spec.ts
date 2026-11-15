@@ -322,6 +322,9 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
           provider.completeConnect({ pending: start.pending, params }),
         );
         expect(error.kind).toBe("fail");
+        // Nobody declined: the person consented, and the callback is not
+        // theirs.
+        expect(error.declined).toBe(false);
       });
 
       it("fails for good when the network fails while it connects", async ({
@@ -358,6 +361,8 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
           }),
         );
         expect(error.kind).toBe("fail");
+        // What lets a caller report a change of mind and not a failure.
+        expect(error.declined).toBe(true);
       });
     });
 

@@ -207,8 +207,9 @@ export type Provider = {
    * have spent it. So it fails with `fail` whatever went wrong, also when
    * the network was only out of reach. The caller then drops `pending`,
    * and whoever wants the account connected after all begins again, with
-   * `beginConnect`. It fails the same way if the person declined or the
-   * callback is not the answer to `pending`.
+   * `beginConnect`. It fails the same way if the callback is not the answer
+   * to `pending`, and if the person declined: that error has `declined`
+   * set, so that the caller can tell a change of mind from a failure.
    */
   completeConnect(
     callback: ConnectCallback,
