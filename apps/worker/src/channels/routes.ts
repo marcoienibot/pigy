@@ -12,6 +12,7 @@ import {
   uuidv7,
 } from "@pigy/core";
 import { type Account, type Json, ProviderError } from "@pigy/providers";
+import { DrizzleQueryError } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { type Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -262,6 +263,17 @@ async function giveBack(
 }
 
 /**
+ * `error` as it may be logged. A query that failed says so with the values
+ * it was run with, as Drizzle reports it, and those of a callback are not
+ * for a log: its `state` is one of them. What is logged in its place has
+ * the statement and the reason, without the values.
+ */
+function loggable(error: unknown): unknown {
+  if (!(error instanceof DrizzleQueryError)) return error;
+  return new Error(`Failed query: ${error.query}`, { cause: error.cause });
+}
+
+/**
  * Under `/connect`: where a network sends the browser back to, with the
  * answer to a connection that began with `POST …/connect`.
  *
@@ -273,9 +285,10 @@ async function giveBack(
  * account of the one to the workspace of the other.
  *
  * It always answers with a redirect to a page of the app, never with an
- * error: a person is looking at it. Where it leads is fixed, and says how
- * the connection ended in words from a list. What a network said goes to
- * the log and not into an address.
+ * error, whatever fails on the way: a person is looking at it. Where it
+ * leads is fixed, and says how the connection ended in words from a list.
+ * What a network said, and what went wrong in pigy, goes to the log and
+ * not into an address.
  */
 export function connectCallbackRoutes(
   dependencies: AppDependencies,
@@ -297,49 +310,49 @@ export function connectCallbackRoutes(
       } satisfies ConnectOutcome;
       return c.redirect(`${connectReturnPath}?${new URLSearchParams(outcome)}`);
     };
-    if (!network) return back("failed");
-
-    const session = await authenticateWithCookie(c, dependencies);
-    const state = c.req.query("state");
-    // Nothing is looked up for somebody who is not signed in.
-    if (!session || !state) return back("expired");
-
-    const url = new URL(c.req.url);
-    const vault = vaultFor(c.env, developmentCredentialKeys, url.origin);
-    if (!vault) return back("failed");
-
-    const db = drizzle(c.env.DB);
-    let flow: Awaited<ReturnType<typeof takePending>>;
     try {
-      flow = await takePending(db, vault, state, session.sessionId, now());
-    } catch (error) {
-      // The connection was begun under a key that is gone.
-      if (!(error instanceof VaultError)) throw error;
-      console.warn(`A connection could not be finished: ${error.message}`);
-      return back("failed");
-    }
-    // The network named in the address is the one that was asked: the
-    // callback of one network must not be finished by the adapter of
-    // another.
-    if (!flow || flow.network !== network) return back("expired");
+      if (!network) return back("failed");
 
-    const workspace = await ownWorkspace(
-      db,
-      flow.workspaceId,
-      session.auth.user.id,
-    );
-    if (!workspace) return back("expired");
-    workspaceId = workspace.id;
+      const session = await authenticateWithCookie(c, dependencies);
+      const state = c.req.query("state");
+      // Nothing is looked up for somebody who is not signed in. They are
+      // sent to the same page as everybody: the app has them sign in
+      // first, and then says that the connection has to be begun again.
+      if (!session || !state) return back("expired");
 
-    const connection = providerOf(network, workspace, {
-      env: c.env,
-      fetch,
-      now,
-      vault,
-    });
-    if (!connection) return back("failed");
+      const url = new URL(c.req.url);
+      const vault = vaultFor(c.env, developmentCredentialKeys, url.origin);
+      if (!vault) return back("failed");
 
-    try {
+      const db = drizzle(c.env.DB);
+      const flow = await takePending(
+        db,
+        vault,
+        state,
+        session.sessionId,
+        now(),
+      );
+      // The network named in the address is the one that was asked: the
+      // callback of one network must not be finished by the adapter of
+      // another.
+      if (!flow || flow.network !== network) return back("expired");
+
+      const workspace = await ownWorkspace(
+        db,
+        flow.workspaceId,
+        session.auth.user.id,
+      );
+      if (!workspace) return back("expired");
+      workspaceId = workspace.id;
+
+      const connection = providerOf(network, workspace, {
+        env: c.env,
+        fetch,
+        now,
+        vault,
+      });
+      if (!connection) return back("failed");
+
       const { account, access } = await connection.provider.completeConnect({
         pending: flow.pending,
         params: url.searchParams,
@@ -361,13 +374,18 @@ export function connectCallbackRoutes(
       }
       return back("connected", stored.channelId);
     } catch (error) {
-      if (!(error instanceof ProviderError)) {
-        console.error("A connection could not be finished", error);
-        return back("failed");
+      // Whatever fails, and wherever: the database while it is asked who
+      // this is, a key that is gone, the network, the workspace. The
+      // person ends on a page of the app, and the log says why.
+      if (error instanceof ProviderError && error.declined) {
+        return back("cancelled");
       }
-      if (error.declined) return back("cancelled");
-      // The message of a provider holds no secret.
-      console.warn(`A connection could not be finished: ${error.message}`);
+      if (error instanceof ProviderError || error instanceof VaultError) {
+        // Their messages hold no secret.
+        console.warn(`A connection could not be finished: ${error.message}`);
+      } else {
+        console.error("A connection could not be finished", loggable(error));
+      }
       return back("failed");
     }
   });

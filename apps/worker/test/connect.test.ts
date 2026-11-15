@@ -22,6 +22,7 @@ import {
 import {
   adminEmail,
   type Browser,
+  breakDatabase,
   expectErrors,
   expectWarnings,
   invite,
@@ -527,6 +528,64 @@ describe("the answer of a network", () => {
     // Only the name of a network that pigy knows is passed on to the page.
     expect(outcome).toEqual({ connect: "failed" });
   });
+
+  it.each([
+    ["who is signed in is looked up", 'from "session"'],
+    [
+      "what was kept of the connection is taken out",
+      'delete from "oauth_state"',
+    ],
+    ["the workspace of the connection is looked up", 'from "workspace"'],
+  ])(
+    "leads back into the app when the database fails while %s",
+    async (_name, statement) => {
+      const { browser, workspaces, callback } = await answered();
+      const errors = expectErrors();
+      let failed = 0;
+      const mend = breakDatabase((sql) => {
+        if (!sql.includes(statement)) return false;
+        failed += 1;
+        return true;
+      });
+
+      const response = await browser.fetch(callback);
+      mend();
+
+      // The statement is one that the callback makes, so this is a failure
+      // at the point that the test is about.
+      expect(failed).toBe(1);
+      // A person is looking at the answer. It is a page of the app that
+      // says the connection failed, not an error in JSON.
+      expect(outcomeOf(response)).toMatchObject({
+        connect: "failed",
+        network: "mastodon",
+      });
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+      // Why, the operator reads in the log: the statement and the reason.
+      expect(errors).toHaveBeenCalledOnce();
+      const logged = errors.mock.calls
+        .flat()
+        .map((entry) =>
+          entry instanceof Error
+            ? `${entry.stack} ${String(entry.cause)}`
+            : String(entry),
+        )
+        .join("\n");
+      expect(logged).toContain("A connection could not be finished");
+      expect(logged).toContain(statement);
+      expect(logged).toContain("The database is in trouble");
+      // Not the values that the statement was run with, which Drizzle puts
+      // into its error. The state of this callback is one of them, and it
+      // was not used up: the statement that takes it out is the one that
+      // failed.
+      const state = new URL(callback, "https://pigy.test").searchParams.get(
+        "state",
+      );
+      expect(state).toBeTruthy();
+      expect(logged).not.toContain(state);
+      expect(await channelsOf(browser, workspaces.sandbox)).toEqual([]);
+    },
+  );
 
   it("says so when the person declined", async () => {
     const { browser, workspaces, callback } = await answered("deny");

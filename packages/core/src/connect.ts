@@ -11,7 +11,10 @@ import { type Network, networkSchema } from "./network/network.ts";
  *    answers with a `ConnectResponse`: the address to send the browser to.
  * 2. There the person consents, or not, and the network sends the browser
  *    back to pigy, which sends it on to `connectReturnPath` with the
- *    outcome in the query: `connectOutcome` describes it.
+ *    outcome in the query: `connectOutcomeSchema` describes it. That is
+ *    where the browser ends whatever went wrong, also for somebody who is
+ *    no longer signed in: the app has them sign in before it shows the
+ *    page.
  *
  * `DELETE /api/workspaces/<workspace ID>/channels/<channel ID>` disconnects
  * and answers with a `DisconnectResponse`.
@@ -69,7 +72,8 @@ export const connectResultSchema = z.enum([
   /**
    * The answer of the network does not belong to a connection that this
    * browser session began in the last minutes: it took too long, it was
-   * used before, or it was begun elsewhere. Starting again helps.
+   * used before, it was begun elsewhere, or the person has signed out
+   * since. Starting again helps.
    */
   "expired",
   /**

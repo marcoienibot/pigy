@@ -380,6 +380,30 @@ export function expectErrors() {
   return error;
 }
 
+/**
+ * Makes the database fail every statement whose SQL `fails` picks out, as
+ * a D1 in trouble does, until the function that is returned is called or
+ * the test ends. The statements are as Drizzle writes them: `from
+ * "session"`, `delete from "oauth_state"`.
+ */
+export function breakDatabase(fails: (sql: string) => boolean): () => void {
+  const prepare = env.DB.prepare.bind(env.DB);
+  const broken = vi.spyOn(env.DB, "prepare").mockImplementation((sql) => {
+    const statement = prepare(sql);
+    if (fails(sql)) {
+      // It fails when it is run, like a statement of D1, and not before:
+      // the error that the app gets is then what Drizzle makes of it.
+      statement.bind = () => {
+        throw new Error("D1_ERROR: The database is in trouble");
+      };
+    }
+    return statement;
+  });
+  const mend = () => broken.mockRestore();
+  onTestFinished(mend);
+  return mend;
+}
+
 /** Puts `email` on the allowlist without going through the API. */
 export async function invite(
   { db, clock }: Pick<TestSetup, "db" | "clock">,
