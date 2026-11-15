@@ -37,7 +37,7 @@ Every message is one text frame with one JSON object, which has a `type`. A fiel
 { "type": "hello", "protocolVersion": 1, "schemaVersion": 1, "clientId": "0192…", "cursor": 42 }
 ```
 
-`cursor` is the `to` of the last patch that the client has applied, or `null` if it has no rows. The server answers with a patch that brings the client up to date, and from then on sends it every change. A socket that has not said hello receives nothing.
+`cursor` is the `to` of the last patch that the client has applied, or `null` if it has applied no patch. The server answers with a patch that brings the client up to date, and from then on sends it every change. A socket that has not said hello receives nothing.
 
 **`mutate`** carries mutations of the client, at least one and at most 100.
 

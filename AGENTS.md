@@ -104,14 +104,17 @@ In `apps/worker/src`: `index.ts` is the entry point and only chooses what the ap
 2. Add the table to `apps/worker/src/workspace/schema.ts` and generate the migration. No "on delete cascade" and no triggers: a row that the database changes by itself is a change that no client hears of.
 3. List the table and its synced columns in `synced` in `apps/worker/src/workspace/synced.ts`. The compiler compares the list with the row in `packages/core`.
 4. Raise `syncSchemaVersion` and describe the table in `SYNC.md`.
+5. Add the table to the two local copies that tests keep, which list the tables by hand: `SyncClient` in `apps/worker/test/sync-client.ts` and `memoryWorkspace` in `packages/core/test/memory-transaction.ts`.
 
-Nothing else: the change log and the patches work on any table that `synced` lists.
+Nothing else in the server: the change log and the patches work on any table that `synced` lists.
 
 A column that clients must not see goes into `schema.ts` and not into `synced.ts` and the row schema. It has to be nullable or have a default, because a mutator that creates a row writes only the synced columns. Code in the object reads and writes it with Drizzle, outside the mutators. A table that clients must not see is simply not listed. `sync.test.ts` has the test that proves both, and it should gain a case when the first real secret arrives.
 
 **Add a mutator.** Add it to `mutators` in `packages/core/src/sync/mutators.ts`: a name, a strict Zod schema for its arguments and a function over the `Transaction`. It is synchronous, uses nothing but its arguments and the transaction, and takes the time from `tx.now`, because a client runs it too. It refuses by throwing `MutationRejected` with a code from `rejectionCodeSchema`. The state guards belong here, not in the callers. Unit-test it in `mutators.test.ts`, raise `syncSchemaVersion`, and add it to the table in `SYNC.md`.
 
 **Change a workspace from Worker code**, without a client, as the REST API will. Look the workspace up in D1, which is where it is decided whose it is, and call `mutateWorkspace(env.WORKSPACE, workspace, name, args)` from `src/workspace/workspaces.ts`. It runs the mutator in the workspace's object, and the clients that are connected receive the change. It answers `{ ok: true }` or the reason the mutator refused.
+
+A call to `mutateWorkspace` cannot be repeated safely. If it fails on the way, after the object has committed the change, the caller cannot tell, and a second call would run a mutator again that is not idempotent. Callers that retry, which are the publishing pipeline in phase 3 and the REST API in phase 6, need one of two things: mutators that are idempotent by design, or a `mutateWorkspace` that takes an identifier from the caller and goes through the bookkeeping that skips a client's mutation the second time. The first such caller decides.
 
 **Add a binding or variable.** Edit `apps/worker/wrangler.jsonc`, then run `pnpm typecheck`. It runs `wrangler types`, which regenerates the git-ignored `worker-configuration.d.ts` that declares `Env` and the runtime types. `pnpm install` generates it too. A secret is not in `wrangler.jsonc`: declare it in `Secrets` in `apps/worker/src/env.ts`, as optional, and add it to `.dev.vars.example`. Routes take their bindings from the `Bindings` type there, not from `Env`, which differs between machines with and without a `.dev.vars`.
 

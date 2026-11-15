@@ -1,7 +1,6 @@
 import {
   applyMutation,
   type Change,
-  type Environment,
   environmentSchema,
   MutationRejected,
   type RejectionCode,
@@ -34,14 +33,10 @@ export const workspaceIdentitySchema = z.object({
   environment: environmentSchema,
 });
 
-export type WorkspaceIdentity = {
-  id: string;
-  ownerId: string;
-  environment: Environment;
-};
+export type WorkspaceIdentity = z.infer<typeof workspaceIdentitySchema>;
 
 /** A mutation as it is run: where it came from does not matter here. */
-type Mutation = { name: string; args: unknown };
+type MutatorCall = { name: string; args: unknown };
 
 /** Why a mutation was refused. */
 export type Refusal = { code: RejectionCode; message: string };
@@ -165,7 +160,7 @@ export class WorkspaceStore {
    * happened and the client sends the mutations again.
    */
   apply(
-    mutations: Mutation[],
+    mutations: MutatorCall[],
     now: number,
     client?: { id: string; lastMutationId: number },
   ): (Refusal | null)[] {
