@@ -34,9 +34,13 @@ const environment: Environment = "live";
  */
 export const Route = createFileRoute("/_app")({
   // Runs on every navigation, so somebody whose session has ended is sent
-  // to the sign-in page by the next link they follow.
-  beforeLoad: async ({ location, abortController }) => {
-    const session = await loadSession(abortController.signal);
+  // to the sign-in page by the next link they follow. It also runs for a
+  // link that is only hovered or focused, which the router loads ahead of
+  // a click that may never come: that is no reason to ask the server.
+  beforeLoad: async ({ location, abortController, preload }) => {
+    const session = await loadSession(abortController.signal, {
+      check: !preload,
+    });
     if (!session) {
       throw redirect({
         to: "/sign-in",

@@ -4,7 +4,7 @@ import {
   type Workspace,
   workspaceListResponseSchema,
 } from "@pigy/core";
-import { ApiError, fetchMe, fetchWorkspaces } from "@/lib/api";
+import { ApiError, fetchMe, fetchWorkspaces, signOut } from "@/lib/api";
 import { countUnsynced, deleteCopies } from "@/sync/indexed-db";
 import { closeWorkspaceSync } from "@/sync/workspace-sync";
 
@@ -78,16 +78,19 @@ export function onSessionChange(listener: () => void): void {
 /**
  * Who is signed in, for a screen that needs a session. Null if nobody is.
  *
- * If this device knows, it answers at once and asks the server in the
- * background: see `checkSession`. So the app starts without waiting for
- * the network, and without a network at all.
+ * If this device knows, it answers at once, so the app starts without
+ * waiting for the network, and without a network at all. With `check`, the
+ * server is asked in the background whether the device is still right: see
+ * `checkSessionSoon`. If this device does not know, the server is asked
+ * whatever `check` says, and nothing is shown before it has answered.
  */
 export async function loadSession(
   signal: AbortSignal,
+  { check }: { check: boolean },
 ): Promise<Session | null> {
   const stored = read();
   if (stored && !stored.ended) {
-    void checkSession();
+    if (check) checkSessionSoon();
     return stored;
   }
   let fresh: Session | null;
@@ -118,26 +121,59 @@ async function adopt(session: Session): Promise<void> {
 let checking: Promise<void> | undefined;
 
 /**
+ * The least time between two questions to the server that are asked
+ * because the person moved about in the app, in milliseconds.
+ */
+const checkEveryMs = 2_000;
+
+/** When the server was last asked, on the clock of `performance.now()`. */
+let checkedAt = Number.NEGATIVE_INFINITY;
+let checkTimer: ReturnType<typeof setTimeout> | undefined;
+
+/**
  * Asks the server whether the session that this device knows of is still
  * the one it has, and acts on the answer. No answer changes nothing: the
  * device is offline.
+ *
+ * This asks now. It is for when there is a reason to doubt the session,
+ * such as a sync socket that the server has refused.
  */
 export function checkSession(): Promise<void> {
+  checkedAt = performance.now();
+  clearTimeout(checkTimer);
+  checkTimer = undefined;
   checking ??= check().finally(() => {
     checking = undefined;
   });
   return checking;
 }
 
+/**
+ * Asks the server as `checkSession` does, for a navigation: at once if it
+ * was last asked longer than `checkEveryMs` ago, and otherwise when that
+ * time is over. Every navigation in the app comes through here, and
+ * moving through a list of drafts with the keyboard is many of them in a
+ * second: they are answered with one question. Somebody whose session has
+ * ended is still sent to the sign-in page by the next link they follow, a
+ * moment later at most.
+ */
+function checkSessionSoon(): void {
+  if (checkTimer !== undefined) return;
+  const wait = checkedAt + checkEveryMs - performance.now();
+  if (wait <= 0) void checkSession();
+  else checkTimer = setTimeout(() => void checkSession(), wait);
+}
+
 async function check(): Promise<void> {
   const stored = read();
-  if (!stored || stored.ended) return;
+  if (!stored || stored.ended || signingOut) return;
   let fresh: Session | null;
   try {
     fresh = await fetchSession();
   } catch {
     return;
   }
+  if (signingOut) return;
   if (!fresh) {
     await endSession();
     // A full page load, so that nothing of the session stays in memory.
@@ -228,6 +264,33 @@ window.addEventListener("storage", (event) => {
     location.reload();
   }
 });
+
+/**
+ * Whether the person is signing out. From then on the server says that the
+ * session is over, and that is no news: acted on, it would send the page,
+ * which is about to leave, to the sign-in page with a way back, and keep
+ * the copies that the person has just agreed to delete. So until the page
+ * has left, nothing is asked and no answer is acted on.
+ */
+let signingOut = false;
+
+/**
+ * Signs the person out because they say so, and deletes what this device
+ * holds of them: see `forgetSession`. Throws if the server has not
+ * confirmed that the session is over. Nothing is deleted then.
+ */
+export async function signOutAndForget(): Promise<void> {
+  signingOut = true;
+  try {
+    await signOut();
+  } catch (error) {
+    signingOut = false;
+    throw error;
+  }
+  // Signing out leaves nothing of the person on the device. If deleting
+  // fails, the sign-in page finds what is left and deals with it.
+  await forgetSession().catch((error: unknown) => console.error(error));
+}
 
 /**
  * Deletes everything that this device holds of the person who was signed

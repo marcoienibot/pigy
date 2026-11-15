@@ -86,6 +86,58 @@ test("a deleted draft can be brought back", async ({
   await expect(draftRows(page)).toHaveCount(2);
 });
 
+test("moving through the drafts does not ask the server who is signed in every time", async ({
+  ownPage: page,
+  isMobile,
+}) => {
+  test.skip(isMobile, "Hovering and shortcuts are for a desktop");
+  for (const text of ["One", "Two", "Three"]) {
+    await writeDraft(page, isMobile, text);
+  }
+  const asked: string[] = [];
+  page.on("request", (request) => {
+    const { pathname } = new URL(request.url());
+    if (pathname === "/api/me") asked.push(pathname);
+  });
+
+  // The clock of the page stands still from here on, so that what the app
+  // does "at most every so often" is done when the test says. The app
+  // starts again under that clock, with no draft open, and asks once as it
+  // starts.
+  const now = Date.now();
+  await page.clock.install({ time: now });
+  await page.clock.pauseAt(now + 60_000);
+  await page.goto("/");
+  await expect(draftRows(page)).toHaveCount(3);
+  await expect.poll(() => asked).toHaveLength(1);
+
+  // Down the list, which is a navigation every time.
+  for (const text of ["Three", "Two", "One"]) {
+    await page.keyboard.press("j");
+    await expect(draftRow(page, text)).toHaveAttribute("aria-current", "page");
+  }
+  // Nothing was asked. A question would have left the page with the
+  // navigation that caused it, before the row was marked as open.
+  expect(asked).toHaveLength(1);
+  // The navigations are not forgotten: when the time is up, the server is
+  // asked, once for all of them.
+  await page.clock.runFor(2000);
+  await expect.poll(() => asked).toHaveLength(2);
+
+  // Long after that, the pointer rests on rows. The router loads a link
+  // ahead when that has lasted a moment, which the clock is moved for. It
+  // is no reason to ask: nobody has followed the link.
+  await page.clock.runFor(60_000);
+  for (const text of ["Three", "Two"]) {
+    await draftRow(page, text).hover();
+    await page.clock.runFor(100);
+  }
+  expect(asked).toHaveLength(2);
+  // Following it is one, and there is nothing to wait for by now.
+  await draftRow(page, "Two").click();
+  await expect.poll(() => asked).toHaveLength(3);
+});
+
 test("the keyboard creates, edits, leaves, moves and deletes", async ({
   ownPage: page,
   isMobile,

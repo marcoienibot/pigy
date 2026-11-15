@@ -20,8 +20,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { signOut } from "@/lib/api";
-import { forgetSession } from "@/lib/session";
+import { signOutAndForget } from "@/lib/session";
 import { cn } from "@/lib/utils";
 import { countUnsynced } from "@/sync/indexed-db";
 
@@ -61,7 +60,7 @@ export function UserMenu({ placement }: { placement: "sidebar" | "header" }) {
   const signOutAndLeave = async () => {
     setSigningOut(true);
     try {
-      await signOut();
+      await signOutAndForget();
     } catch {
       // The session may still be good, so the app stays and says so. Going
       // to the sign-in page would look like having signed out whenever that
@@ -71,9 +70,6 @@ export function UserMenu({ placement }: { placement: "sidebar" | "header" }) {
       setSigningOut(false);
       return;
     }
-    // Signing out leaves nothing of the person on the device. If deleting
-    // fails, the sign-in page finds what is left and deals with it.
-    await forgetSession().catch((error: unknown) => console.error(error));
     // A full page load, so that nothing of the session stays in memory.
     window.location.assign("/sign-in");
   };
