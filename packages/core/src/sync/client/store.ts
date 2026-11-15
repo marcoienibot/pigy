@@ -143,8 +143,17 @@ export class SyncStore {
   /** Whether the last attempt to store `unsaved` failed. */
   private saveFailed = false;
   private cancelSaveRetry: (() => void) | undefined;
-  /** Called when `unsaved` is empty, each once: see `whenStored`. */
+  /**
+   * Called when `unsaved` is empty and the listeners have been told so,
+   * each once: see `whenStored`.
+   */
   private readonly awaitingStored = new Set<() => void>();
+  /**
+   * Whether `unsaved` held mutations when the state was last computed. The
+   * listeners go by that state until it is computed again, which can be
+   * a while after the mutations have been stored: see `refresh`.
+   */
+  private toldUnstored = false;
   /**
    * Mutations of this tab that are in the stored outbox and not in the one
    * in memory, by ID and in the order of their IDs. Another tab had written
@@ -278,14 +287,14 @@ export class SyncStore {
   }
 
   /**
-   * Whether this tab holds a mutation that is not stored, which is what
-   * `whenStored` waits for. For whoever waits for several stores: one of
-   * them can take another mutation while the others are waited for, and
-   * this says so in the moment in which it is asked. False once the store
-   * is closed.
+   * Whether this tab holds a mutation that is not stored, or has stored it
+   * and not yet told its listeners so: what `whenStored` waits for. For
+   * whoever waits for several stores: one of them can take another
+   * mutation while the others are waited for, and this says so in the
+   * moment in which it is asked. False once the store is closed.
    */
   holdsUnstored(): boolean {
-    return !this.closed && this.unsaved.length > 0;
+    return !this.closed && (this.unsaved.length > 0 || this.toldUnstored);
   }
 
   /**
@@ -296,8 +305,11 @@ export class SyncStore {
    * before the page is loaded again. `unsaved` of the state does not say
    * as much: it counts the last kind only.
    *
-   * At once if there is none, and when the store is closed: what it has
-   * not stored by then is gone.
+   * Not before the listeners have been told that there is none: what the
+   * app does for such a mutation, such as having the browser ask before the
+   * page goes, follows the state, which is computed again after the copy
+   * has been read again if need be. At once if there is none, and when the
+   * store is closed: what it has not stored by then is gone.
    */
   whenStored(): Promise<void> {
     if (!this.holdsUnstored()) return Promise.resolve();
@@ -462,8 +474,8 @@ export class SyncStore {
       this.unsaved.splice(0, calls.length);
       this.saving = 0;
       this.saveFailed = false;
-      // Unless more were made while these were written: they are next.
-      if (this.unsaved.length === 0) this.allStored();
+      // Whoever waits in `whenStored` is told by `refresh`, which every
+      // way on from here ends in.
       await this.follow(write, true).catch((error: unknown) => {
         // The storage has the mutations and the memory of this tab is
         // behind, which reading the copy again makes up for.
@@ -723,6 +735,13 @@ export class SyncStore {
       this.state = { ...this.state, pending, unsaved };
     }
     this.notify();
+    // Last: whoever waits in `whenStored` goes on to load the page again,
+    // and by then the listeners have to know, or the tab would still hold
+    // its Web Lock and have the browser ask before the page goes. A tab
+    // that has to read the copy again after it has stored its mutations
+    // tells them only after the read.
+    this.toldUnstored = this.unsaved.length > 0;
+    if (!this.toldUnstored) this.allStored();
   }
 
   private setState(fields: Partial<SyncState>): void {

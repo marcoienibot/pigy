@@ -454,6 +454,65 @@ it("says that everything is stored only when a later attempt has stored what a w
   expect(await kept).toEqual(["post.create"]);
 });
 
+it("says that everything is stored only once its listeners have been told, also when it has to read the copy again first", async () => {
+  const device = browser();
+  const { store } = await device.tab();
+  const makeRoom = fill(device);
+  createDraft(store, "Kept");
+  await settle();
+  expect(store.getState().unsaved).toBe(1);
+  // What the app goes by: a window holds its Web Lock, and has the browser
+  // ask before the page goes, for as long as the state that it was last
+  // told of counts a change that could not be stored.
+  let told = store.getState().unsaved;
+  store.subscribe(() => {
+    told = store.getState().unsaved;
+  });
+  // What the window had been told in the moment in which the store says
+  // that everything is stored. Whoever waits loads the page again then,
+  // and must not find the lock or the question still there.
+  let resolved = false;
+  const toldWhenStored = store.whenStored().then(() => {
+    resolved = true;
+    return told;
+  });
+
+  // There is room again. Another tab has stored a mutation, and its
+  // message is still on its way: when this tab stores the draft, it finds
+  // that it has missed a write, and reads the copy again. That takes its
+  // time.
+  makeRoom();
+  await device.storage.update((head) => {
+    if (!head) throw new Error("The copy exists");
+    return appendMutations(head, [
+      { name: "post.delete", args: { id: newId() }, at: 0 },
+    ]);
+  });
+  const { read } = device.storage;
+  const slow = gate();
+  device.storage.read = async () => {
+    await slow.passed;
+    return read();
+  };
+  await device.advance(saveRetryMs);
+
+  // The draft is stored, and the tab is reading. Its state still says
+  // that the draft is not stored, so the store says the same to whoever
+  // waits and to whoever asks.
+  expect((await read())?.head.outbox.map(({ name }) => name)).toEqual([
+    "post.delete",
+    "post.create",
+  ]);
+  expect(store.getState().unsaved).toBe(1);
+  expect(resolved).toBe(false);
+  expect(store.holdsUnstored()).toBe(true);
+
+  slow.open();
+  expect(await toldWhenStored).toBe(0);
+  expect(store.holdsUnstored()).toBe(false);
+  expect(store.getState()).toMatchObject({ pending: 2, unsaved: 0 });
+});
+
 it("has nothing to wait for once the store is closed", async () => {
   const device = browser();
   const { store } = await device.tab();
