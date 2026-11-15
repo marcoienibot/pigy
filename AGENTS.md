@@ -68,7 +68,7 @@ In `apps/worker/src`: `index.ts` is the entry point and only chooses what the ap
 `workspace/` holds the data of the workspaces. Each workspace is a Durable Object of the class `WorkspaceDO` with a SQLite database of its own:
 
 - `object.ts` is the object: its sockets and the messages of the sync protocol.
-- `store.ts` is its database: it runs mutators, numbers the changes and works out what a client is missing.
+- `store.ts` is its database: it runs mutators, numbers the changes, keeps the rejections that a client has yet to hear of and works out what a client is missing.
 - `schema.ts` has its tables, `migrations/` what `drizzle-kit` generates from them.
 - `synced.ts` lists the columns that clients get to see, and is the only code that reads or writes them.
 - `workspaces.ts` is the Worker's side: the `workspace` table of D1, and `connectWorkspace` and `mutateWorkspace`, the only ways into an object.

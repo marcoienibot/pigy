@@ -21,10 +21,11 @@ test("a page of the app can open the socket of its workspace", async ({
             type: "hello",
             // The versions in packages/core/src/sync/protocol.ts. If this
             // test is answered with "version_mismatch", they have changed.
-            protocolVersion: 1,
+            protocolVersion: 2,
             schemaVersion: 1,
             clientId: "01932c07-0000-7000-8000-000000000001",
             cursor: null,
+            lastMutationId: 0,
           }),
         );
       socket.onmessage = (event) => {

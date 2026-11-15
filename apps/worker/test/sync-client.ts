@@ -85,12 +85,18 @@ type Rows = { [Table in TableName]: Map<string, Row<Table>> };
  *
  * It is strict where a real client may be lenient. A message that is not
  * exactly what the protocol describes, a patch that does not follow the
- * cursor and a row that comes twice in a patch all fail the test.
+ * cursor, a row that comes twice in a patch and a rejection that the client
+ * was told of before all fail the test.
  */
 export class SyncClient {
   readonly clientId = newId();
   /** The `to` of the last patch that was applied. */
   cursor: number | null = null;
+  /**
+   * The `lastMutationId` of the last patch that was applied: what became of
+   * the mutations up to this one, the client knows.
+   */
+  lastMutationId = 0;
   /** The ID of the mutation that `mutation()` makes next. */
   nextMutationId = 1;
   /** Every message that the server has sent to this client, as text. */
@@ -131,8 +137,8 @@ export class SyncClient {
   }
 
   /**
-   * Opens a socket, says hello with the cursor of the local copy and applies
-   * the answer, which it returns.
+   * Opens a socket, says hello with where the local copy is and applies the
+   * answer, which it returns.
    */
   async connect(browser: Browser, workspaceId: string): Promise<ReceivedPatch> {
     await this.open(browser, workspaceId);
@@ -148,6 +154,7 @@ export class SyncClient {
       schemaVersion: syncSchemaVersion,
       clientId: this.clientId,
       cursor: this.cursor,
+      lastMutationId: this.lastMutationId,
       ...fields,
     });
   }
@@ -251,6 +258,22 @@ export class SyncClient {
       else this.rows.post_part.set(id, change.row);
     }
     this.cursor = to;
+    // A patch tells of the rejections among the mutations that it confirms,
+    // which are the ones after those that the client knew of. One from
+    // before would be told twice, one from after is not processed yet.
+    for (const { id } of rejected) {
+      if (id <= this.lastMutationId || id > lastMutationId) {
+        throw new Error(
+          `A patch that confirms the mutations after ${this.lastMutationId} up to ${lastMutationId} rejects ${id}`,
+        );
+      }
+    }
+    if (lastMutationId < this.lastMutationId) {
+      throw new Error(
+        `A patch went back from mutation ${this.lastMutationId} to ${lastMutationId}`,
+      );
+    }
+    this.lastMutationId = lastMutationId;
     return {
       from,
       to,

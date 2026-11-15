@@ -99,7 +99,7 @@ The UI never waits for the network. It reads from memory, writes locally first, 
 - **Transport**: one WebSocket per device, to `/sync/<workspace ID>`, using Durable Object hibernation so idle connections cost nothing. One tab holds the socket and shares updates with other tabs over BroadcastChannel.
 - **Catch-up**: every committed write gets an increasing sequence number and an entry in a change log, which names the rows that changed. A reconnecting client sends its last sequence number and receives the current state of the rows that changed since. The log covers the last 1,000 changes: a client that is further behind gets a fresh snapshot.
 - **Confirmation**: the message that carries the changes of a client's mutation also says that the mutation was processed, so the client can replace its own version of the change with the server's in one step.
-- **Offline**: mutations queue in an IndexedDB outbox and replay in order on reconnect. A rejected mutation rolls back and shows an error on the affected post.
+- **Offline**: mutations queue in an IndexedDB outbox and replay in order on reconnect. A rejected mutation rolls back and shows an error on the affected post. The Durable Object keeps the reason until the client has seen it, so the error is shown also when the answer that carried it was lost.
 - **Conflicts**: the server applies mutations in arrival order, last write wins per field. State guards reject impossible edits, such as changing a post that is already sending.
 - **Secrets**: channel credentials are never synced. Each table has an explicit list of synced columns, and a test fails if a credential field appears in any sync message.
 - **Versions**: the protocol and the synced schema each have a version number. A client that says hello with another version is told so, and updates itself.
@@ -143,7 +143,7 @@ The UI never waits for the network. It reads from memory, writes locally first, 
 | `schedule_slot`, `settings` | Weekly queue slots, timezone, queue paused flag |
 | `metric` | Likes, reposts, replies, quotes and views per target over time |
 | `notification` | In-app notification inbox |
-| `change_log`, `client_mutation` | Sync bookkeeping: which rows each of the latest changes touched, and the last mutation applied per client |
+| `change_log`, `client_mutation`, `rejection` | Sync bookkeeping: which rows each of the latest changes touched, the last mutation applied per client, and the rejected mutations that a client has yet to hear of |
 | `workspace` | One row: which workspace the object holds, and the sequence number of its last change |
 
 Post status follows Buffer: `draft`, `scheduled`, `sending`, `sent`, `error`. A post whose targets ended differently reports `error` and lists each target's own status.

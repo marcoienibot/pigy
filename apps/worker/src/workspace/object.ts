@@ -41,6 +41,14 @@ export const socketLifetimeMs = 5 * 60 * 1000;
  */
 export const maxSockets = 32;
 
+/**
+ * How many rejections the object keeps for a client before it stops taking
+ * mutations from it. A rejection is kept until a hello of the client says
+ * that it has been seen, so this is what makes a client say hello again
+ * that has had many mutations rejected on one socket.
+ */
+export const maxRejectionsKept = 1000;
+
 /** What the object keeps about a socket. It survives hibernation. */
 type SocketState = {
   /** Set by the `hello` of the socket. Until then it receives nothing. */
@@ -244,7 +252,9 @@ export function workspaceObject({ now }: { now: Clock }) {
         socket,
         this.#store.changesSince(hello.cursor),
         this.#store.lastMutationId(hello.clientId),
-        [],
+        // The rejections that the client has not seen: the answer that told
+        // of them was lost. The ones it has seen are forgotten here.
+        this.#store.acknowledge(hello.clientId, hello.lastMutationId),
       );
     }
 
@@ -269,19 +279,18 @@ export function workspaceObject({ now }: { now: Clock }) {
       // What was processed before is skipped: the client sends a mutation
       // again when it does not know whether the first time arrived.
       const fresh = mutations.filter((mutation) => mutation.id > processed);
-      const last = fresh.at(-1);
-      const from = this.#store.seq;
-      const rejected: Rejection[] = [];
-      if (last) {
-        const outcomes = this.#store.apply(fresh, now().getTime(), {
-          id: clientId,
-          lastMutationId: last.id,
-        });
-        outcomes.forEach((refusal, index) => {
-          const id = fresh[index]?.id;
-          if (refusal && id !== undefined) rejected.push({ id, ...refusal });
-        });
+      if (
+        fresh.length > 0 &&
+        this.#store.rejectionCount(clientId) >= maxRejectionsKept
+      ) {
+        // No more are kept until the client has said how many it has seen,
+        // which it does in a hello. The message is not processed: the
+        // client sends it again on the socket that it opens next.
+        socket.close(syncCloseCodes.reconnect, "Connect again");
+        return;
       }
+      const from = this.#store.seq;
+      const rejected = this.#store.applyFrom(clientId, fresh, now().getTime());
       this.#publish(from, { socket, rejected });
     }
 

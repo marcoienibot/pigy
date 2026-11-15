@@ -5,6 +5,8 @@ import {
   helloVersionsSchema,
   pingMessageText,
   syncLimits,
+  syncProtocolVersion,
+  syncSchemaVersion,
 } from "./protocol.ts";
 
 const id = "01932c07-0000-7000-8000-000000000001";
@@ -54,15 +56,19 @@ it("rejects a mutation without arguments", () => {
 
 const hello = {
   type: "hello",
-  protocolVersion: 1,
-  schemaVersion: 1,
+  protocolVersion: syncProtocolVersion,
+  schemaVersion: syncSchemaVersion,
   clientId: id,
   cursor: null,
+  lastMutationId: 0,
 };
 
 it.each([
   ["a client with nothing yet", hello],
-  ["a client that has applied changes", { ...hello, cursor: 12 }],
+  [
+    "a client that has applied changes",
+    { ...hello, cursor: 12, lastMutationId: 7 },
+  ],
 ])("accepts the hello of %s", (_name, message) => {
   expect(clientMessageSchema.safeParse(message).success).toBe(true);
 });
@@ -71,6 +77,11 @@ it.each([
   ["a negative cursor", { ...hello, cursor: -1 }],
   ["a cursor that is not a whole number", { ...hello, cursor: 1.5 }],
   ["no cursor", { ...hello, cursor: undefined }],
+  // Without it the server could not tell which rejections the client has
+  // yet to hear of. Unlike the cursor it is never null: 0 says "none".
+  ["no last mutation ID", { ...hello, lastMutationId: undefined }],
+  ["null as the last mutation ID", { ...hello, lastMutationId: null }],
+  ["a negative last mutation ID", { ...hello, lastMutationId: -1 }],
   ["a client ID that is not a UUIDv7", { ...hello, clientId: "tab-1" }],
   ["a field that the protocol does not have", { ...hello, userId: "me" }],
 ])("rejects a hello with %s", (_name, message) => {
@@ -82,15 +93,15 @@ it("reads the versions of a hello that it does not otherwise understand", () => 
   // as far as the versions to say that it speaks another one.
   const fromTheFuture = {
     type: "hello",
-    protocolVersion: 2,
-    schemaVersion: 9,
+    protocolVersion: syncProtocolVersion + 1,
+    schemaVersion: syncSchemaVersion + 8,
     client: { id, cursors: [] },
   };
 
   expect(clientMessageSchema.safeParse(fromTheFuture).success).toBe(false);
   expect(helloVersionsSchema.parse(fromTheFuture)).toMatchObject({
-    protocolVersion: 2,
-    schemaVersion: 9,
+    protocolVersion: syncProtocolVersion + 1,
+    schemaVersion: syncSchemaVersion + 8,
   });
 });
 

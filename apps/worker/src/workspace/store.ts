@@ -2,14 +2,16 @@ import {
   applyMutation,
   type Change,
   environmentSchema,
+  type Mutation,
   MutationRejected,
+  type Rejection,
   type RejectionCode,
   type Row,
   type TableName,
   type Transaction,
   tableNames,
 } from "@pigy/core";
-import { eq, gt, lte } from "drizzle-orm";
+import { and, asc, count, eq, gt, lte } from "drizzle-orm";
 import {
   type DrizzleSqliteDODatabase,
   drizzle,
@@ -17,7 +19,12 @@ import {
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import { z } from "zod";
 import migrations from "./migrations/migrations.js";
-import { changeLog, clientMutations, workspaceRecord } from "./schema.ts";
+import {
+  changeLog,
+  clientMutations,
+  rejections,
+  workspaceRecord,
+} from "./schema.ts";
 import { deleteRow, findRows, readRow, readRows, writeRow } from "./synced.ts";
 
 /**
@@ -40,6 +47,13 @@ type MutatorCall = { name: string; args: unknown };
 
 /** Why a mutation was refused. */
 export type Refusal = { code: RejectionCode; message: string };
+
+/**
+ * The longest reason that a refusal carries. Part of a reason can be text
+ * that the client sent, such as the name of an argument that the mutator
+ * does not take, and the reasons are stored.
+ */
+export const maxRefusalMessageLength = 200;
 
 /**
  * Thrown in place of what the database threw, when it failed for a reason
@@ -187,81 +201,141 @@ export class WorkspaceStore {
   }
 
   /**
+   * How many rejections of `clientId` are kept: those that the client has
+   * not said it has seen.
+   */
+  rejectionCount(clientId: string): number {
+    const kept = this.db
+      .select({ count: count() })
+      .from(rejections)
+      .where(eq(rejections.clientId, clientId))
+      .get();
+    return kept?.count ?? 0;
+  }
+
+  /**
+   * Takes note that the client has seen what became of its mutations up to
+   * `lastMutationId`, and forgets the rejections among them. Returns the
+   * rejections after that, which the client has yet to hear of, in the order
+   * of the mutations.
+   */
+  acknowledge(clientId: string, lastMutationId: number): Rejection[] {
+    this.db
+      .delete(rejections)
+      .where(
+        and(
+          eq(rejections.clientId, clientId),
+          lte(rejections.mutationId, lastMutationId),
+        ),
+      )
+      .run();
+    return this.db
+      .select({
+        id: rejections.mutationId,
+        code: rejections.code,
+        message: rejections.message,
+      })
+      .from(rejections)
+      .where(eq(rejections.clientId, clientId))
+      .orderBy(asc(rejections.mutationId))
+      .all();
+  }
+
+  /**
    * Runs `mutations` in order and returns, for each, why it was refused, or
    * null. A mutation that is refused leaves nothing behind and does not stop
-   * the ones after it. With `client`, it is recorded along with the changes
-   * that the mutations of this client up to `lastMutationId` are processed.
+   * the ones after it.
    *
    * All of it is one transaction: after a failure half-way, nothing has
-   * happened and the client sends the mutations again. The database failing
-   * while a mutator runs is such a failure, not a refusal: it is thrown.
+   * happened. The database failing while a mutator runs is such a failure,
+   * not a refusal: it is thrown.
    */
-  apply(
-    mutations: MutatorCall[],
-    now: number,
-    client?: { id: string; lastMutationId: number },
-  ): (Refusal | null)[] {
-    return this.storage.transactionSync(() => {
-      const before = this.record();
-      let seq = before.seq;
-      const outcomes = mutations.map((mutation) => {
-        const tx = new RecordingTransaction(this.db, now);
-        try {
-          // A transaction within the transaction: SQLite undoes what the
-          // mutator wrote if it throws.
-          this.storage.transactionSync(() => {
-            try {
-              applyMutation(tx, mutation.name, mutation.args);
-            } catch (error) {
-              // Only what is thrown here is a refusal: it comes from the
-              // mutator. The database failing under it is not, and neither
-              // is a failure of the transaction around it.
-              if (error instanceof StorageFailure) throw error;
-              throw new Refused(refusalOf(error));
-            }
-          });
-        } catch (error) {
-          if (!(error instanceof Refused)) throw error;
-          return error.refusal;
-        }
-        if (tx.changed.size > 0) {
-          seq += 1;
-          // One statement per row: a statement takes at most 100 values.
-          for (const { table, id } of tx.changed.values()) {
-            this.db
-              .insert(changeLog)
-              .values({ seq, tableName: table, rowId: id })
-              .run();
-          }
-        }
-        return null;
-      });
+  apply(mutations: MutatorCall[], now: number): (Refusal | null)[] {
+    return this.storage.transactionSync(() => this.run(mutations, now));
+  }
 
-      if (seq > before.seq) {
-        // The log is kept from growing by dropping what is older than the
-        // window. A cursor from before the floor can no longer be served
-        // from the log.
-        const logFloor = Math.max(before.logFloor, seq - changeLogWindow);
-        if (logFloor > before.logFloor) {
-          this.db.delete(changeLog).where(lte(changeLog.seq, logFloor)).run();
-        }
-        this.db.update(workspaceRecord).set({ seq, logFloor }).run();
-      }
-      if (client) {
+  /**
+   * Runs mutations of the client `clientId`, as `apply` does, and returns
+   * the ones that were refused. In the same transaction as their changes it
+   * records that the mutations are processed, and the refusals, for the
+   * client to hear of if this answer does not reach it. After a failure
+   * nothing has happened, and the client sends the mutations again.
+   */
+  applyFrom(clientId: string, mutations: Mutation[], now: number): Rejection[] {
+    const last = mutations.at(-1);
+    if (!last) return [];
+    return this.storage.transactionSync(() => {
+      const outcomes = this.run(mutations, now);
+      const rejected = mutations.flatMap(({ id }, index) => {
+        const refusal = outcomes[index];
+        return refusal ? [{ id, ...refusal }] : [];
+      });
+      this.db
+        .insert(clientMutations)
+        .values({ clientId, lastMutationId: last.id })
+        .onConflictDoUpdate({
+          target: clientMutations.clientId,
+          set: { lastMutationId: last.id },
+        })
+        .run();
+      for (const { id, code, message } of rejected) {
         this.db
-          .insert(clientMutations)
-          .values({
-            clientId: client.id,
-            lastMutationId: client.lastMutationId,
-          })
-          .onConflictDoUpdate({
-            target: clientMutations.clientId,
-            set: { lastMutationId: client.lastMutationId },
-          })
+          .insert(rejections)
+          .values({ clientId, mutationId: id, code, message })
           .run();
       }
-      return outcomes;
+      return rejected;
     });
+  }
+
+  /** What `apply` does, for a caller that has opened the transaction. */
+  private run(mutations: MutatorCall[], now: number): (Refusal | null)[] {
+    const before = this.record();
+    let seq = before.seq;
+    const outcomes = mutations.map((mutation) => {
+      const tx = new RecordingTransaction(this.db, now);
+      try {
+        // A transaction within the transaction: SQLite undoes what the
+        // mutator wrote if it throws.
+        this.storage.transactionSync(() => {
+          try {
+            applyMutation(tx, mutation.name, mutation.args);
+          } catch (error) {
+            // Only what is thrown here is a refusal: it comes from the
+            // mutator. The database failing under it is not, and neither is
+            // a failure of the transaction around it.
+            if (error instanceof StorageFailure) throw error;
+            throw new Refused(refusalOf(error));
+          }
+        });
+      } catch (error) {
+        if (!(error instanceof Refused)) throw error;
+        return error.refusal;
+      }
+      if (tx.changed.size > 0) {
+        seq += 1;
+        // One statement per row: a statement takes at most 100 values.
+        for (const { table, id } of tx.changed.values()) {
+          this.db
+            .insert(changeLog)
+            .values({ seq, tableName: table, rowId: id })
+            .run();
+        }
+      }
+      return null;
+    });
+
+    if (seq > before.seq) {
+      // The log is kept from growing by dropping what is older than the
+      // window. A cursor from before the floor can no longer be served
+      // from the log.
+      const logFloor = Math.max(before.logFloor, seq - changeLogWindow);
+      if (logFloor > before.logFloor) {
+        this.db.delete(changeLog).where(lte(changeLog.seq, logFloor)).run();
+      }
+      this.db.update(workspaceRecord).set({ seq, logFloor }).run();
+    }
+    return outcomes;
   }
 
   /**
@@ -315,7 +389,10 @@ function put<Table extends TableName>(table: Table, row: Row<Table>): Change {
 /** Why a mutator did not complete, from what it threw. */
 function refusalOf(error: unknown): Refusal {
   if (error instanceof MutationRejected) {
-    return { code: error.code, message: error.message };
+    return {
+      code: error.code,
+      message: error.message.slice(0, maxRefusalMessageLength),
+    };
   }
   // A bug in the mutator: it threw, or it wrote what the database does not
   // take. The mutation counts as processed all the same: a client that sent

@@ -1,4 +1,9 @@
-import { environments, postStatuses, tableNames } from "@pigy/core";
+import {
+  environments,
+  postStatuses,
+  type RejectionCode,
+  tableNames,
+} from "@pigy/core";
 import {
   index,
   integer,
@@ -76,3 +81,19 @@ export const clientMutations = sqliteTable("client_mutation", {
   clientId: text("client_id").primaryKey(),
   lastMutationId: integer("last_mutation_id").notNull(),
 });
+
+/**
+ * The mutations of each client that were rejected, and why. A row is kept
+ * until the client has said that it knows: the answer that told it can get
+ * lost.
+ */
+export const rejections = sqliteTable(
+  "rejection",
+  {
+    clientId: text("client_id").notNull(),
+    mutationId: integer("mutation_id").notNull(),
+    code: text("code").$type<RejectionCode>().notNull(),
+    message: text("message").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.clientId, table.mutationId] })],
+);

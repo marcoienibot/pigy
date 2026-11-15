@@ -10,7 +10,7 @@ import { rowSchemas, type TableName, tableNames } from "./tables.ts";
  */
 
 /** Changes when the messages or their meaning change. */
-export const syncProtocolVersion = 1;
+export const syncProtocolVersion = 2;
 
 /** Changes when the synced tables or the mutators change. */
 export const syncSchemaVersion = 1;
@@ -57,6 +57,11 @@ export const helloMessageSchema = z.strictObject({
   clientId: idSchema,
   /** The `to` of the last patch the client has applied, null if it has none. */
   cursor: counterSchema.nullable(),
+  /**
+   * The `lastMutationId` of that patch, 0 if there is none: the client knows
+   * what became of its mutations up to this one.
+   */
+  lastMutationId: counterSchema,
 });
 
 export type HelloMessage = z.infer<typeof helloMessageSchema>;
@@ -132,7 +137,7 @@ export const changeSchema = z.union([
 
 export type Change = z.infer<typeof changeSchema>;
 
-/** A mutation of the receiving client that had no effect, and why. */
+/** A mutation of the receiving client that was rejected, and why. */
 export const rejectionSchema = z.strictObject({
   id: z.int().positive(),
   code: rejectionCodeSchema,
@@ -156,6 +161,10 @@ export const patchMessageSchema = z.strictObject({
   more: z.boolean(),
   /** The last mutation of the receiving client that the server processed. */
   lastMutationId: counterSchema,
+  /**
+   * Which of the client's mutations were rejected, among those after the
+   * `lastMutationId` that the client had before and up to this one.
+   */
   rejected: z.array(rejectionSchema),
 });
 

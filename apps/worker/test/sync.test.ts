@@ -9,8 +9,15 @@ import {
   syncSchemaVersion,
 } from "@pigy/core";
 import { expect, it, onTestFinished, vi } from "vitest";
-import { socketLifetimeMs } from "../src/workspace/object.ts";
-import { changeLogWindow, WorkspaceStore } from "../src/workspace/store.ts";
+import {
+  maxRejectionsKept,
+  socketLifetimeMs,
+} from "../src/workspace/object.ts";
+import {
+  changeLogWindow,
+  maxRefusalMessageLength,
+  WorkspaceStore,
+} from "../src/workspace/store.ts";
 import { mutateWorkspace } from "../src/workspace/workspaces.ts";
 import { adminEmail, setup, signedIn } from "./helpers.ts";
 import {
@@ -430,6 +437,157 @@ it("answers mutations that were all rejected, and tells nobody else", async () =
   expect(await other.patch()).toMatchObject({ from: 0, to: 1 });
 });
 
+it("tells a client of a rejection when the answer that carried it was lost", async () => {
+  const { browser, workspace, client: phone } = await connected();
+  const { postId, partId } = await createPost(phone, "Draft");
+  const laptop = new SyncClient();
+  await laptop.connect(browser, workspace);
+  laptop.disconnect();
+  // While the laptop is offline, the post is deleted on the phone.
+  phone.mutate("post.delete", { id: postId });
+  await phone.patch();
+
+  // Back online, the laptop sends the edit that it made in the meantime.
+  await laptop.connect(browser, workspace);
+  const edit = laptop.mutate("part.setText", { id: partId, text: "Offline" });
+  // The answer has left the server, so the mutation is processed. The
+  // client does not apply it and drops the socket: to the client, the
+  // answer never arrived.
+  await laptop.next();
+  laptop.disconnect();
+  const hello = await laptop.connect(browser, workspace);
+
+  // The rows could not tell the client what happened: an edit that was
+  // accepted before the post was deleted leaves the same behind. Without
+  // the reason, the edit would be gone and the user would not be told.
+  expect(hello).toMatchObject({ from: 2, to: 2, lastMutationId: edit.id });
+  expect(hello.rejected).toEqual([
+    { id: edit.id, code: "not_found", message: "This post no longer exists" },
+  ]);
+  // Now the client has seen it, and says so in its next hello. It is not
+  // told again: `SyncClient` would fail on a rejection that comes twice.
+  laptop.disconnect();
+  expect(await laptop.connect(browser, workspace)).toMatchObject({
+    lastMutationId: edit.id,
+    rejected: [],
+  });
+});
+
+it("keeps a rejection until a hello says that its client has seen it", async () => {
+  const { browser, workspace, client } = await connected();
+  const other = new SyncClient();
+  await other.connect(browser, workspace);
+  /** The IDs of the mutations whose rejection the server keeps for a client. */
+  const kept = ({ clientId }: SyncClient) =>
+    runInDurableObject(objectOf(workspace), (_, state) =>
+      state.storage.sql
+        .exec(
+          "select mutation_id from rejection where client_id = ? order by mutation_id",
+          clientId,
+        )
+        .toArray()
+        .map((row) => row.mutation_id),
+    );
+  const nowhere = { id: newId(), text: "Nowhere" };
+
+  // Two rejections for the client. It sees the answer to the first and not
+  // the one to the second. The other client does not see its answer either.
+  client.mutate("part.setText", nowhere);
+  await client.patch();
+  client.mutate("part.setText", nowhere);
+  await client.next();
+  other.mutate("part.setText", nowhere);
+  await other.next();
+  // The server cannot know which answers arrived, so it has kept them all.
+  expect(await kept(client)).toEqual([1, 2]);
+
+  // The hello says that the client has seen the first.
+  client.disconnect();
+  const hello = await client.connect(browser, workspace);
+
+  expect(hello.rejected.map(({ id }) => id)).toEqual([2]);
+  expect(await kept(client)).toEqual([2]);
+  // And the next one, that it has seen the second.
+  client.disconnect();
+  expect((await client.connect(browser, workspace)).rejected).toEqual([]);
+  expect(await kept(client)).toEqual([]);
+  // The mutations of two clients have the same IDs. What one client has
+  // seen says nothing about the other, which has yet to hear of its own.
+  expect(await kept(other)).toEqual([1]);
+});
+
+it("takes no more mutations from a client that has too many rejections waiting", async () => {
+  const { browser, workspace, client } = await connected();
+  // As many rejections as the object keeps for one client. The client sees
+  // each answer, but the server only learns that from a hello.
+  for (
+    let sent = 0;
+    sent < maxRejectionsKept;
+    sent += syncLimits.mutationsPerMessage
+  ) {
+    client.send({
+      type: "mutate",
+      mutations: Array.from({ length: syncLimits.mutationsPerMessage }, () =>
+        client.mutation("part.setText", { id: newId(), text: "Nowhere" }),
+      ),
+    });
+    await client.patch();
+  }
+  const create = client.mutation("post.create", {
+    id: newId(),
+    partId: newId(),
+    text: "One more",
+  });
+
+  client.send({ type: "mutate", mutations: [create] });
+
+  // The client is made to say hello again, with the code that has it do so
+  // at once. The mutation was not run, so nothing is lost.
+  expect(await client.closed).toMatchObject({ code: syncCloseCodes.reconnect });
+  expect(await client.connect(browser, workspace)).toMatchObject({
+    to: 0,
+    lastMutationId: maxRejectionsKept,
+    rejected: [],
+  });
+  // That hello said that the client has seen the rejections. They are
+  // forgotten, and the server takes mutations from the client again.
+  const stored = await runInDurableObject(objectOf(workspace), (_, state) =>
+    state.storage.sql.exec("select count(*) as rows from rejection").one(),
+  );
+  expect(stored).toEqual({ rows: 0 });
+  client.send({ type: "mutate", mutations: [create] });
+  expect(await client.patch()).toMatchObject({
+    to: 1,
+    lastMutationId: maxRejectionsKept + 1,
+    rejected: [],
+  });
+});
+
+it("cuts short a reason that quotes what the client sent", async () => {
+  const { client } = await connected();
+  // The reason names the argument that the mutator does not take, and the
+  // server keeps reasons. So a client must not decide how long one is.
+  const argument = "x".repeat(10 * maxRefusalMessageLength);
+
+  client.send({
+    type: "mutate",
+    mutations: [
+      {
+        id: client.nextMutationId++,
+        name: "post.delete",
+        args: { id: newId(), [argument]: true },
+      },
+    ],
+  });
+  const patch = await client.patch();
+
+  expect(patch.rejected).toHaveLength(1);
+  expect(patch.rejected[0]?.code).toBe("invalid_arguments");
+  // Cut, not replaced: the start of the argument's name is still in it.
+  expect(patch.rejected[0]?.message).toContain("xxx");
+  expect(patch.rejected[0]?.message).toHaveLength(maxRefusalMessageLength);
+});
+
 it("sends a change that the Worker makes to the clients that are connected", async () => {
   const { test, workspace, client } = await connected();
   const identity = await identityOf(test, workspace);
@@ -503,6 +661,7 @@ it.each([
       schemaVersion: syncSchemaVersion,
       clientId: "01932c07-0000-7000-8000-000000000001",
       cursor: null,
+      lastMutationId: 0,
       userId: "somebody-else",
     }),
   ],
@@ -548,6 +707,7 @@ it("takes a message of the greatest length and refuses a longer one", async () =
     schemaVersion: syncSchemaVersion,
     clientId: newId(),
     cursor: null,
+    lastMutationId: 0,
   });
   const longest = hello.padEnd(syncLimits.clientMessageLength);
   const fits = new SyncClient();
@@ -856,13 +1016,14 @@ it("processes nothing of a message when the database fails under a mutator", asy
   expect(await client.closed).toMatchObject({ code: syncCloseCodes.failure });
   expect(logged).toHaveBeenCalled();
   // Nothing of the message is processed, also not the mutations before the
-  // one that failed: what the second wrote is not there, and none of the
-  // three counts as processed.
+  // one that failed: neither what the second wrote is there, nor a word
+  // about the first being rejected.
   const stored = await runInDurableObject(objectOf(workspace), (_, state) => ({
     posts: state.storage.sql.exec("select id from post").toArray(),
     clients: state.storage.sql.exec("select * from client_mutation").toArray(),
+    rejections: state.storage.sql.exec("select * from rejection").toArray(),
   }));
-  expect(stored).toEqual({ posts: [], clients: [] });
+  expect(stored).toEqual({ posts: [], clients: [], rejections: [] });
 
   // The failure passes, and the client sends the same mutations again.
   await runInDurableObject(objectOf(workspace), (_, state) => {
