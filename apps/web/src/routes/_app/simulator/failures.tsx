@@ -16,7 +16,7 @@ import {
 } from "@/lib/api";
 import { selectChannels } from "@/lib/channels";
 import { checkSignedOut, failureMessage, useFetched } from "@/lib/fetched";
-import { networkInfo } from "@/lib/networks";
+import { listedNetworks, networkInfo } from "@/lib/networks";
 import { useOnline } from "@/lib/online";
 import {
   faultKind,
@@ -88,7 +88,10 @@ function ArmForm({
 }) {
   const id = useId();
   const channels = useSynced(selectChannels);
-  const declared = faults.networks.map(({ network }) => network);
+  // In the order in which the app lists the networks everywhere else.
+  const declared = listedNetworks.filter((name) =>
+    faults.networks.some(({ network }) => network === name),
+  );
   const [network, setNetwork] = useState<Network | undefined>(() =>
     firstNetwork(
       declared,
@@ -189,9 +192,10 @@ function ArmForm({
         {kinds.map((name) => {
           const words = faultKind(name);
           return (
-            <label key={name} className="flex items-start gap-2">
+            <div key={name} className="flex items-start gap-2">
               <input
                 type="radio"
+                id={`${id}-kind-${name}`}
                 name={`${id}-kind`}
                 value={name}
                 checked={kind === name}
@@ -199,19 +203,21 @@ function ArmForm({
                   setKind(name);
                   setSaid(null);
                 }}
-                aria-describedby={`${id}-kind-${name}`}
+                aria-describedby={`${id}-about-${name}`}
                 className="mt-0.5 size-4 shrink-0 accent-primary"
               />
-              <span className="min-w-0">
-                <span className="block">{words.label}</span>
-                <span
-                  id={`${id}-kind-${name}`}
-                  className="block text-xs text-muted-foreground"
+              <div className="min-w-0">
+                <label htmlFor={`${id}-kind-${name}`} className="block">
+                  {words.label}
+                </label>
+                <p
+                  id={`${id}-about-${name}`}
+                  className="text-xs text-muted-foreground"
                 >
                   {words.description}
-                </span>
-              </span>
-            </label>
+                </p>
+              </div>
+            </div>
           );
         })}
       </fieldset>
