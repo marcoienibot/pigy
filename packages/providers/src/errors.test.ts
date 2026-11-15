@@ -28,6 +28,15 @@ describe("quotable", () => {
     expect(quoted.length).toBe(301);
   });
 
+  it("cuts between characters, not inside one", () => {
+    // An emoji takes two code units. Cut by those, the last one would be
+    // left as half a character, which is no text at all.
+    const quoted = quotable("a".repeat(299) + "😀".repeat(2), []);
+    expect(quoted).toBe(`${"a".repeat(299)}😀…`);
+    // Text of 300 characters is not cut, however many code units it has.
+    expect(quotable("😀".repeat(300), [])).toBe("😀".repeat(300));
+  });
+
   it("puts what a network sent on one line", () => {
     // A line break could make one entry of a log look like two.
     expect(quotable("first\r\nsecond\tthird\u0000", [])).toBe(

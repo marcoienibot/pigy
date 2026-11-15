@@ -54,6 +54,10 @@ export function quotable(text: string, secrets: readonly string[]): string {
   }
   // Control characters could forge lines in a log.
   safe = safe.replace(/\p{Cc}+/gu, " ").trim();
-  // Cut after the secrets are out, so that no half of one is left behind.
-  return safe.length > 300 ? `${safe.slice(0, 300)}…` : safe;
+  // Cut after the secrets are out, so that no half of one is left behind,
+  // and between code points, so that no half of a character is.
+  const characters = Array.from(safe);
+  return characters.length > 300
+    ? `${characters.slice(0, 300).join("")}…`
+    : safe;
 }
