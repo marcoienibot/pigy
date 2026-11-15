@@ -1,6 +1,6 @@
 import { runInDurableObject } from "cloudflare:test";
 import { errorResponseSchema, type Fetch } from "@pigy/core";
-import { expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   channelsOf,
   connectInSandbox,
@@ -18,6 +18,7 @@ import {
   invite,
   setup,
   signedIn,
+  type TestSetup,
   urlOf,
 } from "./helpers.ts";
 import { newId, objectOf, SyncClient, workspaceIds } from "./sync-client.ts";
@@ -40,6 +41,23 @@ async function connected() {
   );
   if (!channel) throw new Error("The account was not connected");
   return { ...context, channel };
+}
+
+/**
+ * The tokens that the Mastodon server of the tests has given out for its
+ * account.
+ */
+function accountTokens({ network }: Pick<TestSetup, "network">) {
+  return network.world
+    .tokens("mastodon")
+    .filter(({ accountId }) => accountId !== null);
+}
+
+/** Which of those tokens are revoked, the ones that are good first. */
+function revokedTokens(test: Pick<TestSetup, "network">): boolean[] {
+  return accountTokens(test)
+    .map(({ revoked }) => revoked)
+    .sort();
 }
 
 /** Answers in place of the network when it is asked to take a token back. */
@@ -217,21 +235,133 @@ it("disconnects nothing for somebody who is not signed in", async () => {
   expect(await channelsOf(browser, workspaces.sandbox)).toHaveLength(1);
 });
 
-it("keeps the channel when the workspace fails to remove it", async () => {
-  const { browser, workspaces, channel } = await connected();
+it("leaves the channel with its access when the workspace fails to remove it", async () => {
+  const { test, browser, workspaces } = await start();
+  const { channel = "" } = await connectLive(test, browser, workspaces.live);
   const errors = expectErrors();
   // The database of the workspace refuses the deletion.
-  await runInDurableObject(objectOf(workspaces.sandbox), (_, state) => {
+  await runInDurableObject(objectOf(workspaces.live), (_, state) => {
     state.storage.sql.exec(
       `create trigger keep before delete on channel
        begin select raise(abort, 'kept'); end`,
     );
   });
 
-  const response = await disconnect(browser, workspaces.sandbox, channel);
+  const response = await disconnect(browser, workspaces.live, channel);
 
   // An error, not a success that leaves the channel in the list.
   expect(response.status).toBe(500);
   expect(errors).toHaveBeenCalled();
-  expect(await channelsOf(browser, workspaces.sandbox)).toHaveLength(1);
+  expect(await channelsOf(browser, workspaces.live)).toMatchObject([
+    { id: channel, status: "connected" },
+  ]);
+  // The channel that stays is one that works: the network was not asked to
+  // take anything back, and the token is as good as before.
+  expect(test.network.requests).not.toContain(
+    "POST https://mastodon.test/oauth/revoke",
+  );
+  expect(accountTokens(test)).toMatchObject([{ revoked: false }]);
+});
+
+describe("an account that is connected again while it is disconnected", () => {
+  /**
+   * The server of the tests, with a gate at its revocations. Once the gate
+   * is armed, the next revocation stops there until `release` is called:
+   * on its way to the server, or, with `answered`, on the way back, when
+   * the server has taken the token back and pigy does not know yet.
+   * `reached` settles when the request has got that far.
+   */
+  function gatedRevocation(where: "on the way" | "answered") {
+    let armed = false;
+    let reach = () => {};
+    let release = () => {};
+    const reached = new Promise<void>((resolve) => {
+      reach = resolve;
+    });
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const interceptNetwork = (network: Fetch): Fetch => {
+      return async (input, init) => {
+        if (!armed || !urlOf(input).endsWith("/oauth/revoke")) {
+          return network(input, init);
+        }
+        armed = false;
+        const answer = where === "answered" && (await network(input, init));
+        reach();
+        await released;
+        return answer || network(input, init);
+      };
+    };
+    return {
+      interceptNetwork,
+      arm() {
+        armed = true;
+      },
+      reached,
+      release: () => release(),
+    };
+  }
+
+  it("keeps the new channel and its access, and gives back the one it had", async () => {
+    const revocation = gatedRevocation("answered");
+    const { test, browser, workspaces } = await start(revocation);
+    const first = await connectLive(test, browser, workspaces.live);
+    revocation.arm();
+
+    const disconnecting = disconnected(
+      browser,
+      workspaces.live,
+      first.channel ?? "",
+    );
+    await revocation.reached;
+    // Meanwhile, in another tab. The server has no token for the account
+    // any more, so this connection gets a new one.
+    const second = await connectLive(test, browser, workspaces.live);
+    revocation.release();
+
+    expect(await disconnecting).toBe(true);
+    // The channel of the second connection is not the one that was
+    // removed, and the disconnect has left it alone.
+    expect(second.channel).not.toBe(first.channel);
+    expect(await channelsOf(browser, workspaces.live)).toMatchObject([
+      { id: second.channel, status: "connected" },
+    ]);
+    expect(revokedTokens(test)).toEqual([false, true]);
+    // The token that is still good is the one of that channel: pigy has
+    // not lost track of an access that it was given. Disconnecting the
+    // channel gives it back.
+    expect(
+      await disconnected(browser, workspaces.live, second.channel ?? ""),
+    ).toBe(true);
+    expect(revokedTokens(test)).toEqual([true, true]);
+  });
+
+  it("cannot tell when Mastodon gives the new connection the token that is being given back", async () => {
+    const revocation = gatedRevocation("on the way");
+    const { test, browser, workspaces } = await start(revocation);
+    const first = await connectLive(test, browser, workspaces.live);
+    revocation.arm();
+
+    const disconnecting = disconnected(
+      browser,
+      workspaces.live,
+      first.channel ?? "",
+    );
+    await revocation.reached;
+    // The server still has the token of the account, and gives it to this
+    // connection as well.
+    const second = await connectLive(test, browser, workspaces.live);
+    revocation.release();
+
+    // The case that the route says it does not cover. The channel of the
+    // second connection is left alone, and says that it is connected, with
+    // the one token that the account ever had, which is gone. It turns out
+    // to need connecting again when it is next used.
+    expect(await disconnecting).toBe(true);
+    expect(await channelsOf(browser, workspaces.live)).toMatchObject([
+      { id: second.channel, status: "connected" },
+    ]);
+    expect(revokedTokens(test)).toEqual([true]);
+  });
 });

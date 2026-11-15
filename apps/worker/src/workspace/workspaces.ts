@@ -12,6 +12,7 @@ import type { MutationOutcome } from "./object.ts";
 import type {
   ChannelAccess,
   ConnectChannelOutcome,
+  DisconnectChannelOutcome,
   StoredChannelAccess,
   WorkspaceIdentity,
 } from "./store.ts";
@@ -19,8 +20,8 @@ import type {
 /**
  * The Worker's side of workspaces: which there are, whose they are, and the
  * only ways into their Durable Objects: `connectWorkspace` for a client,
- * and `mutateWorkspace`, `connectChannel` and `channelAccess` for the
- * Worker's own code.
+ * and `mutateWorkspace`, `connectChannel`, `disconnectChannel` and
+ * `channelAccess` for the Worker's own code.
  */
 
 /**
@@ -137,6 +138,24 @@ export async function connectChannel(
   const outcome = await namespace
     .getByName(workspace.id)
     .connectChannel(workspace, channel, access);
+  if (!outcome) throw foreign(workspace);
+  return outcome;
+}
+
+/**
+ * Removes a channel of `workspace` and returns the access that it held,
+ * sealed, or why it was not removed. The channel and its access go in one
+ * step, so what is returned is all that pigy had of the account. Clients
+ * that are connected hear of it at once.
+ */
+export async function disconnectChannel(
+  namespace: Bindings["WORKSPACE"],
+  workspace: WorkspaceIdentity,
+  channelId: string,
+): Promise<DisconnectChannelOutcome> {
+  const outcome = await namespace
+    .getByName(workspace.id)
+    .disconnectChannel(workspace, channelId);
   if (!outcome) throw foreign(workspace);
   return outcome;
 }

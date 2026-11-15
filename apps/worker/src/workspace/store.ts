@@ -80,6 +80,14 @@ export type StoredChannelAccess = {
 };
 
 /**
+ * The access that a channel held when it was removed, or why it was not
+ * removed: `not_found` if there is no such channel.
+ */
+export type DisconnectChannelOutcome =
+  | { ok: true; access: StoredChannelAccess }
+  | ({ ok: false } & Refusal);
+
+/**
  * The longest reason that a refusal carries. Part of a reason can be text
  * that the client sent, such as the name of an argument that the mutator
  * does not take, and the reasons are stored.
@@ -334,6 +342,32 @@ export class WorkspaceStore {
       .from(channels)
       .where(eq(channels.id, channelId))
       .get();
+  }
+
+  /**
+   * Removes a channel, through the mutator `channel.disconnect`, and
+   * returns the access that it held. Both in one transaction: what is
+   * returned is what the channel had when it went, so whoever gives that
+   * access back to its network gives back the one that pigy no longer
+   * keeps, and no other.
+   */
+  disconnectChannel(channelId: string, now: number): DisconnectChannelOutcome {
+    return this.storage.transactionSync(() => {
+      const access = this.channelAccess(channelId);
+      if (!access) {
+        return {
+          ok: false,
+          code: "not_found",
+          message: "There is no such channel",
+        };
+      }
+      const [refusal] = this.run(
+        [{ name: "channel.disconnect", args: { id: channelId } }],
+        now,
+        "server",
+      );
+      return refusal ? { ok: false, ...refusal } : { ok: true, access };
+    });
   }
 
   /**

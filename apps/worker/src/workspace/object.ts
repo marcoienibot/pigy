@@ -22,6 +22,7 @@ import type { Bindings } from "../env.ts";
 import {
   type ChannelAccess,
   type ConnectChannelOutcome,
+  type DisconnectChannelOutcome,
   type Patch,
   type Refusal,
   type StoredChannelAccess,
@@ -208,11 +209,30 @@ export function workspaceObject({ now }: { now: Clock }) {
     }
 
     /**
+     * Removes a channel and returns the access that it held, sealed as it
+     * was stored, for the Worker to give back to the network. The clients
+     * that are connected hear that the channel is gone. Returns nothing if
+     * `workspace` is not the one that the object holds.
+     */
+    disconnectChannel(
+      workspace: WorkspaceIdentity,
+      channelId: string,
+    ): DisconnectChannelOutcome | undefined {
+      if (!this.#store.bind(workspaceIdentitySchema.parse(workspace))) {
+        return undefined;
+      }
+      const from = this.#store.seq;
+      const outcome = this.#store.disconnectChannel(channelId, now().getTime());
+      this.#publish(from);
+      return outcome;
+    }
+
+    /**
      * What it takes to act for the account of a channel, sealed as it was
-     * stored, or null if there is no such channel. This is the one way
-     * that the access to an account leaves the object, and it leads to the
-     * Worker only. Returns nothing if `workspace` is not the one that the
-     * object holds.
+     * stored, or null if there is no such channel. With `disconnectChannel`
+     * this is the only way that the access to an account leaves the object,
+     * and both lead to the Worker only. Returns nothing if `workspace` is
+     * not the one that the object holds.
      */
     channelAccess(
       workspace: WorkspaceIdentity,

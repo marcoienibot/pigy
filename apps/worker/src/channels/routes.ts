@@ -26,9 +26,8 @@ import type {
   WorkspaceIdentity,
 } from "../workspace/store.ts";
 import {
-  channelAccess,
   connectChannel,
-  mutateWorkspace,
+  disconnectChannel,
   ownWorkspace,
 } from "../workspace/workspaces.ts";
 import { keepPending, takePending } from "./pending.ts";
@@ -184,28 +183,43 @@ export function channelRoutes(dependencies: AppDependencies): Hono<AppEnv> {
     async (c) => {
       const workspace = await workspaceOf(c);
       const channelId = c.req.param("channelId");
-      const access = idSchema.safeParse(channelId).success
-        ? await channelAccess(c.env.WORKSPACE, workspace, channelId)
-        : null;
-      if (!access) {
+      // The channel goes first, and hands over the access that it held in
+      // the same transaction of its workspace. So what is given back below
+      // is what the channel had when it went, and no channel is left with
+      // an access that was given back, whatever fails from here on. An
+      // account that is connected again meanwhile gets a channel of its
+      // own, which this request does not touch.
+      //
+      // One case is left, on a network that gives a new connection the
+      // access of the one before. Mastodon does: it hands out the token
+      // that the account has with the same registration already. An account
+      // that is connected again while this request is on its way can get
+      // the very token that is revoked below, and then has a channel that
+      // says `connected` with an access that is gone. Nothing here can
+      // tell, since the token is the same. That channel turns out to need
+      // connecting again when it is next used, like the channel of another
+      // workspace that shared the access.
+      const removed = idSchema.safeParse(channelId).success
+        ? await disconnectChannel(c.env.WORKSPACE, workspace, channelId)
+        : undefined;
+      if (!removed || (!removed.ok && removed.code === "not_found")) {
         throw new HTTPException(404, { message: "There is no such channel" });
       }
+      if (!removed.ok) throw new Error(`Not disconnected: ${removed.message}`);
 
+      // Whether or not the network takes the access back, the channel is
+      // gone: one that could only be removed while its network answers, or
+      // while its credentials open, could stay for ever.
       const { origin } = new URL(c.req.url);
       const vault = vaultFor(c.env, developmentCredentialKeys, origin);
       const revoked =
         vault !== undefined &&
-        (await giveBack(workspace, access, { env: c.env, fetch, now, vault }));
-      // Whether or not the network took the access back: a channel that it
-      // cannot be asked about, or that it will not answer for, must not stay
-      // for ever.
-      const outcome = await mutateWorkspace(
-        c.env.WORKSPACE,
-        workspace,
-        "channel.disconnect",
-        { id: channelId },
-      );
-      if (!outcome.ok) throw new Error(`Not disconnected: ${outcome.message}`);
+        (await giveBack(workspace, removed.access, {
+          env: c.env,
+          fetch,
+          now,
+          vault,
+        }));
       return c.json(disconnectResponseSchema.parse({ revoked }));
     },
   );
@@ -214,9 +228,9 @@ export function channelRoutes(dependencies: AppDependencies): Hono<AppEnv> {
 }
 
 /**
- * Gives the access to the account of a channel back to its network, and
- * returns whether that worked. It never throws: whoever disconnects goes on
- * to remove the channel either way.
+ * Gives the access that a channel had to its account back to the network,
+ * and returns whether that worked. It never throws: the channel is gone by
+ * then, and whoever disconnects is told whether the access went with it.
  */
 async function giveBack(
   workspace: WorkspaceIdentity,
