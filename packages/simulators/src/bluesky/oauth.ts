@@ -834,7 +834,11 @@ export async function token(
       return invalidGrant("Invalid refresh token");
     }
     // A refresh token is good once. One that comes again was copied, or
-    // its answer was lost: nobody can tell, so the session ends.
+    // its answer was lost: nobody can tell, so the session ends. GUESS:
+    // the specification has refresh tokens used once, and a server end
+    // the session of a code that comes again. That it does the same for a
+    // refresh token, with no grace for an answer that was lost, is from
+    // the code of the reference server.
     if (session.refreshToken !== found.token) {
       revokeSession(state, session);
       return invalidGrant("Refresh token replayed");
@@ -982,7 +986,9 @@ export async function authenticate(
   const refuse = (error: string, description: string) =>
     json(
       401,
-      // The errors of OAuth, in the form of the HTTP API.
+      // The errors of OAuth, in the form of the HTTP API. GUESS: the body
+      // of such a refusal is not documented. The reference server says
+      // the error in `WWW-Authenticate` as well, as RFC 9449 has it.
       { error, message: description },
       {
         ...headers,
