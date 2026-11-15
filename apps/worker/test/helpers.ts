@@ -154,6 +154,20 @@ export class Browser {
     }
     return response;
   }
+
+  /**
+   * Starts the handshake of a WebSocket the way a browser does: with the
+   * cookies and with `Origin`. The answer has the socket if the app took
+   * it. `headers` are as for `fetch`.
+   */
+  webSocket(
+    path: string,
+    headers: Record<string, string | null> = {},
+  ): Promise<Response> {
+    return this.fetch(path, {
+      headers: { Upgrade: "websocket", Origin: this.origin, ...headers },
+    });
+  }
 }
 
 /** Where a redirect leads, as a path within the app or a full address. */

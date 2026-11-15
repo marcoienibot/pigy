@@ -11,19 +11,26 @@ import {
 } from "./session.ts";
 
 /**
- * Refuses a request that changes something and was not made by pigy's own
- * pages. A browser attaches the session cookie to requests that other sites
- * make too, and it tells them apart with the `Origin` header, which a page
- * cannot forge. Browsers send it with every request that is not a GET or a
- * HEAD, so a request without it is refused as well.
+ * Refuses a request that was not made by pigy's own pages. A browser
+ * attaches the session cookie to requests that other sites make too, and it
+ * tells them apart with the `Origin` header, which a page cannot forge.
  */
-export function requireSameOrigin(c: Context): void {
-  if (["GET", "HEAD", "OPTIONS"].includes(c.req.method)) return;
+export function requireOwnOrigin(c: Context): void {
   if (c.req.header("Origin") !== new URL(c.req.url).origin) {
     throw new HTTPException(403, {
       message: "This request did not come from pigy",
     });
   }
+}
+
+/**
+ * Refuses a request that changes something and was not made by pigy's own
+ * pages. Browsers send `Origin` with every request that is not a GET or a
+ * HEAD, so a request without it is refused as well.
+ */
+export function requireSameOrigin(c: Context): void {
+  if (["GET", "HEAD", "OPTIONS"].includes(c.req.method)) return;
+  requireOwnOrigin(c);
 }
 
 /**
