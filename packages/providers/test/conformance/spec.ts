@@ -34,9 +34,14 @@ export type Simulation = {
    * parameters that the network sends to the callback address.
    */
   consent(url: string, answer: "allow" | "deny"): Promise<URLSearchParams>;
-  /** Arms a fault for the next request that publishes. */
+  /**
+   * Arms a fault for the next request that publishes or, with "connect",
+   * for the next request that completes a connection once the network has
+   * taken the code of the callback.
+   */
   arm(
     kind: "rate-limit" | "server-error" | "lost-response" | "token-revoked",
+    during?: "publish" | "connect",
   ): void;
   /** The texts of the posts in the world, oldest first. */
   published(): string[];
@@ -276,6 +281,29 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
           provider.completeConnect({ pending: start.pending, params }),
         );
         expect(error.kind).toBe("fail");
+      });
+
+      it("fails for good when the network fails while it connects", async ({
+        skip,
+      }) => {
+        const { provider, redirectUri, identifier, simulation } = await setup();
+        if (!simulation) return skip("Consenting takes a browser");
+        const start = await provider.beginConnect({ redirectUri, identifier });
+        const callback = {
+          pending: start.pending,
+          params: await simulation.consent(start.url, "allow"),
+        };
+        simulation.arm("server-error", "connect");
+        // Not "retry", though the network may be fine a moment later: the
+        // code of the callback is spent.
+        expect(
+          (await failure(() => provider.completeConnect(callback))).kind,
+        ).toBe("fail");
+        // Which is why a second call with the same callback cannot do
+        // better, with nothing wrong on the network.
+        expect(
+          (await failure(() => provider.completeConnect(callback))).kind,
+        ).toBe("fail");
       });
 
       it("says so when the person declined", async ({ skip }) => {

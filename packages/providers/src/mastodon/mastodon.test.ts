@@ -465,6 +465,49 @@ describe("completing a connection", () => {
     );
   });
 
+  it.each([
+    [
+      "answers that it is down",
+      () => new Response("Bad gateway", { status: 502 }),
+    ],
+    [
+      "cannot be reached",
+      () => {
+        throw new TypeError("fetch failed");
+      },
+    ],
+  ])(
+    "fails for good when the instance %s while the code is exchanged",
+    async (_what, answer) => {
+      const sim = setup();
+      const start = await sim.provider.beginConnect({
+        redirectUri,
+        identifier: domain,
+      });
+      const callback = await answerConsent(sim.simulator.fetch, start.url, {
+        account: sim.ada.id,
+      });
+      sim.hooks.intercept = async (request) => {
+        const form = new URLSearchParams(await request.clone().text());
+        return form.get("grant_type") === "authorization_code"
+          ? answer()
+          : undefined;
+      };
+      const error = await failure(() =>
+        sim.provider.completeConnect({
+          pending: start.pending,
+          params: callback.searchParams,
+        }),
+      );
+      // Whether the instance has used the code up is not known, so it cannot
+      // be tried again: not "retry", which it would be anywhere else.
+      expect(error.kind).toBe("fail");
+      expect(error.message).toMatch(
+        /^mastodon\.example .+ Connect the account again\.$/,
+      );
+    },
+  );
+
   it("refuses a code that the instance does not take", async () => {
     const sim = setup();
     const start = await sim.provider.beginConnect({

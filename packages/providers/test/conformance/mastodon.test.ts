@@ -85,7 +85,13 @@ describeProvider("Mastodon, simulated", async () => {
     sleep: async (seconds) => world.advance(seconds * 1000),
     simulation: {
       consent,
-      arm: (kind) => simulator.arm({ kind, operation: "publish" }),
+      arm: (kind, during = "publish") =>
+        simulator.arm({
+          kind,
+          // With the code exchanged for a token, the adapter asks whose
+          // token it is.
+          operation: during === "connect" ? "account" : "publish",
+        }),
       published: () => feed(world, ["mastodon"]).map(({ post }) => post.text),
       publishRequests,
       now: world.now,

@@ -195,8 +195,15 @@ export type Provider = {
 
   /**
    * Finishes a connection with what the network sent to the callback
-   * address. Fails with `fail` if the person declined or the callback is
-   * not the answer to `pending`.
+   * address.
+   *
+   * It is called once for a callback and cannot be tried again: the code
+   * in the callback is good for one exchange, and a call that failed may
+   * have spent it. So it fails with `fail` whatever went wrong, also when
+   * the network was only out of reach. The caller then drops `pending`,
+   * and whoever wants the account connected after all begins again, with
+   * `beginConnect`. It fails the same way if the person declined or the
+   * callback is not the answer to `pending`.
    */
   completeConnect(
     callback: ConnectCallback,

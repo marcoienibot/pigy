@@ -421,6 +421,22 @@ export function createMastodonProvider({
     return app;
   }
 
+  /**
+   * A failure to complete a connection, as the contract wants it: for
+   * good. The code of the callback is spent, or may be, so no second call
+   * can do better, whatever the trouble of the instance was.
+   */
+  function forGood(error: unknown): unknown {
+    if (!(error instanceof ProviderError) || error.kind === "fail") {
+      return error;
+    }
+    return new ProviderError(
+      "fail",
+      `${error.message} Connect the account again.`,
+      { status: error.status, cause: error },
+    );
+  }
+
   function parseCredentials(credentials: Json): MastodonCredentials {
     const parsed = credentialsSchema.safeParse(credentials);
     if (
@@ -525,68 +541,74 @@ export function createMastodonProvider({
         );
       }
 
-      const token = understood(
-        tokenSchema,
-        await call(domain, "/oauth/token", {
-          method: "POST",
-          form: {
-            grant_type: "authorization_code",
-            code,
-            client_id: clientId,
-            client_secret: clientSecret,
-            redirect_uri: flow.redirectUri,
-            ...(codeVerifier && { code_verifier: codeVerifier }),
-          },
-          secrets: [
-            clientSecret,
-            code,
-            ...(codeVerifier ? [codeVerifier] : []),
-          ],
-        }),
-        domain,
-      );
-      const granted = token.scope.split(" ");
-      if (
-        token.token_type.toLowerCase() !== "bearer" ||
-        // A scope is also granted by the one above it: "write" for
-        // "write:statuses".
-        !flow.scopes.every(
-          (scope) =>
-            granted.includes(scope) ||
-            granted.includes(scope.split(":")[0] ?? ""),
-        )
-      ) {
-        throw new ProviderError(
-          "fail",
-          `${domain} did not give pigy the access it needs to post.`,
+      // From here on the code is spent, or may be: every failure is for
+      // good, and the person begins again.
+      try {
+        const token = understood(
+          tokenSchema,
+          await call(domain, "/oauth/token", {
+            method: "POST",
+            form: {
+              grant_type: "authorization_code",
+              code,
+              client_id: clientId,
+              client_secret: clientSecret,
+              redirect_uri: flow.redirectUri,
+              ...(codeVerifier && { code_verifier: codeVerifier }),
+            },
+            secrets: [
+              clientSecret,
+              code,
+              ...(codeVerifier ? [codeVerifier] : []),
+            ],
+          }),
+          domain,
         );
-      }
+        const granted = token.scope.split(" ");
+        if (
+          token.token_type.toLowerCase() !== "bearer" ||
+          // A scope is also granted by the one above it: "write" for
+          // "write:statuses".
+          !flow.scopes.every(
+            (scope) =>
+              granted.includes(scope) ||
+              granted.includes(scope.split(":")[0] ?? ""),
+          )
+        ) {
+          throw new ProviderError(
+            "fail",
+            `${domain} did not give pigy the access it needs to post.`,
+          );
+        }
 
-      const account = understood(
-        accountSchema,
-        await call(domain, "/api/v1/accounts/verify_credentials", {
-          token: token.access_token,
-        }),
-        domain,
-      );
-      const credentials: MastodonCredentials = {
-        domain,
-        accessToken: token.access_token,
-        clientId,
-        clientSecret,
-      };
-      return {
-        account: {
-          // Mastodon's IDs are unique within an instance only.
-          id: `${account.id}@${domain}`,
-          handle: `@${account.username}@${flow.handleDomain}`,
-          name: account.display_name || account.username,
-          avatarUrl: httpsUrl(account.avatar),
-          profileUrl: httpsUrl(account.url),
-        },
-        // A token of Mastodon's lasts until somebody revokes it.
-        access: { credentials, refreshAt: null, expiresAt: null },
-      };
+        const account = understood(
+          accountSchema,
+          await call(domain, "/api/v1/accounts/verify_credentials", {
+            token: token.access_token,
+          }),
+          domain,
+        );
+        const credentials: MastodonCredentials = {
+          domain,
+          accessToken: token.access_token,
+          clientId,
+          clientSecret,
+        };
+        return {
+          account: {
+            // Mastodon's IDs are unique within an instance only.
+            id: `${account.id}@${domain}`,
+            handle: `@${account.username}@${flow.handleDomain}`,
+            name: account.display_name || account.username,
+            avatarUrl: httpsUrl(account.avatar),
+            profileUrl: httpsUrl(account.url),
+          },
+          // A token of Mastodon's lasts until somebody revokes it.
+          access: { credentials, refreshAt: null, expiresAt: null },
+        };
+      } catch (failure) {
+        throw forGood(failure);
+      }
     },
 
     async disconnect(credentials) {
