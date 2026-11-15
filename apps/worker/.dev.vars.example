@@ -15,11 +15,13 @@ ADMIN_EMAILS=admin@example.com
 #GOOGLE_CLIENT_SECRET=
 
 # The keys that the credentials of connected accounts are sealed with before
-# they are stored. Without this line, a key from the repository is used,
-# which is fine for trying things out and protects nothing. A comma-separated
-# list of "<version>:<key>", each key 32 random bytes in base64: make one
-# with `openssl rand -base64 32`. The highest version seals. To replace a
-# key, add one with a higher version and keep the old one, which still opens
-# what it sealed. Whatever was stored under other keys can no longer be
-# read: connect those accounts again.
+# they are stored. Without this line, `pnpm dev` uses a key from the
+# repository, which is fine for trying things out and protects nothing.
+# `pnpm preview` does not: it serves a production build, which has no such
+# key, and without this line it refuses to connect accounts, with a 503. A
+# comma-separated list of "<version>:<key>", each key 32 random bytes in
+# base64: make one with `openssl rand -base64 32`. The highest version
+# seals. To replace a key, add one with a higher version and keep the old
+# one, which still opens what it sealed. Whatever was stored under other
+# keys can no longer be read: connect those accounts again.
 #CREDENTIAL_KEYS=1:
