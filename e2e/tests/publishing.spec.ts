@@ -283,8 +283,12 @@ test("a post that is published offline goes out when the device is back, and say
   await connection.restore();
   await expect(deliveryTo(post, grace)).toContainText("Sent");
 
-  // Once it has gone out, pigy can forget it. The network keeps it.
-  await post.getByRole("button", { name: "Delete post" }).click();
+  // Once it has gone out, pigy can forget it, here with the keys: ↓ goes
+  // to the post and ⌫ asks to delete it. The network keeps it.
+  await expect(post.getByRole("button", { name: "Delete post" })).toBeVisible();
+  await page.keyboard.press("ArrowDown");
+  await expect(post).toBeFocused();
+  await page.keyboard.press("Backspace");
   const question = page.getByRole("alertdialog");
   await expect(question).toContainText("What it published stays");
   await question.getByRole("button", { name: "Delete" }).click();
