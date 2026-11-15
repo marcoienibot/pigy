@@ -27,7 +27,13 @@ import {
 import { Kbd } from "@/components/ui/kbd";
 import { environmentIcons } from "@/components/workspace-switch";
 import { useNewDraft } from "@/lib/drafts";
-import { modKey, useKeyDown, useShortcuts, withMod } from "@/lib/keyboard";
+import {
+  dialogIsOpen,
+  modKey,
+  useKeyDown,
+  useShortcuts,
+  withMod,
+} from "@/lib/keyboard";
 import { environmentLabels, useSwitchWorkspace } from "@/lib/workspace";
 
 const screens = [
@@ -46,21 +52,6 @@ const themes: { theme: Theme; label: string; icon: typeof Sun }[] = [
 
 const PaletteContext = createContext<(() => void) | null>(null);
 
-/**
- * Whether a dialog is open that the app waits behind: a question, a form.
- * These are the dialogs of `components/ui`, which mark themselves so. A
- * popover or a menu is not one, and the palette is. One that is on its way
- * out is not open: it stays on the page while it fades, and the palette
- * does so too after a command, when the keys may well come again.
- */
-function dialogIsOpen(): boolean {
-  return (
-    document.querySelector(
-      "[data-slot='dialog-content'][data-open], [data-slot='alert-dialog-content'][data-open]",
-    ) !== null
-  );
-}
-
 /** Returns the function that opens the command palette. */
 export function useOpenCommandPalette(): () => void {
   const open = use(PaletteContext);
@@ -77,7 +68,9 @@ export function useOpenCommandPalette(): () => void {
  * It does not open over another dialog. What that dialog asks comes
  * first, and a command would change the app behind it: going to another
  * screen or to the other workspace takes away the screen that a request
- * of the dialog is to answer on.
+ * of the dialog is to answer on. The shortcuts keep to the same rule, the
+ * one below and those of the screens: `useShortcuts` hands out no key
+ * press while a dialog is open.
  */
 export function CommandPalette({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);

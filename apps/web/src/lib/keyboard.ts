@@ -12,24 +12,48 @@ export function withMod(event: KeyboardEvent): boolean {
 }
 
 /**
- * Whether a key press is meant for what has the focus and not for the
- * app: the person is typing, or is in a dialog or a menu. Those take the
- * focus when they open, so a key press comes from inside them.
+ * Whether a dialog is open that the app waits behind: a question, a form.
+ * These are the dialogs of `components/ui`, which mark themselves so. A
+ * popover or a menu is not one, and the command palette is. One that is on
+ * its way out is not open: it stays on the page while it fades, and the
+ * palette does so too after a command, when the keys may well come again.
+ */
+export function dialogIsOpen(): boolean {
+  return (
+    document.querySelector(
+      "[data-slot='dialog-content'][data-open], [data-slot='alert-dialog-content'][data-open]",
+    ) !== null
+  );
+}
+
+/**
+ * Whether a key press is not for the app: it is meant for what has the
+ * focus, because the person is typing or is in a dialog or a menu, or a
+ * dialog is open and the app waits behind it.
+ *
+ * A dialog takes the focus when it opens, so a key press comes from inside
+ * it. Not always, which is why an open dialog is asked for by itself: a
+ * button that is disabled while its request is on its way gives the focus
+ * up, and the browser hands it to the page. The next key press comes from
+ * there, and a shortcut that it ran would change the app behind the
+ * dialog: the question that waits for an answer would be gone, with its
+ * screen.
  */
 export function isBusy(event: KeyboardEvent): boolean {
   const target = event.target as HTMLElement | null;
   return (
     target?.closest(
       "input, textarea, select, [contenteditable='true'], [role='dialog'], [role='alertdialog'], [role='menu']",
-    ) != null
+    ) != null || dialogIsOpen()
   );
 }
 
 /**
  * Calls `handle` with the key presses that are shortcuts of the app:
- * those that reach the page while nobody is typing and no dialog or menu
- * has the focus. Key presses with a modifier are not among them: they belong
- * to the browser, apart from the few that `useKeyDown` is used for.
+ * those that reach the page while nobody is typing, no menu has the focus
+ * and no dialog is open. Key presses with a modifier are not among them:
+ * they belong to the browser, apart from the few that `useKeyDown` is used
+ * for.
  */
 export function useShortcuts(handle: (event: KeyboardEvent) => void): void {
   const onKey = useEffectEvent((event: KeyboardEvent) => {

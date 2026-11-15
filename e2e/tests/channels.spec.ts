@@ -476,12 +476,30 @@ test("a disconnect that is on its way keeps the commands away, and says how it w
   await page.keyboard.press("ControlOrMeta+k");
   expect(await page.getByRole("dialog", { name: "Commands" }).count()).toBe(0);
   await expect(dialog).toBeVisible();
+  // Neither does the key of "New draft". Both buttons of the question are
+  // disabled by now, and a browser takes the focus off a button that is
+  // disabled: the key press comes from the page, as if there were no
+  // question. This says that it is so here, without which the press below
+  // would only repeat what a key press from inside a dialog has always
+  // done.
+  await expect(page.locator("body")).toBeFocused();
+  await page.keyboard.press("c");
+  // The command would have written a draft and left for the Drafts
+  // screen, a moment after the press. The question is still there, and
+  // the draft is looked for below, where it would be listed.
+  await expect(dialog).toBeVisible();
+  await expect(page).toHaveURL("/channels");
 
   // The browser still goes back. The answer comes when the person is on
   // another screen, and is said there: that pigy is still to be removed
   // at the network is theirs to act on.
   await page.goBack();
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Drafts");
+  // The key above made no draft. Had it, the way back would not have led
+  // here either: the draft would have been one more step in the history.
+  await expect(
+    page.getByRole("heading", { name: "No drafts yet" }),
+  ).toBeVisible();
   release();
   await expect(
     page.getByRole("listitem").filter({
