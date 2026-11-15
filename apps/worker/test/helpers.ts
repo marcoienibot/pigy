@@ -21,6 +21,14 @@ const googleClient = {
 type Secrets = "ADMIN_EMAILS" | "GOOGLE_CLIENT_ID" | "GOOGLE_CLIENT_SECRET";
 
 /**
+ * A key for `CREDENTIAL_KEYS`, as a deployment has one: 32 bytes in
+ * base64. `fill` makes it another key.
+ */
+export function credentialKey(fill: number): string {
+  return btoa(String.fromCharCode(...new Uint8Array(32).fill(fill)));
+}
+
+/**
  * The app as it runs in production, with Google credentials, except that
  * the `fetch` it is given leads to a simulated Google and its clock is
  * `clock`, which is also the clock of the workspace objects. The bindings

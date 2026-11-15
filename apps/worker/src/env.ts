@@ -13,6 +13,16 @@ type Secrets = {
   /** The OAuth client of the Google Cloud project. */
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
+  /**
+   * The keys that the credentials of the channels are sealed with, see
+   * src/vault.ts: a comma-separated list of "<version>:<key>", each key 32
+   * random bytes in base64. The key with the highest version seals, and
+   * every key opens what was sealed with it. So a key is replaced by adding
+   * one with a higher version, and the old one stays for as long as
+   * anything is stored that it sealed. Without this variable no account
+   * can be connected.
+   */
+  CREDENTIAL_KEYS?: string;
 };
 
 export type Bindings = Omit<Env, keyof Secrets> & Secrets;
