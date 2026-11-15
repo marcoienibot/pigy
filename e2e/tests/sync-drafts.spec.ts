@@ -469,22 +469,31 @@ test("changes that were not synced survive the end of a session", async ({
   const connection = await connectionOf(page);
   await page.reload();
   await expectSync(page, "Synced");
-  await connection.cut({ api: true });
+  // Cut off from the API too. An app that can still reach it asks the
+  // server every time its socket fails again, and would be told that the
+  // session is over at a moment that the test does not choose: it leaves
+  // for the sign-in page then, in the middle of the test's next step.
+  await connection.cut();
   await writeDraft(page, isMobile, "Written before the session ended");
   await expectSync(page, "Offline · 2 changes");
-
-  // The session ends without the app having a say, as when it runs out:
-  // this request is not the app's.
-  const signOut = await page.request.post("/api/auth/sign-out", {
-    headers: { Origin: new URL(baseURL ?? "").origin },
-  });
-  expect(signOut.status()).toBe(204);
-  // The next step in the app finds out.
+  // On another screen than the one the app starts on, which is where it
+  // has to come back to.
   await page
     .getByRole("navigation", { name: "Main" })
     .getByRole("link", { name: "Queue" })
     .click();
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Queue");
 
+  // The session ends without the app having a say, as when it runs out:
+  // this request is not the app's, and does not pass through the cut.
+  const signOut = await page.request.post("/api/auth/sign-out", {
+    headers: { Origin: new URL(baseURL ?? "").origin },
+  });
+  expect(signOut.status()).toBe(204);
+
+  // The connection is back. The server refuses the socket, the app asks
+  // why, and leaves for the sign-in page by itself.
+  await connection.restore();
   await expect(page).toHaveURL("/sign-in?returnTo=%2Fqueue");
   await expect(page.getByRole("main")).toContainText(
     `2 changes made on this device as ${ownEmail} could be synced`,
@@ -493,7 +502,6 @@ test("changes that were not synced survive the end of a session", async ({
   expect((await localData(page)).copies).toHaveLength(1);
 
   // The same person signs in again, and the change is sent.
-  await connection.restore();
   await signIn(page, ownEmail);
   await expect(page).toHaveURL("/queue");
   await expectSync(page, "Synced");
@@ -505,30 +513,38 @@ test("changes that were not synced survive the end of a session", async ({
 
 test("changes that were kept after a session ended can be deleted", async ({
   ownPage: page,
+  context,
   isMobile,
   baseURL,
 }) => {
   const connection = await connectionOf(page);
   await page.reload();
   await expectSync(page, "Synced");
-  await connection.cut({ api: true });
+  await connection.cut();
   await writeDraft(page, isMobile, "Not worth keeping");
   await expectSync(page, "Offline · 2 changes");
-  const signOut = await page.request.post("/api/auth/sign-out", {
+  // The window is closed before the session ends, and the next one opens
+  // on the sign-in page. In a window that is left open, the app goes to
+  // the sign-in page by itself once it has heard that the session is over,
+  // and a test that is on its own way there is cut short by that.
+  await page.close();
+  const signOut = await context.request.post("/api/auth/sign-out", {
     headers: { Origin: new URL(baseURL ?? "").origin },
   });
   expect(signOut.status()).toBe(204);
 
   // Straight to the sign-in page, as somebody else would who wants to use
-  // this device.
-  await page.goto("/sign-in");
-  await page.getByRole("button", { name: "Delete these changes" }).click();
-  const dialog = page.getByRole("alertdialog");
+  // this device. Nothing on the device knows yet that the session is over:
+  // it is this page that finds out, and keeps the changes.
+  const visitor = await context.newPage();
+  await visitor.goto("/sign-in");
+  await visitor.getByRole("button", { name: "Delete these changes" }).click();
+  const dialog = visitor.getByRole("alertdialog");
   await expect(dialog).toContainText("Delete 2 changes?");
   await dialog.getByRole("button", { name: "Delete" }).click();
 
-  await expect(page.getByText("could be synced")).toHaveCount(0);
-  expect(await localData(page)).toEqual({ copies: [], session: null });
+  await expect(visitor.getByText("could be synced")).toHaveCount(0);
+  expect(await localData(visitor)).toEqual({ copies: [], session: null });
 });
 
 test("a window that is too old for the server says that it has to be reloaded", async ({

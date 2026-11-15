@@ -120,8 +120,10 @@ export async function connectionOf(page: Page) {
 
     /**
      * Cuts the page off: the sync socket is lost and no new one gets
-     * through. With `api: false`, requests to the API still do, as when
-     * only the socket fails.
+     * through. With `api: true`, requests to the API still do, as when
+     * only the socket fails. The app then asks the server every time its
+     * socket fails again, and hears what has become of the session: a test
+     * that ends the session behind its back must not leave the API open.
      */
     async cut(options: { api?: boolean } = {}): Promise<void> {
       online = false;
