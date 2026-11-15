@@ -5,6 +5,7 @@
   "sideEffects": false,
   "exports": {
     "./google": "./src/google/index.ts",
+    "./mastodon": "./src/mastodon/index.ts",
     "./world": "./src/world/index.ts"
   },
   "scripts": {

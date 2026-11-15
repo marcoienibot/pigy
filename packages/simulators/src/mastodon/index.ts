@@ -1,0 +1,454 @@
+import type { Fetch } from "@pigy/core";
+import type { FaultKind, SimWorld } from "../world/index.ts";
+import {
+  type Caller,
+  createStatus,
+  deleteStatus,
+  showInstance,
+  showStatus,
+  verifyCredentials,
+} from "./api.ts";
+import { apiError, html, json } from "./http.ts";
+import {
+  authorize,
+  createApp,
+  oauthMetadata,
+  revoke,
+  token as tokenEndpoint,
+} from "./oauth.ts";
+import {
+  atLeast,
+  createState,
+  type Instance,
+  type MastodonAccount,
+  type MastodonToken,
+} from "./state.ts";
+
+export type { Instance, MastodonAccount } from "./state.ts";
+
+/**
+ * A simulation of Mastodon, written from https://docs.joinmastodon.org and,
+ * where the documentation leaves a question open, from the code of Mastodon
+ * that it links to. What had to be guessed is marked GUESS, for a run
+ * against a real server to confirm.
+ *
+ * It answers on the addresses of the instances in its world, so the adapter
+ * under test is the adapter that runs against Mastodon. It enforces
+ * Mastodon's rules itself and shares no code with the adapter or with
+ * pigy's own validation: a simulator that is more lenient than the service
+ * hides the mistakes it is there to find.
+ *
+ * It is part of the production build, because the sandbox runs on it. So
+ * it acts on its world and on nothing else:
+ *
+ * - It makes no requests, and fails for every host that is not an instance
+ *   of its world.
+ * - Its instances have names that cannot exist on the internet.
+ * - It accepts only the secrets it made itself, which say what they are.
+ *
+ * Not simulated: media, polls, scheduled statuses, quotes, content
+ * warnings, followers, federation between instances, and the limits that
+ * Mastodon keeps per IP address.
+ */
+
+/** The faults that Mastodon can suffer from. Its tokens do not expire. */
+export const mastodonFaultKinds = [
+  "rate-limit",
+  "server-error",
+  "lost-response",
+  "token-revoked",
+] as const satisfies readonly FaultKind[];
+
+/**
+ * The requests that a fault can strike: reading the instance, asking whose
+ * token it is, and posting, reading and deleting a status.
+ */
+export const mastodonOperations = [
+  "instance",
+  "account",
+  "publish",
+  "read",
+  "delete",
+] as const;
+
+type Operation = (typeof mastodonOperations)[number];
+
+export type MastodonFault = {
+  kind: (typeof mastodonFaultKinds)[number];
+  /** Any of them, if left out. */
+  operation?: Operation;
+};
+
+export type MastodonSimulator = {
+  /**
+   * Stands in for `fetch`. Answers requests to the instances of the world
+   * and fails for every other host, so nothing leaves the process.
+   */
+  fetch: Fetch;
+  /**
+   * Adds an instance to the world. Its domain must be under `.example`,
+   * `.test` or `.invalid`, which are reserved: no real server has such a
+   * name, so a simulated instance can never be taken for a real one, and a
+   * request meant for it can never reach one.
+   */
+  addInstance(
+    domain: string,
+    options?: Partial<Omit<Instance, "domain">>,
+  ): void;
+  /** Adds an account to an instance, for somebody to connect. */
+  addAccount(domain: string, username: string, name?: string): MastodonAccount;
+  /** Arms a fault, which strikes the next request it applies to. */
+  arm(fault: MastodonFault): void;
+};
+
+const reservedDomain =
+  /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\.(example|test|invalid)$/;
+
+// Mastodon counts requests in spans of time that start on the clock, not
+// with the first request.
+type Throttle = { limit: number; seconds: number };
+// api/rate-limits: per token, per account for deletions.
+const perToken: Throttle = { limit: 300, seconds: 5 * 60 };
+const deletions: Throttle = { limit: 30, seconds: 30 * 60 };
+// From app/lib/rate_limiter.rb: statuses posted per account.
+const posted: Throttle = { limit: 300, seconds: 3 * 60 * 60 };
+
+type Count = {
+  limit: number;
+  remaining: number;
+  reset: Date;
+  exceeded: boolean;
+};
+
+/** What a request to the API needs of whoever makes it. */
+type Access =
+  /** Nothing. A token is not looked at. */
+  | { who: "anybody" }
+  /** Nothing, but a token that is sent has to be good and have a scope. */
+  | { who: "anybody-or-token"; scopes: string[] }
+  /** The token of an account, with one of the scopes. */
+  | { who: "account"; scopes: string[] };
+
+type Route = {
+  operation: Operation;
+  access: Access;
+  throttles?: Throttle[];
+  run(caller: Caller | undefined): Response | Promise<Response>;
+};
+
+export function createMastodonSimulator(world: SimWorld): MastodonSimulator {
+  const state = createState(world);
+
+  /** Counts one more of `what` and says where that leaves the limit. */
+  function count(what: string, { limit, seconds }: Throttle): Count {
+    const span = Math.floor(world.now().getTime() / 1000 / seconds);
+    const counter = state.counters.get(what);
+    const counted = (counter?.span === span ? counter.count : 0) + 1;
+    state.counters.put(what, { span, count: counted });
+    return {
+      limit,
+      remaining: Math.max(0, limit - counted),
+      reset: new Date((span + 1) * seconds * 1000),
+      exceeded: counted > limit,
+    };
+  }
+
+  function rateLimitHeaders({ limit, remaining, reset }: Count) {
+    return {
+      "X-RateLimit-Limit": String(limit),
+      "X-RateLimit-Remaining": String(remaining),
+      // Mastodon writes six digits after the second.
+      "X-RateLimit-Reset": reset.toISOString().replace("Z", "000Z"),
+    };
+  }
+
+  function tooManyRequests(counted: Count): Response {
+    return json(
+      429,
+      { error: "Too many requests" },
+      rateLimitHeaders({ ...counted, remaining: 0 }),
+    );
+  }
+
+  /**
+   * Who makes a request, by its token: a caller, undefined if it has no
+   * token, or the refusal of a token that is not good.
+   */
+  function callerOf(
+    instance: Instance,
+    bearer: string | undefined,
+  ): Caller | Response | undefined {
+    if (bearer === undefined) return undefined;
+    const token = world.findToken<MastodonToken>("mastodon", bearer);
+    const app = token && state.apps.get(token.clientId);
+    if (!token || !app || token.domain !== instance.domain) {
+      return apiError(401, "The access token is invalid");
+    }
+    if (world.tokenStatus(token) !== "valid") {
+      return apiError(401, "The access token was revoked");
+    }
+    const account = token.accountId
+      ? (state.accounts.get(token.accountId) ?? null)
+      : null;
+    return { token, app, account };
+  }
+
+  /** The route of a request to the API, if it is one that is simulated. */
+  function routeOf(
+    instance: Instance,
+    request: Request,
+    path: string,
+  ): Route | undefined {
+    const { method } = request;
+    if (method === "GET" && path === "/api/v2/instance") {
+      return {
+        operation: "instance",
+        access: { who: "anybody" },
+        run: () => showInstance(state, instance),
+      };
+    }
+    if (method === "GET" && path === "/api/v1/accounts/verify_credentials") {
+      return {
+        operation: "account",
+        access: {
+          who: "account",
+          scopes: [
+            "read",
+            "read:accounts",
+            ...(atLeast(instance.version, 4, 3) ? ["profile"] : []),
+          ],
+        },
+        run: (caller) =>
+          caller?.account
+            ? verifyCredentials(state, caller.account)
+            : apiError(401, "The access token is invalid"),
+      };
+    }
+    if (method === "POST" && path === "/api/v1/statuses") {
+      return {
+        operation: "publish",
+        access: { who: "account", scopes: ["write", "write:statuses"] },
+        throttles: [posted],
+        run: (caller) =>
+          caller?.account
+            ? createStatus(state, instance, request, {
+                ...caller,
+                account: caller.account,
+              })
+            : apiError(401, "The access token is invalid"),
+      };
+    }
+    const id = /^\/api\/v1\/statuses\/([0-9]+)$/.exec(path)?.[1];
+    if (id && method === "GET") {
+      return {
+        operation: "read",
+        access: { who: "anybody-or-token", scopes: ["read", "read:statuses"] },
+        run: (caller) => showStatus(state, instance, id, caller),
+      };
+    }
+    if (id && method === "DELETE") {
+      return {
+        operation: "delete",
+        access: { who: "account", scopes: ["write", "write:statuses"] },
+        throttles: [deletions],
+        run: (caller) =>
+          caller?.account
+            ? deleteStatus(state, instance, id, {
+                ...caller,
+                account: caller.account,
+              })
+            : apiError(401, "The access token is invalid"),
+      };
+    }
+    return undefined;
+  }
+
+  /** Answers a request to the API: faults, limits, access, then the route. */
+  async function api(
+    instance: Instance,
+    request: Request,
+    route: Route,
+  ): Promise<Response> {
+    const bearer = /^Bearer (.+)$/i.exec(
+      request.headers.get("Authorization") ?? "",
+    )?.[1];
+    const fault = world.faults.take(
+      "mastodon",
+      route.operation,
+      // A request without a token has none to lose.
+      mastodonFaultKinds.filter(
+        (kind) => kind !== "token-revoked" || bearer !== undefined,
+      ),
+    );
+    if (fault === "server-error") {
+      // What the proxy in front of a Mastodon that is down answers: a page.
+      return html(
+        503,
+        "<!doctype html><title>Service unavailable</title><h1>We're sorry, but something went wrong on our end.</h1>",
+      );
+    }
+    if (fault === "token-revoked" && bearer !== undefined) {
+      world.revokeToken("mastodon", bearer);
+    }
+
+    const caller =
+      route.access.who === "anybody" ? undefined : callerOf(instance, bearer);
+    // The limits come before the access, as in Mastodon, where they are
+    // kept in front of the application.
+    const counts: Count[] = [];
+    if (caller && !(caller instanceof Response)) {
+      counts.push(count(`token/${caller.token.token}`, perToken));
+    }
+    if (fault === "rate-limit") {
+      return tooManyRequests(counts[0] ?? count("anybody", perToken));
+    }
+    if (counts[0]?.exceeded) return tooManyRequests(counts[0]);
+
+    if (caller instanceof Response) return caller;
+    if (route.access.who !== "anybody") {
+      const { scopes } = route.access;
+      if (!caller && route.access.who === "account") {
+        return apiError(401, "The access token is invalid");
+      }
+      if (
+        caller &&
+        !scopes.some((scope) => caller.token.scopes.includes(scope))
+      ) {
+        return apiError(403, "This action is outside the authorized scopes");
+      }
+      if (caller && !caller.account && route.access.who === "account") {
+        return apiError(422, "This method requires an authenticated user");
+      }
+    }
+    // Counted per account, whatever the token. A request that goes on to
+    // fail counts too, which Mastodon takes back. That is the one thing
+    // this is stricter about.
+    for (const throttle of route.throttles ?? []) {
+      const counted = count(
+        `${route.operation}/${caller?.account?.id}`,
+        throttle,
+      );
+      if (counted.exceeded) return tooManyRequests(counted);
+      counts.push(counted);
+    }
+
+    const response = await route.run(caller);
+    if (fault === "lost-response") {
+      // What `fetch` does when the connection breaks. The request was
+      // carried out all the same.
+      throw new TypeError(
+        "The simulated Mastodon lost its answer on the way back",
+      );
+    }
+    // The headers tell of the limit that is closest.
+    const closest = counts.sort((a, b) => a.remaining - b.remaining)[0];
+    if (closest) {
+      for (const [name, value] of Object.entries(rateLimitHeaders(closest))) {
+        response.headers.set(name, value);
+      }
+    }
+    return response;
+  }
+
+  return {
+    async fetch(input, init) {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      const instance =
+        url.protocol === "https:" && url.port === ""
+          ? state.instances.get(url.hostname)
+          : undefined;
+      if (!instance) {
+        // What `fetch` does when a host cannot be reached.
+        throw new TypeError(
+          `The simulated Mastodon has no instance at ${url.origin}`,
+        );
+      }
+      const { method } = request;
+      const path = url.pathname;
+
+      if (
+        path === "/oauth/authorize" &&
+        (method === "GET" || method === "POST")
+      ) {
+        return authorize(state, instance, request, url);
+      }
+      if (path === "/oauth/token" && method === "POST") {
+        return tokenEndpoint(state, instance, request);
+      }
+      if (path === "/oauth/revoke" && method === "POST") {
+        return revoke(state, instance, request);
+      }
+      if (
+        path === "/.well-known/oauth-authorization-server" &&
+        method === "GET"
+      ) {
+        return oauthMetadata(instance);
+      }
+      if (path === "/api/v1/apps" && method === "POST") {
+        return createApp(state, instance, request);
+      }
+      const route = routeOf(instance, request, path);
+      if (route) return api(instance, request, route);
+      // GUESS: what Mastodon answers for an address it does not have.
+      return path.startsWith("/api/")
+        ? apiError(404, "Not Found")
+        : html(404, "<!doctype html><title>Not found</title>");
+    },
+
+    addInstance(domain, options = {}) {
+      if (!reservedDomain.test(domain)) {
+        throw new Error(
+          `A simulated instance needs a domain under .example, .test or .invalid, in lowercase: ${domain}`,
+        );
+      }
+      state.instances.put(domain, {
+        domain,
+        title: "Simulated Mastodon",
+        version: "4.5.0",
+        maxCharacters: 500,
+        charactersReservedPerUrl: 23,
+        ...options,
+      });
+    },
+
+    addAccount(domain, username, name = username) {
+      if (!state.instances.get(domain)) {
+        throw new Error(`The simulated Mastodon has no instance ${domain}`);
+      }
+      if (!/^[a-z0-9_]{1,30}$/i.test(username)) {
+        throw new Error(`Not a username on Mastodon: ${username}`);
+      }
+      const taken = state.accounts
+        .all()
+        .some(
+          (account) =>
+            account.domain === domain &&
+            account.username.toLowerCase() === username.toLowerCase(),
+        );
+      if (taken) throw new Error(`@${username}@${domain} exists already`);
+      const account: MastodonAccount = {
+        network: "mastodon",
+        id: state.nextId(),
+        domain,
+        username,
+        handle: `@${username}@${domain}`,
+        name,
+      };
+      state.accounts.put(account.id, account);
+      return account;
+    },
+
+    arm({ kind, operation }) {
+      // Checked here as well as by the types: the sandbox will pass on what
+      // a person chose.
+      if (!mastodonFaultKinds.includes(kind)) {
+        throw new Error(`The simulated Mastodon has no fault "${kind}"`);
+      }
+      if (operation !== undefined && !mastodonOperations.includes(operation)) {
+        throw new Error(`The simulated Mastodon has no request "${operation}"`);
+      }
+      world.faults.arm("mastodon", { kind, operation });
+    },
+  };
+}
