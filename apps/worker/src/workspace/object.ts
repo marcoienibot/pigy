@@ -345,14 +345,20 @@ export function workspaceObject({ now }: { now: Clock }) {
      * and tried again the next time.
      */
     override async alarm(): Promise<void> {
-      try {
-        await this.#watchDeliveries();
-        await this.#startDeliveries();
-      } catch (error) {
-        console.error(
-          "The deliveries of a workspace were not looked after",
-          loggable(error),
-        );
+      // Each by itself: a platform that does not say how its runs are
+      // doing must not keep the next delivery from beginning.
+      for (const look of [
+        () => this.#watchDeliveries(),
+        () => this.#startDeliveries(),
+      ]) {
+        try {
+          await look();
+        } catch (error) {
+          console.error(
+            "The deliveries of a workspace were not looked after",
+            loggable(error),
+          );
+        }
       }
       // Nothing is awaited between the last look at the deliveries above
       // and this one, so nothing can have come in between.

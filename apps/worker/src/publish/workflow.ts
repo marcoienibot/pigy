@@ -383,12 +383,17 @@ export async function deliver(
           );
         }
         const renewed = await provider.refresh(refusedCredentials);
-        const kept = await asked(async () =>
-          renewChannelAccess(
+        // From here on the credentials that the channel holds may be
+        // worth nothing: on some networks a refresh ends the ones it
+        // started from. So a failure to store the new ones does not end
+        // the step, which would be run again with the old ones. The step
+        // goes on with what it has, and the log says what was lost.
+        try {
+          const kept = await renewChannelAccess(
             env.WORKSPACE,
             workspace,
             channel.id,
-            access.credentials ?? "",
+            access.credentials,
             {
               credentials: await sealCredentials(
                 channelVault,
@@ -399,9 +404,17 @@ export async function deliver(
               refreshAt: renewed.refreshAt?.getTime() ?? null,
               expiresAt: renewed.expiresAt?.getTime() ?? null,
             },
-          ),
-        );
-        return kept ? renewed.credentials : credentials();
+          );
+          // Not kept: the channel holds others by now, or is gone.
+          if (!kept) return await credentials();
+        } catch (error) {
+          if (error instanceof Ended) throw error;
+          console.error(
+            "The renewed credentials of a channel were not stored",
+            loggable(error),
+          );
+        }
+        return renewed.credentials;
       },
     };
   };

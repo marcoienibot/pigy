@@ -475,6 +475,42 @@ it("renews credentials that the network refuses before their time, and runs the 
   expect(network.refreshes).toBe(1);
 });
 
+it("goes on with renewed credentials that it could not store", async () => {
+  const context = await ready({}, "Not lost");
+  const network = { generation: 1, refreshes: 0 };
+  withAdapter(refreshing(network));
+  const before = await heldBy(context);
+  const errors = expectErrors();
+  // The network has renewed the credentials, and the workspace fails when
+  // it is handed them.
+  const failing = vi
+    .spyOn(WorkspaceStore.prototype, "renewChannelAccess")
+    .mockImplementationOnce(() => {
+      throw new Error("The object was reset");
+    });
+  onTestFinished(() => failing.mockRestore());
+
+  const target = await delivered(context);
+
+  // Had the step ended there, it would have been run again with the
+  // credentials that the refresh started from, which on some networks are
+  // worth nothing by then. The post went out with the new ones instead.
+  expect(target).toMatchObject({ status: "sent", attempt: 1 });
+  expect(context.texted()).toEqual(["Not lost"]);
+  expect(errors).toHaveBeenCalledWith(
+    "The renewed credentials of a channel were not stored",
+    expect.anything(),
+  );
+  // The next step asked the workspace for the credentials again, found the
+  // old ones and renewed them once more, which this network allows. The
+  // channel holds new ones in the end.
+  expect(network.refreshes).toBe(2);
+  expect((await heldBy(context)).credentials).toEqual({
+    generation: 1,
+    inner: before.credentials,
+  });
+});
+
 it("asks for a new connection when the network refuses the renewed credentials too", async () => {
   const context = await ready({}, "No way in");
   // The network takes generation 2, and a refresh returns generation 1.
