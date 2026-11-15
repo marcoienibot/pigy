@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { publicHost, publicOrigin } from "../host.ts";
 
 /**
  * Who an account of atproto is and where it lives, written from the
@@ -27,7 +28,8 @@ const disallowedTlds = [
 /**
  * The handle in what a person typed, in the form that atproto compares
  * them in, or null if it is none. A leading "@" is taken off, as people
- * write one.
+ * write one. A handle is a host that pigy asks for its DID, so it has to
+ * be a public one too.
  */
 export function parseHandle(typed: string): string | null {
   const handle = typed.trim().replace(/^@/, "").toLowerCase();
@@ -40,7 +42,7 @@ export function parseHandle(typed: string): string | null {
     return null;
   }
   const tld = handle.slice(handle.lastIndexOf(".") + 1);
-  return disallowedTlds.includes(tld) ? null : handle;
+  return disallowedTlds.includes(tld) ? null : publicHost(handle);
 }
 
 /** A DID of a method that atproto blesses, or null. */
@@ -97,7 +99,8 @@ export const didDocumentSchema = z.object({
 
 /**
  * The address of the PDS that a DID document names, or null. It has to be
- * an HTTPS address: requests with the account's tokens go there.
+ * the HTTPS address of a public host: requests with the account's tokens
+ * go there, and whoever controls the account writes the document.
  */
 export function pdsOf(
   document: z.infer<typeof didDocumentSchema>,
@@ -107,7 +110,7 @@ export function pdsOf(
       (id === "#atproto_pds" || id === `${document.id}#atproto_pds`) &&
       type === "AtprotoPersonalDataServer",
   );
-  return httpsOrigin(service?.serviceEndpoint);
+  return publicOrigin(service?.serviceEndpoint);
 }
 
 /** Whether a DID document claims `handle` for its account. */
@@ -118,25 +121,4 @@ export function claims(
   return (document.alsoKnownAs ?? []).some(
     (name) => name.toLowerCase() === `at://${handle}`,
   );
-}
-
-/**
- * The origin of `value` if it is an HTTPS address of a server, with no
- * credentials, path or query, and null otherwise.
- */
-export function httpsOrigin(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" &&
-      !url.username &&
-      !url.password &&
-      (url.pathname === "/" || url.pathname === "") &&
-      !url.search &&
-      !url.hash
-      ? url.origin
-      : null;
-  } catch {
-    return null;
-  }
 }

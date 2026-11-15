@@ -123,7 +123,7 @@ Imports:
 - For all three packages Biome rejects `window`, `document`, `localStorage`, `process` and `Buffer`, and Node modules in the source. The source is type-checked without Node types (`tsconfig.src.json`), the tests with them (`tsconfig.test.json`).
 - `e2e` imports no application code.
 
-In `packages/providers/src`: `provider.ts` is the contract, `errors.ts` the one error that an adapter reports a failure with, `publish.ts` the loop that publishes a post step by step, `http.ts` how adapters send a request. Each network has a directory. `test/conformance` holds the specification that every adapter passes.
+In `packages/providers/src`: `provider.ts` is the contract, `errors.ts` the one error that an adapter reports a failure with, `publish.ts` the loop that publishes a post step by step, `http.ts` how adapters send a request, `host.ts` which hosts they may send one to when somebody else has named the host. Each network has a directory. `test/conformance` holds the specification that every adapter passes.
 
 In `packages/simulators/src`: `world/` is what the simulated networks share: the storage, the world with its accounts, tokens and posts, the clock, the faults and the consent page. It also has what every simulation is made with, such as the frame of a page in `pages.ts`. Each service has a directory. `google/` is not part of a production build and keeps nothing in a world. It may import from `world/`. Nothing in `world/` or in the directory of a network imports from `google/`: that would carry the simulated sign-in into a production build.
 

@@ -101,6 +101,42 @@ async function failure(action: () => Promise<unknown>): Promise<ProviderError> {
   throw new Error("Expected a ProviderError, and nothing failed");
 }
 
+/**
+ * An intercept that lets the world answer, and changes the JSON of the
+ * answers to the requests whose address ends with `path`.
+ */
+function rewriting(
+  path: string,
+  change: (body: Record<string, unknown>) => Record<string, unknown>,
+): Intercept {
+  return async (request, simulator) => {
+    const response = await simulator(request);
+    if (!new URL(request.url).pathname.endsWith(path)) return response;
+    const body = (await response.json()) as Record<string, unknown>;
+    return Response.json(change(body), {
+      status: response.status,
+      headers: response.headers,
+    });
+  };
+}
+
+/** Addresses of hosts that nobody on the internet may make pigy ask. */
+const privateAddresses = [
+  "https://10.0.0.5",
+  "https://10.0.0.5:8443",
+  "https://127.0.0.1",
+  "https://[::1]",
+  "https://localhost",
+  "https://pds.localhost",
+  "https://pds.local",
+  "https://pds.internal",
+  "https://pds.lan",
+  "https://pds.home",
+  "https://pds.corp",
+  "https://pds.bsky.test:8443",
+  "http://pds.bsky.test",
+];
+
 /** Consents as `account` and returns what is sent to the callback. */
 async function consented(test: Setup, identifier = "ada.bsky.test") {
   const start = await test.provider.beginConnect({ redirectUri, identifier });
@@ -152,6 +188,12 @@ describe("parseHandle", () => {
       "ada.example",
       "ada.invalid",
       "ada.localhost",
+      // Names of private networks, which atproto does not set aside but
+      // which could lead into the network of whoever runs pigy.
+      "ada.lan",
+      "ada.home",
+      "ada.corp",
+      "ada.internal",
       `${"a".repeat(64)}.bsky.social`,
     ]) {
       expect(parseHandle(typed), typed).toBeNull();
@@ -285,6 +327,83 @@ describe("connecting", () => {
     );
     expect(error).toMatchObject({ kind: "fail" });
     expect(error.message).toMatch(/does not claim/);
+  });
+
+  it("asks no host that the document of an account names unless it is a public one", async () => {
+    // Whoever controls an account writes its DID document, and with it
+    // where pigy sends requests.
+    for (const address of privateAddresses) {
+      const test = await setup();
+      test.intercept(
+        rewriting(`/${test.ada.id}`, (document) => ({
+          ...document,
+          service: [
+            {
+              id: "#atproto_pds",
+              type: "AtprotoPersonalDataServer",
+              serviceEndpoint: address,
+            },
+          ],
+        })),
+      );
+      const error = await failure(() =>
+        test.provider.beginConnect({
+          redirectUri,
+          identifier: "ada.bsky.test",
+        }),
+      );
+      expect(error.kind, address).toBe("fail");
+      expect(test.requests.at(-1), address).toBe(
+        `GET https://plc.directory/${test.ada.id}`,
+      );
+    }
+  });
+
+  it("asks no authorization server and no endpoint unless it is at a public host", async () => {
+    const named = [
+      // What the PDS names as its authorization server.
+      (address: string) =>
+        rewriting("/oauth-protected-resource", (metadata) => ({
+          ...metadata,
+          authorization_servers: [address],
+        })),
+      // What the authorization server names as its endpoints.
+      ...[
+        "pushed_authorization_request_endpoint",
+        "authorization_endpoint",
+        "token_endpoint",
+        "revocation_endpoint",
+      ].map(
+        (endpoint) => (address: string) =>
+          rewriting("/oauth-authorization-server", (metadata) => ({
+            ...metadata,
+            [endpoint]: `${address}/oauth/endpoint`,
+          })),
+      ),
+    ];
+    for (const intercept of named) {
+      for (const address of privateAddresses) {
+        const test = await setup();
+        test.intercept(intercept(address));
+        const error = await failure(() =>
+          test.provider.beginConnect({
+            redirectUri,
+            identifier: "ada.bsky.test",
+          }),
+        );
+        expect(error.kind, address).toBe("fail");
+        // Nothing was asked of the host, nor pushed anywhere.
+        const { origin } = new URL(address);
+        expect(
+          test.requests.filter(
+            (request) =>
+              new URL(request.split(" ")[1] ?? "").origin === origin ||
+              request.startsWith("POST"),
+          ),
+          address,
+        ).toEqual([]);
+      }
+    }
   });
 
   it("does not take the answer of another server for the one it asked", async () => {

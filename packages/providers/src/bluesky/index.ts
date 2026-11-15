@@ -7,13 +7,8 @@ import {
 } from "@pigy/core";
 import { z } from "zod";
 import { ProviderError, quotable } from "../errors.ts";
-import {
-  type HttpAnswer,
-  httpsUrl,
-  randomToken,
-  retryAfter,
-  send,
-} from "../http.ts";
+import { publicOrigin, publicUrl } from "../host.ts";
+import { type HttpAnswer, randomToken, retryAfter, send } from "../http.ts";
 import {
   type Json,
   type Provider,
@@ -26,7 +21,6 @@ import {
   didDocumentUrl,
   didsInAnswer,
   dnsAnswerSchema,
-  httpsOrigin,
   parseDid,
   parseHandle,
   pdsOf,
@@ -658,7 +652,8 @@ export function createBlueskyProvider({
       await call(`${pds}/.well-known/oauth-protected-resource`),
       new URL(pds).host,
     );
-    const issuer = httpsOrigin(resource.authorization_servers[0]);
+    // Whoever controls the PDS names it, and pigy sends requests there.
+    const issuer = publicOrigin(resource.authorization_servers[0]);
     if (!issuer) {
       throw new ProviderError(
         "fail",
@@ -670,17 +665,25 @@ export function createBlueskyProvider({
       await call(`${issuer}/.well-known/oauth-authorization-server`),
       new URL(issuer).host,
     );
-    const endpoints = [
-      server.authorization_endpoint,
-      server.token_endpoint,
-      server.pushed_authorization_request_endpoint,
-      ...(server.revocation_endpoint ? [server.revocation_endpoint] : []),
-    ];
+    // Where pigy sends the person, the code and the tokens: public hosts
+    // alone, as for everything that somebody else names.
+    const endpoints = {
+      authorization: publicUrl(server.authorization_endpoint),
+      token: publicUrl(server.token_endpoint),
+      pushed: publicUrl(server.pushed_authorization_request_endpoint),
+      revocation:
+        server.revocation_endpoint === undefined
+          ? null
+          : publicUrl(server.revocation_endpoint),
+    };
     if (
       // The server has to be the one that the PDS names: the issuer is its
       // origin, RFC 8414 section 3.3.
       server.issuer !== issuer ||
-      !endpoints.every((endpoint) => httpsUrl(endpoint)) ||
+      !endpoints.authorization ||
+      !endpoints.token ||
+      !endpoints.pushed ||
+      (server.revocation_endpoint !== undefined && !endpoints.revocation) ||
       !server.dpop_signing_alg_values_supported.includes("ES256") ||
       !server.token_endpoint_auth_methods_supported.includes(
         "private_key_jwt",
@@ -695,7 +698,13 @@ export function createBlueskyProvider({
         `${new URL(issuer).host} is not an authorization server that pigy can use.`,
       );
     }
-    return { issuer, server };
+    return {
+      issuer,
+      authorizationEndpoint: endpoints.authorization,
+      tokenEndpoint: endpoints.token,
+      pushedEndpoint: endpoints.pushed,
+      revocationEndpoint: endpoints.revocation,
+    };
   }
 
   /**
@@ -768,8 +777,8 @@ export function createBlueskyProvider({
     if (
       !parsed.success ||
       // The servers decide where the tokens are sent.
-      httpsOrigin(parsed.data.pds) !== parsed.data.pds ||
-      httpsOrigin(parsed.data.issuer) !== parsed.data.issuer ||
+      publicOrigin(parsed.data.pds) !== parsed.data.pds ||
+      publicOrigin(parsed.data.issuer) !== parsed.data.issuer ||
       !parseDid(parsed.data.did)
     ) {
       throw new ProviderError(
@@ -877,7 +886,8 @@ export function createBlueskyProvider({
           `The account ${handle} names no server that pigy can post to.`,
         );
       }
-      const { issuer, server } = await authorizationServer(pds);
+      const server = await authorizationServer(pds);
+      const { issuer } = server;
 
       const state = randomToken();
       const code = await pkce();
@@ -886,7 +896,7 @@ export function createBlueskyProvider({
       const session = { issuer, clientId, keyId: key.id, dpopKey };
       const answer = await asClient(
         session,
-        server.pushed_authorization_request_endpoint,
+        server.pushedEndpoint,
         {
           response_type: "code",
           redirect_uri: redirectUri,
@@ -903,7 +913,7 @@ export function createBlueskyProvider({
         throw failure(answer, {});
       }
       const pushed = understood(pushedSchema, answer.json, "Bluesky");
-      const url = new URL(server.authorization_endpoint);
+      const url = new URL(server.authorizationEndpoint);
       url.search = new URLSearchParams({
         client_id: clientId,
         request_uri: pushed.request_uri,
@@ -915,8 +925,8 @@ export function createBlueskyProvider({
         did,
         pds,
         issuer,
-        tokenEndpoint: server.token_endpoint,
-        revocationEndpoint: server.revocation_endpoint ?? null,
+        tokenEndpoint: server.tokenEndpoint,
+        revocationEndpoint: server.revocationEndpoint,
         redirectUri,
         clientId,
         keyId: key.id,
