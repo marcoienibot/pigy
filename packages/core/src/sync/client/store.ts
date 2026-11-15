@@ -81,7 +81,15 @@ export type TabMessage =
   /** From a tab that wants to know which tabs hold such mutations now. */
   | { type: "unsaved?" };
 
-/** A `BroadcastChannel`: what a tab posts reaches the other tabs. */
+/**
+ * A `BroadcastChannel`: what a tab posts reaches the other tabs that share
+ * the copy.
+ *
+ * `unsaved` and `unsaved?` may reach further, and in the app they do: to
+ * every store of the person in the browser, whichever workspace it holds,
+ * the other tabs' and the other one of the same tab. What a store could not
+ * store is lost when the person signs out, in whatever workspace it is.
+ */
 export interface TabChannel {
   post(message: TabMessage): void;
   /** Hands `listener` the messages of other tabs. Returns how to stop. */
@@ -143,11 +151,11 @@ export class SyncStore {
    */
   private readonly ahead = new Map<number, PendingMutation>();
   private cancelCatchUp: (() => void) | undefined;
-  /** Names this tab among those that share the copy. */
+  /** Names this store among those that the channel reaches. */
   private readonly tab: string;
   /**
-   * How many mutations the other tabs have last said they could not store,
-   * by tab. A tab that holds none is not in it.
+   * How many mutations the other stores have last said they could not
+   * store, by the name of each. One that holds none is not in it.
    */
   private readonly elsewhere = new Map<string, number>();
   /** Called with the name of every tab that says how many it holds. */
@@ -318,10 +326,12 @@ export class SyncStore {
   }
 
   /**
-   * How many mutations the tabs that share the copy could not store, this
-   * one and the others. They are in no storage, so this is the only way to
-   * learn of them for whoever is about to do what loses them: signing out
-   * makes every tab start again.
+   * How many mutations could not be stored, by this store and by the others
+   * that hear it on the channel about that: see `TabChannel`. In the app
+   * those are all the tabs of the person, with both their workspaces. The
+   * mutations are in no storage, so this is the only way to learn of them
+   * for whoever is about to do what loses them: signing out makes every tab
+   * start again.
    *
    * A tab says so when it cannot store a mutation, and says that it holds
    * none when it has stored them or is about to go, `leaving`. The tabs

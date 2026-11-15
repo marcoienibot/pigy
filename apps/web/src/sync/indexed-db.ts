@@ -172,25 +172,50 @@ async function copyNames(): Promise<string[]> {
 }
 
 /**
- * How many mutations of `userId` on this device the server has not
- * confirmed, in all their copies.
+ * How many mutations the server has not confirmed in each copy of `userId`
+ * on this device, by the ID of its workspace.
  */
-export async function countUnsynced(userId: string): Promise<number> {
-  let count = 0;
+async function unsynced(userId: string): Promise<Map<string, number>> {
+  const ofUser = `${prefix}${userId}/`;
+  const counts = new Map<string, number>();
   for (const name of await copyNames()) {
-    if (!name.startsWith(`${prefix}${userId}/`)) continue;
+    if (!name.startsWith(ofUser)) continue;
     const db = await open(name);
     try {
       const outbox = db.transaction("outbox").objectStore("outbox").count();
-      count += await new Promise<number>((resolve, reject) => {
-        outbox.onsuccess = () => resolve(outbox.result);
-        outbox.onerror = () => reject(outbox.error);
-      });
+      counts.set(
+        name.slice(ofUser.length),
+        await new Promise<number>((resolve, reject) => {
+          outbox.onsuccess = () => resolve(outbox.result);
+          outbox.onerror = () => reject(outbox.error);
+        }),
+      );
     } finally {
       db.close();
     }
   }
+  return counts;
+}
+
+/**
+ * How many mutations of `userId` on this device the server has not
+ * confirmed, in all their copies: those of the workspace on screen and of
+ * the other one.
+ */
+export async function countUnsynced(userId: string): Promise<number> {
+  let count = 0;
+  for (const held of (await unsynced(userId)).values()) count += held;
   return count;
+}
+
+/**
+ * The IDs of the workspaces of `userId` whose copies on this device hold
+ * mutations that the server has not confirmed.
+ */
+export async function unsyncedWorkspaces(userId: string): Promise<string[]> {
+  return [...(await unsynced(userId))].flatMap(([workspaceId, count]) =>
+    count > 0 ? [workspaceId] : [],
+  );
 }
 
 /**
