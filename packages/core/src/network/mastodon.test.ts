@@ -118,8 +118,10 @@ describe("stripMastodonText", () => {
 });
 
 describe("comparableMastodonText", () => {
+  // The instance that saves the texts, under the two names it can have.
+  const own = ["mastodon.example", "social.mastodon.example"];
   const same = (sent: string, saved: string) =>
-    comparableMastodonText(sent) === comparableMastodonText(saved);
+    comparableMastodonText(sent, own) === comparableMastodonText(saved, own);
 
   it("is the same for a text and for what Mastodon saves of it", () => {
     // Each pair is a text and what mastodon.example makes of it when it
@@ -129,13 +131,11 @@ describe("comparableMastodonText", () => {
     expect(same("@gargron@mastodon.social", "@Gargron@mastodon.social")).toBe(
       true,
     );
-    // A domain that stands for another one.
-    expect(same("cc @bob@example.com.", "cc @bob@social.example.com.")).toBe(
-      true,
-    );
-    expect(same("@a@x.example,@B@y.example\n@c", "@A,@b@y.example\n@C")).toBe(
-      true,
-    );
+    // The instance under its other name, and in capitals.
+    expect(same("cc @bob@Social.Mastodon.Example.", "cc @bob.")).toBe(true);
+    expect(
+      same("@a@mastodon.example,@B@y.example\n@c", "@A,@b@y.example\n@C"),
+    ).toBe(true);
     expect(same("  Hello \n", "Hello")).toBe(true);
     // Mastodon rewrites a mention also where it does not count it as one:
     // before "://" and with a domain that is too long.
@@ -146,6 +146,15 @@ describe("comparableMastodonText", () => {
 
   it("differs for texts that differ in anything else", () => {
     expect(same("Hi @ada", "Hi @bob")).toBe(false);
+    // The same name on two instances is two people, and so is the name on
+    // another instance and on this one.
+    expect(same("Hi @ada@one.example", "Hi @ada@other.example")).toBe(false);
+    expect(same("Hi @ada@other.example", "Hi @ada")).toBe(false);
+    // Not covered: a domain that stands for another one, which Mastodon
+    // replaces. Such a part is not found again.
+    expect(same("cc @bob@example.com.", "cc @bob@social.example.com.")).toBe(
+      false,
+    );
     expect(same("Hi @ada", "Hi ada")).toBe(false);
     expect(same("Hello", "hello")).toBe(false);
     expect(same("a b", "a  b")).toBe(false);

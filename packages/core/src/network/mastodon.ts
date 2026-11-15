@@ -88,26 +88,42 @@ export function stripMastodonText(text: string): string {
  * is not that text. Mastodon drops the whitespace around it, and it writes
  * every mention of an account that it finds the way the account is written,
  * app/services/process_mentions_service.rb: on mastodon.example,
- * "@ADA@mastodon.example" becomes "@ada", "@gargron@mastodon.social" becomes
- * "@Gargron@mastodon.social", and a domain that stands for another becomes
- * that one.
+ * "@ADA@mastodon.example" becomes "@ada", and "@gargron@mastodon.social"
+ * becomes "@Gargron@mastodon.social".
  *
  * Which accounts a server finds, only the server knows. So this does not
- * rewrite as Mastodon does. It reduces every mention to what both spellings
- * share, the name in lower case. It takes for a mention what Mastodon
- * rewrites, which is more than what `countMastodonCharacters` counts as
- * one. Two texts with the same form therefore differ at most in the case
- * and the domains of their mentions.
+ * rewrite as Mastodon does. It writes every mention in lower case, and
+ * without its domain if that is one of `ownDomains`, the domains of the
+ * instance itself: those are the two things that Mastodon changes in a
+ * mention it has found. The domain of another instance stays, because
+ * "@ada@one.example" and "@ada@other.example" are two people. It takes for
+ * a mention what Mastodon rewrites, which is more than what
+ * `countMastodonCharacters` counts as one. Two texts with the same form
+ * therefore differ at most in the case of their mentions, and in whether a
+ * mention of an account of the instance names the instance.
  *
- * Not covered: an account whose server answers for it under another name,
+ * Not covered: a domain that stands for another, which Mastodon replaces
+ * by that one, an account whose server answers for it under another name,
  * which Mastodon then writes, and "@a@b.example@c", which Mastodon may save
  * as the mention "@a@c".
  */
-export function comparableMastodonText(text: string): string {
+export function comparableMastodonText(
+  text: string,
+  ownDomains: readonly string[],
+): string {
+  const own = new Set(ownDomains.map((domain) => domain.toLowerCase()));
   return stripMastodonText(text).replace(
     mentionPattern,
-    (_mention: string, before: string, username: string) =>
-      `${before}@${username.toLowerCase()}`,
+    (
+      _mention: string,
+      before: string,
+      username: string,
+      domain: string | undefined,
+    ) => {
+      const name = `${before}@${username.toLowerCase()}`;
+      const host = domain?.toLowerCase();
+      return host === undefined || own.has(host) ? name : `${name}@${host}`;
+    },
   );
 }
 

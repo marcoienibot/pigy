@@ -845,13 +845,19 @@ describe("a step that may have posted already", () => {
       done: false,
       waitSeconds: 0,
       // An account without a status has none to look after. The parts are
-      // to be seen by whom the account has set.
-      state: { accountId: sim.ada.id, after: null, visibility: "public" },
+      // to be seen by whom the account has set. The instance has one name.
+      state: {
+        accountId: sim.ada.id,
+        after: null,
+        visibility: "public",
+        ownDomains: [domain],
+      },
     });
-    // Two questions, and nothing that changes anything.
+    // Three questions, and nothing that changes anything.
     expect(sim.paths().slice(requests)).toEqual([
       "GET /api/v1/accounts/verify_credentials",
       `GET /api/v1/accounts/${sim.ada.id}/statuses`,
+      "GET /api/v2/instance",
     ]);
 
     await postByHand(sim, credentials, "The older one");
@@ -860,6 +866,7 @@ describe("a step that may have posted already", () => {
       accountId: sim.ada.id,
       after: newest,
       visibility: "public",
+      ownDomains: [domain],
     });
     expect(sim.requests.filter(posts)).toEqual([]);
   });
@@ -916,12 +923,33 @@ describe("a step that may have posted already", () => {
       parts: [{ text: "Thank you, @ada" }],
     });
     await post.step();
-    // The domain and the case of a mention do not count when a status is
-    // looked for. The name does.
+    // The case of a mention does not count when a status is looked for.
+    // The name does.
     await postByHand(sim, credentials, "Thank you, @bob");
 
     expect((await post.part()).done).toBe(true);
     expect(texts(sim)).toEqual(["Thank you, @bob", "Thank you, @ada"]);
+  });
+
+  it("takes no status that mentions an account of the same name elsewhere", async () => {
+    const sim = setup();
+    const { credentials } = await connect(sim);
+    sim.simulator.addInstance("other.example");
+    sim.simulator.addAccount("other.example", "ada");
+    const post = delivery(sim, credentials, {
+      parts: [{ text: `Thank you, @ada@${domain}` }],
+    });
+    await post.step();
+    // The person writes to the Ada of another instance, in the same words.
+    // That is another reader. Taken for the part, it would leave the part
+    // unpublished and reported as done.
+    await postByHand(sim, credentials, "Thank you, @ada@other.example");
+
+    expect((await post.part()).done).toBe(true);
+    expect(texts(sim)).toEqual([
+      "Thank you, @ada@other.example",
+      "Thank you, @ada",
+    ]);
   });
 
   it("posts what never arrived", async () => {
@@ -1108,6 +1136,7 @@ describe("a step that may have posted already", () => {
         accountId: sim.ada.id,
         after: since[39],
         visibility: "public",
+        ownDomains: [domain],
       },
     });
     expect((await post.step()).state).toMatchObject({ after: since[40] });
@@ -1176,7 +1205,12 @@ describe("a step that may have posted already", () => {
         parts: [],
         done: false,
         waitSeconds: 0,
-        state: { accountId: sim.ada.id, after: "9", visibility: "public" },
+        state: {
+          accountId: sim.ada.id,
+          after: "9",
+          visibility: "public",
+          ownDomains: [domain],
+        },
       },
     });
     expect(progress.parts[0]?.id).toBe(byHand);

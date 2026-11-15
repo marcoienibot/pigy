@@ -213,6 +213,12 @@ const notesSchema = z.strictObject({
    * taken for a part.
    */
   visibility: z.string().min(1),
+  /**
+   * The domains of the instance itself: the one it is reached at and the
+   * one in the handles of its accounts. A mention that names one of them
+   * is saved without it.
+   */
+  ownDomains: z.array(z.string().min(1)),
 });
 
 type Notes = z.infer<typeof notesSchema>;
@@ -577,15 +583,15 @@ export function createMastodonProvider({
    *   source is not the text that was sent either. Mastodon writes every
    *   mention of an account that it finds the way the account is written,
    *   and which accounts it finds, only the server knows. So the two are
-   *   compared in the form of `comparableMastodonText`, in which neither
-   *   the case nor the domain of a mention counts.
+   *   compared in the form of `comparableMastodonText`, in which the case
+   *   of a mention does not count, and neither does the domain of one that
+   *   names the instance itself.
    *
    * That comparison lets in a status which differs from the part in the
-   * case or the domain of a mention, "@ada@other.example" for
-   * "@ada@mastodon.example", and in nothing else. Such a status still has
-   * to fit in all the rest: the account's own, newer than this delivery, in
-   * the same place, with every other character the same. Only the person
-   * can have written it, by hand and since, and it reads as the part does.
+   * case of a mention, or in naming the instance where the part does not,
+   * "@ada" for "@Ada@mastodon.example" on mastodon.example, and in nothing
+   * else. Both are the same account. A mention of the same name on another
+   * instance is somebody else, and such a status is not taken.
    *
    * So a status that reads differently, stands elsewhere, is seen by
    * others or has more than text is never taken for the one that is looked
@@ -613,11 +619,11 @@ export function createMastodonProvider({
    */
   async function findPosted(
     credentials: MastodonCredentials,
-    { accountId, after, visibility }: Notes,
+    { accountId, after, visibility, ownDomains }: Notes,
     replyTo: string | null,
     text: string,
   ) {
-    const wanted = comparableMastodonText(text);
+    const wanted = comparableMastodonText(text, ownDomains);
     // `min_id` lists the statuses that follow one, where `since_id` would
     // list the newest. "0" is below every ID: the account had no status.
     const cursor = after ?? "0";
@@ -648,7 +654,10 @@ export function createMastodonProvider({
         continue;
       }
       const source = await sourceText(credentials, status.id);
-      if (source !== null && comparableMastodonText(source) === wanted) {
+      if (
+        source !== null &&
+        comparableMastodonText(source, ownDomains) === wanted
+      ) {
         return { status };
       }
     }
@@ -897,6 +906,8 @@ export function createMastodonProvider({
           domain,
         );
         const [newest] = await listStatuses(access, account.id, { limit: "1" });
+        const instance = await readInstance(domain, accessToken);
+        const handleDomain = parseInstanceDomain(instance.domain) ?? domain;
         // Left to itself, Mastodon posts with what the account has set. A
         // step names it all the same, so that all parts are posted alike
         // and it knows what it is looking for.
@@ -909,6 +920,7 @@ export function createMastodonProvider({
           // looked for a public status would not find its own.
           visibility:
             intended === "public" && account.limited ? "unlisted" : intended,
+          ownDomains: [...new Set([domain, handleDomain])],
         });
       }
 

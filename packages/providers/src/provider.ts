@@ -313,7 +313,9 @@ export type Provider = {
    *   stood. Two deliveries that begin together with the same first part
    *   record the same, and one takes the other's post for its own: it
    *   replies to it, and the post goes when either delivery is deleted.
-   *   No provider can tell the two apart.
+   *   No provider can tell the two apart. pigy keeps to this per channel.
+   *   An account that is connected as two channels, in two workspaces, is
+   *   not covered: PLAN.md section 8 says what can happen then.
    * - What a person has deleted or changed on the network since is no
    *   longer what a step looks for, and may be published again.
    */
