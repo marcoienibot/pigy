@@ -28,6 +28,8 @@ export class PublishWorkflow extends publishWorkflow({
   // A test that wants the development key deploys it as a secret.
   developmentCredentialKeys: undefined,
   providerOf: (...args) => (deployment.providerOf ?? providerOf)(...args),
+  // A pause within a step is over at once: no test waits for one.
+  pause: async () => {},
 }) {
   constructor(ctx: ExecutionContext, env: Bindings) {
     // The bindings of the runtime with the secrets of the test, and none

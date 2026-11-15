@@ -6,6 +6,7 @@ import { expect, it, onTestFinished, vi } from "vitest";
 import { openCredentials } from "../src/channels/credentials.ts";
 import { providerOf } from "../src/network/providers.ts";
 import { lostTrackMessage } from "../src/publish/delivery.ts";
+import { renewalWaitsMs } from "../src/publish/workflow.ts";
 import { createVault } from "../src/vault.ts";
 import { WorkspaceStore } from "../src/workspace/store.ts";
 import { renewChannelAccess } from "../src/workspace/workspaces.ts";
@@ -379,20 +380,25 @@ it("takes a step that fails in a way of pigy's own for one whose outcome nobody 
   expect(context.texted()).toEqual(["Half done"]);
 });
 
+/** Mastodon's credentials with a generation: see `refreshing`. */
+type Aged = { generation: number; inner: Json };
+
+/** What a channel holds from its connection counts as generation 0. */
+function aged(credentials: Json): Aged {
+  return credentials !== null &&
+    typeof credentials === "object" &&
+    "generation" in credentials
+    ? (credentials as Aged)
+    : { generation: 0, inner: credentials };
+}
+
 /**
  * An adapter of a network whose access runs out, in place of Mastodon's,
  * which never asks for a refresh. Its credentials are Mastodon's with a
  * generation, and the network takes those of `network.generation` only.
- * What a channel holds from its connection counts as generation 0.
+ * A refresh returns generation 1, whatever it starts from.
  */
 function refreshing(network: { generation: number; refreshes: number }) {
-  type Aged = { generation: number; inner: Json };
-  const aged = (credentials: Json): Aged =>
-    credentials !== null &&
-    typeof credentials === "object" &&
-    "generation" in credentials
-      ? (credentials as Aged)
-      : { generation: 0, inner: credentials };
   const current = (credentials: Json): Json => {
     const { generation, inner } = aged(credentials);
     if (generation !== network.generation) {
@@ -414,6 +420,37 @@ function refreshing(network: { generation: number; refreshes: number }) {
         credentials: { generation: 1, inner: aged(credentials).inner },
         refreshAt: new Date("2026-11-20T00:00:00Z"),
         expiresAt: new Date("2026-12-24T00:00:00Z"),
+      };
+    },
+  });
+}
+
+/**
+ * The same, on a network where a refresh ends the credentials that it
+ * started from, as where a refresh token is good once: the network renews
+ * the generation that it issued last and no other, and takes the new one
+ * from then on. Whoever loses what a refresh returned has to connect the
+ * account again.
+ */
+function rotating(network: { generation: number; refreshes: number }) {
+  return (provider: Provider): Provider => ({
+    ...refreshing(network)(provider),
+    async refresh(credentials) {
+      const { generation, inner } = aged(credentials);
+      // The generation that was issued last is the number of refreshes
+      // so far: the connection issued generation 0.
+      if (generation !== network.refreshes) {
+        throw new ProviderError(
+          "reconnect",
+          "This access was renewed before, and cannot be renewed again.",
+        );
+      }
+      network.refreshes++;
+      network.generation = generation + 1;
+      return {
+        credentials: { generation: generation + 1, inner },
+        refreshAt: null,
+        expiresAt: null,
       };
     },
   });
@@ -487,11 +524,16 @@ it("goes on with renewed credentials that it could not store", async () => {
   const before = await heldBy(context);
   const errors = expectErrors();
   // The network has renewed the credentials, and the workspace fails when
-  // it is handed them.
+  // it is handed them, the first time and every time that the step tries
+  // again.
+  const tries = renewalWaitsMs.length + 1;
+  const original = WorkspaceStore.prototype.renewChannelAccess;
+  let handed = 0;
   const failing = vi
     .spyOn(WorkspaceStore.prototype, "renewChannelAccess")
-    .mockImplementationOnce(() => {
-      throw new Error("The object was reset");
+    .mockImplementation(function (this: WorkspaceStore, ...args) {
+      if (++handed <= tries) throw new Error("The object was reset");
+      return original.apply(this, args);
     });
   onTestFinished(() => failing.mockRestore());
 
@@ -502,10 +544,13 @@ it("goes on with renewed credentials that it could not store", async () => {
   // worth nothing by then. The post went out with the new ones instead.
   expect(target).toMatchObject({ status: "sent", attempt: 1 });
   expect(context.texted()).toEqual(["Not lost"]);
-  expect(errors).toHaveBeenCalledWith(
-    "The renewed credentials of a channel were not stored",
-    expect.anything(),
-  );
+  // It gave up after as many tries as it has, and said so once.
+  expect(
+    errors.mock.calls.filter(
+      ([message]) =>
+        message === "The renewed credentials of a channel were not stored",
+    ),
+  ).toHaveLength(1);
   // The next step asked the workspace for the credentials again, found the
   // old ones and renewed them once more, which this network allows. The
   // channel holds new ones in the end.
@@ -514,6 +559,88 @@ it("goes on with renewed credentials that it could not store", async () => {
     generation: 1,
     inner: before.credentials,
   });
+});
+
+it("hands renewed credentials to the workspace again when it does not take them at first", async () => {
+  const context = await ready({}, "Kept", "And its reply");
+  // On this network a refresh ends the credentials that it started from.
+  const network = { generation: 1, refreshes: 0 };
+  withAdapter(rotating(network));
+  const before = await heldBy(context);
+  // The network has renewed the credentials, and the workspace fails when
+  // it is handed them: once.
+  const failing = vi
+    .spyOn(WorkspaceStore.prototype, "renewChannelAccess")
+    .mockImplementationOnce(() => {
+      throw new Error("The object was reset");
+    });
+  onTestFinished(() => failing.mockRestore());
+
+  const target = await delivered(context);
+
+  // The step handed them over a second time, and the workspace took them.
+  // Had it gone on without, the step for the second part would have read
+  // the old ones from the workspace, which the network neither takes nor
+  // renews again, and the delivery would have ended with an account that
+  // has to be connected again.
+  expect(target).toMatchObject({ status: "sent", attempt: 1, error: null });
+  expect(context.texted()).toEqual(["Kept", "And its reply"]);
+  expect(failing).toHaveBeenCalledTimes(2);
+  // One refresh: what was handed over again is what the first one
+  // returned.
+  expect(network.refreshes).toBe(1);
+  const after = await heldBy(context);
+  expect(after.credentials).toEqual({
+    generation: 1,
+    inner: before.credentials,
+  });
+  expect(after.channel.status).toBe("connected");
+});
+
+it("runs a step again when the workspace cannot be asked what it holds in place of a renewal", async () => {
+  const context = await ready({}, "Asked again");
+  const network = { generation: 1, refreshes: 0 };
+  withAdapter(refreshing(network));
+  const errors = expectErrors();
+  // The workspace does not keep the renewed credentials, as when the
+  // channel holds others by now. The step then goes on with what the
+  // channel holds, and has to ask for it.
+  const declining = vi
+    .spyOn(WorkspaceStore.prototype, "renewChannelAccess")
+    .mockImplementationOnce(() => false);
+  // The workspace fails that question. It is the third of the step: the
+  // credentials to call the adapter with, the ones to renew, and this one.
+  const original = WorkspaceStore.prototype.channelAccess;
+  let asked = 0;
+  const failing = vi
+    .spyOn(WorkspaceStore.prototype, "channelAccess")
+    .mockImplementation(function (this: WorkspaceStore, ...args) {
+      if (++asked === 3) throw new Error("The object was reset");
+      return original.apply(this, args);
+    });
+  onTestFinished(() => {
+    declining.mockRestore();
+    failing.mockRestore();
+  });
+  // The platform runs the step again after a minute, and a test does not
+  // wait for that.
+  await context.workflows.modifyAll(async (modifier) => {
+    await modifier.disableRetryDelays();
+  });
+
+  const target = await delivered(context);
+
+  expect(target).toMatchObject({ status: "sent", attempt: 1, error: null });
+  expect(context.texted()).toEqual(["Asked again"]);
+  // The question was asked and failed, which is what this test is about.
+  expect(asked).toBeGreaterThanOrEqual(3);
+  // The step did not go on with credentials that the channel does not
+  // hold, and nothing was reported as lost: the step failed, and was run
+  // again from its beginning.
+  expect(errors).not.toHaveBeenCalledWith(
+    "The renewed credentials of a channel were not stored",
+    expect.anything(),
+  );
 });
 
 it("asks for a new connection when the network refuses the renewed credentials too", async () => {

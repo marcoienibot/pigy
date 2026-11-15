@@ -13,10 +13,19 @@ export type CredentialSource = {
   /**
    * Renews the credentials now, because a call failed with `refresh`: the
    * network refused `refused`. Returns the credentials to make the call
-   * again with, which are stored by then. `Provider.refresh` has the
-   * rules: one refresh at a time per account, and none if `refused` are no
-   * longer the stored credentials. It fails as `Provider.refresh` does,
-   * with `reconnect` when the network will not renew.
+   * again with. `Provider.refresh` has the rules: one refresh at a time
+   * per account, and none if `refused` are no longer the stored
+   * credentials. It fails as `Provider.refresh` does, with `reconnect`
+   * when the network will not renew.
+   *
+   * A caller may count on what is returned being good for the call at
+   * hand. It may not count on `credentials` returning the same from then
+   * on. A source stores what a refresh returns before it hands it out,
+   * and tries again where that fails, because on some networks a refresh
+   * ends the credentials that it started from: what is not stored is
+   * lost. A source that cannot store them returns them all the same, and
+   * logs that. They are then good for this call and for no later one, and
+   * the account may have to be connected again.
    */
   refresh: (refused: Json) => Promise<Json>;
 };

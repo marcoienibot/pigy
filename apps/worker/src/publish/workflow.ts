@@ -78,6 +78,11 @@ export type PublishDependencies = Pick<
 > & {
   /** Makes the adapter of a network for a workspace. */
   providerOf: typeof providerOf;
+  /**
+   * Waits for so many milliseconds, within a step: for a moment in which
+   * the workspace cannot be told what has to reach it.
+   */
+  pause: (milliseconds: number) => Promise<void>;
 };
 
 /**
@@ -85,6 +90,14 @@ export type PublishDependencies = Pick<
  * network again, in milliseconds.
  */
 export const limitsLifetimeMs = 24 * 60 * 60 * 1000;
+
+/**
+ * How long a step waits before it hands renewed credentials to a workspace
+ * again that did not take them, in milliseconds: once per entry. The
+ * workspace is in the way of a deploy for a moment at most, and a step has
+ * minutes.
+ */
+export const renewalWaitsMs = [1000, 5000, 15_000];
 
 /**
  * A try of a step that talks to a network. What goes wrong in it is its
@@ -287,7 +300,13 @@ function linkOf({ publicUrl }: Reach, url: string | null): string | null {
  * object of the workspace watches for.
  */
 export async function deliver(
-  { fetch, now, developmentCredentialKeys, providerOf }: PublishDependencies,
+  {
+    fetch,
+    now,
+    developmentCredentialKeys,
+    providerOf,
+    pause,
+  }: PublishDependencies,
   env: Bindings,
   { workspace, targetId, attempt }: DeliveryParams,
   /** The ID of the run, which the workspace gave it: its own alone. */
@@ -391,36 +410,60 @@ export async function deliver(
         const renewed = await provider.refresh(refusedCredentials);
         // From here on the credentials that the channel holds may be
         // worth nothing: on some networks a refresh ends the ones it
-        // started from. So a failure to store the new ones does not end
-        // the step, which would be run again with the old ones. The step
-        // goes on with what it has, and the log says what was lost.
+        // started from. If the new ones do not get into the workspace,
+        // the next step reads the old ones, cannot renew them a second
+        // time, and the account has to be connected again. So a
+        // workspace that does not take them is handed them again, a few
+        // times: the same sealed text, and no second refresh.
+        let kept: boolean;
         try {
-          const kept = await renewChannelAccess(
-            env.WORKSPACE,
-            workspace,
-            channel.id,
-            access.credentials,
-            {
-              credentials: await sealCredentials(
-                channelVault,
+          const sealed = {
+            credentials: await sealCredentials(
+              channelVault,
+              workspace,
+              access,
+              renewed.credentials,
+            ),
+            refreshAt: renewed.refreshAt?.getTime() ?? null,
+            expiresAt: renewed.expiresAt?.getTime() ?? null,
+          };
+          for (let tries = 0; ; tries++) {
+            try {
+              kept = await renewChannelAccess(
+                env.WORKSPACE,
                 workspace,
-                access,
-                renewed.credentials,
-              ),
-              refreshAt: renewed.refreshAt?.getTime() ?? null,
-              expiresAt: renewed.expiresAt?.getTime() ?? null,
-            },
-          );
-          // Not kept: the channel holds others by now, or is gone.
-          if (!kept) return await credentials();
+                channel.id,
+                access.credentials,
+                sealed,
+              );
+              break;
+            } catch (error) {
+              const wait = renewalWaitsMs[tries];
+              if (wait === undefined) throw error;
+              // A try that failed may have stored them all the same,
+              // with only its answer lost. The next one then finds them
+              // in the place of the ones it expects and is answered as
+              // not kept, and what the channel holds is read below.
+              await pause(wait);
+            }
+          }
         } catch (error) {
-          if (error instanceof Ended) throw error;
+          // Given up. Ending the step here would have it run again with
+          // the old credentials. It goes on with what it has, which may
+          // be the last that anybody gets out of this access, and the
+          // log says what was lost, without anything of it.
           console.error(
             "The renewed credentials of a channel were not stored",
             loggable(error),
           );
+          return renewed.credentials;
         }
-        return renewed.credentials;
+        // Not kept: the channel holds others by now, or is gone, and the
+        // step goes on with what it holds. That is asked outside of what
+        // is caught above: a workspace that cannot be asked is no reason
+        // to go on with credentials that the channel does not hold. The
+        // step fails then, and is run again.
+        return kept ? renewed.credentials : credentials();
       },
     };
   };

@@ -51,4 +51,5 @@ export class SimWorldDO extends simWorldObject({ now }) {}
 export class PublishWorkflow extends publishWorkflow({
   ...dependencies,
   providerOf,
+  pause: (milliseconds) => scheduler.wait(milliseconds),
 }) {}
