@@ -9,7 +9,8 @@
   },
   "scripts": {
     "typecheck": "tsc -b",
-    "test": "vitest run"
+    "test": "vitest run",
+    "conformance:live": "node scripts/conformance-live.mjs"
   },
   "dependencies": {
     "@pigy/core": "workspace:*",
