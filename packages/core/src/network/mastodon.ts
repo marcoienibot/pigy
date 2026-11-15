@@ -92,11 +92,12 @@ export function stripMastodonText(text: string): string {
  * becomes "@Gargron@mastodon.social".
  *
  * Which accounts a server finds, only the server knows. So this does not
- * rewrite as Mastodon does. It writes every mention in lower case, and
- * without its domain if that is one of `ownDomains`, the domains of the
- * instance itself: those are the two things that Mastodon changes in a
- * mention it has found. The domain of another instance stays, because
- * "@ada@one.example" and "@ada@other.example" are two people. It takes for
+ * rewrite as Mastodon does. It writes every mention in lower case, its
+ * domain the way Mastodon keeps domains, and without the domain if that is
+ * one of `ownDomains`, the domains of the instance itself: those are the
+ * things that Mastodon changes in a mention it has found. The domain of
+ * another instance stays, because "@ada@one.example" and
+ * "@ada@other.example" are two people. It takes for
  * a mention what Mastodon rewrites, which is more than what
  * `countMastodonCharacters` counts as one. Two texts with the same form
  * therefore differ at most in the case of their mentions, and in whether a
@@ -111,7 +112,7 @@ export function comparableMastodonText(
   text: string,
   ownDomains: readonly string[],
 ): string {
-  const own = new Set(ownDomains.map((domain) => domain.toLowerCase()));
+  const own = new Set(ownDomains.map(storedDomain));
   return stripMastodonText(text).replace(
     mentionPattern,
     (
@@ -121,10 +122,25 @@ export function comparableMastodonText(
       domain: string | undefined,
     ) => {
       const name = `${before}@${username.toLowerCase()}`;
-      const host = domain?.toLowerCase();
+      const host = domain === undefined ? undefined : storedDomain(domain);
       return host === undefined || own.has(host) ? name : `${name}@${host}`;
     },
   );
+}
+
+/**
+ * A domain as Mastodon keeps it, lib/tag_manager.rb: in lower case and in
+ * ASCII, so "bücher.example" as "xn--bcher-kva.example". A mention that was
+ * written the first way is saved the second.
+ */
+function storedDomain(domain: string): string {
+  try {
+    return new URL(`https://${domain}`).hostname;
+  } catch {
+    // Nothing that a URL can name. Then it is no account's domain either,
+    // and Mastodon leaves the mention as it is.
+    return domain.toLowerCase();
+  }
 }
 
 /**

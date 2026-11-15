@@ -133,6 +133,15 @@ describe("comparableMastodonText", () => {
     );
     // The instance under its other name, and in capitals.
     expect(same("cc @bob@Social.Mastodon.Example.", "cc @bob.")).toBe(true);
+    // Mastodon keeps a domain in ASCII, and writes the mention with that.
+    expect(
+      same("Hi @ada@bücher.example", "Hi @ada@xn--bcher-kva.example"),
+    ).toBe(true);
+    // The same for the instance itself, whose domain comes in ASCII.
+    const umlaut = ["xn--mstodon-5wa.example"];
+    expect(comparableMastodonText("@ada@mästodon.example", umlaut)).toBe(
+      comparableMastodonText("@ada", umlaut),
+    );
     expect(
       same("@a@mastodon.example,@B@y.example\n@c", "@A,@b@y.example\n@C"),
     ).toBe(true);
