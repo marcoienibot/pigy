@@ -225,6 +225,17 @@ function rateLimitReset(headers: Headers): Date | undefined {
   return Number.isNaN(date.getTime()) ? undefined : date;
 }
 
+/**
+ * Whether the status with the ID `id` is newer than the one with the ID
+ * `other`. Mastodon's IDs are numbers that grow with time, written as
+ * strings of any length. They are compared as its documentation says,
+ * api/guidelines: the longer one is the greater, and of two that are
+ * equally long, the one that sorts later.
+ */
+function isNewer(id: string, other: string): boolean {
+  return id.length > other.length || (id.length === other.length && id > other);
+}
+
 export function createMastodonProvider({
   fetch,
   now,
@@ -567,11 +578,17 @@ export function createMastodonProvider({
       limit: String(listLength),
       exclude_reblogs: "true",
     });
-    const [newest] = statuses;
-    // The end is an empty list, or the same list again from a server that
-    // does not know `min_id`.
-    if (!newest || newest.id === cursor) return null;
-    for (const status of statuses.reverse()) {
+    // Mastodon lists what follows `after`, and nothing else. A server that
+    // does not know `min_id` lists the account's newest statuses whatever
+    // it is asked, among them those from before the post. Those are never
+    // looked at: one of them could read like the part.
+    const newer = statuses
+      .filter(({ id }) => after === null || isNewer(id, after))
+      .sort((a, b) => (isNewer(a.id, b.id) ? 1 : -1));
+    const newest = newer.at(-1);
+    // The end: nothing is newer than what has been looked at.
+    if (!newest) return null;
+    for (const status of newer) {
       if ((status.in_reply_to_id ?? null) !== replyTo) continue;
       const source = await sourceText(credentials, status.id);
       if (source !== null && comparableMastodonText(source) === wanted) {

@@ -996,23 +996,54 @@ describe("a step that may have posted already", () => {
     expect(texts(sim)).toEqual(["Hello", "Hello"]);
   });
 
-  it("stops looking at a server that lists the same statuses again", async () => {
+  it("tells what is newer by the length of an ID before its digits", async () => {
     const sim = setup();
     const { credentials } = await connect(sim);
-    await postByHand(sim, credentials, "From before");
+    const byHand = await postByHand(sim, credentials, "Hello");
+    // Mastodon's IDs are numbers of any length. This one is longer than
+    // the "9" that the notes name, so it is the greater, though it sorts
+    // before it as a string.
+    expect(byHand.length).toBeGreaterThan(1);
+    const progress = await sim.provider.publishStep({
+      credentials,
+      content: hello,
+      key: "target-1",
+      progress: {
+        parts: [],
+        done: false,
+        waitSeconds: 0,
+        state: { accountId: sim.ada.id, after: "9" },
+      },
+    });
+    expect(progress.parts[0]?.id).toBe(byHand);
+    expect(texts(sim)).toEqual(["Hello"]);
+  });
+
+  it("takes nothing from before the post at a server that lists it all the same", async () => {
+    const sim = setup();
+    const { credentials } = await connect(sim);
+    // The same text, from before this post was begun. It is the newest
+    // status then, so it is the one that the first step notes.
+    await postByHand(sim, credentials, "Hello");
     const post = delivery(sim, credentials, hello);
     await post.step();
+    await postByHand(sim, credentials, "Other");
     // A server that speaks Mastodon's API and does not know `min_id`: it
-    // lists the newest statuses, whatever it is asked to begin after.
+    // lists the newest statuses, whatever it is asked to begin after. So
+    // its list holds the old "Hello" next to what is new.
     sim.hooks.intercept = (request) => {
       const url = new URL(request.url);
       if (!url.searchParams.has("min_id")) return undefined;
       url.searchParams.delete("min_id");
       return sim.simulator.fetch(new Request(url, request));
     };
-    // It does not take the list for news again and again: it posts.
-    expect((await post.step()).done).toBe(true);
-    expect(texts(sim)).toEqual(["From before", "Hello"]);
+
+    // The old status is not the part, and the same list is not taken for
+    // news again and again: the part is posted.
+    const { parts, done } = await post.part();
+    expect(done).toBe(true);
+    expect(texts(sim)).toEqual(["Hello", "Other", "Hello"]);
+    expect(parts[0]?.id).toBe(feed(sim.world).at(-1)?.post.id);
   });
 });
 
