@@ -17,13 +17,47 @@ import { expect, type Page, test } from "../fixtures.ts";
 
 /**
  * Opens the app in `page` as its older version: the first page load of
- * the browser, which is signed in as `email` already.
+ * the browser, which is signed in already. With `newerHeld`, the newer
+ * version cannot be installed before the function that this returns is
+ * called.
  */
-async function openOlderVersion(page: Page): Promise<void> {
-  await olderVersionFirst(page.context());
+async function openOlderVersion(
+  page: Page,
+  { newerHeld = false } = {},
+): Promise<() => void> {
+  const versions = await olderVersionFirst(page.context());
+  const release = newerHeld ? versions.holdNewer() : () => {};
   await page.goto("/");
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Drafts");
   await serviceWorkerAnswersFor(page);
+  return release;
+}
+
+/**
+ * Marks the window of `page`. The mark is gone when the page is loaded
+ * again, and says before that whether the page has begun to leave: the
+ * browser tells a page so in the moment in which a script asks for a
+ * reload, which is earlier than the test would see the new page.
+ */
+async function mark(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const state = window as { sameLoad?: boolean; leaving?: boolean };
+    state.sameLoad = true;
+    window.addEventListener("beforeunload", () => {
+      state.leaving = true;
+    });
+  });
+}
+
+/** What is left of the mark of `mark` in the window of `page`. */
+function markOf(page: Page): Promise<{ sameLoad: boolean; leaving: boolean }> {
+  return page.evaluate(() => {
+    const state = window as { sameLoad?: boolean; leaving?: boolean };
+    return {
+      sameLoad: state.sameLoad === true,
+      leaving: state.leaving === true,
+    };
+  });
 }
 
 /**
@@ -51,10 +85,7 @@ test("a new version waits while the app is in use, and takes over when the app i
   await editor(page).press("End");
   await page.keyboard.type(", and");
   await expectSync(page, "Synced");
-  // Gone with the next page load, if there is one.
-  await page.evaluate(() => {
-    (window as { sameLoad?: boolean }).sameLoad = true;
-  });
+  await mark(page);
 
   await comeBackTo(page);
 
@@ -65,9 +96,7 @@ test("a new version waits while the app is in use, and takes over when the app i
   await backToList(page, isMobile);
   await nav.getByRole("link", { name: "Settings" }).click();
   await expect(page.getByText("A new version of pigy is ready")).toBeVisible();
-  expect(
-    await page.evaluate(() => (window as { sameLoad?: boolean }).sameLoad),
-  ).toBe(true);
+  expect(await markOf(page)).toEqual({ sameLoad: true, leaving: false });
   // And the person goes on writing.
   await nav.getByRole("link", { name: "Drafts" }).click();
   await draftRow(page, "Begun under the older version").click();
@@ -86,9 +115,10 @@ test("a new version waits while the app is in use, and takes over when the app i
   await expect(second.getByRole("heading", { level: 1 })).toHaveText("Drafts");
   await expect(newerVersion(second)).toHaveCount(1);
 
-  // The first window cannot stay behind as the older version: the files
-  // of that one are gone. It has loaded itself again, where it was, and
-  // nothing that was written in it is lost.
+  // The first window does not stay behind as the older version under
+  // the service worker of the newer one: after a real release the files
+  // of the older one would be gone. It has loaded itself again, where it
+  // was, and nothing that was written in it is lost.
   await expect(newerVersion(page)).toHaveCount(1);
   await expect(editor(page)).toHaveValue(
     "Begun under the older version, and finished under it",
@@ -153,21 +183,36 @@ test("a window that is too old for the server loads the new version when it is r
     });
   });
   await signInBeforeFirstLoad(ownEmail);
-  await openOlderVersion(page);
+  // The window asks for the newer version as soon as it knows that it is
+  // too old, before anybody can press a button. Left alone, the newer
+  // version would be installed and waiting by the time of the click, and
+  // a reload that asked nobody would start as it too. So its install is
+  // held: until the test says, the device has the older version only.
+  const installNewer = await openOlderVersion(page, { newerHeld: true });
   await expectSync(page, "Reload to update");
+  await mark(page);
 
   await page
     .getByRole("button", { name: "Sync: Reload to update" })
     .filter({ visible: true })
     .first()
     .click();
-  await page
+  const reload = page
     .getByRole("dialog")
-    .getByRole("button", { name: "Reload" })
-    .click();
+    .getByRole("button", { name: "Reload" });
+  await reload.click();
 
-  // A reload alone would bring the older version back, from the device:
-  // nothing but the reload of this window has looked for a newer one.
+  // The button has the window wait for the newer version: it is the page
+  // that was clicked in, and has not begun to load itself again. A reload
+  // that asked nobody would have begun in the click, and would bring the
+  // older version back, from the device.
+  await expect(reload).toBeDisabled();
+  expect(await markOf(page)).toEqual({ sameLoad: true, leaving: false });
+
+  installNewer();
+
+  // Now there is a newer version to start as, and the reload that waited
+  // for it does.
   await expect(newerVersion(page)).toHaveCount(1);
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Drafts");
 });

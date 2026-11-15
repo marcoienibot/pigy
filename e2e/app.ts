@@ -181,9 +181,10 @@ export async function expectSync(
 }
 
 /**
- * Waits until the service worker of the app answers for `page`. It does
- * from the moment it is installed, which is when it has every file of the
- * app: a page that it answers for can be loaded without a connection.
+ * Waits until a service worker of the app answers for `page`. The first
+ * one of a browser does from the moment it is installed, which is when it
+ * has every file of the app: a page that it answers for can be loaded
+ * without a connection.
  */
 export async function serviceWorkerAnswersFor(page: Page): Promise<void> {
   await page.waitForFunction(() => navigator.serviceWorker.controller !== null);
@@ -215,10 +216,13 @@ export async function serviceWorkerAnswersFor(page: Page): Promise<void> {
  *
  * What the newer version keeps as its app shell says that it is the newer
  * one, in `newerVersion`.
+ *
+ * The caches of the older version are not those of a release before the
+ * build: under their other name the newer version does not delete them
+ * when it takes over, as it deletes those of a real release. A window that
+ * stayed behind as the older version would not miss a file here.
  */
-export async function olderVersionFirst(
-  context: BrowserContext,
-): Promise<void> {
+export async function olderVersionFirst(context: BrowserContext) {
   const current = await (await context.request.get("/sw.js")).text();
   // What every cache of the app is named with: `prefix` in
   // apps/web/src/sw/precache.ts.
@@ -237,6 +241,9 @@ export async function olderVersionFirst(
   context.on("serviceworker", (worker) => {
     first ??= worker;
   });
+  // Resolved when the newer version may have its app shell: see
+  // `holdNewer`.
+  let released: Promise<void> = Promise.resolve();
   await context.route(
     (url) => url.pathname === "/",
     async (route) => {
@@ -245,6 +252,7 @@ export async function olderVersionFirst(
       // version.
       const worker = route.request().serviceWorker();
       if (!worker || worker === first) return route.fallback();
+      await released;
       const response = await route.fetch();
       await route.fulfill({
         // Without the headers of the server: the browser would keep this
@@ -254,6 +262,22 @@ export async function olderVersionFirst(
       });
     },
   );
+
+  return {
+    /**
+     * Keeps the newer version from being installed until the function
+     * that this returns is called: the browser finds it and begins to
+     * install it, and it is left waiting for its app shell. Call this
+     * before the browser looks for the newer version.
+     */
+    holdNewer(): () => void {
+      let release = () => {};
+      released = new Promise((resolve) => {
+        release = resolve;
+      });
+      return release;
+    },
+  };
 }
 
 /**
