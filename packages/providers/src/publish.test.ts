@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ProviderError } from "./errors.ts";
 import type { Provider, PublishProgress, PublishRequest } from "./provider.ts";
-import { type PublishRunner, publish } from "./publish.ts";
+import { type PublishRunner, publish, withCredentials } from "./publish.ts";
 
 const content = { parts: [{ text: "one" }, { text: "two" }] };
 const job = {
@@ -340,5 +340,27 @@ describe("publish, when the network refuses the credentials before their time", 
         failure,
       );
     }
+  });
+});
+
+describe("withCredentials", () => {
+  it("makes any call of a provider that way, not only a step", async () => {
+    // What a caller asks before it publishes: the limits of an account. A
+    // network that refuses the token there is answered in the same way.
+    const tokens: unknown[] = [];
+    const limits = await withCredentials(
+      {
+        credentials: async () => ({ token: "t1" }),
+        refresh: async () => ({ token: "t2" }),
+      },
+      async (credentials) => {
+        tokens.push(credentials);
+        if (tokens.length === 1) throw new ProviderError("refresh", "Too old");
+        return { maxCharacters: 500 };
+      },
+    );
+
+    expect(limits).toEqual({ maxCharacters: 500 });
+    expect(tokens).toEqual([{ token: "t1" }, { token: "t2" }]);
   });
 });

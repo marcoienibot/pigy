@@ -2,8 +2,8 @@ import type { PostContent } from "@pigy/core";
 import { ProviderError } from "./errors.ts";
 import type { Json, Provider, PublishProgress } from "./provider.ts";
 
-/** What a post is published with. */
-export type PublishJob = {
+/** Where a caller has the credentials of an account from. */
+export type CredentialSource = {
   /**
    * The credentials of the account as they are now. They are asked for
    * every time a step is run, also when it is run again: a post can take
@@ -11,18 +11,58 @@ export type PublishJob = {
    */
   credentials: () => Promise<Json>;
   /**
-   * Renews the credentials now, because a step failed with `refresh`: the
-   * network refused `refused`. Returns the credentials to run the step
+   * Renews the credentials now, because a call failed with `refresh`: the
+   * network refused `refused`. Returns the credentials to make the call
    * again with, which are stored by then. `Provider.refresh` has the
    * rules: one refresh at a time per account, and none if `refused` are no
    * longer the stored credentials. It fails as `Provider.refresh` does,
    * with `reconnect` when the network will not renew.
    */
   refresh: (refused: Json) => Promise<Json>;
+};
+
+/** What a post is published with. */
+export type PublishJob = CredentialSource & {
   content: PostContent;
   /** See `PublishRequest.key`. */
   key: string;
 };
+
+/**
+ * Calls a method of a provider with the credentials of `source`, and
+ * returns what it returns.
+ *
+ * A call that fails with `refresh` is made a second time, with the
+ * credentials that `source.refresh` returns. The network has refused the
+ * first request, so nothing was done. If the network refuses those too,
+ * nothing but a new connection helps: the call fails with `reconnect`.
+ */
+export async function withCredentials<Result>(
+  source: CredentialSource,
+  call: (credentials: Json) => Promise<Result>,
+): Promise<Result> {
+  const credentials = await source.credentials();
+  try {
+    return await call(credentials);
+  } catch (error) {
+    if (!(error instanceof ProviderError) || error.kind !== "refresh") {
+      throw error;
+    }
+  }
+  const renewed = await source.refresh(credentials);
+  try {
+    return await call(renewed);
+  } catch (error) {
+    if (error instanceof ProviderError && error.kind === "refresh") {
+      // The network takes neither the old credentials nor the new.
+      throw new ProviderError("reconnect", error.message, {
+        status: error.status,
+        cause: error,
+      });
+    }
+    throw error;
+  }
+}
 
 /**
  * How the steps of a post are run. In a Cloudflare Workflow these are
@@ -60,8 +100,8 @@ export type PublishRunner = {
  * sequence of steps, which is what a workflow goes by when it replays.
  *
  * A step that fails with `refresh` is run a second time within the same
- * run of the runner, with the credentials that `job.refresh` returns. The
- * network has refused the first request, so nothing was sent.
+ * run of the runner, with the credentials that `job.refresh` returns:
+ * `withCredentials` has the rule.
  */
 export async function publish(
   provider: Provider,
@@ -75,29 +115,11 @@ export async function publish(
       await runner.sleep(`wait-${step}`, progress.waitSeconds);
     }
     const request = { content: job.content, key: job.key, progress };
-    progress = await runner.run(`publish-${step}`, async () => {
-      const credentials = await job.credentials();
-      try {
-        return await provider.publishStep({ ...request, credentials });
-      } catch (error) {
-        if (!(error instanceof ProviderError) || error.kind !== "refresh") {
-          throw error;
-        }
-      }
-      const renewed = await job.refresh(credentials);
-      try {
-        return await provider.publishStep({ ...request, credentials: renewed });
-      } catch (error) {
-        if (error instanceof ProviderError && error.kind === "refresh") {
-          // The network takes neither the old credentials nor the new.
-          throw new ProviderError("reconnect", error.message, {
-            status: error.status,
-            cause: error,
-          });
-        }
-        throw error;
-      }
-    });
+    progress = await runner.run(`publish-${step}`, () =>
+      withCredentials(job, (credentials) =>
+        provider.publishStep({ ...request, credentials }),
+      ),
+    );
   }
   return progress;
 }
