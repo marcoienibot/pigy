@@ -29,7 +29,7 @@ pigy is an invite-only web app for writing a post once and publishing it to Link
 | Sign-in | Google only | The allowlist is keyed on a verified email. Bluesky gives no email, and a second provider adds a second identity to reconcile. LinkedIn sign-in can be added later in a few lines |
 | Sign-in code | `oauth4webapi` for the OpenID Connect flow, and sessions of our own on D1. Not Better Auth, which an earlier draft of this plan named | Code that talks to external services gets `fetch` and the clock as parameters (section 6), so that tests and local development run against simulators and never reach a real host. Better Auth has no way to pass a `fetch` to the requests it makes to the provider: discovery, token exchange and signing keys. `oauth4webapi` takes one. Sessions are a small, well-documented pattern (section 11) |
 | Invite-only | Email allowlist stored in the database, managed from an admin page | No redeploy to invite a friend. Removing an email signs that person out |
-| Frontend | React, Vite, TanStack Router, TanStack DB, Tailwind, shadcn/ui | The local-first libraries are best supported on React. The speed comes from reading local data, not from the framework |
+| Frontend | React, Vite, TanStack Router, Tailwind, shadcn/ui, and a small client store of our own for the synced data | The speed comes from reading local data, not from the framework. Section 4 says why the store is not a library |
 | Data | One Durable Object with SQLite per user and environment, D1 for sign-in and global data | Local-first sync needs ordered, transactional writes per user, which a Durable Object gives for free |
 | Publishing | Cloudflare Workflows, started by Durable Object alarms | Publishing is multi-step and must survive retries without double-posting |
 | Sandbox shape | A Live/Sandbox switch per user, like Stripe's test mode | Sandbox data, accounts and API keys stay fully separate from real ones |
@@ -48,7 +48,7 @@ pigy is an invite-only web app for writing a post once and publishing it to Link
  Browser / installed PWA                      Cloudflare Worker "pigy"
 ┌──────────────────────────────┐          ┌─────────────────────────────────────────┐
 │ React UI                     │  HTTPS   │ Hono router                             │
-│ TanStack DB (rows in memory) │◄────────►│  /api/auth/*   sign-in with Google      │
+│ Sync store (rows in memory)  │◄────────►│  /api/auth/*   sign-in with Google      │
 │ IndexedDB (rows + outbox)    │          │  /api/admin/*  the allowlist            │
 │                              │          │  /api/v1/*     public REST API          │
 │ Service worker (shell, push) │◄────────►│  /sync/*       WebSocket to WorkspaceDO │
@@ -93,26 +93,38 @@ Tooling: pnpm workspaces, strict TypeScript, Biome, Vitest, Playwright, Wrangler
 The UI never waits for the network. It reads from memory, writes locally first, and syncs in the background. [SYNC.md](SYNC.md) is the protocol between client and server, in enough detail to write a client from.
 
 - **Source of truth**: one `WorkspaceDO` per workspace. All writes go through it in a single order.
-- **Client state**: every row of the workspace is held in TanStack DB collections and mirrored to IndexedDB. A cold start renders from IndexedDB before any request finishes.
+- **Client state**: every row of the workspace is held in memory by the sync store and stored in IndexedDB, one database per user and workspace. A cold start renders from IndexedDB before any request finishes: the device remembers who was signed in on it, and the server is asked in the background whether that still holds (section 11).
 - **Writes**: named mutators such as `post.create`, `part.setText` and `post.schedule` live in `packages/core`. They are synchronous functions over a small transaction interface: read a row, find rows by a column, write a row, delete a row, the time. The client runs them optimistically. The Durable Object runs the same code as the authority. The REST API calls the same mutators, so an API write shows up in open tabs immediately.
 - **Idempotency**: IDs are generated on the client (UUIDv7). Each client numbers its mutations, and the Durable Object remembers the last number applied per client, so a replay is a no-op and a gap is refused.
-- **Transport**: one WebSocket per device, to `/sync/<workspace ID>`, using Durable Object hibernation so idle connections cost nothing. One tab holds the socket and shares updates with other tabs over BroadcastChannel. The Durable Object holds a client to that: a second socket of the same client closes the first.
+- **Transport**: one WebSocket per device, to `/sync/<workspace ID>`, using Durable Object hibernation so idle connections cost nothing. The tabs of a browser share one copy in IndexedDB. The tab that holds a Web Lock holds the socket, and when it is closed the next tab takes over. Every tab writes its own mutations to the shared copy and tells the others over a BroadcastChannel what it wrote. The Durable Object holds a client to one socket: a second socket of the same client closes the first.
 - **Catch-up**: every committed write gets an increasing sequence number and an entry in a change log, which names the rows that changed. A reconnecting client sends its last sequence number and receives the current state of the rows that changed since. The log covers the last 1,000 changes: a client that is further behind gets a fresh snapshot.
 - **Confirmation**: the message that carries the changes of a client's mutation also says that the mutation was processed, so the client can replace its own version of the change with the server's in one step.
-- **Offline**: mutations queue in an IndexedDB outbox and replay in order on reconnect. A rejected mutation rolls back and shows an error on the affected post. The Durable Object keeps the reason until the client has seen it, so the error is shown also when the answer that carried it was lost.
+- **Offline**: mutations queue in an IndexedDB outbox and are sent in order on reconnect. Mutations that only repeat one another, such as the text of a part on every keystroke, become one while they wait. A rejected mutation rolls back, and a notice says what was refused and why. The notice is not on the post, as an earlier draft of this plan had it: the post is often gone, which is why the mutation was refused. The Durable Object keeps the reason until the client has seen it, so the notice is shown also when the answer that carried it was lost, and the client keeps it until the person has dismissed it.
 - **Conflicts**: the server applies mutations in arrival order, last write wins per field. State guards reject impossible edits, such as changing a post that is already sending.
 - **Secrets**: channel credentials are never synced. Each table has an explicit list of synced columns, and a test fails if a credential field appears in any sync message.
 - **Versions**: the protocol and the synced schema each have a version number. A client that says hello with another version is told so, and updates itself.
 
-**Library choice.** TanStack DB is the client store. The sync protocol is ours and small. Alternatives considered:
+**The client store.** The store is our own code, not a library. `packages/core/src/sync/client` holds everything that needs no browser, and `apps/web/src/sync` what does: IndexedDB, the BroadcastChannel, the Web Lock, the WebSocket and the React hooks.
+
+- **The view** is computed, never stored: the rows of the server with the unconfirmed mutations run on top, by the mutators that the server runs. A patch changes the rows of the server, and the next view has the unconfirmed mutations on the new rows. A mutation that the new rows no longer allow drops out of the view, the way the server will reject it. A workspace has hundreds to a few thousand rows, so computing the view again on every change costs nothing that anybody notices.
+- **Every change of the stored copy is one transaction** of IndexedDB, described by a pure function from what is stored to what to write: applying a patch, adding a mutation and giving it its ID, marking mutations as sent, starting over. The same description of the write goes to the other tabs, which apply it to what they hold in memory. A tab that finds it has missed one reads the copy again.
+- **React** reads the store through `useSyncExternalStore`: `useSynced(select)` for rows, `useMutate()` to change them. No screen has a loading state for synced data.
+
+Alternatives considered:
 
 | Option | Verdict |
 | --- | --- |
+| TanStack DB, with its offline transactions | Tried in a spike at the start of phase 2b, and not used. See below |
 | Zero | Needs Postgres and its own server process, so it cannot run on Workers alone |
 | LiveStore | Event-sourced. The scheduler and REST API would have to take part in the event log, which is a larger change of model than this app needs |
 | Replicache | Fits well, but is in maintenance mode, and it brings a protocol of its own, which the server does not speak |
 
-**Spike before committing** (first task of phase 2b). Build drafts only, then check: cold start renders from IndexedDB with the network disabled, an offline edit survives a reload and syncs later, two tabs converge, and an API write appears live. The protocol was fixed with the server, in phase 2a, and does not depend on the client library. So if TanStack DB cannot do this cleanly, the fallback is a small client store of our own that speaks the same protocol. An earlier draft named Replicache as the fallback: that would mean replacing the protocol and the server side of sync with Replicache's.
+**Why not TanStack DB.** An earlier draft of this plan named it as the client store, with our own store as the fallback if a spike showed that it did not fit. The spike ran `@tanstack/db` 1.0.0-rc.1.5 and `@tanstack/offline-transactions` 1.2.1 against the model of SYNC.md, and they do not fit it:
+
+- A pending change is kept as a snapshot of the whole row, laid over whatever the server sends. In the spike, a post with a pending edit went on showing as a draft after the server had changed its status, and went on showing at all after the server had deleted it. Our protocol needs the pending mutator to run again on the new rows, where it would have refused. Getting that from the library means computing the view ourselves and feeding it in as if it came from the server, which leaves the library as a container for rows.
+- Its outbox holds row changes with idempotency keys, in a storage of its own. SYNC.md needs named mutations with consecutive IDs, dropped in the same transaction that stores the rows of the patch that confirms them. Two storages cannot do that, and the outbox would be a second source of truth for what is pending.
+- Only the tab that leads has the durable outbox. The other tabs run without it, so a mutation made offline in a second tab does not survive a reload.
+- Its persistence for rows in the browser is SQLite compiled to WebAssembly, over OPFS, per collection: more to load than this store is long, and the cursor would still be stored somewhere else.
 
 ## 5. Data model
 
@@ -350,6 +362,7 @@ What `uncertain` does not cover is a step that is cut off after its request went
 - The session is checked when a sync socket is opened, not while it is open. A socket therefore lasts five minutes, after which the client has to open a new one. That bounds how long a session that has ended, by sign-out or by removal from the allowlist, can go on using a socket. Telling every workspace about every session that ends would close them sooner, but sessions end in many places, and one that was missed would leave a socket open for good.
 - The address Google redirects back to is built from the address the app is reached at, so it works unchanged on `localhost`, on `workers.dev` and on a custom domain. Each has to be registered with the Google client.
 - Without Google credentials nobody can sign in: the production build has no other way in. Section 7 covers the simulated Google of development and tests.
+- The device remembers who was signed in on it and which workspaces they have, in `localStorage`. That lets the app show the local copy before the server has answered, and without a connection. It lets nobody in: the session cookie does that, and the server checks it. The app asks the server on every navigation, in the background, and the sync socket is refused within five minutes of a session ending. When the answer is that the session is over, the app leaves for the sign-in page and the local copy goes: section 16. So somebody whose session has ended can see the data that was already on the device until the device has reached the server once, and never anything newer.
 
 ## 12. Public API
 
@@ -392,8 +405,9 @@ REST under `/api/v1`, described by an OpenAPI document generated from the same Z
 | Unit | Vitest | Grapheme counting, link and mention detection, LinkedIn escaping, thread splitting, queue slot maths, validation rules |
 | Adapter conformance | Vitest in Node | One spec for all networks, run once per network: connect, validate, publish text, images, video and threads, read back, delete, refresh tokens, map every error class, publish nothing twice. Runs against the simulator |
 | Pipeline | Vitest in the Workers runtime with local D1, Durable Objects, R2 and Workflows | API call to alarm to workflow to simulator. Asserts final statuses, sync messages and the push notification. Injects faults, including the lost-response case, and asserts no duplicate post |
-| Sync | Vitest in the Workers runtime | Two clients converge, the offline outbox replays once, snapshot fallback works, one user cannot reach another's workspace, credentials never appear in sync messages |
-| End to end | Playwright against the local Worker, built as for production except that sign-in is simulated | Simulated Google sign-in, allowlist refusal, sandbox onboarding, connecting four simulated accounts, cross-post with override, thread and image, schedule and fast-forward, offline draft then sync, installability checks, phone viewports |
+| Sync | Vitest in the Workers runtime | Two clients converge, the offline outbox replays once, snapshot fallback works, one user cannot reach another's workspace, credentials never appear in sync messages. The server is tested with a client written for the tests, and the client of the app is tested against the real workspace object |
+| Sync client | Vitest | The rules of SYNC.md for a client, against a server that the tests play: pending mutations on top of patches, confirmation and rejection, the outbox and what it merges, starting over, every close code, several tabs |
+| End to end | Playwright against the local Worker, built as for production except that sign-in is simulated | Simulated Google sign-in, allowlist refusal, sandbox onboarding, connecting four simulated accounts, cross-post with override, thread and image, schedule and fast-forward, offline draft then sync, several tabs and devices, installability checks, phone viewports |
 
 **No real network in CI.** In test runs, any outbound request to a host that is not simulated throws, so a test that reaches for a real service fails.
 
@@ -414,7 +428,8 @@ The conformance suite runs in Node, like the other tests of the packages, and no
 - The addresses of avatars and profiles come from the networks. Only HTTPS addresses are passed on.
 - The simulated networks are part of the production build. Section 7 says what keeps them to their simulated world.
 - Media links for Threads are signed and expire.
-- Signing out wipes the local IndexedDB copy.
+- Signing out deletes what the device holds of the person: the local copies in IndexedDB and what it remembers of the session. If there are changes that were not synced, the app says so first and asks.
+- So does learning that the session has ended, by expiry or because an invitation was withdrawn. There is one exception. A session ends without the person's doing, and a copy can hold changes that were made offline and never synced: deleting it would lose work that nobody chose to lose. Such a copy is kept. It is not shown to anybody, and the sign-in page says that it is there, whose it is and how many changes it holds. They are synced when the same person signs in again. They are deleted when somebody else signs in on the device, or when whoever is at the device says so on the sign-in page.
 - A content security policy, and an audit trail of publishes per workspace.
 
 ## 17. Phases
@@ -425,7 +440,7 @@ Each phase ends with something that works and is covered by tests. Sizes are rel
 | --- | --- | --- | --- |
 | 0 | Foundations | S | Monorepo, a hello-world Worker with the React shell running in the local Workers runtime, CI green on lint, typecheck, tests, build and a Playwright smoke test |
 | 1 | Sign-in and invite-only access | M | Google sign-in works, a non-invited email is refused, admins manage the allowlist, simulated Google sign-in drives the tests |
-| 2 | Local-first core | L | Sync spike passed. Drafts can be created and edited offline, sync across tabs and devices, and the app installs as a PWA |
+| 2 | Local-first core | L | The client store is chosen by a spike. Drafts can be created and edited offline, sync across tabs and devices, and the app installs as a PWA |
 | 3 | Networks, simulators, sandbox | L | All four simulators and adapters exist. A text post publishes now to all four, in the sandbox and for real. Conformance and pipeline tests pass |
 | 4 | Per-network text and threads | M | Live character counters, per-network overrides, thread editor, link cards, mentions and hashtags |
 | 5 | Scheduling and queue | M | Exact-time scheduling, weekly slots, add to queue, reorder, pause, queue and calendar views |
@@ -436,7 +451,7 @@ Each phase ends with something that works and is covered by tests. Sizes are rel
 | 10 | Engagement stats | S | Stats collected and shown on sent posts |
 | 11 | Hardening and launch | M | Deployment from CI, security review, reconnect flows, logging and alerts, backups checked, setup guide, friends invited |
 
-Phase 2 is built in two steps. 2a is the server side: workspaces, the `WorkspaceDO`, the mutators, and the sync protocol with its tests. 2b is the client: the browser store, IndexedDB, the offline outbox, the drafts screen and the PWA shell.
+Phase 2 is built in three steps. 2a is the server side: workspaces, the `WorkspaceDO`, the mutators, and the sync protocol with its tests. 2b is the client: the sync store, IndexedDB, the offline outbox, the tabs of a browser, and the drafts screen. 2c is the PWA shell: the service worker, the manifest, starting the app without a network, and installing it. Until 2c the data is there without a network and the app itself is not: a page that is open goes on working offline, and loading it takes the server.
 
 Phase 3 is built in steps too. 3a is in the packages only: the provider interface, what the simulators share, and Mastodon as the first network, with its adapter, its simulator and the conformance suite. The steps after it put that to use in the Worker: the channels with their encrypted credentials, the routes that connect an account, the publishing workflow, the simulated world of each sandbox user, the Live/Sandbox switch, the simulated feeds and the failure panel. Then Bluesky, LinkedIn and Threads follow, each the way Mastodon was built.
 
@@ -469,7 +484,8 @@ Mastodon and Bluesky need no developer registration. VAPID keys, the Bluesky sig
 
 | Risk | Mitigation |
 | --- | --- |
-| TanStack DB with a custom sync protocol is newer ground than the rest of the stack | Spike at the start of phase 2b. The protocol does not depend on the library, so the fallback is a small client store of our own |
+| The client store is our own code, where a library would have had other users to find its bugs | It is small, and its rules are those of SYNC.md, which are tested one by one in `packages/core` and against the real workspace object. Section 4 says why it is not TanStack DB |
+| A deleted post is brought back by making a new one with the same text | Enough while a draft is only text. From phase 4 a post has more than a client can put back by hand, such as targets, media and a place in the queue: undo then needs a mutator of its own, or deletion that waits |
 | atproto OAuth libraries are written for Node and may not run on Workers | Spike at the start of the Bluesky work. Candidates: `@atcute/oauth-node-client`, then `@bskyprism/atproto-oauth-client-cloudflare-workers`. Last resort: Bluesky app passwords |
 | Threads is limited to testers | Fine for friends. Opening it up needs Meta's app review |
 | LinkedIn tokens die after 60 days | Reminder a week before, one-tap reconnect |
@@ -542,7 +558,7 @@ Posts, drafts, schedules and stats are unaffected.
 - Google OpenID Connect: https://developers.google.com/identity/openid-connect/openid-connect
 - oauth4webapi: https://github.com/panva/oauth4webapi
 - Sessions: https://lucia-auth.com and https://auth.pilcrowonpaper.com/sessions
-- TanStack DB: https://tanstack.com/db/latest/docs/overview and https://tanstack.com/db/latest/docs/guides/offline-transactions
-- Durable Object sync with TanStack DB, as a reference design: https://github.com/grrowl/tanstack-durable-object-sync
+- TanStack DB, which the spike of phase 2b tried: https://tanstack.com/db/latest/docs/overview and https://tanstack.com/db/latest/docs/guides/offline-transactions
+- Web Locks and BroadcastChannel: https://developer.mozilla.org/en-US/docs/Web/API/Web_Locks_API and https://developer.mozilla.org/en-US/docs/Web/API/BroadcastChannel
 - Cloudflare limits: https://developers.cloudflare.com/workers/platform/limits and https://developers.cloudflare.com/durable-objects/platform/limits
 - Workers Vitest integration: https://developers.cloudflare.com/workers/testing/vitest-integration/test-apis and https://developers.cloudflare.com/workers/testing/vitest-integration/known-issues/

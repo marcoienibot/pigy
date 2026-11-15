@@ -2,7 +2,7 @@
 
 How a client keeps a copy of a workspace and changes it. Protocol version 2, schema version 1.
 
-This document is the contract between the server and any client: the browser store of the app, or anything else. It is meant to be enough to write a client from. The message schemas, the row schemas, the mutators, the limits and the versions are code in `packages/core/src/sync`, and a client should use them rather than copy them. The server is `apps/worker/src/workspace`. `apps/worker/test/sync-client.ts` is a small client written from this document, which the tests of the server use.
+This document is the contract between the server and any client: the browser store of the app, or anything else. It is meant to be enough to write a client from. The message schemas, the row schemas, the mutators, the limits and the versions are code in `packages/core/src/sync`, and a client should use them rather than copy them. The server is `apps/worker/src/workspace`. `apps/worker/test/sync-client.ts` is a small client written from this document, which the tests of the server use. The client of the app is `packages/core/src/sync/client`, and what it takes from a browser is in `apps/web/src/sync`.
 
 ## 1. Model
 
