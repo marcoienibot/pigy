@@ -1,7 +1,23 @@
 import { DurableObject } from "cloudflare:workers";
-import { type Clock, sandboxMastodonDomain } from "@pigy/core";
-import { createMastodonSimulator } from "@pigy/simulators/mastodon";
-import { createWorld } from "@pigy/simulators/world";
+import {
+  type Clock,
+  type Network,
+  type SandboxFault,
+  type SandboxFaults,
+  sandboxMastodonDomain,
+} from "@pigy/core";
+import {
+  createMastodonSimulator,
+  mastodonFaultKinds,
+  mastodonOperations,
+} from "@pigy/simulators/mastodon";
+import {
+  createWorld,
+  type FaultKind,
+  feed,
+  type SimAccount,
+  type SimPost,
+} from "@pigy/simulators/world";
 import type { Bindings } from "../env.ts";
 import {
   type WorkspaceIdentity,
@@ -31,6 +47,30 @@ export type WorldAnswer =
   | { status: number; headers: [string, string][]; body: ArrayBuffer }
   | { noSuchHost: string }
   | { unreachable: string };
+
+/** What is in a world for a person to look at: its accounts and posts. */
+export type WorldContents = { accounts: SimAccount[]; posts: SimPost[] };
+
+/** The faults of a world after one was armed, or which field was wrong. */
+export type ArmOutcome =
+  | { ok: true; faults: SandboxFaults }
+  | { ok: false; field: "network" | "kind" | "operation"; message: string };
+
+/**
+ * The networks that a world simulates, each with the ways it can be made
+ * to fail and the kinds of request that a fault can strike, as its
+ * simulator declares them. A network joins by getting an entry here.
+ */
+const simulated: {
+  readonly [Name in Network]?: {
+    kinds: readonly FaultKind[];
+    operations: readonly string[];
+  };
+} = {
+  mastodon: { kinds: mastodonFaultKinds, operations: mastodonOperations },
+};
+
+const simulatedNetworks = Object.keys(simulated) as Network[];
 
 // The accounts that a new world has, for a person to connect as.
 const seedAccounts = [
@@ -73,15 +113,7 @@ export function simWorldObject({ now }: { now: Clock }) {
       if (!this.#bind(workspaceIdentitySchema.parse(workspace))) {
         return undefined;
       }
-      const world = createWorld({ storage: this.ctx.storage.kv, now });
-      const mastodon = createMastodonSimulator(world);
-      if (!this.ctx.storage.kv.get(seededKey)) {
-        mastodon.addInstance(sandboxMastodonDomain);
-        for (const [username, name] of seedAccounts) {
-          mastodon.addAccount(sandboxMastodonDomain, username, name);
-        }
-        this.ctx.storage.kv.put(seededKey, true);
-      }
+      const { mastodon } = this.#world();
       // The simulators of the networks. Each says which hosts are its own,
       // and the one that owns the host of the request answers it. They are
       // not tried in turn: a simulator fails for a host that is not its own
@@ -105,6 +137,121 @@ export function simWorldObject({ now }: { now: Clock }) {
         if (error instanceof TypeError) return { unreachable: error.message };
         throw error;
       }
+    }
+
+    /**
+     * The accounts of the world and what they have published, oldest
+     * first, for the sandbox `workspace`. Returns nothing if `workspace` is
+     * not the sandbox that the world belongs to.
+     */
+    contents(workspace: WorkspaceIdentity): WorldContents | undefined {
+      if (!this.#bind(workspaceIdentitySchema.parse(workspace))) {
+        return undefined;
+      }
+      const { world } = this.#world();
+      return {
+        accounts: simulatedNetworks.flatMap((network) =>
+          world.accounts(network).all(),
+        ),
+        posts: feed(world, simulatedNetworks).map(({ post }) => post),
+      };
+    }
+
+    /**
+     * The ways the networks of the world can be made to fail, and the
+     * faults that are armed. Returns nothing if `workspace` is not the
+     * sandbox that the world belongs to.
+     */
+    faults(workspace: WorkspaceIdentity): SandboxFaults | undefined {
+      if (!this.#bind(workspaceIdentitySchema.parse(workspace))) {
+        return undefined;
+      }
+      const { world } = this.#world();
+      return {
+        networks: simulatedNetworks.map((network) => ({
+          network,
+          kinds: [...(simulated[network]?.kinds ?? [])],
+          operations: [...(simulated[network]?.operations ?? [])],
+          armed: world.faults.armed(network).map(({ kind, operation }) => ({
+            kind,
+            operation: operation ?? null,
+          })),
+        })),
+      };
+    }
+
+    /**
+     * Arms a fault: the next request to the network that it applies to
+     * fails that way. Only what the simulator of the network declares is
+     * taken. Returns nothing if `workspace` is not the sandbox that the
+     * world belongs to.
+     */
+    arm(
+      workspace: WorkspaceIdentity,
+      { network, kind, operation }: SandboxFault,
+    ): ArmOutcome | undefined {
+      if (!this.#bind(workspaceIdentitySchema.parse(workspace))) {
+        return undefined;
+      }
+      const declared = simulated[network];
+      if (!declared) {
+        return {
+          ok: false,
+          field: "network",
+          message: `The sandbox does not simulate ${network} yet.`,
+        };
+      }
+      const known = declared.kinds.find((candidate) => candidate === kind);
+      if (!known) {
+        return {
+          ok: false,
+          field: "kind",
+          message: `The simulated ${network} cannot fail with "${kind}".`,
+        };
+      }
+      if (operation !== undefined && !declared.operations.includes(operation)) {
+        return {
+          ok: false,
+          field: "operation",
+          message: `The simulated ${network} has no request "${operation}".`,
+        };
+      }
+      this.#world().world.faults.arm(network, { kind: known, operation });
+      // Checked just now: the world is this workspace's.
+      const faults = this.faults(workspace);
+      if (!faults) throw new Error("The world has changed hands");
+      return { ok: true, faults };
+    }
+
+    /**
+     * Disarms every fault of the world. Returns nothing if `workspace` is
+     * not the sandbox that the world belongs to.
+     */
+    disarm(workspace: WorkspaceIdentity): SandboxFaults | undefined {
+      if (!this.#bind(workspaceIdentitySchema.parse(workspace))) {
+        return undefined;
+      }
+      const { world } = this.#world();
+      for (const network of simulatedNetworks) world.faults.clear(network);
+      return this.faults(workspace);
+    }
+
+    /**
+     * The world of the object and the simulators of its networks, over the
+     * storage of the object. A world that is used for the first time gets
+     * what every sandbox starts with.
+     */
+    #world() {
+      const world = createWorld({ storage: this.ctx.storage.kv, now });
+      const mastodon = createMastodonSimulator(world);
+      if (!this.ctx.storage.kv.get(seededKey)) {
+        mastodon.addInstance(sandboxMastodonDomain);
+        for (const [username, name] of seedAccounts) {
+          mastodon.addAccount(sandboxMastodonDomain, username, name);
+        }
+        this.ctx.storage.kv.put(seededKey, true);
+      }
+      return { world, mastodon };
     }
 
     /**

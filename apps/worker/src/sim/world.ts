@@ -1,11 +1,19 @@
-import type { Fetch } from "@pigy/core";
+import type {
+  Fetch,
+  SandboxFault,
+  SandboxFaults,
+  SandboxFeed,
+  SandboxPost,
+} from "@pigy/core";
 import type { Bindings } from "../env.ts";
 import type { WorkspaceIdentity } from "../workspace/store.ts";
-import type { WorldRequest } from "./object.ts";
+import type { ArmOutcome, WorldContents, WorldRequest } from "./object.ts";
 
 /**
- * The Worker's side of the simulated worlds: the only way into their
- * Durable Objects, and the addresses of their pages.
+ * The Worker's side of the simulated worlds: the only ways into their
+ * Durable Objects, and the addresses of their pages. `worldFetch` is the
+ * way for a request to a simulated network. The others are for a person
+ * who looks at their sandbox: what is published there, and the faults.
  */
 
 /**
@@ -82,11 +90,7 @@ export function worldFetch(
       headers: [...request.headers],
       body: request.body && (await request.arrayBuffer()),
     });
-    if (!answer) {
-      throw new Error(
-        `The simulated world of workspace ${workspace.id} is another workspace's`,
-      );
-    }
+    if (!answer) throw foreign(workspace);
     if ("noSuchHost" in answer) throw new WorldHostMissing(answer.noSuchHost);
     // What `fetch` does when a connection breaks.
     if ("unreachable" in answer) throw new TypeError(answer.unreachable);
@@ -96,6 +100,109 @@ export function worldFetch(
     const bodiless = [204, 205, 304].includes(status);
     return new Response(bodiless ? null : body, { status, headers });
   };
+}
+
+function foreign(workspace: WorkspaceIdentity): Error {
+  return new Error(
+    `The simulated world of workspace ${workspace.id} is another workspace's`,
+  );
+}
+
+/**
+ * What is published in the simulated world of the sandbox `workspace`, by
+ * account: for each, the posts that begin something, newest first, each
+ * with the replies of the account beneath it.
+ */
+export async function worldFeed(
+  namespace: Bindings["SIM_WORLD"],
+  workspace: WorkspaceIdentity,
+): Promise<SandboxFeed> {
+  const contents = await namespace.getByName(workspace.id).contents(workspace);
+  if (!contents) throw foreign(workspace);
+  return threaded(contents);
+}
+
+/**
+ * The contents of a world as a feed. A post is a reply if the post that it
+ * replies to is there and is the same account's: a thread of pigy's is a
+ * chain of those. Anything else stands for itself.
+ */
+function threaded({ accounts, posts }: WorldContents): SandboxFeed {
+  const entries = new Map<string, SandboxPost>();
+  const key = (network: string, id: string) => `${network} ${id}`;
+  // Oldest first, so that replies are listed in the order they were made.
+  for (const { network, id, text, createdAt } of posts) {
+    entries.set(key(network, id), { id, text, createdAt, replies: [] });
+  }
+  const beginnings = new Map<string, SandboxPost[]>();
+  for (const post of posts) {
+    const entry = entries.get(key(post.network, post.id));
+    if (!entry) continue;
+    const parent =
+      post.replyToId === null
+        ? undefined
+        : posts.find(
+            (other) =>
+              other.network === post.network &&
+              other.id === post.replyToId &&
+              other.accountId === post.accountId,
+          );
+    if (parent) {
+      entries.get(key(parent.network, parent.id))?.replies.push(entry);
+    } else {
+      const account = key(post.network, post.accountId);
+      beginnings.set(account, [entry, ...(beginnings.get(account) ?? [])]);
+    }
+  }
+  return {
+    accounts: accounts
+      .map(({ network, id, handle, name }) => ({
+        network,
+        id,
+        handle,
+        name,
+        posts: beginnings.get(key(network, id)) ?? [],
+      }))
+      .sort(
+        (a, b) =>
+          a.network.localeCompare(b.network) ||
+          a.handle.localeCompare(b.handle),
+      ),
+  };
+}
+
+/** How the networks of the sandbox `workspace` can fail, and what is armed. */
+export async function worldFaults(
+  namespace: Bindings["SIM_WORLD"],
+  workspace: WorkspaceIdentity,
+): Promise<SandboxFaults> {
+  const faults = await namespace.getByName(workspace.id).faults(workspace);
+  if (!faults) throw foreign(workspace);
+  return faults;
+}
+
+/**
+ * Arms a fault in the simulated world of the sandbox `workspace`, or says
+ * which part of it the network does not have.
+ */
+export async function armWorldFault(
+  namespace: Bindings["SIM_WORLD"],
+  workspace: WorkspaceIdentity,
+  fault: SandboxFault,
+): Promise<ArmOutcome> {
+  const outcome = await namespace.getByName(workspace.id).arm(workspace, fault);
+  if (!outcome) throw foreign(workspace);
+  return outcome;
+}
+
+/** Disarms every fault in the simulated world of the sandbox `workspace`. */
+export async function disarmWorld(
+  namespace: Bindings["SIM_WORLD"],
+  workspace: WorkspaceIdentity,
+): Promise<SandboxFaults> {
+  const faults = await namespace.getByName(workspace.id).disarm(workspace);
+  if (!faults) throw foreign(workspace);
+  return faults;
 }
 
 /** Where the Worker serves the pages of the simulated networks. */
