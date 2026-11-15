@@ -2,7 +2,7 @@ import type { Row, TableName } from "@pigy/core";
 import { eq } from "drizzle-orm";
 import type { DrizzleSqliteDODatabase } from "drizzle-orm/durable-sqlite";
 import type { SQLiteColumn, SQLiteTable } from "drizzle-orm/sqlite-core";
-import { postParts, posts } from "./schema.ts";
+import { channels, postParts, posts } from "./schema.ts";
 
 /**
  * The synced tables and, for each, its synced columns: the ones that clients
@@ -12,7 +12,8 @@ import { postParts, posts } from "./schema.ts";
  *
  * The compiler holds the lists to the rows that @pigy/core describes: a
  * column that is missing here, one that is not a field of the row, or one of
- * another type does not compile.
+ * another type does not compile. Neither does a column that can be null
+ * where the field cannot, or the other way round.
  */
 const synced = {
   post: {
@@ -33,12 +34,30 @@ const synced = {
       text: postParts.text,
     },
   },
+  channel: {
+    table: channels,
+    columns: {
+      id: channels.id,
+      network: channels.network,
+      accountId: channels.accountId,
+      handle: channels.handle,
+      name: channels.name,
+      avatarUrl: channels.avatarUrl,
+      profileUrl: channels.profileUrl,
+      status: channels.status,
+      connectedAt: channels.connectedAt,
+      expiresAt: channels.expiresAt,
+    },
+  },
 } satisfies {
   [Table in TableName]: {
     table: SQLiteTable;
     columns: {
       [Field in keyof Row<Table>]: SQLiteColumn & {
-        _: { data: Row<Table>[Field]; notNull: true };
+        _: {
+          data: NonNullable<Row<Table>[Field]>;
+          notNull: null extends Row<Table>[Field] ? false : true;
+        };
       };
     };
   };

@@ -107,7 +107,11 @@ export class SyncClient {
    */
   closed: Promise<{ code: number; reason: string }> = new Promise(() => {});
 
-  private readonly rows: Rows = { post: new Map(), post_part: new Map() };
+  private readonly rows: Rows = {
+    post: new Map(),
+    post_part: new Map(),
+    channel: new Map(),
+  };
   private socket: WebSocket | undefined;
   /** Messages that no test has looked at yet. */
   private readonly inbox: string[] = [];
@@ -255,7 +259,9 @@ export class SyncClient {
       seen.add(key);
       if (change.op === "delete") this.rows[change.table].delete(id);
       else if (change.table === "post") this.rows.post.set(id, change.row);
-      else this.rows.post_part.set(id, change.row);
+      else if (change.table === "post_part") {
+        this.rows.post_part.set(id, change.row);
+      } else this.rows.channel.set(id, change.row);
     }
     this.cursor = to;
     // A patch tells of the rejections among the mutations that it confirms,
@@ -293,6 +299,10 @@ export class SyncClient {
 
   /** The whole local copy, to compare two clients. */
   get copy() {
-    return { post: this.table("post"), post_part: this.table("post_part") };
+    return {
+      post: this.table("post"),
+      post_part: this.table("post_part"),
+      channel: this.table("channel"),
+    };
   }
 }

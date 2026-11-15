@@ -15,6 +15,13 @@
       "when": 1794705082955,
       "tag": "0001_rejections",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1794718693219,
+      "tag": "0002_channels",
+      "breakpoints": true
     }
   ]
 }

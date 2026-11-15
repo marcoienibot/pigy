@@ -6,6 +6,7 @@ import {
   type HelloMessage,
   helloVersionsSchema,
   type MutateMessage,
+  type MutatorArgs,
   type PatchMessage,
   pingMessageText,
   pongMessageText,
@@ -19,8 +20,11 @@ import {
 } from "@pigy/core";
 import type { Bindings } from "../env.ts";
 import {
+  type ChannelAccess,
+  type ConnectChannelOutcome,
   type Patch,
   type Refusal,
+  type StoredChannelAccess,
   type WorkspaceIdentity,
   WorkspaceStore,
   workspaceIdentitySchema,
@@ -177,6 +181,47 @@ export function workspaceObject({ now }: { now: Clock }) {
       const [refusal] = this.#store.apply([{ name, args }], now().getTime());
       this.#publish(from);
       return refusal ? { ok: false, ...refusal } : { ok: true };
+    }
+
+    /**
+     * Stores an account that somebody has connected as a channel, together
+     * with the access to it, which the Worker has sealed. The clients that
+     * are connected receive the channel, and never the access. Returns
+     * nothing if `workspace` is not the one that the object holds.
+     */
+    connectChannel(
+      workspace: WorkspaceIdentity,
+      channel: MutatorArgs<"channel.connect">,
+      access: ChannelAccess,
+    ): ConnectChannelOutcome | undefined {
+      if (!this.#store.bind(workspaceIdentitySchema.parse(workspace))) {
+        return undefined;
+      }
+      const from = this.#store.seq;
+      const outcome = this.#store.connectChannel(
+        channel,
+        access,
+        now().getTime(),
+      );
+      this.#publish(from);
+      return outcome;
+    }
+
+    /**
+     * What it takes to act for the account of a channel, sealed as it was
+     * stored, or null if there is no such channel. This is the one way
+     * that the access to an account leaves the object, and it leads to the
+     * Worker only. Returns nothing if `workspace` is not the one that the
+     * object holds.
+     */
+    channelAccess(
+      workspace: WorkspaceIdentity,
+      channelId: string,
+    ): StoredChannelAccess | null | undefined {
+      if (!this.#store.bind(workspaceIdentitySchema.parse(workspace))) {
+        return undefined;
+      }
+      return this.#store.channelAccess(channelId) ?? null;
     }
 
     override webSocketMessage(

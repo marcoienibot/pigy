@@ -123,7 +123,8 @@ it("accepts a row of the table that a change names", () => {
 
 it.each([
   ["a row of another table", { op: "put", table: "post_part", row: post }],
-  ["a table that is not synced", { op: "put", table: "channel", row: post }],
+  // A table of the server's own bookkeeping.
+  ["a table that is not synced", { op: "put", table: "change_log", row: post }],
   [
     // A client must not quietly accept a column that it does not know: the
     // server is not meant to send any.
@@ -132,7 +133,7 @@ it.each([
   ],
   [
     "a deletion in a table that is not synced",
-    { op: "delete", table: "channel", id },
+    { op: "delete", table: "change_log", id },
   ],
 ])("rejects a change with %s", (_name, change) => {
   expect(changeSchema.safeParse(change).success).toBe(false);

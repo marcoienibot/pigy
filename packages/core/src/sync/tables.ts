@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { idSchema } from "../id.ts";
+import { networkSchema } from "../network/network.ts";
 
 /**
  * The synced tables: the part of a workspace that its clients hold a copy
@@ -56,10 +57,76 @@ export const postPartRowSchema = z.strictObject({
   text: z.string().max(maxPartTextLength),
 });
 
+/** Whether pigy can act for the account of a channel. */
+export const channelStatuses = [
+  /** It can, as far as pigy knows. */
+  "connected",
+  /**
+   * The network no longer accepts the access that pigy was given. The
+   * person has to connect the account again, which brings the channel back
+   * to `connected`.
+   */
+  "needs_reconnect",
+] as const;
+
+export const channelStatusSchema = z.enum(channelStatuses);
+
+export type ChannelStatus = z.infer<typeof channelStatusSchema>;
+
+/**
+ * The longest values that a channel holds. What an account is called comes
+ * from its network, so it is as long as the network lets it be. These keep
+ * a row small whatever a network sends.
+ */
+export const channelLimits = {
+  accountIdLength: 300,
+  handleLength: 300,
+  nameLength: 300,
+  urlLength: 2000,
+} as const;
+
+/** An address that a browser may load or follow: HTTPS, and nothing else. */
+const httpsUrlSchema = z
+  .string()
+  .max(channelLimits.urlLength)
+  .startsWith("https://");
+
+/**
+ * A connected social account. The row says whose account it is, for
+ * display. What pigy acts for the account with, its credentials, is kept
+ * by the server next to the row and is not part of it.
+ */
+export const channelRowSchema = z.strictObject({
+  id: idSchema,
+  network: networkSchema,
+  /**
+   * The network's own, permanent ID of the account. A workspace has at
+   * most one channel per network and account.
+   */
+  accountId: z.string().min(1).max(channelLimits.accountIdLength),
+  /** How the network addresses the account, such as "@ada@mastodon.example". */
+  handle: z.string().min(1).max(channelLimits.handleLength),
+  /** The name the person goes by. */
+  name: z.string().min(1).max(channelLimits.nameLength),
+  /** A picture of the account, or null. */
+  avatarUrl: httpsUrlSchema.nullable(),
+  /** The account's page on the network, or null. */
+  profileUrl: httpsUrlSchema.nullable(),
+  status: channelStatusSchema,
+  /** When the account was last connected: when pigy got the access it has. */
+  connectedAt: timeSchema,
+  /**
+   * When that access ends unless the person connects again before, on a
+   * network where it does. Null where no end is known.
+   */
+  expiresAt: timeSchema.nullable(),
+});
+
 /** The schema of a row of every synced table, by the name of the table. */
 export const rowSchemas = {
   post: postRowSchema,
   post_part: postPartRowSchema,
+  channel: channelRowSchema,
 } as const;
 
 export type TableName = keyof typeof rowSchemas;

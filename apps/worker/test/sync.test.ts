@@ -20,8 +20,12 @@ import {
   maxRefusalMessageLength,
   WorkspaceStore,
 } from "../src/workspace/store.ts";
-import { mutateWorkspace } from "../src/workspace/workspaces.ts";
-import { adminEmail, setup, signedIn } from "./helpers.ts";
+import {
+  channelAccess,
+  connectChannel,
+  mutateWorkspace,
+} from "../src/workspace/workspaces.ts";
+import { adminEmail, expectErrors, setup, signedIn } from "./helpers.ts";
 import {
   identityOf,
   newId,
@@ -46,13 +50,6 @@ async function connected() {
   return { ...context, client };
 }
 
-/** Keeps what the object logs out of the test output and returns it. */
-function expectErrors() {
-  const error = vi.spyOn(console, "error").mockImplementation(() => {});
-  onTestFinished(() => error.mockRestore());
-  return error;
-}
-
 /** Creates a post through `client` and returns the IDs of it and its part. */
 async function createPost(client: SyncClient, text: string) {
   const ids = { postId: newId(), partId: newId() };
@@ -74,6 +71,7 @@ it("answers the first hello of a client with a snapshot", async () => {
   expect(client.copy).toEqual({
     post: [{ id: postId, status: "draft", createdAt, updatedAt: createdAt }],
     post_part: [{ id: partId, postId, position: 0, text: "Hello" }],
+    channel: [],
   });
 });
 
@@ -882,6 +880,154 @@ it("sends only the synced columns of the synced tables", async () => {
   expect(new Set(snapshot.changes.map(({ table }) => table))).toEqual(
     new Set(["post", "post_part"]),
   );
+});
+
+/** An account as the Worker hands it to a workspace when it is connected. */
+function connectedAccount(fields: { name?: string } = {}) {
+  return {
+    id: newId(),
+    network: "mastodon" as const,
+    accountId: "1@mastodon.example",
+    handle: "@ada@mastodon.example",
+    name: "Ada Lovelace",
+    avatarUrl: null,
+    profileUrl: "https://mastodon.example/@ada",
+    expiresAt: null,
+    ...fields,
+  };
+}
+
+it("never sends what a workspace keeps of a channel besides its row", async () => {
+  const { test, browser, workspace, client: early } = await connected();
+  const identity = await identityOf(test, workspace);
+  // What the Worker stores with a channel: the credentials, sealed, and
+  // when to refresh them. Texts that nothing else in a workspace has.
+  const first = { credentials: "sealed-credentials-one", refreshAt: 1234567 };
+  const second = { credentials: "sealed-credentials-two", refreshAt: 7654321 };
+
+  // The three ways a row leaves the object: in a change as it happens, in
+  // what a client missed, and in a snapshot.
+  const stored = await connectChannel(
+    env.WORKSPACE,
+    identity,
+    connectedAccount(),
+    first,
+  );
+  await early.patch();
+  early.disconnect();
+  // The account is connected again while the client is away: the access is
+  // replaced, and the row changes with it.
+  await connectChannel(
+    env.WORKSPACE,
+    identity,
+    connectedAccount({ name: "Ada" }),
+    second,
+  );
+  await early.connect(browser, workspace);
+  const fresh = new SyncClient();
+  await fresh.connect(browser, workspace);
+
+  if (!stored.ok) throw new Error(stored.message);
+  // All three carried the channel.
+  const messages = [...early.received, ...fresh.received];
+  expect(
+    messages.filter((text) => text.includes(stored.channelId)),
+  ).toHaveLength(3);
+  expect(fresh.table("channel")).toMatchObject([
+    { id: stored.channelId, name: "Ada", status: "connected" },
+  ]);
+  // None carried the access, in whole or in part, or so much as the name
+  // of a column that holds it.
+  const sent = messages.join("\n");
+  for (const secret of [
+    "sealed-credentials",
+    "1234567",
+    "7654321",
+    "credentials",
+    "refresh",
+  ]) {
+    expect(sent).not.toContain(secret);
+  }
+  // It is there, and it is the one of the second connection: the Worker
+  // gets it back, and nobody else has a way to ask.
+  expect(
+    await channelAccess(env.WORKSPACE, identity, stored.channelId),
+  ).toEqual({
+    network: "mastodon",
+    accountId: "1@mastodon.example",
+    credentials: "sealed-credentials-two",
+  });
+
+  // A channel that goes takes its access along.
+  await mutateWorkspace(env.WORKSPACE, identity, "channel.disconnect", {
+    id: stored.channelId,
+  });
+  await fresh.patch();
+  expect(fresh.table("channel")).toEqual([]);
+  expect(
+    await channelAccess(env.WORKSPACE, identity, stored.channelId),
+  ).toBeNull();
+  const left = await runInDurableObject(objectOf(workspace), (_, state) =>
+    state.storage.sql.exec("select * from channel").toArray(),
+  );
+  expect(left).toEqual([]);
+});
+
+it("refuses the mutations of a client that only the server runs", async () => {
+  const { test, workspace, client } = await connected();
+  const identity = await identityOf(test, workspace);
+  const stored = await connectChannel(
+    env.WORKSPACE,
+    identity,
+    connectedAccount(),
+    { credentials: "sealed", refreshAt: null },
+  );
+  await client.patch();
+  if (!stored.ok) throw new Error(stored.message);
+
+  // A client that makes up a channel of its own, and one that drops a
+  // channel without the Worker giving its access back.
+  const made = client.mutate("channel.connect", {
+    ...connectedAccount(),
+    accountId: "2@mastodon.example",
+  });
+  const dropped = client.mutate("channel.disconnect", {
+    id: stored.channelId,
+  });
+
+  expect(await client.patch()).toMatchObject({
+    changes: [],
+    rejected: [{ id: made.id, code: "not_allowed" }],
+  });
+  expect(await client.patch()).toMatchObject({
+    changes: [],
+    rejected: [{ id: dropped.id, code: "not_allowed" }],
+  });
+  expect(client.table("channel").map(({ id }) => id)).toEqual([
+    stored.channelId,
+  ]);
+});
+
+it("tells the Worker when a workspace does not store a channel", async () => {
+  const { test, workspace } = await start();
+  const identity = await identityOf(test, workspace);
+  expectErrors();
+
+  // An account whose ID is longer than a channel holds: what a network
+  // could send, which the mutator refuses.
+  const outcome = await connectChannel(
+    env.WORKSPACE,
+    identity,
+    { ...connectedAccount(), accountId: "1".repeat(301) },
+    { credentials: "sealed", refreshAt: null },
+  );
+
+  expect(outcome).toMatchObject({ ok: false, code: "invalid_arguments" });
+  // Nothing is kept of it, the access least of all.
+  const left = await runInDurableObject(objectOf(workspace), (_, state) =>
+    state.storage.sql.exec("select * from channel").toArray(),
+  );
+  expect(left).toEqual([]);
 });
 
 it("carries on after the object was evicted from memory", async () => {

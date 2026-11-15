@@ -1,5 +1,6 @@
 import {
   applyMutation,
+  type MutationSource,
   type Row,
   type TableName,
   type Transaction,
@@ -14,7 +15,11 @@ type Tables = { [Table in TableName]: Map<string, Row<Table>> };
  * behind.
  */
 export function memoryWorkspace() {
-  let tables: Tables = { post: new Map(), post_part: new Map() };
+  let tables: Tables = {
+    post: new Map(),
+    post_part: new Map(),
+    channel: new Map(),
+  };
 
   const transaction = (now: number): Transaction => ({
     now,
@@ -35,15 +40,21 @@ export function memoryWorkspace() {
   });
 
   return {
-    /** Runs a mutation at the time `now`. */
-    mutate(name: string, args: unknown, now = 0): void {
+    /** Runs a mutation at the time `now`, as a client's unless `source` says. */
+    mutate(
+      name: string,
+      args: unknown,
+      now = 0,
+      source: MutationSource = "client",
+    ): void {
       const before = tables;
       tables = {
         post: new Map(before.post),
         post_part: new Map(before.post_part),
+        channel: new Map(before.channel),
       };
       try {
-        applyMutation(transaction(now), name, args);
+        applyMutation(transaction(now), name, args, source);
       } catch (error) {
         tables = before;
         throw error;

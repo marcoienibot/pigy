@@ -1,13 +1,13 @@
 # pigy sync protocol
 
-How a client keeps a copy of a workspace and changes it. Protocol version 2, schema version 1.
+How a client keeps a copy of a workspace and changes it. Protocol version 2, schema version 2.
 
 This document is the contract between the server and any client: the browser store of the app, or anything else. It is meant to be enough to write a client from. The message schemas, the row schemas, the mutators, the limits and the versions are code in `packages/core/src/sync`, and a client should use them rather than copy them. The server is `apps/worker/src/workspace`. `apps/worker/test/sync-client.ts` is a small client written from this document, which the tests of the server use. The client of the app is `packages/core/src/sync/client`, and what it takes from a browser is in `apps/web/src/sync`.
 
 ## 1. Model
 
 - A **workspace** is one user's data in one environment. Everybody has two, `live` and `sandbox`. `GET /api/workspaces` lists them, as `{ "workspaces": [{ "id": "…", "environment": "live" }, { "id": "…", "environment": "sandbox" }] }`, and creates them the first time.
-- The **synced tables** of a workspace are the part of it that clients hold a copy of: `post` and `post_part` so far. `packages/core/src/sync/tables.ts` describes their rows. A row has an `id`, a UUID version 7 in lowercase, that is unique in its table.
+- The **synced tables** of a workspace are the part of it that clients hold a copy of: `post`, `post_part` and `channel` so far. `packages/core/src/sync/tables.ts` describes their rows. A row has an `id`, a UUID version 7 in lowercase, that is unique in its table.
 - A client never writes rows. It sends **mutations**: the name of a mutator and its arguments, such as `post.create`. The server runs the mutator, and what it does to the rows is what counts. A client may run the same mutator, from `packages/core/src/sync/mutators.ts`, on its own copy first, to show the change before the server has answered.
 - The server applies mutations one at a time, in the order they arrive. Each mutation that changes something is one change and gets a **sequence number**: the changes of a workspace are numbered 1, 2, 3 and so on. A **cursor** is a sequence number, and a client whose cursor is N has exactly the rows that the server had after change N. Cursor 0 is the empty workspace.
 - A **client** is one local copy: its rows, its cursor, the mutations it has made that the server has not confirmed, and the ID of the last one that the server has confirmed. It has a **client ID**, a UUID version 7 that it makes up once, and it numbers its mutations 1, 2, 3 and so on. The server remembers the last mutation it has processed for each client ID, which is what makes it safe to send a mutation twice. A client keeps its copy and its client ID for one workspace: another workspace is another copy with another ID.
@@ -38,7 +38,7 @@ Every message is one text frame with one JSON object, which has a `type`. A fiel
 **`hello`** is the first message on every socket, and is sent once.
 
 ```json
-{ "type": "hello", "protocolVersion": 2, "schemaVersion": 1, "clientId": "0192…", "cursor": 42, "lastMutationId": 7 }
+{ "type": "hello", "protocolVersion": 2, "schemaVersion": 2, "clientId": "0192…", "cursor": 42, "lastMutationId": 7 }
 ```
 
 `cursor` is the `to` of the last patch that the client has applied, or `null` if it has applied no patch. `lastMutationId` is the `lastMutationId` of the last patch that the client has applied, or 0 if it has applied no patch. It says that the client knows what became of its mutations up to that one, and the server forgets what it kept to tell the client: see section 4.
@@ -95,7 +95,7 @@ Steps 1 to 4 belong in one transaction of the local store: the rows, the cursor,
 **`error`** says what the client did wrong. The server then closes the socket with the code 4400.
 
 ```json
-{ "type": "error", "code": "version_mismatch", "message": "…", "protocolVersion": 2, "schemaVersion": 1 }
+{ "type": "error", "code": "version_mismatch", "message": "…", "protocolVersion": 2, "schemaVersion": 2 }
 ```
 
 `protocolVersion` and `schemaVersion` are what the server speaks. The codes:
@@ -132,6 +132,23 @@ The mutators, their arguments and what they refuse are in `packages/core/src/syn
 
 Whoever creates a row makes up its ID, so a client can create rows while it is offline. `uuidv7` in `packages/core` makes one.
 
+Some mutators are the server's own. A client that sends one has it rejected with `not_allowed`, like any mutation that cannot be applied, and a client does not run them on its copy either: it receives what they did in a patch.
+
+| Name | Does |
+| --- | --- |
+| `channel.connect` | Stores an account that was just connected as a channel with the status `connected`. An account that has a channel keeps it, under the ID it had |
+| `channel.disconnect` | Removes a channel. Does nothing if the channel is gone |
+
+They are the server's because a channel stands for something that only the server has: the credentials of the account. A channel that a client made up would have none, and one that a client dropped would leave them behind, still good at the network. So an account is connected and disconnected over HTTP, through the routes that `packages/core/src/connect.ts` describes, and a client learns of the outcome as it learns of every change.
+
+### Channels
+
+A row of `channel` is a connected account: its network, the network's ID of the account, the handle, the name, the addresses of its picture and of its page, the status, when it was connected and when its access ends. A workspace has at most one channel per network and account. The credentials are no part of the row. They are in a column that is not synced, and no message carries them.
+
+- `status` is `connected`, or `needs_reconnect` once the network has refused the access of the channel. Connecting the account again brings the channel back to `connected`, under the same ID.
+- `avatarUrl` and `profileUrl` are HTTPS addresses that a browser can open, or null. They are null for every account of a simulated network, which has no addresses.
+- `expiresAt` is null on the networks whose access does not end, such as Mastodon.
+
 Every mutation that a client sends is processed exactly once, and one of three things happens: it changes rows, it changes nothing, or it is rejected. All three are final. A mutation is also rejected, not refused as a message, if its name is unknown (`unknown_mutation`), its arguments are not what the mutator takes (`invalid_arguments`), or its mutator fails on it, which is a bug in the server (`internal_error`). Otherwise a client would send it again for ever, and none of its later mutations would get through. It is another matter when the database of the workspace fails under a mutator, because it is full, for example: sent again later, the mutation can go through. The server then processes nothing of the message and closes the socket with 1011.
 
 The server keeps a rejection until the client has seen it. The patch that answers a `mutate` can get lost, and the rows do not tell the client what happened: an edit that was accepted before its post was deleted leaves the same rows behind as an edit that was rejected because the post was gone. So the answer to the next hello of the client lists the rejections after the `lastMutationId` of that hello, and the server forgets the ones up to it. A client that applies patches the way section 3 says therefore learns of every rejection, and of each once.
@@ -153,7 +170,8 @@ This is not part of the contract, but it explains its edges.
 - **Keeping the log bounded.** The log covers the last 1,000 changes. A client whose cursor is older gets a snapshot, as does a client with no cursor, and one whose cursor is higher than the workspace's sequence number, which can only come from another workspace or from a workspace that was restored to an earlier state. A snapshot costs as much as the workspace is large, which for text is little.
 - **Exactly once.** For every client ID the server stores the ID of the last mutation it has processed, in the same transaction as the changes of that mutation. The rows of this table are never removed: one small row per local copy that has ever sent a mutation. The rejections are stored in the same transaction, with a reason of at most 200 characters, and removed when a hello says that the client has seen them. A client that never comes back leaves fewer than 1,100 behind.
 - **Rejected or failed.** An error is the database's own, and aborts the message, if SQLite reports that it could not do its work whatever it was asked: it is full, cannot be read or written, is locked, or has no memory. Every other error while a mutator runs is the mutator's, and the mutation is rejected for good: an error that the mutator throws, and one from the database about what the mutator wrote, such as a constraint that a row violates or a value that is too large. Those would come again however often the mutation was sent.
-- **What can be synced.** Each synced table has an explicit list of synced columns, in `apps/worker/src/workspace/synced.ts`, and every row in a patch is read through it. A column or a table that is not listed cannot get into a message.
+- **What can be synced.** Each synced table has an explicit list of synced columns, in `apps/worker/src/workspace/synced.ts`, and every row in a patch is read through it. A column or a table that is not listed cannot get into a message. The credentials of a channel are such a column. The object does not hold them in the clear either: the Worker seals them before it hands them over.
+- **Whose a mutation is.** The object runs a mutator for a client, when a `mutate` arrives, or for the Worker, which calls it directly. It tells the mutator which, and a mutator of the server's own refuses a client.
 - **Hibernation.** The sockets stay open while the object is not in memory. What the object knows about a socket, its client ID and when it runs out, is stored with the socket, and everything else is in the database.
 - **Who is asking.** The object does not see the client's request. The Worker makes a new one that names the workspace, after it has checked the session and the owner. The object remembers which workspace it holds from the first time it is used, and refuses to serve another.
 

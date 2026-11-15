@@ -200,3 +200,163 @@ it("says which argument is wrong", () => {
     workspace.mutate("part.setText", { id: partId, text: null }),
   ).toThrow(/^text: /);
 });
+
+const channelId = "01932c07-0000-7000-8000-000000000006";
+const otherChannelId = "01932c07-0000-7000-8000-000000000007";
+
+/** What the server passes to `channel.connect` for an account. */
+function account(fields: Record<string, unknown> = {}) {
+  return {
+    id: channelId,
+    network: "mastodon",
+    accountId: "1@mastodon.example",
+    handle: "@ada@mastodon.example",
+    name: "Ada Lovelace",
+    avatarUrl: "https://mastodon.example/avatars/ada.png",
+    profileUrl: "https://mastodon.example/@ada",
+    expiresAt: null,
+    ...fields,
+  };
+}
+
+it("stores a connected account as a channel that is good to use", () => {
+  const workspace = memoryWorkspace();
+
+  workspace.mutate("channel.connect", account(), 1000, "server");
+
+  expect(workspace.rows("channel")).toEqual([
+    { ...account(), status: "connected", connectedAt: 1000 },
+  ]);
+});
+
+it("brings the channel of an account up to date when the account is connected again", () => {
+  const workspace = memoryWorkspace();
+  workspace.mutate("channel.connect", account(), 1000, "server");
+  // What the publishing of a later phase does when the network refuses the
+  // access. No mutator does it yet, so the row is stored directly.
+  workspace.put("channel", {
+    ...account(),
+    network: "mastodon",
+    status: "needs_reconnect",
+    connectedAt: 1000,
+  });
+
+  // The server makes up a new ID every time: it does not know whether the
+  // account has a channel.
+  workspace.mutate(
+    "channel.connect",
+    account({ id: otherChannelId, name: "Ada", expiresAt: 9000 }),
+    5000,
+    "server",
+  );
+
+  // One channel, under the ID it had, because posts refer to it by that.
+  expect(workspace.rows("channel")).toEqual([
+    {
+      ...account({ name: "Ada", expiresAt: 9000 }),
+      status: "connected",
+      connectedAt: 5000,
+    },
+  ]);
+});
+
+it.each([
+  ["another account of the network", { accountId: "2@mastodon.example" }],
+  // The IDs of two networks are unrelated, also when they read the same.
+  ["the account with the same ID on another network", { network: "bluesky" }],
+])("gives %s a channel of its own", (_name, fields) => {
+  const workspace = memoryWorkspace();
+  workspace.mutate("channel.connect", account(), 1000, "server");
+
+  workspace.mutate(
+    "channel.connect",
+    account({ id: otherChannelId, ...fields }),
+    1000,
+    "server",
+  );
+
+  expect(workspace.rows("channel").map(({ id }) => id)).toEqual([
+    channelId,
+    otherChannelId,
+  ]);
+});
+
+it("refuses to give a new channel the ID of another", () => {
+  const workspace = memoryWorkspace();
+  workspace.mutate("channel.connect", account(), 1000, "server");
+
+  const code = rejectionOf(() =>
+    workspace.mutate(
+      "channel.connect",
+      account({ accountId: "2@mastodon.example" }),
+      1000,
+      "server",
+    ),
+  );
+
+  // Storing it would have replaced the channel of the first account.
+  expect(code).toBe("already_exists");
+  expect(workspace.rows("channel")).toEqual([
+    { ...account(), status: "connected", connectedAt: 1000 },
+  ]);
+});
+
+it.each([
+  ["an address that is not HTTPS", { avatarUrl: "http://mastodon.example/a" }],
+  // A page shows the profile as a link. Followed, this would run a script.
+  ["a script in place of an address", { profileUrl: "javascript:alert(1)" }],
+  ["a network that pigy does not know", { network: "myspace" }],
+  ["a status", { status: "needs_reconnect" }],
+  ["an empty handle", { handle: "" }],
+])("refuses to store a channel with %s", (_name, fields) => {
+  const workspace = memoryWorkspace();
+
+  const code = rejectionOf(() =>
+    workspace.mutate("channel.connect", account(fields), 1000, "server"),
+  );
+
+  expect(code).toBe("invalid_arguments");
+  expect(workspace.rows("channel")).toEqual([]);
+});
+
+it("removes a channel, and accepts that it is gone already", () => {
+  const workspace = memoryWorkspace();
+  workspace.mutate("channel.connect", account(), 1000, "server");
+
+  workspace.mutate("channel.disconnect", { id: channelId }, 2000, "server");
+  // Two tabs can disconnect the same channel.
+  workspace.mutate("channel.disconnect", { id: channelId }, 3000, "server");
+
+  expect(workspace.rows("channel")).toEqual([]);
+});
+
+it.each([
+  ["channel.connect", account()],
+  ["channel.disconnect", { id: channelId }],
+])("refuses %s from a client", (name, args) => {
+  const workspace = memoryWorkspace();
+  workspace.mutate("channel.connect", account(), 1000, "server");
+
+  // A channel is only as good as the credentials that the server keeps for
+  // it, so a client can neither make one up nor drop one.
+  expect(rejectionOf(() => workspace.mutate(name, args, 2000, "client"))).toBe(
+    "not_allowed",
+  );
+  expect(workspace.rows("channel")).toEqual([
+    { ...account(), status: "connected", connectedAt: 1000 },
+  ]);
+});
+
+it("lets the server run what a client may", () => {
+  const workspace = memoryWorkspace();
+
+  // The REST API of a later phase creates posts this way.
+  workspace.mutate(
+    "post.create",
+    { id: postId, partId, text: "Hello" },
+    0,
+    "server",
+  );
+
+  expect(workspace.rows("post")).toHaveLength(1);
+});

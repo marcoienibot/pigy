@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { idSchema } from "../id.ts";
-import { maxPartTextLength } from "./tables.ts";
+import { channelRowSchema, maxPartTextLength } from "./tables.ts";
 import type { Transaction } from "./transaction.ts";
 
 /**
@@ -8,6 +8,10 @@ import type { Transaction } from "./transaction.ts";
  * sends the name and the arguments of a mutation, never rows. The server runs
  * the mutator and its result is what counts. A client may run the same
  * mutator on its local copy first, to show the change at once.
+ *
+ * Some mutators are the server's own: a client that sends one is refused.
+ * They change rows that stand for something only the server has, such as a
+ * channel, which is nothing without its credentials.
  *
  * A mutator is synchronous and uses nothing but its arguments and the
  * transaction, so that it does the same thing wherever it runs. It either
@@ -27,6 +31,8 @@ export const rejectionCodeSchema = z.enum([
   "not_found",
   /** The post is past being a draft, so it can no longer be edited. */
   "not_a_draft",
+  /** The mutation is one that only the server runs. */
+  "not_allowed",
   /** The server failed. The details are in its logs. */
   "internal_error",
 ]);
@@ -44,12 +50,18 @@ export class MutationRejected extends Error {
   }
 }
 
+/** Who asks for a mutation: a client over its socket, or the server itself. */
+export type MutationSource = "client" | "server";
+
 function mutator<Schema extends z.ZodType>(
   schema: Schema,
   run: (tx: Transaction, args: z.output<Schema>) => void,
+  { serverOnly = false } = {},
 ) {
   return {
     schema,
+    /** True for a mutator that a client may not ask for. */
+    serverOnly,
     /** Checks `args` and runs the mutator. */
     apply(tx: Transaction, args: unknown): void {
       const parsed = schema.safeParse(args);
@@ -121,6 +133,47 @@ export const mutators = {
     }
     tx.delete("post", id);
   }),
+
+  /**
+   * Stores the account that somebody has just connected, as a channel that
+   * is good to use. An account has one channel: if the workspace has one
+   * for it already, that channel is brought up to date and keeps its ID,
+   * and `id` is not used. The server runs this when a network has handed it
+   * the access to the account, and stores that access with the channel.
+   */
+  "channel.connect": mutator(
+    channelRowSchema.omit({ status: true, connectedAt: true }),
+    (tx, channel) => {
+      const existing = tx
+        .find("channel", "accountId", channel.accountId)
+        .find(({ network }) => network === channel.network);
+      if (!existing && tx.get("channel", channel.id)) {
+        throw new MutationRejected(
+          "already_exists",
+          "This channel exists already",
+        );
+      }
+      tx.put("channel", {
+        ...channel,
+        id: existing?.id ?? channel.id,
+        status: "connected",
+        connectedAt: tx.now,
+      });
+    },
+    { serverOnly: true },
+  ),
+
+  /**
+   * Removes a channel, and with it the access that the server keeps for
+   * it. Does nothing if the channel is gone.
+   */
+  "channel.disconnect": mutator(
+    z.strictObject({ id: idSchema }),
+    (tx, { id }) => {
+      tx.delete("channel", id);
+    },
+    { serverOnly: true },
+  ),
 };
 
 export type MutatorName = keyof typeof mutators;
@@ -131,15 +184,17 @@ export type MutatorArgs<Name extends MutatorName> = z.input<
 >;
 
 /**
- * Runs the mutation `name` with `args` in `tx`. Throws `MutationRejected` if
- * there is no such mutator, if the arguments are not what it takes, or if it
- * refuses. Then, and when anything else is thrown, the caller has to discard
- * what the mutation wrote to `tx`.
+ * Runs the mutation `name` with `args` in `tx`, for `source`. Throws
+ * `MutationRejected` if there is no such mutator, if it is one that
+ * `source` may not ask for, if the arguments are not what it takes, or if
+ * it refuses. Then, and when anything else is thrown, the caller has to
+ * discard what the mutation wrote to `tx`.
  */
 export function applyMutation(
   tx: Transaction,
   name: string,
   args: unknown,
+  source: MutationSource,
 ): void {
   if (!Object.hasOwn(mutators, name)) {
     throw new MutationRejected(
@@ -147,5 +202,12 @@ export function applyMutation(
       `There is no mutation named ${JSON.stringify(name)}`,
     );
   }
-  mutators[name as MutatorName].apply(tx, args);
+  const mutator = mutators[name as MutatorName];
+  if (mutator.serverOnly && source === "client") {
+    throw new MutationRejected(
+      "not_allowed",
+      `Only the server runs ${JSON.stringify(name)}`,
+    );
+  }
+  mutator.apply(tx, args);
 }

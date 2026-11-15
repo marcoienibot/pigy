@@ -4,6 +4,9 @@ import {
   environmentSchema,
   type Mutation,
   MutationRejected,
+  type MutationSource,
+  type MutatorArgs,
+  type Network,
   type Rejection,
   type RejectionCode,
   type Row,
@@ -21,6 +24,7 @@ import { z } from "zod";
 import migrations from "./migrations/migrations.js";
 import {
   changeLog,
+  channels,
   clientMutations,
   rejections,
   workspaceRecord,
@@ -47,6 +51,33 @@ type MutatorCall = { name: string; args: unknown };
 
 /** Why a mutation was refused. */
 export type Refusal = { code: RejectionCode; message: string };
+
+/**
+ * What the object keeps for a channel besides its row, and what clients
+ * never see: the access to the account.
+ */
+export type ChannelAccess = {
+  /**
+   * The credentials as the Worker sealed them. The object cannot read
+   * them.
+   */
+  credentials: string;
+  /** When to refresh them, in milliseconds since the epoch, or null. */
+  refreshAt: number | null;
+};
+
+/** The channel that an account was stored as, or why it was not. */
+export type ConnectChannelOutcome =
+  | { ok: true; channelId: string }
+  | ({ ok: false } & Refusal);
+
+/** What it takes to act for the account of a channel. */
+export type StoredChannelAccess = {
+  network: Network;
+  accountId: string;
+  /** Sealed. Null for a channel that was stored without. */
+  credentials: string | null;
+};
 
 /**
  * The longest reason that a refusal carries. Part of a reason can be text
@@ -241,16 +272,68 @@ export class WorkspaceStore {
   }
 
   /**
-   * Runs `mutations` in order and returns, for each, why it was refused, or
-   * null. A mutation that is refused leaves nothing behind and does not stop
-   * the ones after it.
+   * Runs `mutations` of the server's own in order and returns, for each,
+   * why it was refused, or null. A mutation that is refused leaves nothing
+   * behind and does not stop the ones after it.
    *
    * All of it is one transaction: after a failure half-way, nothing has
    * happened. The database failing while a mutator runs is such a failure,
    * not a refusal: it is thrown.
    */
   apply(mutations: MutatorCall[], now: number): (Refusal | null)[] {
-    return this.storage.transactionSync(() => this.run(mutations, now));
+    return this.storage.transactionSync(() =>
+      this.run(mutations, now, "server"),
+    );
+  }
+
+  /**
+   * Stores an account that was connected as a channel, with the access to
+   * it: the row through the mutator `channel.connect`, which clients hear
+   * of, and the access next to it, which they do not. Both in one
+   * transaction, so that there is never a channel without its access, or
+   * with the access of an earlier connection.
+   */
+  connectChannel(
+    channel: MutatorArgs<"channel.connect">,
+    access: ChannelAccess,
+    now: number,
+  ): ConnectChannelOutcome {
+    return this.storage.transactionSync(() => {
+      const [refusal] = this.run(
+        [{ name: "channel.connect", args: channel }],
+        now,
+        "server",
+      );
+      if (refusal) return { ok: false, ...refusal };
+      // The mutator has kept the ID of the channel that the account had, if
+      // it had one, so the row is found by the account.
+      const [stored] = this.db
+        .update(channels)
+        .set(access)
+        .where(
+          and(
+            eq(channels.network, channel.network),
+            eq(channels.accountId, channel.accountId),
+          ),
+        )
+        .returning({ id: channels.id })
+        .all();
+      if (!stored) throw new Error("The channel was not stored");
+      return { ok: true, channelId: stored.id };
+    });
+  }
+
+  /** What it takes to act for the account of a channel, if there is one. */
+  channelAccess(channelId: string): StoredChannelAccess | undefined {
+    return this.db
+      .select({
+        network: channels.network,
+        accountId: channels.accountId,
+        credentials: channels.credentials,
+      })
+      .from(channels)
+      .where(eq(channels.id, channelId))
+      .get();
   }
 
   /**
@@ -264,7 +347,7 @@ export class WorkspaceStore {
     const last = mutations.at(-1);
     if (!last) return [];
     return this.storage.transactionSync(() => {
-      const outcomes = this.run(mutations, now);
+      const outcomes = this.run(mutations, now, "client");
       const rejected = mutations.flatMap(({ id }, index) => {
         const refusal = outcomes[index];
         return refusal ? [{ id, ...refusal }] : [];
@@ -287,8 +370,15 @@ export class WorkspaceStore {
     });
   }
 
-  /** What `apply` does, for a caller that has opened the transaction. */
-  private run(mutations: MutatorCall[], now: number): (Refusal | null)[] {
+  /**
+   * What `apply` does, for a caller that has opened the transaction and
+   * says whose the mutations are.
+   */
+  private run(
+    mutations: MutatorCall[],
+    now: number,
+    source: MutationSource,
+  ): (Refusal | null)[] {
     const before = this.record();
     let seq = before.seq;
     const outcomes = mutations.map((mutation) => {
@@ -298,7 +388,7 @@ export class WorkspaceStore {
         // mutator wrote if it throws.
         this.storage.transactionSync(() => {
           try {
-            applyMutation(tx, mutation.name, mutation.args);
+            applyMutation(tx, mutation.name, mutation.args, source);
           } catch (error) {
             // Only what is thrown here is a refusal: it comes from the
             // mutator. The database failing under it is not, and neither is

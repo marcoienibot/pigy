@@ -9,11 +9,18 @@ import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { workspaces } from "../db/schema.ts";
 import type { Bindings } from "../env.ts";
 import type { MutationOutcome } from "./object.ts";
-import type { WorkspaceIdentity } from "./store.ts";
+import type {
+  ChannelAccess,
+  ConnectChannelOutcome,
+  StoredChannelAccess,
+  WorkspaceIdentity,
+} from "./store.ts";
 
 /**
  * The Worker's side of workspaces: which there are, whose they are, and the
- * only ways into their Durable Objects.
+ * only ways into their Durable Objects: `connectWorkspace` for a client,
+ * and `mutateWorkspace`, `connectChannel` and `channelAccess` for the
+ * Worker's own code.
  */
 
 /**
@@ -112,10 +119,46 @@ export async function mutateWorkspace<Name extends MutatorName>(
   const outcome = await namespace
     .getByName(workspace.id)
     .mutate(workspace, name, args);
-  if (!outcome) {
-    throw new Error(
-      `The object of workspace ${workspace.id} holds another workspace`,
-    );
-  }
+  if (!outcome) throw foreign(workspace);
   return outcome;
+}
+
+/**
+ * Stores an account that was connected to `workspace` as a channel, with
+ * the access to it, sealed. An account that has a channel already keeps
+ * it. Clients that are connected receive the channel at once.
+ */
+export async function connectChannel(
+  namespace: Bindings["WORKSPACE"],
+  workspace: WorkspaceIdentity,
+  channel: MutatorArgs<"channel.connect">,
+  access: ChannelAccess,
+): Promise<ConnectChannelOutcome> {
+  const outcome = await namespace
+    .getByName(workspace.id)
+    .connectChannel(workspace, channel, access);
+  if (!outcome) throw foreign(workspace);
+  return outcome;
+}
+
+/**
+ * What it takes to act for the account of a channel of `workspace`, sealed,
+ * or null if the workspace has no such channel.
+ */
+export async function channelAccess(
+  namespace: Bindings["WORKSPACE"],
+  workspace: WorkspaceIdentity,
+  channelId: string,
+): Promise<StoredChannelAccess | null> {
+  const access = await namespace
+    .getByName(workspace.id)
+    .channelAccess(workspace, channelId);
+  if (access === undefined) throw foreign(workspace);
+  return access;
+}
+
+function foreign(workspace: WorkspaceIdentity): Error {
+  return new Error(
+    `The object of workspace ${workspace.id} holds another workspace`,
+  );
 }

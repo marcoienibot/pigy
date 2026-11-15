@@ -1,5 +1,7 @@
 import {
+  channelStatuses,
   environments,
+  networks,
   postStatuses,
   type RejectionCode,
   tableNames,
@@ -10,6 +12,7 @@ import {
   primaryKey,
   sqliteTable,
   text,
+  uniqueIndex,
 } from "drizzle-orm/sqlite-core";
 
 /**
@@ -44,6 +47,46 @@ export const postParts = sqliteTable(
     text: text("text").notNull(),
   },
   (table) => [index("post_part_post_id_idx").on(table.postId)],
+);
+
+export const channels = sqliteTable(
+  "channel",
+  {
+    id: text("id").primaryKey(),
+    network: text("network", { enum: networks }).notNull(),
+    accountId: text("account_id").notNull(),
+    handle: text("handle").notNull(),
+    name: text("name").notNull(),
+    avatarUrl: text("avatar_url"),
+    profileUrl: text("profile_url"),
+    status: text("status", { enum: channelStatuses }).notNull(),
+    connectedAt: integer("connected_at").notNull(),
+    expiresAt: integer("expires_at"),
+
+    // The columns below are not synced: synced.ts does not list them, so
+    // they never leave the object. `connectChannel` of store.ts writes them
+    // in the same transaction as the mutator that writes the row.
+
+    /**
+     * What the adapter of the network acts for the account with, sealed by
+     * the Worker before it gets here: see src/vault.ts. The object stores
+     * it and hands it back, and has no way to read it.
+     */
+    credentials: text("credentials"),
+    /**
+     * When the adapter wants the credentials refreshed, where the network
+     * has that. Nothing reads it yet: the timer comes with the first
+     * network that needs one.
+     */
+    refreshAt: integer("refresh_at"),
+  },
+  (table) => [
+    // An account is one channel, however often it is connected.
+    uniqueIndex("channel_network_account_id_idx").on(
+      table.network,
+      table.accountId,
+    ),
+  ],
 );
 
 // The tables below never leave the object.

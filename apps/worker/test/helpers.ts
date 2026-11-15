@@ -256,6 +256,13 @@ export function expectWarnings() {
   return warn;
 }
 
+/** The same for a test in which the app logs an error. */
+export function expectErrors() {
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  onTestFinished(() => error.mockRestore());
+  return error;
+}
+
 /** Puts `email` on the allowlist without going through the API. */
 export async function invite(
   { db, clock }: Pick<TestSetup, "db" | "clock">,
