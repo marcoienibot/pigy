@@ -1,5 +1,5 @@
 import type { SyncState } from "@pigy/core";
-import { useState } from "react";
+import { useReloadToUpdate } from "@/components/reload-to-update";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -9,8 +9,8 @@ import {
   PopoverTitle,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { reloadToUpdate } from "@/lib/service-worker";
 import { cn } from "@/lib/utils";
+import { useUnsavedInTab } from "@/lib/workspace";
 import { useSyncState } from "@/sync/react";
 
 function changes(count: number): string {
@@ -123,9 +123,11 @@ export function SyncIndicator({
 }) {
   const { label, detail, tone, reload } = describeSync(useSyncState());
   const inSidebar = placement === "sidebar";
-  // The reload first asks the server for the version to load, which can
-  // take a moment.
-  const [reloading, setReloading] = useState(false);
+  const { reloading, reload: reloadNow } = useReloadToUpdate();
+  // Not while the tab holds changes that it could not store, which the
+  // reload would wait for: the label says so for those of this workspace,
+  // and the switch for those of the other.
+  const unsaved = useUnsavedInTab();
 
   return (
     <Popover>
@@ -154,15 +156,8 @@ export function SyncIndicator({
           <PopoverTitle>{label}</PopoverTitle>
           <PopoverDescription>{detail}</PopoverDescription>
         </PopoverHeader>
-        {reload && (
-          <Button
-            size="sm"
-            disabled={reloading}
-            onClick={() => {
-              setReloading(true);
-              void reloadToUpdate();
-            }}
-          >
+        {reload && unsaved === 0 && (
+          <Button size="sm" disabled={reloading} onClick={reloadNow}>
             Reload
           </Button>
         )}

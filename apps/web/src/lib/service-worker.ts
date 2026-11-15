@@ -38,9 +38,11 @@ import { unsavedInSomeWindow, whenSaved } from "@/sync/workspace-sync";
  *   with a Web Lock, see `unsavedInSomeWindow`, and a page that starts
  *   meanwhile starts as the version it is, whose files are all there. The
  *   new version goes on waiting: for the last window to go, or for a
- *   start after the changes are stored. What is left is a write that fails
- *   in the instant after a page that starts has looked: that window is
- *   under the new worker until it has stored its changes.
+ *   start after the changes are stored. A reload that somebody asks for
+ *   would be such a start, and bring nothing new: `reloadToUpdate` says so
+ *   and leaves the window as it is. What is left is a write that fails in
+ *   the instant after a page that starts has looked: that window is under
+ *   the new worker until it has stored its changes.
  * - A page that no worker answered for is taken on by the first worker
  *   that is activated. It was loaded from the server, and the worker can
  *   be of another build: one that was deployed before the page had fetched
@@ -240,14 +242,33 @@ export async function checkForUpdate(): Promise<void> {
  * does not offer the button, and one that comes to hold them after the
  * button was pressed stays, and says "Not saved", until it has stored
  * them.
+ *
+ * And not while another window holds changes that it could not store. The
+ * page that starts would not let the version that waits take over then,
+ * see `mayTakeOver`: the reload would bring this version back, with the
+ * button that leads nowhere, and a window that is too old for the server
+ * would be as old after it. The promise resolves in that case alone, to
+ * "blocked", for the button to say why nothing happened. Nothing says
+ * when the other window has stored its changes, so the button stays and
+ * is pressed again. A browser that does not say who holds the lock is
+ * taken the same way, as a page that starts takes it.
  */
-export async function reloadToUpdate(): Promise<void> {
+export async function reloadToUpdate(): Promise<"blocked"> {
   await Promise.race([
     checkForUpdate(),
     new Promise((resolve) => setTimeout(resolve, updateCheckMs)),
   ]);
+  // What this window holds itself comes first, so that the lock which is
+  // looked for next is another window's: this one gives its own back when
+  // its changes are stored.
+  await whenSaved();
+  const registration = await container?.getRegistration();
+  if (registration?.waiting && !(await mayTakeOver())) return "blocked";
+  // Once more, with nothing after it but the reload: something may have
+  // been typed while the browser was asked.
   await whenSaved();
   location.reload();
+  return new Promise(() => {});
 }
 
 /** Whether a newer version of the app is installed and waits. */

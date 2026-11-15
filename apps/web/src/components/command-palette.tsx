@@ -19,6 +19,7 @@ import {
   UserPlus,
 } from "lucide-react";
 import { createContext, type ReactNode, use, useMemo, useState } from "react";
+import { useReloadToUpdate } from "@/components/reload-to-update";
 import { type Theme, useTheme } from "@/components/theme-provider";
 import {
   Command,
@@ -42,7 +43,7 @@ import {
   useShortcuts,
   withMod,
 } from "@/lib/keyboard";
-import { reloadToUpdate, useUpdateReady } from "@/lib/service-worker";
+import { useUpdateReady } from "@/lib/service-worker";
 import {
   environmentLabels,
   useSwitchWorkspace,
@@ -99,6 +100,7 @@ export function CommandPalette({ children }: { children: ReactNode }) {
   const updateReady = useUpdateReady();
   const unsaved = useUnsavedInTab();
   const update = updateReady && unsaved === 0;
+  const { reload } = useReloadToUpdate();
 
   useKeyDown((event) => {
     if (withMod(event) && event.key.toLowerCase() === "k") {
@@ -217,7 +219,7 @@ export function CommandPalette({ children }: { children: ReactNode }) {
                   </CommandItem>
                 )}
                 {update && (
-                  <CommandItem onSelect={run(() => void reloadToUpdate())}>
+                  <CommandItem onSelect={run(reload)}>
                     <RefreshCw aria-hidden="true" />
                     Reload to update pigy
                   </CommandItem>

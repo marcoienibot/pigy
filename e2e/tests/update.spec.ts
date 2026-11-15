@@ -269,6 +269,28 @@ test("a new version does not take over while a window holds changes that it coul
   await expect(editor(page)).toHaveValue("Written with no room left");
   await expectSync(page, "Not saved · 1 change");
 
+  // The second window knows of the newer version and offers to load it.
+  // A reload would start as the older version once more, for the reason
+  // that this start did, and make the same offer. So the window stays the
+  // page that it is, and says what is in the way.
+  await second
+    .getByRole("navigation", { name: "Main" })
+    .getByRole("link", { name: "Settings" })
+    .click();
+  const reloadSecond = second.getByRole("button", { name: "Reload to update" });
+  await expect(reloadSecond).toBeVisible();
+  await mark(second);
+  await reloadSecond.click();
+  await expect(
+    second.getByText(
+      "Another pigy window holds changes that it could not save",
+    ),
+  ).toBeVisible();
+  expect(await markOf(second)).toEqual({ sameLoad: true, leaving: false });
+  // To be pressed again when the first window has stored its text: nothing
+  // tells the second one when that is.
+  await expect(reloadSecond).toBeEnabled();
+
   // It knows of the newer version and does not offer to load it, which
   // would lose the text as well. The offer is there once the text is
   // stored, so it is the text that keeps it away.
