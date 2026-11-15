@@ -12,13 +12,14 @@ import {
 import { toast } from "sonner";
 import { EmptyState, Page } from "@/components/page";
 import { SyncIndicator } from "@/components/sync-indicator";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { selectNoChannels } from "@/lib/channels";
 import {
   type Draft,
   selectDrafts,
@@ -32,6 +33,7 @@ import {
   useShortcuts,
   withMod,
 } from "@/lib/keyboard";
+import { connectableNetworks } from "@/lib/networks";
 import { timeAgo, useNow } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { onLeaveWorkspace } from "@/lib/workspace";
@@ -256,14 +258,7 @@ function Drafts() {
         )}
       >
         {drafts.length === 0 ? (
-          <EmptyState
-            title="No drafts yet"
-            description="Posts you are still writing will appear here."
-          >
-            <Button variant="outline" onClick={() => newDraft()}>
-              Write a draft
-            </Button>
-          </EmptyState>
+          <FirstSteps onWrite={() => newDraft()} />
         ) : (
           <DraftList drafts={drafts} />
         )}
@@ -308,6 +303,47 @@ function Drafts() {
         )}
       </section>
     </Page>
+  );
+}
+
+/**
+ * What the list says while it is empty, which is what somebody new sees
+ * first: where they are, and what to do next. Until an account is
+ * connected, that is to connect one.
+ */
+function FirstSteps({ onWrite }: { onWrite: () => void }) {
+  const { workspace } = Route.useRouteContext();
+  const noChannels = useSynced(selectNoChannels);
+  const sandbox = workspace.environment === "sandbox";
+  // The first network that can be connected: its form opens at once.
+  const [network] = connectableNetworks;
+
+  return (
+    <EmptyState
+      title="No drafts yet"
+      description={
+        !noChannels
+          ? "Posts you are still writing will appear here."
+          : sandbox
+            ? "This is your sandbox: a place to try pigy on simulated networks, where nothing is posted for real. Connect one of its made-up accounts, then write a post."
+            : "Posts you are still writing will appear here. To publish them, connect an account."
+      }
+    >
+      <div className="flex flex-col items-center gap-2">
+        {noChannels && network && (
+          <Link
+            to="/channels"
+            search={{ add: network }}
+            className={buttonVariants()}
+          >
+            Connect {sandbox ? "a simulated" : "an"} account
+          </Link>
+        )}
+        <Button variant="outline" onClick={onWrite}>
+          Write a draft
+        </Button>
+      </div>
+    </EmptyState>
   );
 }
 

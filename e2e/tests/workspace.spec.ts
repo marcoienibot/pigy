@@ -1,12 +1,15 @@
 import {
   backToList,
   breakStorage,
+  channelRows,
   connectionOf,
+  connectSimulated,
   draftRow,
   draftRows,
   editor,
   expectSync,
   expectWorkspace,
+  grace,
   localData,
   openScreen,
   switchTo,
@@ -52,7 +55,7 @@ test("somebody new starts in the sandbox, which says so on every screen, and liv
   }
 });
 
-test("each workspace shows its own drafts, never under the name of the other, and the choice survives a reload", async ({
+test("each workspace shows its own drafts and channels, never under the name of the other, and the choice survives a reload", async ({
   ownPage: page,
   isMobile,
 }) => {
@@ -70,10 +73,12 @@ test("each workspace shows its own drafts, never under the name of the other, an
       if (!listed) return;
       // The banner of the sandbox.
       const inSandbox = document.querySelector('[role="note"]') !== null;
-      const rows = document.querySelectorAll('ul[aria-label="Drafts"] a');
+      const rows = document.querySelectorAll(
+        'ul[aria-label="Drafts"] a, ul[aria-label="Channels"] li',
+      );
       for (const row of rows) {
         const text = row.textContent ?? "";
-        if (text.includes("Sandbox draft")) {
+        if (text.includes("Sandbox draft") || text.includes("@grace@")) {
           listed.sandbox = true;
           if (!inSandbox) listed.mixed = true;
         }
@@ -100,15 +105,22 @@ test("each workspace shows its own drafts, never under the name of the other, an
   await page.reload();
 
   await writeDraft(page, isMobile, "Sandbox draft");
+  await openScreen(page, "Channels");
+  await connectSimulated(page, grace);
 
-  // Live has none of it.
+  // Live has neither.
   await switchTo(page, "Live");
+  await expect(
+    page.getByRole("heading", { name: "No accounts connected" }),
+  ).toBeVisible();
+  await expect(channelRows(page)).toHaveCount(0);
+  await openScreen(page, "Drafts");
   await expect(
     page.getByRole("heading", { name: "No drafts yet" }),
   ).toBeVisible();
   await writeDraft(page, isMobile, "Live draft");
   await expect(draftRows(page)).toHaveCount(1);
-  // Both were looked at, or the note below would say nothing: the draft
+  // Both were looked at, or the note below would say nothing: the channel
   // of the sandbox and the draft of live, since the page was last loaded.
   expect(await listed()).toEqual({ sandbox: true, live: true, mixed: false });
 
@@ -122,6 +134,9 @@ test("each workspace shows its own drafts, never under the name of the other, an
   await switchTo(page, "Sandbox");
   await expect(draftRow(page, "Sandbox draft")).toBeVisible();
   await expect(draftRows(page)).toHaveCount(1);
+  await openScreen(page, "Channels");
+  await expect(channelRows(page)).toHaveCount(1);
+  await expect(channelRows(page)).toContainText(grace);
   expect(await listed()).toEqual({ sandbox: true, live: true, mixed: false });
 });
 

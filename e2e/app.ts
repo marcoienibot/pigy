@@ -57,6 +57,48 @@ export async function switchTo(
   await expectWorkspace(page, name);
 }
 
+/** The rows of the list of channels. */
+export function channelRows(page: Page): Locator {
+  return page.getByRole("list", { name: "Channels" }).getByRole("listitem");
+}
+
+/**
+ * The simulated Mastodon server that every sandbox starts with, and one of
+ * its accounts: `sandboxMastodonDomain` in packages/core/src/sandbox.ts and
+ * the accounts in apps/worker/src/sim/object.ts.
+ */
+export const sandboxServer = "mastodon.example";
+export const grace = `@grace@${sandboxServer}`;
+
+/**
+ * Begins to connect a simulated Mastodon account from the Channels screen
+ * of a sandbox, and stops on the consent page of the simulated server.
+ */
+export async function openConsentPage(page: Page): Promise<void> {
+  await page.getByRole("button", { name: "Connect account" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: "Mastodon" }).click();
+  // The sandbox has filled in its simulated server.
+  await dialog.getByRole("button", { name: "Continue to Mastodon" }).click();
+  await page.waitForURL(
+    ({ pathname }) =>
+      pathname === `/sim/network/${sandboxServer}/oauth/authorize`,
+  );
+}
+
+/**
+ * Connects the simulated account `handle` from the Channels screen of a
+ * sandbox, as a person does: through the consent page and back.
+ */
+export async function connectSimulated(
+  page: Page,
+  handle: string,
+): Promise<void> {
+  await openConsentPage(page);
+  await page.getByRole("button", { name: handle }).click();
+  await expect(channelRows(page).filter({ hasText: handle })).toBeVisible();
+}
+
 /** The rows of the list of drafts. */
 export function draftRows(page: Page): Locator {
   return page.getByRole("list", { name: "Drafts" }).getByRole("link");

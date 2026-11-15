@@ -10,6 +10,7 @@ import {
   Settings,
   Share2,
   Sun,
+  UserPlus,
 } from "lucide-react";
 import { createContext, type ReactNode, use, useMemo, useState } from "react";
 import { type Theme, useTheme } from "@/components/theme-provider";
@@ -107,6 +108,17 @@ export function CommandPalette({ children }: { children: ReactNode }) {
                 <CommandShortcut>
                   <Kbd>C</Kbd>
                 </CommandShortcut>
+              </CommandItem>
+            </CommandGroup>
+            <CommandGroup heading="Channels">
+              <CommandItem
+                onSelect={run(
+                  () =>
+                    void navigate({ to: "/channels", search: { add: true } }),
+                )}
+              >
+                <UserPlus aria-hidden="true" />
+                Connect an account
               </CommandItem>
             </CommandGroup>
             <CommandGroup heading="Workspace">

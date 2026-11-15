@@ -1,6 +1,7 @@
 import { useRouteContext } from "@tanstack/react-router";
 import { ChevronsUpDown, LogOut } from "lucide-react";
 import { useState } from "react";
+import { Avatar } from "@/components/avatar";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -23,23 +24,6 @@ import {
 import { signOutAndForget } from "@/lib/session";
 import { cn } from "@/lib/utils";
 import { countUnsynced } from "@/sync/indexed-db";
-
-/** Up to two letters to show in place of a picture. */
-function initials(name: string): string {
-  const [first = "", second = ""] = name.trim().split(/\s+/);
-  return (first.charAt(0) + second.charAt(0)).toUpperCase();
-}
-
-function Avatar({ name }: { name: string }) {
-  return (
-    <span
-      aria-hidden="true"
-      className="flex size-6 shrink-0 items-center justify-center rounded-full bg-primary text-[0.625rem] font-medium text-primary-foreground"
-    >
-      {initials(name)}
-    </span>
-  );
-}
 
 /**
  * Who is signed in, and the way to sign out. In the sidebar it shows the

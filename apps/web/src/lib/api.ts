@@ -2,6 +2,10 @@ import {
   type AddAllowedEmailRequest,
   type AllowedEmail,
   allowedEmailListResponseSchema,
+  type ConnectRequest,
+  connectResponseSchemaFor,
+  type DisconnectResponse,
+  disconnectResponseSchema,
   errorResponseSchema,
   type HealthResponse,
   healthResponseSchema,
@@ -17,6 +21,11 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /**
+     * The field of the request that the message is about, if the API named
+     * one: a form shows the message next to that input.
+     */
+    readonly field: string | undefined = undefined,
   ) {
     super(message);
   }
@@ -49,6 +58,7 @@ async function request(
     response.status,
     // The API explains its errors. Anything else in between does not.
     body.data?.message ?? `${method} ${path} returned ${response.status}`,
+    body.data?.field,
   );
 }
 
@@ -114,4 +124,39 @@ export async function removeAllowedEmail(email: string): Promise<void> {
   await request(`${allowedEmailsPath}/${encodeURIComponent(email)}`, {
     method: "DELETE",
   });
+}
+
+/**
+ * Begins to connect an account to a workspace, and returns the address to
+ * send the browser to: the consent page of the network, or of a simulated
+ * one. A refusal is an `ApiError` with a message for the person, and with
+ * the `field` that it is about: `ConnectError` in `@pigy/core` has what
+ * each status means.
+ */
+export async function beginConnect(
+  workspaceId: string,
+  connect: ConnectRequest,
+): Promise<string> {
+  const response = await request(`/api/workspaces/${workspaceId}/connect`, {
+    method: "POST",
+    json: connect,
+  });
+  // An address that this page may navigate to, and nothing else.
+  return connectResponseSchemaFor(location.origin).parse(await response.json())
+    .url;
+}
+
+/**
+ * Disconnects a channel, and answers whether its network took the access
+ * back. The channel is gone either way.
+ */
+export async function disconnectChannel(
+  workspaceId: string,
+  channelId: string,
+): Promise<DisconnectResponse> {
+  const response = await request(
+    `/api/workspaces/${workspaceId}/channels/${channelId}`,
+    { method: "DELETE" },
+  );
+  return disconnectResponseSchema.parse(await response.json());
 }
