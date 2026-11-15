@@ -1,6 +1,10 @@
 import { defineConfig, devices } from "@playwright/test";
+import { portFromEnvironment } from "./server.ts";
 
-const port = 4173;
+// The port of the server that the run starts: `PIGY_E2E_PORT`, or 4173.
+// A run whose server is not the one on its port fails, see server.ts.
+const port = portFromEnvironment() ?? 4173;
+process.env.PIGY_E2E_PORT = String(port);
 
 export default defineConfig({
   testDir: "./tests",
@@ -29,14 +33,18 @@ export default defineConfig({
   // Tests run against a build, served by the Workers runtime the same way
   // it is deployed: static assets plus the Worker. It is the production
   // build in everything but sign-in, where a simulated Google stands in for
-  // the real one. `pnpm preview:e2e` builds it and serves it on this port,
-  // with an empty database.
+  // the real one. `pnpm preview:e2e` builds it and serves it on the port of
+  // `PIGY_E2E_PORT`, with an empty database.
   webServer: {
     command: "pnpm preview:e2e",
     cwd: "..",
+    env: { PIGY_E2E_PORT: String(port) },
     url: `http://localhost:${port}/api/health`,
     // Always build: a server that is already running could serve a stale
     // build.
     reuseExistingServer: false,
   },
+  // Playwright only waits for the port to answer. This makes sure that the
+  // server that answers is the one that it started.
+  globalSetup: "./global-setup.ts",
 });

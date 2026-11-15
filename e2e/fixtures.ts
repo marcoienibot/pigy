@@ -9,6 +9,7 @@ import {
   type TestInfo,
   type WebSocketRoute,
 } from "@playwright/test";
+import { expectOwnServer } from "./server.ts";
 
 /**
  * The admin of the app under test. The e2e build has no configuration, so
@@ -163,8 +164,13 @@ async function guardNetwork(
  * and the test that made it fails once its body has run. That goes for the
  * service worker of the app as for its pages: the requests of both are
  * requests of the browser context, which is what is guarded.
+ *
+ * A test also fails when the app that answers on the port of the run is
+ * not the build that the run started, before it or after it: on a machine
+ * with several checkouts it can be another one's. See server.ts.
  */
 export const test = base.extend<{
+  ownServer: undefined;
   networkGuard: undefined;
   /** `page`, signed in as the admin. For tests that are not about sign-in. */
   signedInPage: Page;
@@ -193,6 +199,20 @@ export const test = base.extend<{
    */
   signInBeforeFirstLoad: (email: string) => Promise<void>;
 }>({
+  // Before the test and after it, so that a test that passed ran against
+  // the server of the run from its start to its end, the last test of a
+  // run included: see server.ts.
+  ownServer: [
+    async ({ baseURL }, use) => {
+      if (!baseURL) throw new Error("baseURL is not set");
+      const port = Number(new URL(baseURL).port);
+      await expectOwnServer(port);
+      await use(undefined);
+      await expectOwnServer(port);
+    },
+    { auto: true },
+  ],
+
   networkGuard: [
     async ({ context, baseURL }, use) => {
       if (!baseURL) throw new Error("baseURL is not set");
