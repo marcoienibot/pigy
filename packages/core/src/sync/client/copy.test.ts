@@ -222,6 +222,55 @@ it("replaces only the mutation right before, and only for the same part", () => 
   ]);
 });
 
+it("takes note of a rejection once, however often it is told", () => {
+  const first = draft("First");
+  const second = draft("Second");
+  let copy = newCopy();
+  // Two parts, so that the second mutation does not replace the first.
+  copy = append(
+    copy,
+    setText(first.part.id, "One"),
+    setText(second.part.id, "Two"),
+  );
+  // Both mutations are confirmed, the first as rejected.
+  copy = step(copy, (head) =>
+    applyPatch(
+      head,
+      {
+        from: null,
+        to: 1,
+        changes: second.puts("Two"),
+        lastMutationId: 2,
+        rejected: [{ id: 1, code: "not_found", message: "Gone" }],
+      },
+      newId(),
+    ),
+  ).copy;
+  expect(copy.head.rejections).toHaveLength(1);
+
+  // What the server answers to a hello that was sent with an older
+  // `lastMutationId`: the hello of a tab that took the socket over while
+  // the tab before it was still storing the patch above. The answer tells
+  // of the rejection again. SYNC.md section 3, step 4.
+  const { copy: after, result } = step(copy, (head) =>
+    applyPatch(
+      head,
+      {
+        from: 1,
+        to: 1,
+        changes: [],
+        lastMutationId: 2,
+        rejected: [{ id: 1, code: "not_found", message: "Gone" }],
+      },
+      newId(),
+    ),
+  );
+
+  expect(result).toBe("applied");
+  // The person is not told twice of one refused change.
+  expect(after.head.rejections).toHaveLength(1);
+});
+
 it("applies a patch to the rows, the cursor and the outbox in one write", () => {
   const kept = draft("Kept");
   const gone = draft("Gone");
