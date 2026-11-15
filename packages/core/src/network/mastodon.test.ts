@@ -99,3 +99,18 @@ describe("stripMastodonText", () => {
     expect(stripMastodonText(" \u00a0a\u00a0\t")).toBe("\u00a0a\u00a0");
   });
 });
+
+describe("the patterns", () => {
+  it("find links and mentions that stand next to each other", () => {
+    // What stands before a match is matched with it. It must not be taken
+    // from the match before, or every second one would be missed.
+    expect(count("https://a.example https://b.example https://c.example")).toBe(
+      23 * 3 + 2,
+    );
+    expect(count("@a@x.example @b@x.example @c@x.example")).toBe(
+      "@a @b @c".length,
+    );
+    expect(count("https://a.example\nhttps://b.example")).toBe(23 * 2 + 1);
+    expect(count("@a@x.example,@b@x.example")).toBe("@a,@b".length);
+  });
+});

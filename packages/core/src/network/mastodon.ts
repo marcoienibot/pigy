@@ -30,9 +30,13 @@ const hostChar = String.raw`[^\p{White_Space}\p{Cc}!-\/:-@\[-\x60{-~]`;
 const hostLabel = String.raw`(?:${hostChar}(?:[_-]|${hostChar})*)?${hostChar}\.`;
 const topLevelDomain = "(?:[a-z]{2,}(?![0-9a-z@+-])|xn--[0-9a-z]+)";
 
+// These patterns do without lookbehind, which older browsers that pigy
+// still opens in cannot compile: what must stand before a match is matched
+// with it, as the first group, and put back.
+
 const linkPattern = new RegExp(
   // Not in the middle of a word, a mention or a hashtag.
-  "(?<![a-z0-9@＠$#＃])" +
+  "(^|[^a-z0-9@＠$#＃])" +
     String.raw`https?:\/\/` +
     `(?:${hostLabel})+${topLevelDomain}` +
     "(?::[0-9]+)?" +
@@ -46,7 +50,7 @@ const wordChar = String.raw`[\p{L}\p{M}\p{Nd}\p{Pc}]`;
 
 // A mention with a domain, as Account::MENTION_RE: "@name@example.com".
 const remoteMentionPattern = new RegExp(
-  String.raw`(?<![=\/\p{L}\p{M}\p{Nd}\p{Pc}])@([a-z0-9_]+(?:[.-]+[a-z0-9_]+)*)@${wordChar}+(?:[.-]+${wordChar}+)*`,
+  String.raw`(^|[^=\/\p{L}\p{M}\p{Nd}\p{Pc}])@([a-z0-9_]+(?:[.-]+[a-z0-9_]+)*)@${wordChar}+(?:[.-]+${wordChar}+)*`,
   "giu",
 );
 
@@ -55,7 +59,9 @@ const remoteMentionPattern = new RegExp(
 const afterMentionPattern =
   /^(?:[@＠]|[\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u00FF\u0100-\u024F\u0253-\u0254\u0256-\u0257\u0259\u025B\u0263\u0268\u026F\u0272\u0289\u028B\u02BB\u1E00-\u1EFF]|[\u0300-\u036F]|:\/\/)/u;
 
-const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+// Made when it is first needed, so that a browser without it can still load
+// the rest of this package.
+let graphemes: Intl.Segmenter | undefined;
 
 /**
  * The text as Mastodon stores it: without the whitespace around it. This is
@@ -77,14 +83,24 @@ export function countMastodonCharacters(
   const stripped = stripMastodonText(text);
   const placeholder = "x".repeat(charactersPerUrl);
   const countable = stripped
-    .replace(linkPattern, placeholder)
+    .replace(
+      linkPattern,
+      (_link: string, before: string) => before + placeholder,
+    )
     .replace(
       remoteMentionPattern,
-      (mention: string, username: string, offset: number, whole: string) =>
+      (
+        mention: string,
+        before: string,
+        username: string,
+        offset: number,
+        whole: string,
+      ) =>
         afterMentionPattern.test(whole.slice(offset + mention.length))
           ? mention
-          : `@${username}`,
+          : `${before}@${username}`,
     );
+  graphemes ??= new Intl.Segmenter(undefined, { granularity: "grapheme" });
   let count = 0;
   for (const _ of graphemes.segment(countable)) count++;
   return count;
