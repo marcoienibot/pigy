@@ -1,0 +1,1 @@
+CREATE INDEX `post_target_status_idx` ON `post_target` (`status`);

@@ -140,6 +140,10 @@ export const postTargets = sqliteTable(
       table.channelId,
     ),
     index("post_target_channel_id_idx").on(table.channelId),
+    // For the queue: the targets that wait and those under way are looked
+    // up by their status at every change of the workspace, and they are
+    // few among all that were ever published.
+    index("post_target_status_idx").on(table.status),
   ],
 );
 
