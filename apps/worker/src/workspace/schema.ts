@@ -199,3 +199,23 @@ export const rejections = sqliteTable(
   },
   (table) => [primaryKey({ columns: [table.clientId, table.mutationId] })],
 );
+
+/**
+ * The calls of the Worker that came with a key, and how each ended: a call
+ * that comes a second time is answered from here and not carried out again.
+ * A row is kept for as long as a caller may still repeat the call.
+ */
+export const keyedCalls = sqliteTable(
+  "keyed_call",
+  {
+    key: text("key").primaryKey(),
+    /** What the call was answered with. */
+    outcome: text("outcome", { mode: "json" })
+      .$type<
+        { ok: true } | { ok: false; code: RejectionCode; message: string }
+      >()
+      .notNull(),
+    handledAt: integer("handled_at").notNull(),
+  },
+  (table) => [index("keyed_call_handled_at_idx").on(table.handledAt)],
+);

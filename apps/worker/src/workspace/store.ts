@@ -14,7 +14,7 @@ import {
   type Transaction,
   tableNames,
 } from "@pigy/core";
-import { and, asc, count, eq, gt, lte } from "drizzle-orm";
+import { and, asc, count, eq, gt, lt, lte } from "drizzle-orm";
 import {
   type DrizzleSqliteDODatabase,
   drizzle,
@@ -26,6 +26,7 @@ import {
   changeLog,
   channels,
   clientMutations,
+  keyedCalls,
   rejections,
   workspaceRecord,
 } from "./schema.ts";
@@ -51,6 +52,19 @@ type MutatorCall = { name: string; args: unknown };
 
 /** Why a mutation was refused. */
 export type Refusal = { code: RejectionCode; message: string };
+
+/** The result of a mutation that did not come from a client. */
+export type MutationOutcome = { ok: true } | ({ ok: false } & Refusal);
+
+/** What names a call of the Worker that is carried out once. */
+export const callKeySchema = z.string().min(1).max(200);
+
+/**
+ * How long the object remembers a call that came with a key, in
+ * milliseconds: 30 days, which is longer than a workflow keeps the steps
+ * that it may run again.
+ */
+export const keyLifetimeMs = 30 * 24 * 60 * 60 * 1000;
 
 /**
  * What the object keeps for a channel besides its row, and what clients
@@ -280,18 +294,55 @@ export class WorkspaceStore {
   }
 
   /**
-   * Runs `mutations` of the server's own in order and returns, for each,
-   * why it was refused, or null. A mutation that is refused leaves nothing
-   * behind and does not stop the ones after it.
+   * Runs a mutation of the server's own and returns how it ended. A
+   * mutation that is refused leaves nothing behind. The database failing
+   * while the mutator runs is not a refusal: it is thrown, and nothing has
+   * happened.
    *
-   * All of it is one transaction: after a failure half-way, nothing has
-   * happened. The database failing while a mutator runs is such a failure,
-   * not a refusal: it is thrown.
+   * With a `key`, the mutation is run once: see `once`.
    */
-  apply(mutations: MutatorCall[], now: number): (Refusal | null)[] {
-    return this.storage.transactionSync(() =>
-      this.run(mutations, now, "server"),
-    );
+  mutate(mutation: MutatorCall, now: number, key?: string): MutationOutcome {
+    return this.once(key, now, () => {
+      const [refusal] = this.run([mutation], now, "server");
+      return refusal ? { ok: false, ...refusal } : { ok: true };
+    });
+  }
+
+  /**
+   * Carries out a call of the Worker that changes the workspace, in one
+   * transaction, and returns how it ended.
+   *
+   * With a `key`, it is carried out once: the outcome is kept under the
+   * key, in the same transaction, and a call that comes with the same key
+   * again is answered with that outcome and does nothing. That is what
+   * makes a call safe to repeat for a caller that cannot tell whether the
+   * first one arrived, such as a step of a workflow that is run again. The
+   * caller answers for the key: the same key for the same call, and for no
+   * other. A call that failed, which is one that threw, has not happened
+   * and left no key behind.
+   */
+  private once(
+    key: string | undefined,
+    now: number,
+    call: () => MutationOutcome,
+  ): MutationOutcome {
+    return this.storage.transactionSync(() => {
+      if (key === undefined) return call();
+      const handled = this.db
+        .select({ outcome: keyedCalls.outcome })
+        .from(keyedCalls)
+        .where(eq(keyedCalls.key, key))
+        .get();
+      if (handled) return handled.outcome;
+      const outcome = call();
+      this.db.insert(keyedCalls).values({ key, outcome, handledAt: now }).run();
+      // Nobody repeats a call after this long.
+      this.db
+        .delete(keyedCalls)
+        .where(lt(keyedCalls.handledAt, now - keyLifetimeMs))
+        .run();
+      return outcome;
+    });
   }
 
   /**
@@ -371,8 +422,9 @@ export class WorkspaceStore {
   }
 
   /**
-   * Runs mutations of the client `clientId`, as `apply` does, and returns
-   * the ones that were refused. In the same transaction as their changes it
+   * Runs mutations of the client `clientId`, in order, and returns the
+   * ones that were refused: a mutation that is refused leaves nothing
+   * behind and does not stop the ones after it. In the same transaction as their changes it
    * records that the mutations are processed, and the refusals, for the
    * client to hear of if this answer does not reach it. After a failure
    * nothing has happened, and the client sends the mutations again.
@@ -405,8 +457,9 @@ export class WorkspaceStore {
   }
 
   /**
-   * What `apply` does, for a caller that has opened the transaction and
-   * says whose the mutations are.
+   * Runs `mutations` in order and returns, for each, why it was refused,
+   * or null. For a caller that has opened the transaction and says whose
+   * the mutations are.
    *
    * Every mutation is run at a time of its own, later than the one before
    * it: the clock's, or one millisecond after the time of the mutation

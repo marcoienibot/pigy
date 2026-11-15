@@ -22,9 +22,10 @@ import type { Bindings } from "../env.ts";
 import {
   type ChannelAccess,
   type ConnectChannelOutcome,
+  callKeySchema,
   type DisconnectChannelOutcome,
+  type MutationOutcome,
   type Patch,
-  type Refusal,
   type StoredChannelAccess,
   type WorkspaceIdentity,
   WorkspaceStore,
@@ -80,9 +81,6 @@ type SocketState = {
   protocolVersion: number;
   schemaVersion: number;
 };
-
-/** The result of a mutation that did not come from a client. */
-export type MutationOutcome = { ok: true } | ({ ok: false } & Refusal);
 
 /**
  * The Durable Object of a workspace: the one place where the data of the
@@ -167,21 +165,27 @@ export function workspaceObject({ now }: { now: Clock }) {
 
     /**
      * Runs a mutator for Worker code, such as the REST API. The clients that
-     * are connected receive the change like any other. Returns nothing if
-     * `workspace` is not the one that the object holds.
+     * are connected receive the change like any other. A call with a `key`
+     * is carried out once, and answered the same way every time it comes.
+     * Returns nothing if `workspace` is not the one that the object holds.
      */
     mutate(
       workspace: WorkspaceIdentity,
       name: string,
       args: unknown,
+      key?: string,
     ): MutationOutcome | undefined {
       if (!this.#store.bind(workspaceIdentitySchema.parse(workspace))) {
         return undefined;
       }
       const from = this.#store.seq;
-      const [refusal] = this.#store.apply([{ name, args }], now().getTime());
+      const outcome = this.#store.mutate(
+        { name, args },
+        now().getTime(),
+        callKeySchema.optional().parse(key),
+      );
       this.#publish(from);
-      return refusal ? { ok: false, ...refusal } : { ok: true };
+      return outcome;
     }
 
     /**

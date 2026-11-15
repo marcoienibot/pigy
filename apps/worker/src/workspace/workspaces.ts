@@ -8,11 +8,11 @@ import { and, eq } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { workspaces } from "../db/schema.ts";
 import type { Bindings } from "../env.ts";
-import type { MutationOutcome } from "./object.ts";
 import type {
   ChannelAccess,
   ConnectChannelOutcome,
   DisconnectChannelOutcome,
+  MutationOutcome,
   StoredChannelAccess,
   WorkspaceIdentity,
 } from "./store.ts";
@@ -110,16 +110,25 @@ export function connectWorkspace(
  * code that changes a workspace without a client, such as the REST API. The
  * caller answers for `workspace` being the one it may change. Clients that
  * are connected receive the change at once.
+ *
+ * A call can fail on its way back, after the object has made the change,
+ * and the caller cannot tell. Called again, it would run the mutator a
+ * second time. A caller that tries again therefore passes a `key`, which
+ * names the call: the object carries a call with a key out once, and
+ * answers every repeat of it with the outcome of the first, for 30 days.
+ * The same key must mean the same call, and no other, within its
+ * workspace.
  */
 export async function mutateWorkspace<Name extends MutatorName>(
   namespace: Bindings["WORKSPACE"],
   workspace: WorkspaceIdentity,
   name: Name,
   args: MutatorArgs<Name>,
+  key?: string,
 ): Promise<MutationOutcome> {
   const outcome = await namespace
     .getByName(workspace.id)
-    .mutate(workspace, name, args);
+    .mutate(workspace, name, args, key);
   if (!outcome) throw foreign(workspace);
   return outcome;
 }

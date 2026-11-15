@@ -17,6 +17,7 @@ import {
 import {
   changeLogWindow,
   isDatabaseFailure,
+  keyLifetimeMs,
   maxRefusalMessageLength,
   WorkspaceStore,
 } from "../src/workspace/store.ts";
@@ -731,6 +732,115 @@ it("tells the Worker why a mutation of its own was rejected", async () => {
   // the next change.
   await createPost(client, "Hello");
   expect(client.cursor).toBe(1);
+});
+
+it("carries a change of the Worker's out once when it comes with a key", async () => {
+  const { test, workspace, client } = await connected();
+  const identity = await identityOf(test, workspace);
+  const { partId } = await createPost(client, "Hello");
+  const write = (text: string, key?: string) =>
+    mutateWorkspace(
+      env.WORKSPACE,
+      identity,
+      "part.setText",
+      { id: partId, text },
+      key,
+    );
+  const text = () => client.table("post_part")[0]?.text;
+
+  expect(await write("First", "step-1")).toEqual({ ok: true });
+  await client.patch();
+  expect(await write("Other", "step-2")).toEqual({ ok: true });
+  await client.patch();
+
+  // The caller did not get the answer to the first call and makes it
+  // again. Run a second time, the mutator would put back what the call
+  // after it has replaced. It is answered as it was, and changes nothing.
+  expect(await write("First", "step-1")).toEqual({ ok: true });
+  // Nothing was sent for the repeat: the next patch is that of the next
+  // change, and it follows the one before without a gap.
+  expect(await write("Last")).toEqual({ ok: true });
+  expect(await client.patch()).toMatchObject({ from: 3, to: 4 });
+  expect(text()).toBe("Last");
+});
+
+it("answers a call with a key the same way every time, also when it was refused", async () => {
+  const { test, workspace, client } = await connected();
+  const identity = await identityOf(test, workspace);
+  const postId = newId();
+  const partId = newId();
+  const edit = () =>
+    mutateWorkspace(
+      env.WORKSPACE,
+      identity,
+      "part.setText",
+      { id: partId, text: "Edited" },
+      "edit",
+    );
+  const refused = {
+    ok: false,
+    code: "not_found",
+    message: "This post no longer exists",
+  };
+
+  expect(await edit()).toEqual(refused);
+  // The post exists by the time the call is repeated. It was refused, and
+  // stays refused: the caller acted on that answer, or will.
+  client.mutate("post.create", { id: postId, partId, text: "Hello" });
+  await client.patch();
+  expect(await edit()).toEqual(refused);
+  expect(client.table("post_part")[0]?.text).toBe("Hello");
+});
+
+it("forgets the key of a call that failed, and old keys in time", async () => {
+  const { test, workspace, client } = await connected();
+  const identity = await identityOf(test, workspace);
+  const { partId } = await createPost(client, "Hello");
+  const write = (text: string, key: string) =>
+    mutateWorkspace(
+      env.WORKSPACE,
+      identity,
+      "part.setText",
+      { id: partId, text },
+      key,
+    );
+  const keys = () =>
+    runInDurableObject(objectOf(workspace), (_, state) =>
+      state.storage.sql
+        .exec<{ key: string }>("select key from keyed_call order by key")
+        .toArray()
+        .map(({ key }) => key),
+    );
+
+  // The database fails under the mutator, as in the test of a full
+  // database below: the call has not happened. If its key were kept, the
+  // repeat would be answered and never carried out.
+  const full = await runInDurableObject(objectOf(workspace), (_, state) => {
+    const { sql } = state.storage;
+    const exec = sql.exec.bind(sql);
+    return vi.spyOn(sql, "exec").mockImplementation((query, ...bindings) => {
+      if (query.includes('"post_part"') && bindings.includes("First")) {
+        throw new Error("database or disk is full: SQLITE_FULL");
+      }
+      return exec(query, ...bindings);
+    });
+  });
+  onTestFinished(() => full.mockRestore());
+  await expect(write("First", "a")).rejects.toThrow();
+  full.mockRestore();
+  expect(await keys()).toEqual([]);
+  expect(await write("First", "a")).toEqual({ ok: true });
+  expect(await client.patch()).toMatchObject({ from: 1, to: 2 });
+
+  // A key is kept for as long as anybody may repeat its call, and no
+  // longer: the table must not grow for ever. It goes when a later call
+  // comes with a key.
+  test.advance(keyLifetimeMs - 1000);
+  expect(await write("Second", "b")).toEqual({ ok: true });
+  expect(await keys()).toEqual(["a", "b"]);
+  test.advance(2000);
+  expect(await write("Third", "c")).toEqual({ ok: true });
+  expect(await keys()).toEqual(["b", "c"]);
 });
 
 it.each([
