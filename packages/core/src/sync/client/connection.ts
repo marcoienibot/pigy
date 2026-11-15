@@ -1,0 +1,500 @@
+import { z } from "zod";
+import type { Fetch } from "../../dependencies.ts";
+import { workspaceListResponseSchema } from "../../workspace.ts";
+import {
+  type HelloMessage,
+  type MutateMessage,
+  type PatchMessage,
+  pingMessageText,
+  type ServerMessage,
+  serverMessageSchema,
+  syncCloseCodes,
+  syncProtocolVersion,
+  syncSchemaVersion,
+} from "../protocol.ts";
+import { applyPatch, nextBatch } from "./copy.ts";
+import type { ConnectionState, SyncStore } from "./store.ts";
+
+/** A WebSocket, as far as the connection uses one. */
+export type Socket = {
+  send(text: string): void;
+  close(): void;
+};
+
+/** What a socket tells the connection, after `OpenSocket` has returned. */
+export type SocketEvents = {
+  /** The handshake went through. */
+  open(): void;
+  /** `data` is what the frame held: text, for a message of the protocol. */
+  message(data: unknown): void;
+  /**
+   * The socket is closed, with this code. Without an `open` before it, the
+   * handshake failed.
+   */
+  close(code: number): void;
+};
+
+/** Starts the handshake of a socket to the workspace. */
+export type OpenSocket = (events: SocketEvents) => Socket;
+
+/** Calls `callback` once, after `delayMs`. Returns how to call that off. */
+export type Schedule = (callback: () => void, delayMs: number) => () => void;
+
+/** Why a handshake failed, as far as `GET /api/workspaces` tells. */
+export type Access =
+  /** The session has ended. */
+  | "signed-out"
+  /** The workspace is not one of whoever is signed in. */
+  | "no-access"
+  /** Neither: there is no connection, or the server has a problem. */
+  | "unknown";
+
+/**
+ * Asks the server why a handshake may have failed, as SYNC.md section 2
+ * says: a browser does not tell a script.
+ */
+export async function checkAccess(
+  fetch: Fetch,
+  workspaceId: string,
+): Promise<Access> {
+  let response: Response;
+  try {
+    response = await fetch("/api/workspaces");
+  } catch {
+    return "unknown";
+  }
+  if (response.status === 401) return "signed-out";
+  if (!response.ok) return "unknown";
+  const list = workspaceListResponseSchema.safeParse(
+    await response.json().catch(() => undefined),
+  );
+  if (!list.success) return "unknown";
+  return list.data.workspaces.some(({ id }) => id === workspaceId)
+    ? "unknown"
+    : "no-access";
+}
+
+/** The times of a connection, in milliseconds. SYNC.md leaves them open. */
+export const syncTimings = {
+  /**
+   * How long a socket may take from the start of its handshake to the
+   * answer to its hello, and how long the answer to a `mutate` may take.
+   */
+  answer: 15_000,
+  /** How often a socket is pinged. */
+  pingEvery: 30_000,
+  /** How long the answer to a ping may take. */
+  pong: 10_000,
+  /**
+   * The pause before connecting again: after the first failure, after the
+   * second and so on. The last one is for every failure after that.
+   */
+  retry: [1_000, 2_000, 4_000, 8_000, 16_000, 30_000],
+} as const;
+
+/**
+ * What an error about versions has in any version of the protocol: a
+ * server that speaks a later one may word the rest of its messages in a way
+ * that this client cannot read.
+ */
+const versionMismatchSchema = z.looseObject({
+  type: z.literal("error"),
+  code: z.literal("version_mismatch"),
+  protocolVersion: z.int(),
+  schemaVersion: z.int(),
+});
+
+/**
+ * Keeps a copy in step with the server over a socket, as SYNC.md asks of a
+ * client: it says hello with where the copy is, applies the patches, sends
+ * the mutations of the outbox and connects again when the socket is lost.
+ * One tab runs it at a time, the one that holds the socket of the copy.
+ */
+export class SyncConnection {
+  private state: "new" | "running" | "ended" = "new";
+  private finish = () => {};
+  private unsubscribe = () => {};
+  private socket: Socket | undefined;
+  /**
+   * Counts the sockets. An event of a socket other than the latest is
+   * ignored: that socket was given up.
+   */
+  private generation = 0;
+  /** Whether the hello of the socket has been answered. */
+  private ready = false;
+  /** The ID of the last mutation of the `mutate` that awaits its answer. */
+  private awaiting: number | undefined;
+  /** The messages so far of a patch that is still arriving. */
+  private parts: PatchMessage[] = [];
+  /** How many times in a row connecting has failed. */
+  private failures = 0;
+  /** Whether the next mutations are being read from the outbox. */
+  private taking = false;
+  /** What the sockets say is handled in the order it arrives. */
+  private work: Promise<void> = Promise.resolve();
+  private cancelRetry: (() => void) | undefined;
+  private cancelAnswer: (() => void) | undefined;
+  private cancelPing: (() => void) | undefined;
+  private cancelPong: (() => void) | undefined;
+
+  constructor(
+    private readonly options: {
+      store: SyncStore;
+      open: OpenSocket;
+      /** Asks the server why a handshake may have failed. */
+      checkAccess: () => Promise<Access>;
+      schedule: Schedule;
+      /** Told of what went wrong, for the log. */
+      onError: (error: unknown) => void;
+    },
+  ) {}
+
+  /**
+   * Holds the socket of the copy. The promise resolves when that is over:
+   * after `stop()`, or when the connection has given up for good, which the
+   * `connection` and `outdated` of the store tell apart.
+   */
+  run(): Promise<void> {
+    if (this.state !== "new") throw new Error("A connection runs once");
+    this.state = "running";
+    const { store, onError } = this.options;
+    store.setConnection("connecting");
+    this.unsubscribe = store.subscribe(() => this.send());
+    const ended = new Promise<void>((resolve) => {
+      this.finish = resolve;
+    });
+    // The hello says where the stored copy is, and this tab may have missed
+    // the last writes of the tab that held the socket before it.
+    store
+      .reload()
+      .catch(onError)
+      .then(() => {
+        if (this.state === "running") this.connect();
+      });
+    return ended;
+  }
+
+  /** Closes the socket and stops connecting. */
+  stop(): void {
+    this.end();
+  }
+
+  /**
+   * For when there is reason to think that the network has changed, such
+   * as the browser saying so: connects now if a pause was on, and makes
+   * sure that a socket which seems open still is.
+   */
+  wake(): void {
+    if (this.state !== "running") return;
+    if (this.cancelRetry) this.connect();
+    else if (this.ready) this.ping();
+  }
+
+  private end(connection?: ConnectionState): void {
+    if (this.state !== "running") return;
+    this.state = "ended";
+    this.drop();
+    this.unsubscribe();
+    if (connection) this.options.store.setConnection(connection);
+    this.options.store.leave();
+    this.finish();
+  }
+
+  private connect(): void {
+    this.drop();
+    const generation = this.generation;
+    let opened = false;
+    const handle = (step: () => void | Promise<void>) => {
+      const current = () =>
+        this.state === "running" && generation === this.generation;
+      this.work = this.work
+        .then(() => (current() ? step() : undefined))
+        .catch((error: unknown) => {
+          this.options.onError(error);
+          if (current()) this.retry();
+        });
+    };
+    this.socket = this.options.open({
+      open: () =>
+        handle(() => {
+          opened = true;
+          this.hello();
+        }),
+      message: (data) => handle(() => this.receive(data)),
+      close: (code) => handle(() => this.closed(code, opened)),
+    });
+    this.expectAnswer();
+  }
+
+  /** Gives the socket up, if there is one, and everything that waits. */
+  private drop(): void {
+    this.generation += 1;
+    for (const cancel of [
+      this.cancelRetry,
+      this.cancelAnswer,
+      this.cancelPing,
+      this.cancelPong,
+    ]) {
+      cancel?.();
+    }
+    this.cancelRetry = undefined;
+    this.cancelAnswer = undefined;
+    this.cancelPing = undefined;
+    this.cancelPong = undefined;
+    this.ready = false;
+    this.awaiting = undefined;
+    this.parts = [];
+    const { socket } = this;
+    this.socket = undefined;
+    try {
+      socket?.close();
+    } catch {
+      // It was closed already.
+    }
+  }
+
+  /** Connects again at once. */
+  private reconnect(): void {
+    this.connect();
+  }
+
+  /** Connects again after a pause, which grows with every failure. */
+  private retry(): void {
+    this.drop();
+    const pauses = syncTimings.retry;
+    const pause = pauses[Math.min(this.failures, pauses.length - 1)] ?? 0;
+    this.failures += 1;
+    this.options.store.setConnection("offline");
+    this.cancelRetry = this.options.schedule(() => this.connect(), pause);
+  }
+
+  private hello(): void {
+    const { clientId, cursor, lastMutationId } = this.options.store.head.meta;
+    this.socket?.send(
+      JSON.stringify({
+        type: "hello",
+        protocolVersion: syncProtocolVersion,
+        schemaVersion: syncSchemaVersion,
+        clientId,
+        cursor,
+        lastMutationId,
+      } satisfies HelloMessage),
+    );
+  }
+
+  private async receive(data: unknown): Promise<void> {
+    let message: ServerMessage;
+    try {
+      const json: unknown = JSON.parse(z.string().parse(data));
+      const mismatch = versionMismatchSchema.safeParse(json);
+      if (mismatch.success) {
+        this.failed(mismatch.data);
+        return;
+      }
+      message = serverMessageSchema.parse(json);
+    } catch (error) {
+      throw new Error("The server sent what is not a message", {
+        cause: error,
+      });
+    }
+    // Whatever it says, the socket is alive.
+    this.cancelPong?.();
+    this.cancelPong = undefined;
+    switch (message.type) {
+      case "pong":
+        break;
+      case "error":
+        this.failed(message);
+        break;
+      case "patch":
+        this.parts.push(message);
+        if (!message.more) {
+          const parts = this.parts;
+          this.parts = [];
+          await this.patch(parts);
+        }
+        break;
+    }
+  }
+
+  /** Applies a patch whose messages are all in. */
+  private async patch(parts: PatchMessage[]): Promise<void> {
+    const [first] = parts;
+    if (!first) return;
+    const { store } = this.options;
+    const generation = this.generation;
+    const outcome = await store.transact((head) =>
+      applyPatch(
+        head,
+        {
+          from: first.from,
+          to: first.to,
+          changes: parts.flatMap(({ changes }) => changes),
+          lastMutationId: first.lastMutationId,
+          rejected: first.rejected,
+        },
+        store.newClientId(),
+      ),
+    );
+    if (this.state !== "running" || generation !== this.generation) return;
+    if (outcome === "gap") {
+      // A patch was missed, or another tab has moved the stored cursor.
+      await store.reload();
+      if (generation === this.generation) this.reconnect();
+      return;
+    }
+    if (outcome === "start-over") {
+      this.reconnect();
+      return;
+    }
+    if (!this.ready) {
+      this.ready = true;
+      this.failures = 0;
+      this.cancelAnswer?.();
+      this.cancelAnswer = undefined;
+      store.setConnection("online");
+      this.pingLater();
+    }
+    if (this.awaiting !== undefined && first.lastMutationId >= this.awaiting) {
+      this.awaiting = undefined;
+      this.cancelAnswer?.();
+      this.cancelAnswer = undefined;
+    }
+    this.send();
+  }
+
+  /**
+   * Sends the next mutations, if the socket is free for them: one `mutate`
+   * is on its way at a time. The ones made in the meantime wait in the
+   * outbox, where a later one can still take the place of an earlier one.
+   */
+  private send(): void {
+    if (!this.ready || this.awaiting !== undefined || this.taking) return;
+    const { store, onError } = this.options;
+    if (store.head.outbox.length === 0) return;
+    this.taking = true;
+    const generation = this.generation;
+    const current = () =>
+      this.state === "running" && generation === this.generation;
+    // Durable, because the server remembers what it is sent: if the copy
+    // then forgot that it has made these mutations, it would give their IDs
+    // to others, which the server would take for repeats.
+    store
+      .transact((head) => nextBatch(head, store.newClientId()), {
+        durable: true,
+      })
+      .then((batch) => {
+        this.taking = false;
+        if (!current()) {
+          // The socket is another one by now. It was not served while this
+          // was reading.
+          this.send();
+        } else if (batch === "start-over") {
+          this.reconnect();
+        } else if (batch) {
+          this.awaiting = batch.at(-1)?.id;
+          this.socket?.send(
+            JSON.stringify({
+              type: "mutate",
+              mutations: batch,
+            } satisfies MutateMessage),
+          );
+          this.expectAnswer();
+        }
+      })
+      .catch((error: unknown) => {
+        this.taking = false;
+        onError(error);
+        if (current()) this.retry();
+      });
+  }
+
+  /** The server has said that this client did something wrong. */
+  private failed(error: {
+    code: string;
+    protocolVersion: number;
+    schemaVersion: number;
+  }): void {
+    switch (error.code) {
+      case "version_mismatch":
+        if (
+          error.protocolVersion > syncProtocolVersion ||
+          error.schemaVersion > syncSchemaVersion
+        ) {
+          // Only a newer version of the app can talk to this server. Other
+          // tabs may run one, so this one makes way.
+          this.options.store.markOutdated();
+          this.end("offline");
+        } else {
+          // The server is the older one: it is being updated.
+          this.retry();
+        }
+        break;
+      case "mutation_gap":
+        // The answer to the next hello says which mutation the server
+        // expects. `nextBatch` then finds whether the outbox has it.
+        this.reconnect();
+        break;
+      default:
+        // A bug in this client, says SYNC.md. The same message would be
+        // refused again, so there is no hurry.
+        this.options.onError(
+          new Error(`The server refused a message: ${error.code}`),
+        );
+        this.retry();
+    }
+  }
+
+  private async closed(code: number, opened: boolean): Promise<void> {
+    const wasReady = this.ready;
+    if (code === syncCloseCodes.replaced) {
+      // Another socket has said hello as this copy. Connecting again would
+      // close that one in turn.
+      this.end("replaced");
+      return;
+    }
+    if (code === syncCloseCodes.reconnect && wasReady) {
+      // The socket has reached the end of its life. The handshake of the
+      // next one checks the session again.
+      this.reconnect();
+      return;
+    }
+    if (opened) {
+      this.retry();
+      return;
+    }
+    // The handshake failed, and only the server can say why.
+    this.drop();
+    this.options.store.setConnection("offline");
+    const generation = this.generation;
+    const access = await this.options.checkAccess();
+    if (this.state !== "running" || generation !== this.generation) return;
+    if (access === "unknown") this.retry();
+    else this.end(access);
+  }
+
+  /** Gives the socket up if it stays silent for too long from now. */
+  private expectAnswer(): void {
+    this.cancelAnswer?.();
+    this.cancelAnswer = this.options.schedule(
+      () => this.retry(),
+      syncTimings.answer,
+    );
+  }
+
+  private pingLater(): void {
+    this.cancelPing = this.options.schedule(() => {
+      this.ping();
+      this.pingLater();
+    }, syncTimings.pingEvery);
+  }
+
+  /** Asks the server for a sign of life. */
+  private ping(): void {
+    this.socket?.send(pingMessageText);
+    this.cancelPong ??= this.options.schedule(
+      () => this.retry(),
+      syncTimings.pong,
+    );
+  }
+}
