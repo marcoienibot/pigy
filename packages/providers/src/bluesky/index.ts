@@ -346,8 +346,12 @@ type Call = {
  */
 type Nonces = Map<string, string>;
 
-/** An answer, and the host that gave it, for the messages to name. */
-type Answer = HttpAnswer & { host: string };
+/**
+ * An answer, with the host that gave it, for the messages to name, and
+ * what the request that it answers carried that must not show up in a
+ * message: a server may repeat any of it.
+ */
+type Answer = HttpAnswer & { host: string; secrets: readonly string[] };
 
 /** The error that an answer names, in the body or in `WWW-Authenticate`. */
 function errorOf({ headers, json }: Answer): string | undefined {
@@ -368,7 +372,7 @@ export function createBlueskyProvider({
   /** Sends a request and returns the answer as it is. */
   async function request(
     url: string,
-    { method = "GET", json, form }: Call,
+    { method = "GET", json, form, secrets = [] }: Call,
     headers: Record<string, string> = {},
   ): Promise<Answer> {
     const { host } = new URL(url);
@@ -389,7 +393,7 @@ export function createBlueskyProvider({
       },
       { timeoutMs, maxBytes },
     );
-    return { ...answer, host };
+    return { ...answer, host, secrets };
   }
 
   /**
@@ -411,12 +415,8 @@ export function createBlueskyProvider({
    * is the access token that the request was made with, if any: only an
    * answer to it says anything about the account's access.
    */
-  function failure(
-    answer: Answer,
-    { secrets = [] }: Call,
-    token?: string,
-  ): ProviderError {
-    const { status, headers, json, host } = answer;
+  function failure(answer: Answer, token?: string): ProviderError {
+    const { status, headers, json, host, secrets } = answer;
     const body = z
       .object({
         error: z.string().optional(),
@@ -426,7 +426,7 @@ export function createBlueskyProvider({
       .safeParse(json).data;
     const said = quotable(
       body?.message ?? body?.error_description ?? body?.error ?? "",
-      [...secrets, ...(token ? [token] : [])],
+      secrets,
     );
     if (status === 429) {
       return new ProviderError(
@@ -504,7 +504,7 @@ export function createBlueskyProvider({
   async function call(url: string, options: Call = {}): Promise<unknown> {
     const answer = await request(url, options);
     if (answer.status < 200 || answer.status >= 300) {
-      throw failure(answer, options);
+      throw failure(answer);
     }
     return answer.json;
   }
@@ -512,19 +512,24 @@ export function createBlueskyProvider({
   /**
    * Sends a request with a DPoP proof of `key`, and once more if the
    * server asks for a nonce: it hands one out with the refusal, and the
-   * request was not carried out. `form` is made anew for each try, because
-   * what it holds may be good once, as the assertion of a client is.
+   * request was not carried out. `form` is made anew for each try, with
+   * the secrets that it holds, because what it holds may be good once, as
+   * the assertion of a client is. The proof and the access token are
+   * secrets of the request too.
    */
   async function withProof(
     url: string,
     key: PrivateJwk,
     nonces: Nonces,
     options: Call & { accessToken?: string },
-    form?: () => Promise<Record<string, string>>,
+    form?: () => Promise<{
+      form: Record<string, string>;
+      secrets: readonly string[];
+    }>,
   ): Promise<Answer> {
     const { origin } = new URL(url);
     for (let tries = 1; ; tries++) {
-      const { method = "GET", accessToken } = options;
+      const { method = "GET", accessToken, secrets = [] } = options;
       const proof = await dpopProof(key, {
         method,
         url,
@@ -532,9 +537,19 @@ export function createBlueskyProvider({
         nonce: nonces.get(origin),
         accessToken,
       });
+      const made = form && (await form());
       const answer = await request(
         url,
-        { ...options, ...(form && { form: await form() }) },
+        {
+          ...options,
+          ...(made && { form: made.form }),
+          secrets: [
+            ...secrets,
+            ...(made?.secrets ?? []),
+            proof,
+            ...(accessToken ? [accessToken] : []),
+          ],
+        },
         {
           DPoP: proof,
           ...(accessToken && { Authorization: `DPoP ${accessToken}` }),
@@ -556,6 +571,8 @@ export function createBlueskyProvider({
   /**
    * Posts a form to an endpoint of the authorization server, as the
    * client, with an assertion signed by `keyId` and a proof of `dpopKey`.
+   * `secrets` are what `params` hold, and what else the session has, that
+   * must not show up in a message.
    */
   async function asClient(
     session: {
@@ -580,18 +597,24 @@ export function createBlueskyProvider({
       session.dpopKey,
       new Map(),
       { method: "POST", secrets },
-      async () => ({
-        ...params,
-        client_id: session.clientId,
-        client_assertion_type: clientAssertionType,
-        client_assertion: await clientAssertion(
+      async () => {
+        const assertion = await clientAssertion(
           key.privateKey,
           key.id,
           session.clientId,
           session.issuer,
           now(),
-        ),
-      }),
+        );
+        return {
+          form: {
+            ...params,
+            client_id: session.clientId,
+            client_assertion_type: clientAssertionType,
+            client_assertion: assertion,
+          },
+          secrets: [assertion],
+        };
+      },
     );
   }
 
@@ -601,7 +624,7 @@ export function createBlueskyProvider({
     // record of `_atproto.<handle>`.
     const query = `https://${dnsResolver}/dns-query?${new URLSearchParams({ name: `_atproto.${handle}`, type: "TXT" })}`;
     const dns = await request(query, {}, { Accept: "application/dns-json" });
-    if (dns.status !== 200) throw failure(dns, {});
+    if (dns.status !== 200) throw failure(dns);
     const viaDns = [
       ...new Set(
         didsInAnswer(understood(dnsAnswerSchema, dns.json, dnsResolver)),
@@ -739,8 +762,8 @@ export function createBlueskyProvider({
    * What atproto has a client check: the type of the tokens, that they
    * are the account's, and that they have the scopes that pigy asked for.
    */
-  function tokensOf(answer: Answer, did: string, secrets: string[]) {
-    if (answer.status !== 200) throw failure(answer, { secrets });
+  function tokensOf(answer: Answer, did: string) {
+    if (answer.status !== 200) throw failure(answer);
     const tokens = understood(tokenSchema, answer.json, "Bluesky");
     const granted = tokens.scope.split(" ");
     if (tokens.token_type.toLowerCase() !== "dpop") {
@@ -815,7 +838,7 @@ export function createBlueskyProvider({
       accessToken,
     });
     if (answer.status < 200 || answer.status >= 300) {
-      throw failure(answer, options, accessToken);
+      throw failure(answer, accessToken);
     }
     return answer.json;
   }
@@ -837,7 +860,7 @@ export function createBlueskyProvider({
     if (answer.status === 400 && errorOf(answer) === "RecordNotFound") {
       return null;
     }
-    if (answer.status !== 200) throw failure(answer, {});
+    if (answer.status !== 200) throw failure(answer);
     return understood(recordSchema, answer.json, new URL(pds).host);
   }
 
@@ -919,10 +942,12 @@ export function createBlueskyProvider({
           // The account that was resolved: the server signs in no other.
           login_hint: handle,
         },
-        [],
+        // A server may repeat what it was sent: the state, by which the
+        // callback is believed, and what else the connection is made with.
+        [state, code.verifier, dpopKey.d],
       );
       if (answer.status !== 201 && answer.status !== 200) {
-        throw failure(answer, {});
+        throw failure(answer);
       }
       const pushed = understood(pushedSchema, answer.json, "Bluesky");
       const url = new URL(server.authorizationEndpoint);
@@ -1007,7 +1032,7 @@ export function createBlueskyProvider({
           },
           secrets,
         );
-        const tokens = tokensOf(answer, flow.did, secrets);
+        const tokens = tokensOf(answer, flow.did);
         // The account was resolved when the connection began, minutes
         // ago, which the specification allows as a cache: it has a client
         // keep what it resolved for an authorization for less than ten
@@ -1083,7 +1108,7 @@ export function createBlueskyProvider({
           );
         }
       }
-      const tokens = tokensOf(answer, session.did, secrets);
+      const tokens = tokensOf(answer, session.did);
       const { accessToken: _, refreshToken: __, ...rest } = session;
       return accessOf(rest, tokens);
     },
@@ -1096,7 +1121,11 @@ export function createBlueskyProvider({
           `${new URL(session.issuer).host} has no way for pigy to give the access back.`,
         );
       }
-      const secrets = [session.accessToken, session.refreshToken];
+      const secrets = [
+        session.accessToken,
+        session.refreshToken,
+        session.dpopKey.d,
+      ];
       // The refresh token stands for the whole session: revoking it ends
       // the access tokens of the session too, RFC 7009 section 2.1.
       const answer = await asClient(
@@ -1105,7 +1134,7 @@ export function createBlueskyProvider({
         { token: session.refreshToken, token_type_hint: "refresh_token" },
         secrets,
       );
-      if (answer.status !== 200) throw failure(answer, { secrets });
+      if (answer.status !== 200) throw failure(answer);
     },
 
     async limits(credentials): Promise<Limits> {

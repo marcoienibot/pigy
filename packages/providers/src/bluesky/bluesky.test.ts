@@ -749,6 +749,94 @@ describe("publishing", () => {
   });
 });
 
+describe("what a server repeats of a request", () => {
+  /**
+   * Makes the authorization server refuse the requests to `path` with a
+   * description that repeats what the request sent as `name`: a field of
+   * its form, or its proof of DPoP. Returns what it repeated.
+   */
+  function reflecting(test: Setup, path: string, name: string) {
+    const repeated: string[] = [];
+    test.intercept(async (request, simulator) => {
+      if (!request.url.endsWith(path)) return simulator(request);
+      const sent: Record<string, string> = {
+        ...Object.fromEntries(new URLSearchParams(await request.text())),
+        DPoP: request.headers.get("DPoP") ?? "",
+      };
+      const value = sent[name] ?? "";
+      repeated.push(value);
+      return Response.json(
+        { error: "invalid_request", error_description: value },
+        { status: 400 },
+      );
+    });
+    return repeated;
+  }
+
+  /** Fails unless `error` quotes what was repeated, without any of it. */
+  function expectRemoved(error: ProviderError, repeated: string[]) {
+    const [value = ""] = repeated;
+    expect(value).not.toBe("");
+    // The description reached the message, in place of what it said.
+    expect(error.message).toContain("[removed]");
+    // A message is cut to a sentence or two, so a long secret that was not
+    // removed would show as its beginning.
+    expect(error.message).not.toContain(value.slice(0, 32));
+  }
+
+  it("says none of the secrets of a pushed request", async () => {
+    for (const name of ["state", "client_assertion", "DPoP"]) {
+      const test = await setup();
+      const repeated = reflecting(test, "/oauth/par", name);
+      const error = await failure(() =>
+        test.provider.beginConnect({
+          redirectUri,
+          identifier: "ada.bsky.test",
+        }),
+      );
+      expectRemoved(error, repeated);
+    }
+  });
+
+  it("says none of the secrets of an exchange of the code", async () => {
+    for (const name of ["code", "code_verifier", "client_assertion", "DPoP"]) {
+      const test = await setup();
+      const { start, params } = await consented(test);
+      const repeated = reflecting(test, "/oauth/token", name);
+      const error = await failure(() =>
+        test.provider.completeConnect({ pending: start.pending, params }),
+      );
+      expectRemoved(error, repeated);
+    }
+  });
+
+  it("says none of the secrets of a refresh, or of giving the access back", async () => {
+    const calls = [
+      {
+        path: "/oauth/token",
+        names: ["refresh_token", "client_assertion", "DPoP"],
+        call: (test: Setup, credentials: Json) =>
+          test.provider.refresh?.(credentials),
+      },
+      {
+        path: "/oauth/revoke",
+        names: ["token", "client_assertion", "DPoP"],
+        call: (test: Setup, credentials: Json) =>
+          test.provider.disconnect(credentials),
+      },
+    ];
+    for (const { path, names, call } of calls) {
+      for (const name of names) {
+        const test = await setup();
+        const { access } = await connected(test);
+        const repeated = reflecting(test, path, name);
+        const error = await failure(async () => call(test, access.credentials));
+        expectRemoved(error, repeated);
+      }
+    }
+  });
+});
+
 describe("reading and deleting", () => {
   it("reads only posts of the account, and deletes nothing of another", async () => {
     const test = await setup();
