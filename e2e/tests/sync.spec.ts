@@ -23,7 +23,10 @@ test("a page of the app can open the socket of its workspace", async ({
             // test is answered with "version_mismatch", they have changed.
             protocolVersion: 2,
             schemaVersion: 1,
-            clientId: "01932c07-0000-7000-8000-000000000001",
+            // A client of its own, with an ID in the form of a UUIDv7. The
+            // test runs in two projects at once, and with the same ID the
+            // hello of one would close the socket of the other.
+            clientId: `01932c07-0000-7000-8000-${crypto.randomUUID().slice(-12)}`,
             cursor: null,
             lastMutationId: 0,
           }),

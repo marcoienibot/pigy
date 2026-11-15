@@ -244,6 +244,20 @@ export function workspaceObject({ now }: { now: Clock }) {
         fail(socket, "invalid_message", "This socket has said hello already");
         return;
       }
+      // A client has one socket. An older one with the same client ID is
+      // one that the client has given up, or that of another tab over the
+      // same copy. Left open, it would get the answers to mutations that
+      // were sent on this one, and each of the two would see the other move
+      // the cursor they share. This socket is not among them: it has no
+      // client ID yet.
+      for (const other of this.ctx.getWebSockets()) {
+        if (
+          other.readyState === WebSocket.OPEN &&
+          stateOf(other).clientId === hello.clientId
+        ) {
+          other.close(syncCloseCodes.replaced, "Replaced by a newer socket");
+        }
+      }
       socket.serializeAttachment({
         ...state,
         clientId: hello.clientId,

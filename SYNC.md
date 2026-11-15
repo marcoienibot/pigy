@@ -11,6 +11,7 @@ This document is the contract between the server and any client: the browser sto
 - A client never writes rows. It sends **mutations**: the name of a mutator and its arguments, such as `post.create`. The server runs the mutator, and what it does to the rows is what counts. A client may run the same mutator, from `packages/core/src/sync/mutators.ts`, on its own copy first, to show the change before the server has answered.
 - The server applies mutations one at a time, in the order they arrive. Each mutation that changes something is one change and gets a **sequence number**: the changes of a workspace are numbered 1, 2, 3 and so on. A **cursor** is a sequence number, and a client whose cursor is N has exactly the rows that the server had after change N. Cursor 0 is the empty workspace.
 - A **client** is one local copy: its rows, its cursor, the mutations it has made that the server has not confirmed, and the ID of the last one that the server has confirmed. It has a **client ID**, a UUID version 7 that it makes up once, and it numbers its mutations 1, 2, 3 and so on. The server remembers the last mutation it has processed for each client ID, which is what makes it safe to send a mutation twice. A client keeps its copy and its client ID for one workspace: another workspace is another copy with another ID.
+- A client has **at most one socket** open. Tabs of a browser that share a stored copy, and with it a client ID, choose one among them to hold the socket and to pass on what it receives. Or each tab keeps a copy of its own, with a client ID of its own. Two sockets with one client ID do not work: every patch moves the cursor that both go by, so each would find that the other has made it miss a patch, and the answer to a `mutate` goes only to the socket that sent it. The server therefore closes the older socket when a newer one says hello with the same client ID.
 - A client that loses its local copy, or any part of it, starts over with a new client ID: the server would take the mutations of a second copy with the same ID for repeats of the first one's, and skip them. A client that is told of a `lastMutationId` higher than any mutation it has made is in that position.
 
 ## 2. Connecting
@@ -40,7 +41,7 @@ Every message is one text frame with one JSON object, which has a `type`. A fiel
 
 `cursor` is the `to` of the last patch that the client has applied, or `null` if it has applied no patch. `lastMutationId` is the `lastMutationId` of the last patch that the client has applied, or 0 if it has applied no patch. It says that the client knows what became of its mutations up to that one, and the server forgets what it kept to tell the client: see section 4.
 
-The server answers with a patch that brings the client up to date, and from then on sends it every change. A socket that has not said hello receives nothing.
+The server answers with a patch that brings the client up to date, and from then on sends it every change. A socket that has not said hello receives nothing. If an older socket with the same client ID is still open, the server closes it with the code 4409.
 
 **`mutate`** carries mutations of the client, at least one and at most 100.
 
@@ -112,9 +113,10 @@ Steps 1 to 4 belong in one transaction of the local store: the rows, the cursor,
 | --- | --- | --- |
 | 4400 | An `error` message came before | See above |
 | 4401 | The socket has reached the end of its life. A message that was arriving is not processed | Connect again at once |
+| 4409 | A newer socket has said hello with the same client ID | Nothing. The client has a newer socket, and this one is no longer its own. If tabs share the copy, another tab holds the socket now. Connecting again because of this close would close that socket in turn, and so on for ever |
 | 1011 | The server failed while it handled a message. It may have processed the message or not. The server also closes the sockets of other clients with this code, when it has made a change and cannot send it to them | Connect again, after a pause |
 
-After any close, and after a socket was lost, a client connects again, says hello with its cursor and its `lastMutationId`, and sends its unconfirmed mutations again under the IDs they have: all of them, or those after the `lastMutationId` of the answer to its hello. The server skips the ones that it has processed, so a client never has to know whether a message got through, after a 1011 no more than after a lost socket. A socket can be lost without the client being told. A client that gets no `pong`, or no patch in answer to a `mutate`, within a time of its choosing closes the socket and connects again.
+After any close but 4409, and after a socket was lost, a client connects again, says hello with its cursor and its `lastMutationId`, and sends its unconfirmed mutations again under the IDs they have: all of them, or those after the `lastMutationId` of the answer to its hello. The server skips the ones that it has processed, so a client never has to know whether a message got through, after a 1011 no more than after a lost socket. A socket can be lost without the client being told. A client that gets no `pong`, or no patch in answer to a `mutate`, within a time of its choosing closes the socket and connects again.
 
 ## 4. Mutations
 

@@ -588,6 +588,24 @@ it("cuts short a reason that quotes what the client sent", async () => {
   expect(patch.rejected[0]?.message).toHaveLength(maxRefusalMessageLength);
 });
 
+it("closes the older socket of a client that opens another", async () => {
+  const { browser, workspace, client } = await connected();
+  const other = new SyncClient();
+  await other.connect(browser, workspace);
+  const older = client.closed;
+
+  // A second socket for the same local copy while the first is open: what
+  // a tab does that shares a stored copy with another tab, and a client
+  // that has given up on a socket that the server still holds.
+  await client.connect(browser, workspace);
+
+  expect(await older).toMatchObject({ code: syncCloseCodes.replaced });
+  // The newer socket works, and the socket of another client was left
+  // alone: it still gets the changes.
+  await createPost(client, "Hello");
+  expect(await other.patch()).toMatchObject({ from: 0, to: 1 });
+});
+
 it("sends a change that the Worker makes to the clients that are connected", async () => {
   const { test, workspace, client } = await connected();
   const identity = await identityOf(test, workspace);

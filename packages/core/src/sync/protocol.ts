@@ -38,6 +38,11 @@ export const syncCloseCodes = {
    */
   reconnect: 4401,
   /**
+   * A newer socket has said hello with the same client ID. A client has one
+   * socket, so this one is no longer its own.
+   */
+  replaced: 4409,
+  /**
    * The server failed while it handled a message, which it may or may not
    * have processed. The code is the one that WebSocket has for this.
    */
