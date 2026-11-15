@@ -1114,6 +1114,8 @@ it("never sends what a workspace keeps of a channel besides its row", async () =
     network: "mastodon",
     accountId: "1@mastodon.example",
     credentials: "sealed-credentials-two",
+    // Which connection the access is of: the time that the row has.
+    connectedAt: fresh.table("channel")[0]?.connectedAt,
   });
 
   // A channel that goes takes its access along.

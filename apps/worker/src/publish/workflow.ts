@@ -131,8 +131,13 @@ type Failure =
   | { kind: "retry"; message: string; waitSeconds: number | null }
   /** Trying again would fail again. The message is for the person. */
   | { kind: "fail"; message: string }
-  /** The network no longer takes the access of the channel. */
-  | { kind: "reconnect"; message: string }
+  /**
+   * The network no longer takes the access of the channel. `connection`
+   * says which access: the time at which the account was connected, as
+   * the workspace had it when the step asked for the credentials, or null
+   * if the step had not asked.
+   */
+  | { kind: "reconnect"; message: string; connection: number | null }
   /** A part may or may not be published. A person has to look. */
   | { kind: "uncertain"; message: string }
   /** The delivery is not this run's any more: it was ended otherwise. */
@@ -182,7 +187,11 @@ type Prepared = {
 /** How a delivery ends: the arguments of `target.end`, without the target. */
 type Ending =
   | { status: "sent" }
-  | { status: "error" | "uncertain"; error: string; reconnect: boolean };
+  | {
+      status: "error" | "uncertain";
+      error: string;
+      refusedConnection: number | null;
+    };
 
 /** What a failure means for the delivery. Not asked for `superseded`. */
 function endingOf(failure: Failure, tries: number): Ending {
@@ -197,29 +206,33 @@ function endingOf(failure: Failure, tries: number): Ending {
             ? `${failure.message} pigy has tried ${tries} times.`
             : failure.message,
         ),
-        reconnect: false,
+        refusedConnection: null,
       };
     case "fail":
       return {
         status: "error",
         error: reason(failure.message),
-        reconnect: false,
+        refusedConnection: null,
       };
     case "reconnect":
       return {
         status: "error",
         error: reason(failure.message),
-        reconnect: true,
+        refusedConnection: failure.connection,
       };
     case "uncertain":
       return {
         status: "uncertain",
         error: reason(failure.message),
-        reconnect: false,
+        refusedConnection: null,
       };
     case "superseded":
     case "bug":
-      return { status: "uncertain", error: lostTrackMessage, reconnect: false };
+      return {
+        status: "uncertain",
+        error: lostTrackMessage,
+        refusedConnection: null,
+      };
   }
 }
 
@@ -228,8 +241,15 @@ function endingOf(failure: Failure, tries: number): Ending {
  * adapter reports is taken for the word of a network. Anything else is a
  * failure of pigy's: it is logged here, where the error still is what it
  * was, and nothing is known of how far the step got.
+ *
+ * `connection` names the access that the step used: the time at which the
+ * account was connected, or null if the step did not ask for credentials.
  */
-function failureOf(error: unknown, now: Date): Failure {
+function failureOf(
+  error: unknown,
+  now: Date,
+  connection: number | null,
+): Failure {
   if (error instanceof Ended) return error.failure;
   if (error instanceof ProviderError) {
     const { message } = error;
@@ -251,7 +271,7 @@ function failureOf(error: unknown, now: Date): Failure {
       // `refresh` gets here, and they are refused all the same.
       case "refresh":
       case "reconnect":
-        return { kind: "reconnect", message };
+        return { kind: "reconnect", message, connection };
       case "uncertain":
         return { kind: "uncertain", message };
     }
@@ -264,6 +284,7 @@ function failureOf(error: unknown, now: Date): Failure {
       kind: "reconnect",
       message:
         "pigy can no longer read the access that it was given to this account. Connect the account again.",
+      connection,
     };
   }
   console.error("A step of a delivery failed", loggable(error));
@@ -329,6 +350,14 @@ export async function deliver(
   const key = async (call: string, says: unknown) =>
     `${runId}/${call}/${await digest(says)}`;
   const vault = vaultWithoutRequest(env, developmentCredentialKeys);
+  /**
+   * The connection whose credentials the step that is running has asked
+   * the workspace for last: the time at which the account was connected.
+   * A step that the network refuses says which connection was refused,
+   * because its word can reach the workspace after the person has
+   * connected the account again, and must not count against that.
+   */
+  let connection: number | null = null;
 
   /** Asks the workspace for what a step needs before it does anything. */
   const asked = async <Answer>(call: () => Promise<Answer>) => {
@@ -379,6 +408,7 @@ export async function deliver(
       );
       // Disconnected, which has ended the delivery.
       if (!access) throw superseded();
+      connection = access.connectedAt;
       return access;
     };
     const credentials = async () => {
@@ -484,11 +514,14 @@ export async function deliver(
   ): Promise<Value> => {
     for (let tries = 1; ; tries++) {
       const attemptStep = async (): Promise<Tried<Value>> => {
+        // Of this try alone: what a step before it asked for is not what
+        // this one was refused with.
+        connection = null;
         try {
           return { value: await body() };
         } catch (error) {
           if (error instanceof Unasked) throw error;
-          return { failure: failureOf(error, now()) };
+          return { failure: failureOf(error, now(), connection) };
         }
       };
       // What a try returns is plain JSON: a `Prepared` or the progress of

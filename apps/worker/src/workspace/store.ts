@@ -107,6 +107,12 @@ export type StoredChannelAccess = {
   accountId: string;
   /** Sealed. Null for a channel that was stored without. */
   credentials: string | null;
+  /**
+   * When the account was connected last, by the time of the workspace,
+   * which names the connection that the credentials are from: no two
+   * connections of a workspace share it.
+   */
+  connectedAt: number;
 };
 
 /**
@@ -444,6 +450,7 @@ export class WorkspaceStore {
         network: channels.network,
         accountId: channels.accountId,
         credentials: channels.credentials,
+        connectedAt: channels.connectedAt,
       })
       .from(channels)
       .where(eq(channels.id, channelId))

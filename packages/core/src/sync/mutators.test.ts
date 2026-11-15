@@ -778,13 +778,13 @@ it.each([
   ["sent", { status: "sent" }, { error: null, sentAt: 5000 }, "sent"],
   [
     "failed",
-    { status: "error", error: "No", reconnect: false },
+    { status: "error", error: "No", refusedConnection: null },
     { error: "No", sentAt: null },
     "error",
   ],
   [
     "of unknown outcome",
-    { status: "uncertain", error: "Look", reconnect: false },
+    { status: "uncertain", error: "Look", refusedConnection: null },
     { error: "Look", sentAt: null },
     "error",
   ],
@@ -829,7 +829,7 @@ it("keeps a post sending until the last of its targets has ended", () => {
       attempt: 1,
       status: "error",
       error: "No",
-      reconnect: false,
+      refusedConnection: null,
     },
     5000,
     "server",
@@ -869,7 +869,8 @@ it("marks the channel when a delivery ends because its access is refused", () =>
       attempt: 1,
       status: "error",
       error: "Connect the account again",
-      reconnect: true,
+      // The connection that the channel has: it was made at 1000.
+      refusedConnection: 1000,
     },
     5000,
     "server",
@@ -880,6 +881,38 @@ it("marks the channel when a delivery ends because its access is refused", () =>
   ).toEqual([
     [channelId, "needs_reconnect"],
     [otherChannelId, "connected"],
+  ]);
+});
+
+it("leaves a channel alone that was connected again since its access was refused", () => {
+  const workspace = sending();
+  // The network has refused the access of the connection made at 1000.
+  // Before the delivery says so, the person connects the account again:
+  // the channel keeps its ID, and has another access.
+  workspace.mutate("channel.connect", account(), 4500, "server");
+
+  workspace.mutate(
+    "target.end",
+    {
+      id: targetId,
+      attempt: 1,
+      status: "error",
+      error: "Connect the account again",
+      refusedConnection: 1000,
+    },
+    5000,
+    "server",
+  );
+
+  // The delivery has failed all the same: it was refused.
+  expect(workspace.rows("post_target")).toMatchObject([
+    { status: "error", error: "Connect the account again" },
+  ]);
+  // The access that the channel has now was never tried. Marked, every
+  // later delivery would fail without trying it.
+  expect(workspace.rows("channel")).toMatchObject([
+    { id: channelId, status: "connected", connectedAt: 4500 },
+    { id: otherChannelId, status: "connected" },
   ]);
 });
 
@@ -902,7 +935,7 @@ it("tries a delivery that failed again, at the end of the queue", () => {
       attempt: 1,
       status: "error",
       error: "No",
-      reconnect: false,
+      refusedConnection: null,
     },
     5000,
     "server",
@@ -958,7 +991,7 @@ it("refuses to try a delivery again whose account is disconnected", () => {
       attempt: 1,
       status: "error",
       error: "No",
-      reconnect: false,
+      refusedConnection: null,
     },
     5000,
     "server",
@@ -989,7 +1022,7 @@ it("refuses the report of a delivery that is no longer under way", () => {
       attempt: 1,
       status: "error",
       error: "No",
-      reconnect: false,
+      refusedConnection: null,
     },
     5000,
     "server",

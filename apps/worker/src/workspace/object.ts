@@ -448,7 +448,7 @@ export function workspaceObject({ now }: { now: Clock }) {
               attempt: run.attempt,
               status: "uncertain",
               error: lostTrackMessage,
-              reconnect: false,
+              refusedConnection: null,
             } satisfies MutatorArgs<"target.end">,
           },
           now().getTime(),

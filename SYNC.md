@@ -146,7 +146,7 @@ Some mutators are the server's own. A client that sends one has it rejected with
 | `channel.disconnect` | Removes a channel. Does nothing if the channel is gone. Its targets go the way "Publishing" below says |
 | `target.start` | Begins the delivery of a target that waited its turn: `sending`, in a new attempt |
 | `target.progress` | Adds the results of the parts that a delivery has published |
-| `target.end` | Ends a delivery as `sent`, `error` or `uncertain`, and marks the channel as `needs_reconnect` if its access was refused |
+| `target.end` | Ends a delivery as `sent`, `error` or `uncertain`. It names the connection whose access the network refused, if it refused one, by the `connectedAt` of the channel, and marks the channel as `needs_reconnect` if that is the connection which the channel still has |
 
 They are the server's because a channel stands for something that only the server has: the credentials of the account. A channel that a client made up would have none, and one that a client dropped would leave them behind, still good at the network. So an account is connected and disconnected over HTTP, through the routes that `packages/core/src/connect.ts` describes, and a client learns of the outcome as it learns of every change.
 
@@ -168,7 +168,7 @@ A client chooses the channels of a draft with `target.add` and `target.remove`, 
 1. `post.publish` makes the post `sending` and every target `queued`, with `queuedAt` set. A client that runs the mutator shows this at once.
 2. The server begins each delivery when its channel is free: the target is `sending` and its `attempt` is 1. The deliveries to one channel go out one at a time, in the order of `queuedAt`, so a target can stay `queued` while a post that was published before it is on its way to the same account. The targets of one post go to different channels and do not wait for each other.
 3. A row of `target_part_result` appears for each part as it is published, the first part first. A thread is seen going out part by part.
-4. The delivery ends: the target is `sent`, with `sentAt`, or `error` or `uncertain`, with the reason in `error`, a text for the person. If the network no longer takes the access of the channel, the channel is `needs_reconnect` in the same change.
+4. The delivery ends: the target is `sent`, with `sentAt`, or `error` or `uncertain`, with the reason in `error`, a text for the person. If the network no longer takes the access of the channel, the channel is `needs_reconnect` in the same change. Not if the account was connected again while the delivery was under way: the target fails all the same, and the channel stays `connected`, with an access that the delivery has not tried.
 5. When the last target of the post has ended, the post is `sent` if all of them are, and `error` otherwise. A post whose targets ended differently is in `error`: the targets say which of them arrived.
 
 The statuses of a target:

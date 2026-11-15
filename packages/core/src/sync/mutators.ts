@@ -551,9 +551,16 @@ export const mutators = {
 
   /**
    * Ends a delivery: every part is published, or it has failed, with the
-   * reason for the person. `reconnect` says that the network no longer
-   * takes the access of the channel, which then needs connecting again.
-   * The post leaves `sending` when the last of its targets has ended.
+   * reason for the person. The post leaves `sending` when the last of its
+   * targets has ended.
+   *
+   * `refusedConnection` says whether the network has refused the access
+   * of the channel, and which access: the `connectedAt` of the channel
+   * that the refused credentials were read with, or null if none were
+   * refused. The channel then needs connecting again, unless it has been
+   * connected again since. The end of a delivery can be recorded long
+   * after its network refused, and must not mark a connection that the
+   * delivery has never tried.
    */
   "target.end": mutator(
     z.discriminatedUnion("status", [
@@ -567,7 +574,7 @@ export const mutators = {
         attempt: z.number().int().positive(),
         status: targetStatusSchema.extract(["error", "uncertain"]),
         error: z.string().min(1).max(targetLimits.errorLength),
-        reconnect: z.boolean(),
+        refusedConnection: channelRowSchema.shape.connectedAt.nullable(),
       }),
     ]),
     (tx, end) => {
@@ -578,9 +585,11 @@ export const mutators = {
         error: end.status === "sent" ? null : end.error,
         sentAt: end.status === "sent" ? tx.now : null,
       });
-      if (end.status !== "sent" && end.reconnect) {
+      if (end.status !== "sent" && end.refusedConnection !== null) {
         const channel = tx.get("channel", target.channelId);
-        if (channel) {
+        // The time of a connection names it: no two mutations of a
+        // workspace are run at the same time.
+        if (channel?.connectedAt === end.refusedConnection) {
           tx.put("channel", { ...channel, status: "needs_reconnect" });
         }
       }

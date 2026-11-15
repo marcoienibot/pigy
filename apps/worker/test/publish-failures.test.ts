@@ -24,12 +24,14 @@ import {
   connectAccount,
   ended,
   follow,
+  gate,
   inPlaceOfPosting,
   postStatus,
   publishedOf,
   publishTo,
   retry,
   runIdOf,
+  runOf,
   started,
   targetOf,
   waitsOf,
@@ -280,6 +282,61 @@ it("marks the channel when the network no longer takes its access, and sends not
     status: "sent",
     attempt: 2,
     error: null,
+  });
+  expect(texted()).toEqual(["Locked out"]);
+});
+
+it("leaves a channel alone that was connected again before its delivery said that it was refused", async () => {
+  // The network holds the request to post until the test lets it through.
+  const held = gate((request) => request === postStatus);
+  const context = await ready(
+    { interceptNetwork: held.intercept },
+    "Locked out",
+  );
+  const { test, browser, workspace, channel, client, draft, texted } = context;
+  // Somebody has taken the access back at the network.
+  test.network.mastodon.arm({ kind: "token-revoked", operation: "publish" });
+  held.close();
+  const [targetId = ""] = await publishTo(client, draft.postId, channel);
+  await held.reached();
+  await follow(client, () => targetOf(client, targetId).status === "sending");
+  // The run is stopped after the step that it is in, the one that the
+  // network refuses, and before the step that tells the workspace how the
+  // delivery ended. That stands for whatever keeps the end of a delivery
+  // from being recorded for a while: a workspace that cannot be reached,
+  // a deploy.
+  using run = await runOf(workspace, targetId);
+  await run.pause();
+  held.open();
+  await vi.waitFor(async () =>
+    expect((await run.status()).status).toBe("paused"),
+  );
+
+  // Meanwhile the person connects the account again: the channel keeps
+  // its ID, and holds an access that the network takes.
+  expect(await connectAccount(test, browser, workspace)).toBe(channel);
+  await client.patch();
+  await run.resume();
+  await ended(client, draft.postId);
+
+  // The delivery failed: its access was refused.
+  expect(targetOf(client, targetId)).toMatchObject({
+    status: "error",
+    error: `${realMastodonDomain} no longer accepts the access that pigy was given to this account.`,
+  });
+  // That was the access of the connection before. The channel is not
+  // marked for it: the one that it has now was never tried.
+  expect(client.table("channel")).toMatchObject([
+    { id: channel, status: "connected" },
+  ]);
+
+  // So the next attempt tries it, and gets through. On a channel that was
+  // marked it would have failed without a request.
+  await retry(client, targetId);
+  expect(await ended(client, draft.postId)).toMatchObject({ status: "sent" });
+  expect(targetOf(client, targetId)).toMatchObject({
+    status: "sent",
+    attempt: 2,
   });
   expect(texted()).toEqual(["Locked out"]);
 });
