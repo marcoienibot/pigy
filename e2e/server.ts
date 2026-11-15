@@ -148,26 +148,37 @@ function ask(address: string, port: number): Promise<Answer> {
   });
 }
 
+/** What answers on the port of the run. */
+type Server =
+  /** The build of the run, and nothing else, at one address or both. */
+  | "ours"
+  | "nothing"
+  | {
+      /** What answers that is not the build of the run. */
+      stranger: string;
+      /** Whether the build of the run answers too, at the other address. */
+      besideOurs: boolean;
+    };
+
 /**
- * Whether `localhost:<port>` is the server of the build `build`. It is when
- * something answers on the port, and everything that answers, at either
- * address of `localhost`, serves the ID `build`. Otherwise this says what
- * answers instead, if anything does.
+ * What answers on `localhost:<port>`, at either address of `localhost`,
+ * where a server of the build `build` is expected.
  */
 export async function serverOn(
   port: number,
   build: string | undefined,
-): Promise<"ours" | "nothing" | { stranger: string }> {
+): Promise<Server> {
   const answers = await Promise.all(
     loopback.map(async (address) => ({
       url: `http://${address.includes(":") ? `[${address}]` : address}:${port}`,
       answer: await ask(address, port),
     })),
   );
+  const ours = (answer: Answer) =>
+    answer.kind === "answer" && answer.status === 200 && answer.body === build;
   const strangers = answers.flatMap(({ url, answer }) => {
-    if (answer.kind === "nothing") return [];
+    if (answer.kind === "nothing" || ours(answer)) return [];
     if (answer.kind === "failed") return [`${url} fails: ${answer.reason}`];
-    if (answer.status === 200 && answer.body === build) return [];
     if (answer.status === 200 && answer.body.startsWith("pigy-e2e-build ")) {
       return [`${url} serves the e2e build "${answer.body}"`];
     }
@@ -176,16 +187,26 @@ export async function serverOn(
     ];
   });
   if (strangers.length > 0) {
-    const ours =
+    const expected =
       build === undefined
         ? "this checkout has no e2e build"
         : `the build of this run is "${build}"`;
-    return { stranger: `${strangers.join(", and ")}, while ${ours}` };
+    return {
+      stranger: `${strangers.join(", and ")}, while ${expected}`,
+      besideOurs: answers.some(({ answer }) => ours(answer)),
+    };
   }
   return answers.every(({ answer }) => answer.kind === "nothing")
     ? "nothing"
     : "ours";
 }
+
+/**
+ * What a run is told when another server listens next to its own, on the
+ * other address of `localhost`.
+ */
+export const besideOurs =
+  "Another server listens on the same port at the other address of localhost, and the browser may go to it.";
 
 /**
  * Throws unless the server on `port` is still the one that the run
@@ -213,7 +234,7 @@ export async function expectOwnServer(port: number): Promise<void> {
   }
   if (server !== "ours") {
     throw new Error(
-      `Port ${port} is no longer served by the server that this run started: ${server.stranger}. The server of this run stopped during the run, and another server took the port.`,
+      `Port ${port} is no longer served by the server that this run started alone: ${server.stranger}. ${server.besideOurs ? besideOurs : "The server of this run stopped during the run, and another server took the port."}`,
     );
   }
 }

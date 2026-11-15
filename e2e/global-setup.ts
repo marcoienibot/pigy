@@ -1,4 +1,9 @@
-import { ownBuild, portFromEnvironment, serverOn } from "./server.ts";
+import {
+  besideOurs,
+  ownBuild,
+  portFromEnvironment,
+  serverOn,
+} from "./server.ts";
 
 /**
  * Runs once the server of the run answers on its port, before any test:
@@ -18,8 +23,10 @@ export default async function globalSetup(): Promise<void> {
     );
   }
   if (server !== "ours" || build === undefined) {
+    // Without a build, whatever answers is somebody else's.
+    const stranger = server === "ours" ? undefined : server;
     throw new Error(
-      `Port ${port} is not served by the server that this run started: ${server === "ours" ? "this checkout has no e2e build" : server.stranger}. Another server took the port while this run was building its own, which then could not start. Run again, or choose a port that nothing else uses with PIGY_E2E_PORT.`,
+      `Port ${port} is not served by the server that this run started alone: ${stranger?.stranger ?? "this checkout has no e2e build"}. ${stranger?.besideOurs ? besideOurs : "Another server took the port while this run was building its own, which then could not start."} Run again, or choose a port that nothing else uses with PIGY_E2E_PORT.`,
     );
   }
   // The workers are started after this, with the environment of the runner.
