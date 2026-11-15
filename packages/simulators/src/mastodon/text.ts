@@ -199,6 +199,32 @@ function findMentions(text: string): (Range & { username: string })[] {
   return mentions;
 }
 
+/**
+ * The text of a status as Mastodon saves it: every mention of an account
+ * that it finds is written the way the account is. `acctOf` is given the
+ * name and the domain of a mention, the domain undefined if it has none,
+ * and returns what Mastodon calls the `acct` of the account: its name for
+ * one of the instance's own, name and domain for one from elsewhere. It
+ * returns undefined for nobody, and that mention stays as it was typed.
+ *
+ * So "@ADA@mastodon.example" posted on mastodon.example is saved as "@ada",
+ * and the source of the status no longer is the text that was sent.
+ *
+ * From app/services/process_mentions_service.rb. It goes by the pattern of
+ * a mention alone, Account::MENTION_RE, and not by the rules that decide
+ * which mention is counted without its domain.
+ */
+export function rewriteMentions(
+  text: string,
+  acctOf: (username: string, domain: string | undefined) => string | undefined,
+): string {
+  return text.replace(mention, (typed: string, name: string) => {
+    const [username = "", domain] = name.split("@");
+    const acct = acctOf(username, domain);
+    return acct === undefined ? typed : `@${acct}`;
+  });
+}
+
 // GUESS: that Ruby, which Mastodon counts with, and this runtime find the
 // same grapheme clusters. Both follow Unicode, in versions that may differ.
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
@@ -246,8 +272,10 @@ function linkHtml(url: string): string {
  * The `content` of a status: its text as HTML. Blank lines part
  * paragraphs, other line breaks become `<br />`, links become `<a>`.
  *
- * Mentions and hashtags stay plain text here. Mastodon links them too,
- * which makes no difference to the text that the HTML stands for.
+ * Mentions and hashtags stay plain text here. Mastodon links them too.
+ * That makes no difference to the text that the HTML stands for, but for
+ * one: Mastodon shows a mention of an account from elsewhere without its
+ * domain, and this shows it as it is saved.
  */
 export function renderContent(text: string): string {
   return text

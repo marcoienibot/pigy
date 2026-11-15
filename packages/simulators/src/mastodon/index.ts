@@ -49,8 +49,9 @@ export type { Instance, MastodonAccount } from "./state.ts";
  * - It accepts only the secrets it made itself, which say what they are.
  *
  * Not simulated: media, polls, scheduled statuses, quotes, content
- * warnings, followers, federation between instances, and the limits that
- * Mastodon keeps per IP address.
+ * warnings, followers, federation between instances beyond finding the
+ * account that a mention names, and the limits that Mastodon keeps per IP
+ * address.
  */
 
 /** The faults that Mastodon can suffer from. */

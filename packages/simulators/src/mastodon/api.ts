@@ -9,7 +9,7 @@ import {
   type Status,
   type Visibility,
 } from "./state.ts";
-import { countableLength, renderContent } from "./text.ts";
+import { countableLength, renderContent, rewriteMentions } from "./text.ts";
 
 /**
  * The part of Mastodon's API that pigy uses: methods/instance,
@@ -17,8 +17,10 @@ import { countableLength, renderContent } from "./text.ts";
  * errors of entities/Error. Where the documentation is silent, the code it
  * links to was read: app/controllers/api/v1/statuses_controller.rb,
  * app/controllers/api/v1/accounts/statuses_controller.rb,
- * app/services/post_status_service.rb, app/lib/account_statuses_filter.rb,
- * app/models/concerns/paginable.rb and app/models/status.rb.
+ * app/services/post_status_service.rb,
+ * app/services/process_mentions_service.rb,
+ * app/lib/account_statuses_filter.rb, app/models/concerns/paginable.rb and
+ * app/models/status.rb.
  */
 
 /** Who makes a request, by its token. */
@@ -227,6 +229,38 @@ function findStatus(state: State, instance: Instance, id: string) {
   return status?.domain === instance.domain ? status : undefined;
 }
 
+/**
+ * How Mastodon writes the account that a mention on `instance` names, or
+ * undefined if it finds none. Names and domains are compared without
+ * regard to case, and a mention with the instance's own domain, or with
+ * none, is of one of its own accounts. From
+ * app/services/process_mentions_service.rb and the scopes `with_username`
+ * and `with_domain` of app/models/account.rb.
+ *
+ * An account on another instance of the world is found too. Mastodon asks
+ * the other server for it, with WebFinger, which may also answer with
+ * another domain than the one that was typed. The world has no such
+ * aliases.
+ */
+function mentionedAcct(
+  state: State,
+  instance: Instance,
+  username: string,
+  domain = instance.domain,
+): string | undefined {
+  const account = state.accounts
+    .all()
+    .find(
+      (known) =>
+        known.username.toLowerCase() === username.toLowerCase() &&
+        known.domain === domain.toLowerCase(),
+    );
+  if (!account) return undefined;
+  return account.domain === instance.domain
+    ? account.username
+    : `${account.username}@${account.domain}`;
+}
+
 /** `POST /api/v1/statuses`: posts a status. */
 export async function createStatus(
   state: State,
@@ -272,12 +306,12 @@ export async function createStatus(
     }
   }
 
-  // Mastodon stores, and counts, the text without the whitespace around
-  // it. This is what Ruby's `strip` removes.
-  const body = (typeof params.status === "string" ? params.status : "").replace(
-    /^[\0\t\n\v\f\r ]+|[\0\t\n\v\f\r ]+$/g,
-    "",
-  );
+  // Mastodon stores, and counts, the text with its mentions rewritten and
+  // without the whitespace around it. This is what Ruby's `strip` removes.
+  const body = rewriteMentions(
+    typeof params.status === "string" ? params.status : "",
+    (username, domain) => mentionedAcct(state, instance, username, domain),
+  ).replace(/^[\0\t\n\v\f\r ]+|[\0\t\n\v\f\r ]+$/g, "");
   const visibility = text(params, "visibility") ?? "public";
   const errors: string[] = [];
   if (body.trim() === "") errors.push("Text can't be blank");

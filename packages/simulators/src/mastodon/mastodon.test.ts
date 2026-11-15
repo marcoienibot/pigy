@@ -750,6 +750,39 @@ describe("posting a status", () => {
     expect(feed(sim.world)[0]?.post.text).toBe("Hello");
   });
 
+  it("writes a mention the way the account that it finds is written", async () => {
+    const sim = setup();
+    const { token } = await connect(sim);
+    sim.simulator.addInstance("other.example");
+    sim.simulator.addAccount("other.example", "Bob");
+    const saved = async (status: string) => {
+      const { status: made } = await publish(sim, token, { status });
+      const source = await api(
+        sim,
+        "GET",
+        `/api/v1/statuses/${made.id}/source`,
+        token,
+      );
+      return ((await source.json()) as { text: string }).text;
+    };
+
+    // One of the instance's own loses its domain. Case does not matter in
+    // finding it, and it is written as the account has it.
+    expect(await saved("@ADA@Mastodon.Example and @Ada!")).toBe(
+      "@ada and @ada!",
+    );
+    // One from elsewhere keeps the domain, as the account has it.
+    expect(await saved("Hi @bob@OTHER.example.")).toBe(
+      "Hi @Bob@other.example.",
+    );
+    // Bob is not of this instance, and nobody is of either.
+    const unknown = "@bob @nobody@mastodon.example @ada@elsewhere.example";
+    expect(await saved(unknown)).toBe(unknown);
+    // No mentions: an address, the end of a path and of a parameter.
+    const none = "mail@ADA https://example.com/@ADA ?to=@ADA";
+    expect(await saved(none)).toBe(none);
+  });
+
   it.each([
     [{}, "Validation failed: Text can't be blank"],
     [{ status: " \n " }, "Validation failed: Text can't be blank"],

@@ -48,7 +48,10 @@ export type SimPost = {
   /** Unique within the network. */
   id: string;
   accountId: string;
-  /** The text as it was sent. */
+  /**
+   * The text as the network keeps it. That need not be the text that was
+   * sent: Mastodon rewrites mentions and drops the whitespace around it.
+   */
   text: string;
   /** The post that this one replies to. A thread is a chain of these. */
   replyToId: string | null;
