@@ -455,7 +455,20 @@ export function workspaceObject({ now }: { now: Clock }) {
      */
     async #watchDeliveries(): Promise<void> {
       for (const run of this.#store.deliveries(true)) {
-        if (!(await this.#isOver(run))) continue;
+        let over: boolean;
+        try {
+          over = await this.#isOver(run);
+        } catch (error) {
+          // Nothing is known of this one, which the next look makes up
+          // for. The others are looked at all the same: one of them may be
+          // over, and its channel waits for it.
+          console.error(
+            `The workflow of the delivery ${this.#runId(run)} could not be asked how it is`,
+            loggable(error),
+          );
+          continue;
+        }
+        if (!over) continue;
         const from = this.#store.seq;
         const ended = this.#store.mutate(
           {

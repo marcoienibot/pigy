@@ -836,6 +836,73 @@ it("ends a delivery whose workflow the platform no longer knows", async () => {
   );
 });
 
+it("ends a delivery whose workflow is over when it cannot ask about another", async () => {
+  const context = await ready();
+  const { test, browser, workflows, workspace, channel, client } = context;
+  const errors = expectErrors();
+  const other = "other.test";
+  test.network.mastodon.addInstance(other);
+  const account = test.network.mastodon.addAccount(other, "emmy", "Emmy");
+  const second = await connectAccount(test, browser, workspace, {
+    domain: other,
+    accountId: account.id,
+  });
+  await client.connect(browser, workspace);
+  // Both workflows publish, and then fail for good where they tell the
+  // workspace how they ended.
+  await workflows.modifyAll(async (modifier) => {
+    await modifier.mockStepError({ name: "end" }, new Error("Stopped"));
+    await modifier.disableRetryDelays();
+  });
+  const draft = await writeDraft(client, workspace, "Twice");
+  const targets = await publishTo(client, draft.postId, channel, second);
+  await follow(client, () =>
+    targets.every(
+      (targetId) => targetOf(client, targetId).status === "sending",
+    ),
+  );
+  for (const targetId of targets) await eventsOf(workspace, targetId);
+  /** The statuses of the targets as the workspace has them, sorted. */
+  const statuses = () =>
+    runInDurableObject(objectOf(workspace), (_, state) =>
+      state.storage.sql
+        .exec<{ status: string }>(
+          "select status from post_target order by status",
+        )
+        .toArray()
+        .map(({ status }) => status),
+    );
+  expect(await statuses()).toEqual(["sending", "sending"]);
+
+  // The platform does not answer the first question about a run, whichever
+  // of the two that is about, and answers the next.
+  const get = env.PUBLISH.get.bind(env.PUBLISH);
+  let asked = 0;
+  const failing = vi
+    .spyOn(env.PUBLISH, "get")
+    .mockImplementation(async (id) => {
+      if (++asked === 1) throw new Error("Workflows is out of order");
+      return get(id);
+    });
+  onTestFinished(() => failing.mockRestore());
+  expect(await runDurableObjectAlarm(objectOf(workspace))).toBe(true);
+  failing.mockRestore();
+
+  // The run that it could ask about is over, and its delivery is ended:
+  // the channel is free. Read from the workspace, because a client that
+  // waits for the change would wait for ever where it does not come.
+  expect(await statuses()).toEqual(["sending", "uncertain"]);
+  expect(errors).toHaveBeenCalledWith(
+    expect.stringMatching(/could not be asked how it is$/),
+    expect.anything(),
+  );
+
+  // Nothing is known of the other one until the next look, which ends it.
+  expect(await runDurableObjectAlarm(objectOf(workspace))).toBe(true);
+  expect(await statuses()).toEqual(["uncertain", "uncertain"]);
+  expect(await ended(client, draft.postId)).toMatchObject({ status: "error" });
+});
+
 it("changes nothing when what a delivery did is recorded a second time", async () => {
   // The network answers nothing, so that the workflow of the delivery
   // stays out of the way: the test reports in its place.
