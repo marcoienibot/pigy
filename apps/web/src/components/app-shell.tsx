@@ -80,8 +80,12 @@ function Notices() {
 
   return (
     <>
-      {/* On a phone, above the bottom bar. */}
-      <Toaster position="bottom-right" mobileOffset={{ bottom: 72 }} />
+      {/* On a phone, above the bottom bar, which is taller where the
+          phone keeps the bottom of the screen for itself. */}
+      <Toaster
+        position="bottom-right"
+        mobileOffset={{ bottom: "calc(72px + env(safe-area-inset-bottom))" }}
+      />
       <Rejections />
     </>
   );
@@ -89,7 +93,8 @@ function Notices() {
 
 function Shell({ children }: { children: ReactNode }) {
   return (
-    <div className="flex h-dvh flex-col">
+    // The bottom of a phone's screen is the tab bar's, below.
+    <div className="flex h-dvh flex-col px-safe pt-safe md:pb-safe">
       <SandboxBanner />
       {/* Positioned, for what covers the whole app on a phone, such as the
           editor of a draft: it covers this and leaves the banner in sight. */}
@@ -130,7 +135,7 @@ function Shell({ children }: { children: ReactNode }) {
 
         <nav
           aria-label="Main"
-          className="flex shrink-0 border-t bg-background pb-[env(safe-area-inset-bottom)] md:hidden"
+          className="flex shrink-0 border-t bg-background pb-safe md:hidden"
         >
           {navItems.map(({ label, icon: Icon, ...link }) => (
             <Link

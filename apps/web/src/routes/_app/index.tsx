@@ -265,9 +265,12 @@ function Drafts() {
           "min-h-0 min-w-0 flex-1 flex-col bg-background",
           // On a phone the editor takes the whole app, navigation
           // included, and the list is a step back. Only the banner of the
-          // sandbox stays above it: the shell is what this is placed in.
+          // sandbox stays above it: the shell is what this is placed in,
+          // and it keeps the sides and the top out of the edges that a
+          // phone keeps for itself. The bottom is the tab bar's, which
+          // this covers.
           openId
-            ? "absolute inset-0 z-40 flex pb-[env(safe-area-inset-bottom)] md:static md:z-auto md:pb-0"
+            ? "absolute inset-0 z-40 flex pb-safe md:static md:z-auto md:pb-0"
             : "hidden md:flex",
         )}
       >
