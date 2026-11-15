@@ -22,7 +22,9 @@ import {
  *
  * A person has two workspaces, live and sandbox, and a tab shows one of
  * them. It syncs the one it shows, and goes on syncing one that it has
- * shown before: see `workspaceSync`.
+ * shown before: see `workspaceSync`. A second Web Lock is the tab's and
+ * not a workspace's: it says that the tab holds changes which it could not
+ * store, in either workspace. See `unsavedLock`.
  */
 export type WorkspaceSync = {
   /** What the screens read and write. */
@@ -90,14 +92,72 @@ function ask(event: BeforeUnloadEvent): void {
   event.returnValue = true;
 }
 
+/**
+ * The Web Lock that a window holds, in shared mode, for as long as it
+ * holds changes which it could not store, in whichever workspace. A window
+ * that starts looks for it before it lets a new version of the app take
+ * over, see src/lib/service-worker.ts: loading the window with those
+ * changes again would lose them, and left as it is under the new version
+ * it would run a build whose files are gone.
+ *
+ * The name is a contract between the versions of the app, and must not
+ * change: the window that holds the lock and the window that looks for it
+ * run different versions whenever a new one waits, and a window that
+ * looked under another name would find nothing and go ahead.
+ */
+const unsavedLock = "pigy/unsaved";
+
+/** Gives `unsavedLock` back, while this tab holds it or has asked for it. */
+let releaseUnsavedLock: (() => void) | undefined;
+
+/**
+ * Holds `unsavedLock` while `unsaved`, and gives it back when not. The tab
+ * asks for it once, whichever of its stores holds the changes, and gives
+ * it back when none of them does.
+ */
+function sayUnsaved(unsaved: boolean): void {
+  if (unsaved && !releaseUnsavedLock) {
+    const stored = new Promise<void>((resolve) => {
+      releaseUnsavedLock = resolve;
+    });
+    // Shared, so that every window with such changes gets it at once.
+    navigator.locks
+      .request(unsavedLock, { mode: "shared" }, () => stored)
+      .catch(report);
+  } else if (!unsaved && releaseUnsavedLock) {
+    releaseUnsavedLock();
+    releaseUnsavedLock = undefined;
+  }
+}
+
+/**
+ * Whether a window of the app in this browser holds changes that it could
+ * not store. False where that cannot be found out, as in a browser
+ * without Web Locks.
+ */
+export async function unsavedInSomeWindow(): Promise<boolean> {
+  if (!("locks" in navigator)) return false;
+  try {
+    const { held = [], pending = [] } = await navigator.locks.query();
+    return [...held, ...pending].some(({ name }) => name === unsavedLock);
+  } catch (error) {
+    report(error);
+    return false;
+  }
+}
+
 /** A store of this tab has changed, or the tab has another set of them. */
 function changed(): void {
+  const unsaved = unsavedInTab() > 0;
   // The browser asks before the page goes for as long as the tab holds
   // what that would lose, whichever workspace is on screen. The listener
   // is there only for that long: a browser may not put a page aside to
   // come back to while it listens for this.
-  if (unsavedInTab() > 0) window.addEventListener("beforeunload", ask);
+  if (unsaved) window.addEventListener("beforeunload", ask);
   else window.removeEventListener("beforeunload", ask);
+  // The windows that start are told as well, or they would let a new
+  // version of the app take over, under which this one could not stay.
+  sayUnsaved(unsaved);
   for (const watcher of [...watchers]) watcher();
 }
 

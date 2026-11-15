@@ -1,5 +1,6 @@
 import {
   backToList,
+  breakStorage,
   draftRow,
   editor,
   expectSync,
@@ -215,4 +216,190 @@ test("a window that is too old for the server loads the new version when it is r
   // for it does.
   await expect(newerVersion(page)).toHaveCount(1);
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Drafts");
+});
+
+/** Whether a newer version is installed and waits in the browser of `page`. */
+function newerWaits(page: Page): Promise<boolean> {
+  return page.evaluate(
+    async () =>
+      (await navigator.serviceWorker.getRegistration())?.waiting != null,
+  );
+}
+
+test("a new version does not take over while a window holds changes that it could not store", async ({
+  page,
+  context,
+  ownEmail,
+  signInBeforeFirstLoad,
+  isMobile,
+}) => {
+  await signInBeforeFirstLoad(ownEmail);
+  await openOlderVersion(page);
+  await writeDraft(page, isMobile, "Written while there was room");
+  await expectSync(page, "Synced");
+  // The device has no room left, as far as this window can tell: what is
+  // typed in it now is in the window and nowhere else.
+  const storage = await breakStorage(page);
+  await draftRow(page, "Written while there was room").click();
+  await editor(page).fill("Written with no room left");
+  await expectSync(page, "Not saved · 1 change");
+  await mark(page);
+
+  // A newer version is found, and is installed behind the window.
+  await comeBackTo(page);
+  await expect.poll(() => newerWaits(page)).toBe(true);
+
+  // The app is opened in a second window, which would let the newer
+  // version take over at any other time. It starts as the older version:
+  // a window shows nothing before it has decided, so one that had let the
+  // newer version take over would be the newer version here.
+  const second = await context.newPage();
+  await second.goto("/");
+  await expect(second.getByRole("heading", { level: 1 })).toHaveText("Drafts");
+  await expect(newerVersion(second)).toHaveCount(0);
+  // The newer version still waits. It would not if the second window had
+  // asked it to take over and gone on as the older version only because
+  // that took too long.
+  expect(await newerWaits(second)).toBe(true);
+  // The first window is the page that the text was typed in, with the
+  // text. Under a service worker of the newer version it would have to
+  // choose: load itself again and lose the text, or stay and run a build
+  // whose files that worker has deleted.
+  expect(await markOf(page)).toEqual({ sameLoad: true, leaving: false });
+  await expect(editor(page)).toHaveValue("Written with no room left");
+  await expectSync(page, "Not saved · 1 change");
+
+  // It knows of the newer version and does not offer to load it, which
+  // would lose the text as well. The offer is there once the text is
+  // stored, so it is the text that keeps it away.
+  const nav = page.getByRole("navigation", { name: "Main" });
+  const offer = page.getByText("A new version of pigy is ready");
+  await backToList(page, isMobile);
+  await nav.getByRole("link", { name: "Settings" }).click();
+  await expect(page.getByRole("heading", { name: "Appearance" })).toBeVisible();
+  await expect(offer).toHaveCount(0);
+
+  // There is room again, and the window stores the text the next time it
+  // tries, which is within five seconds.
+  await storage.repair();
+  await expect(offer).toBeVisible({ timeout: 15_000 });
+  await expectSync(page, "Synced");
+
+  // The second window is started again, and nothing keeps the newer
+  // version from taking over now. The first window follows, and has the
+  // text: it did not load itself again before the text was stored.
+  await second.reload();
+  await expect(newerVersion(second)).toHaveCount(1);
+  await expect(newerVersion(page)).toHaveCount(1);
+  await page
+    .getByRole("navigation", { name: "Main" })
+    .getByRole("link", { name: "Drafts" })
+    .click();
+  await expect(draftRow(page, "Written with no room left")).toBeVisible();
+});
+
+/**
+ * Counts the page loads of `page` and notes when it begins to leave, in
+ * what a tab keeps across a reload. Call it before the page is opened.
+ */
+async function countLoads(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const loads = Number(sessionStorage.getItem("loads") ?? 0) + 1;
+    sessionStorage.setItem("loads", String(loads));
+    window.addEventListener("beforeunload", () =>
+      sessionStorage.setItem("leaving", "yes"),
+    );
+  });
+}
+
+/** What `countLoads` has counted in `page`. */
+function loadsOf(page: Page): Promise<{ loads: number; leaving: boolean }> {
+  return page.evaluate(() => ({
+    loads: Number(sessionStorage.getItem("loads")),
+    leaving: sessionStorage.getItem("leaving") === "yes",
+  }));
+}
+
+test("a page that the service worker of its own build takes on stays as it is", async ({
+  page,
+}) => {
+  await countLoads(page);
+  // The first page load of the browser: the server answers it, and the
+  // service worker is installed behind it.
+  await page.goto("/sign-in");
+  await serviceWorkerAnswersFor(page);
+
+  // The page asks the caches whether the worker has its build when the
+  // worker takes it on, and would load itself again on the answer. The
+  // caches answer in the order in which they are asked, so by the time
+  // the test has its own answer, the page has had the one it asked for
+  // and has acted on it.
+  await page.evaluate(async () => {
+    await caches.match("/");
+  });
+  expect(await loadsOf(page)).toEqual({ loads: 1, leaving: false });
+});
+
+test("a page that the service worker of another build takes on loads itself again", async ({
+  page,
+  context,
+}) => {
+  // Another build of the app, which is what a device gets when a release
+  // is deployed after it has loaded the page and before the page has
+  // fetched the service worker. It is made up from the build of the
+  // tests, as in `olderVersionFirst`: its service worker with another name
+  // for its caches, and with a script of its own in place of the one that
+  // the app shell loads.
+  const shell = await (await context.request.get("/")).text();
+  const script = /<script type="module"[^>]* src="([^"]+)"/.exec(shell)?.[1];
+  if (!script) throw new Error("The app shell loads no script");
+  const otherScript = "/assets/index-of-another-build.js";
+  const build = await (await context.request.get("/sw.js")).text();
+  expect(build, "The service worker does not keep the script").toContain(
+    script,
+  );
+  await context.route("**/sw.js", (route) =>
+    route.fulfill({
+      contentType: "text/javascript",
+      body: build
+        .replaceAll("pigy-app-", "pigy-other-")
+        .replaceAll(script, otherScript),
+    }),
+  );
+  // What the server of that build would have: the script, and an app
+  // shell that loads it. Only the first service worker of the browser is
+  // that build: the browser looks for a newer one behind the test, and
+  // finds the build of the tests.
+  let first: unknown;
+  context.on("serviceworker", (worker) => {
+    first ??= worker;
+  });
+  await context.route(
+    (url) => url.pathname === otherScript,
+    (route) => route.fulfill({ contentType: "text/javascript", body: "" }),
+  );
+  await context.route(
+    (url) => url.pathname === "/",
+    (route) => {
+      const worker = route.request().serviceWorker();
+      if (!worker || worker !== first) return route.fallback();
+      return route.fulfill({
+        contentType: "text/html; charset=utf-8",
+        body: `<!doctype html><html data-other-build><head><script type="module" src="${otherScript}"></script></head><body>Another build</body></html>`,
+      });
+    },
+  );
+  const otherBuild = page.locator("html[data-other-build]");
+
+  // The server answers the first page load, with the build of the tests:
+  // only a service worker is ever given the app shell of the other build.
+  await page.goto("/sign-in");
+
+  // The service worker of the other build is installed, and takes the
+  // page on. The page finds that the worker does not keep its script, and
+  // loads itself again: what it shows now is what that worker keeps. A
+  // page that stayed would go on as the build of the tests, under a
+  // worker that after a real release would not have the code of its next
+  // screen.
+  await expect(otherBuild).toHaveCount(1);
 });

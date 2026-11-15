@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Build } from "./build.ts";
-import { type Platform, precache, refusal } from "./precache.ts";
+import { keeps, type Platform, precache, refusal } from "./precache.ts";
 
 const origin = "https://pigy.example";
 
@@ -334,6 +334,33 @@ describe("taking over", () => {
     await app.activate();
 
     expect(browser.names().sort()).toEqual(["pigy-app-2", "shared-files"]);
+  });
+
+  it("leaves a page with a way to tell whether the worker is of its build", async () => {
+    // What a page asks that no worker answered for, when this one has
+    // taken it on: whether the caches hold the script that the page was
+    // started from.
+    const { fetch } = server(files);
+    const browser = browserCaches();
+    browser.keep("pigy-app-1", {
+      "/": shellOf("/assets/index-111.js"),
+      "/assets/index-111.js": "console.log('app 1')",
+    });
+    const app = precache(build, { caches: browser.caches, fetch, origin });
+    await app.install();
+    const page = (script: string) =>
+      keeps(browser.caches, new URL(script, origin).href);
+
+    // While this worker waits, the caches hold both builds, and the
+    // answer would be yes for a page of either. A page asks when the
+    // worker has taken it on, which is after this:
+    expect(await page("/assets/index-111.js")).toBe(true);
+    await app.activate();
+
+    // A page of the build before has to load itself again.
+    expect(await page("/assets/index-111.js")).toBe(false);
+    // A page of this build stays.
+    expect(await page("/assets/index-222.js")).toBe(true);
   });
 });
 

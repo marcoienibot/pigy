@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { activateMessage } from "@/sw/messages";
-import { whenSaved } from "@/sync/workspace-sync";
+import { keeps } from "@/sw/precache";
+import { unsavedInSomeWindow, whenSaved } from "@/sync/workspace-sync";
 
 /**
  * The page's side of the service worker in src/sw: registering it, and
@@ -18,16 +19,39 @@ import { whenSaved } from "@/sync/workspace-sync";
  * - when the app is started while it waits: the page that starts says so
  *   before it has put anything on screen, and starts again as the new
  *   version, or
- * - when the person asks to reload, with `reloadToUpdate`.
+ * - when the person asks to reload, with `reloadToUpdate`, which is such
+ *   a start.
  *
- * All windows of a browser share one service worker. When a new one takes
- * over, every window that is open loads itself again, so that none goes on
- * as the old version under the new worker, which does not have its files.
- * A window does that at once unless it holds changes that it could not
- * store: those would be lost, so it waits for them. The window that is
- * loaded again without having asked is never the one that somebody is
- * typing in: what makes a new version take over is a window that starts
- * or a button that is pressed, and that is where the person is.
+ * All windows of a browser share one service worker, and a worker that
+ * takes over deletes the files of the build before it. So the rule that
+ * everything here keeps is that no window goes on under a worker of
+ * another build: the next screen whose code it has not loaded yet would
+ * fail. Three things follow from it.
+ *
+ * - When a new worker takes over, every window that is open loads itself
+ *   again. Not before it has stored what was typed in it, which
+ *   `whenSaved` waits for: that is over at once, unless the device fails
+ *   to store it, and then the window stays as it is until it has.
+ * - A window that stays like that would run the old build under the new
+ *   worker, so no page that starts lets a new version take over while a
+ *   window holds changes which it could not store. Such a window says so
+ *   with a Web Lock, see `unsavedInSomeWindow`, and a page that starts
+ *   meanwhile starts as the version it is, whose files are all there. The
+ *   new version goes on waiting: for the last window to go, or for a
+ *   start after the changes are stored. What is left is a write that fails
+ *   in the instant after a page that starts has looked: that window is
+ *   under the new worker until it has stored its changes.
+ * - A page that no worker answered for is taken on by the first worker
+ *   that is activated. It was loaded from the server, and the worker can
+ *   be of another build: one that was deployed before the page had fetched
+ *   its worker, or one that takes over from the worker which a reload with
+ *   Shift went past. The page looks, and loads itself again if so: see
+ *   `takenOn`.
+ *
+ * The window that is loaded again without having asked is never the one
+ * that somebody is typing in: what makes a new version take over is a
+ * window that starts or a button that is pressed, and that is where the
+ * person is.
  */
 
 /**
@@ -77,6 +101,43 @@ function watch(registration: ServiceWorkerRegistration): void {
 }
 
 /**
+ * Loads the page again once it holds no change that is not stored: a
+ * service worker of another build answers for it now.
+ */
+function reloadWhenSaved(): void {
+  void whenSaved().then(() => location.reload());
+}
+
+/**
+ * For a page that no service worker answered for, when one has taken it
+ * on: loads the page again if the worker is of another build.
+ *
+ * It is of this page's build if it keeps the script that the app shell of
+ * the page loads, the one that index.html names. The build names a script
+ * after its content, and that one names the others, each of which names
+ * what it loads: a worker that keeps it keeps every script and stylesheet
+ * that this page can still ask for. Not so the file of this module, which
+ * stays the same when the code of a screen changes. And only the worker
+ * that answers now keeps anything: it has deleted the caches of the others
+ * before it took the page on, see the listener for "activate" in
+ * src/sw/sw.ts.
+ */
+async function takenOn(): Promise<void> {
+  const script = document.querySelector<HTMLScriptElement>(
+    'script[type="module"][src]',
+  );
+  let own: boolean;
+  try {
+    own = !script || (await keeps(caches, script.src));
+  } catch (error) {
+    // The browser does not let the page look. It goes on as before.
+    console.error("Service worker", error);
+    return;
+  }
+  if (!own) reloadWhenSaved();
+}
+
+/**
  * Starts the service worker, before the app renders. If a newer version of
  * the app was waiting, it takes over now and the page is loaded again:
  * the promise does not resolve then. It rejects if the browser refuses to
@@ -84,22 +145,25 @@ function watch(registration: ServiceWorkerRegistration): void {
  */
 export async function startServiceWorker(): Promise<void> {
   if (!container) return;
-  // A page that no service worker answers for was loaded from the server.
-  // The first worker that is installed takes it on, and that is no new
-  // version.
   let controlled = container.controller !== null;
   const replaced = new Promise<void>((resolve) => {
     container.addEventListener("controllerchange", () => {
       if (controlled) {
         resolve();
-        void whenSaved().then(() => location.reload());
+        reloadWhenSaved();
+      } else {
+        // The first worker that this page has. That is a new version only
+        // if it is not of the build that the server gave the page.
+        controlled = true;
+        void takenOn();
       }
-      controlled = true;
     });
   });
 
   const registration = await container.getRegistration();
-  if (controlled && registration?.waiting) {
+  // Not while a window holds changes that it could not store: it would
+  // have to stay as it is, under a worker of another build.
+  if (controlled && registration?.waiting && !(await unsavedInSomeWindow())) {
     registration.waiting.postMessage(activateMessage);
     const tookOver = await Promise.race([
       replaced.then(() => true),

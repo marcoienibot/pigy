@@ -18,7 +18,16 @@ export type Platform = {
   origin: string;
 };
 
-/** Every cache of the app has a name that begins with this. */
+/**
+ * Every cache of the app has a name that begins with this.
+ *
+ * A contract between the versions of the app, which must not change: a
+ * service worker that takes over deletes the caches of the versions
+ * before it, and it knows them by this prefix. Under another one it would
+ * leave them on the device for good, and a page that asks whether the
+ * worker keeps its build, with `keeps`, would be told of a build that
+ * nothing answers from.
+ */
 const prefix = "pigy-app-";
 
 const shell = "/";
@@ -63,6 +72,22 @@ export async function refusal(
   if (!html || !loads) return "the server did not answer with the app shell";
   const missing = loads.find((file) => !files.has(file));
   return missing && `the app shell is of another version: it loads ${missing}`;
+}
+
+/**
+ * Whether the service worker that answers for a page keeps the file at
+ * `url`. That is how a page finds out whether the worker is of its own
+ * build, with the script that it was started from: see
+ * src/lib/service-worker.ts. `caches` are those of the page. They hold one
+ * build of the app once a worker has taken over, because `activate` below
+ * has deleted the others by then.
+ */
+export async function keeps(
+  caches: Pick<Platform["caches"], "match">,
+  url: string,
+): Promise<boolean> {
+  // By its path, which is what `install` keeps a file under.
+  return (await caches.match(new URL(url).pathname)) !== undefined;
 }
 
 /**
