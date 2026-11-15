@@ -7,7 +7,7 @@ import {
   sandboxServers,
   type Workspace,
 } from "@pigy/core";
-import { createFileRoute, redirect } from "@tanstack/react-router";
+import { createFileRoute, redirect, useRouter } from "@tanstack/react-router";
 import { ArrowLeft, ChevronRight, Plus, Unplug, X } from "lucide-react";
 import {
   type FormEvent,
@@ -47,6 +47,7 @@ import {
   disconnectNotice,
   keepConnectOutcome,
   type Notice,
+  overChannels,
   selectChannels,
   takeConnectOutcome,
 } from "@/lib/channels";
@@ -131,6 +132,7 @@ function Channels() {
   const { workspace } = Route.useRouteContext();
   const { add, reconnect } = Route.useSearch();
   const navigate = Route.useNavigate();
+  const router = useRouter();
   const synced = useSynced(selectChannels);
   const offline = useSyncState().connection === "offline";
   const sandbox = workspace.environment === "sandbox";
@@ -158,16 +160,48 @@ function Channels() {
       ? connectNotice(said.outcome, connected)
       : disconnectNotice(said.disconnected, said.revoked));
 
+  const again = channels.find(({ id }) => id === reconnect);
+  const dialogOpen = add !== undefined || again !== undefined;
   // The dialog that connects an account is one step in the history of
   // the browser, whatever it shows. Opening it adds an entry, so that
-  // Back closes it. Its steps take the place of that entry, and so does
-  // closing it: Back then leads out of the dialog, and not through what
-  // it has shown.
-  const open = (search: ChannelsSearch) => void navigate({ search });
+  // Back closes it. Its steps take the place of that entry: Back leads
+  // out of the dialog, and not through what it has shown.
+  //
+  // The entry that this screen adds says that the screen is under it:
+  // `overChannels`. Closing the dialog then takes the entry back, and the
+  // history is as it was before the dialog. Putting the screen in the
+  // place of the entry would leave the screen in the history twice, once
+  // more for every time the dialog was closed, and Back would do nothing
+  // that often.
+  const open = (search: ChannelsSearch) =>
+    void navigate({ search, state: overChannels });
+  // Asked of the entry that the browser is on, which the screen follows a
+  // moment later.
+  const isOverScreen = () =>
+    router.history.location.state.overChannels === true;
   const step = (search: ChannelsSearch) =>
-    void navigate({ search, replace: true });
-  const close = () => step({});
-  const again = channels.find(({ id }) => id === reconnect);
+    void navigate({
+      search,
+      replace: true,
+      ...(isOverScreen() && { state: overChannels }),
+    });
+  // Back has been asked for and the dialog is still there: the browser
+  // goes back a moment after it is told to. A second "Cancel" or Escape in
+  // that moment must not go back a second time, out of the screen.
+  const leaving = useRef(false);
+  useEffect(() => {
+    if (!dialogOpen) leaving.current = false;
+  }, [dialogOpen]);
+  const close = () => {
+    // What is under an entry that this screen did not add is not known:
+    // the dialog was opened by a link from another screen, or by an
+    // address from outside the app. The screen takes the place of the
+    // entry there, so that Back leads to where the person came from.
+    if (!isOverScreen()) return step({});
+    if (leaving.current) return;
+    leaving.current = true;
+    router.history.back();
+  };
   const connectButton = useRef<HTMLButtonElement>(null);
 
   return (
@@ -241,7 +275,7 @@ function Channels() {
       </div>
 
       <ConnectDialog
-        open={add !== undefined || again !== undefined}
+        open={dialogOpen}
         network={again?.network ?? (add === true ? undefined : add)}
         again={again}
         workspace={workspace}

@@ -147,12 +147,13 @@ test("the empty Channels screen says what a channel is, and the choice of a netw
   await expect(page).toHaveURL("/channels");
 });
 
-test("the dialog that connects an account is one step back in the browser, whatever it has shown", async ({
+test("the dialog that connects an account is one step back in the browser, and closing it leaves the history as it was", async ({
   ownPage: page,
 }) => {
   await openScreen(page, "Channels");
   const dialog = page.getByRole("dialog");
   const connect = page.getByRole("button", { name: "Connect account" });
+  const heading = page.getByRole("heading", { level: 1 });
 
   // Two steps into the dialog, and one step back is out of it: not at
   // the choice of a network that the form came from.
@@ -163,20 +164,82 @@ test("the dialog that connects an account is one step back in the browser, whate
   await expect(dialog).toBeHidden();
   await expect(page).toHaveURL("/channels");
 
-  // Through the steps again, and out with "Cancel". Back does not lead
-  // into the dialog again, at any of its steps: the first Back changes
-  // nothing on the screen, and the next one leaves it.
+  // Through the steps again, and out with "Cancel". One Back then leaves
+  // the screen, as it did before the dialog was opened. A dialog that put
+  // the screen in the place of its entry when it closed would leave the
+  // screen in the history twice: this Back would change nothing, and the
+  // heading would go on saying "Channels".
   await connect.click();
   await dialog.getByRole("button", { name: "Mastodon" }).click();
   await dialog.getByRole("button", { name: "Networks" }).click();
   await dialog.getByRole("button", { name: "Mastodon" }).click();
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await expect(dialog).toBeHidden();
-  await page.goBack();
   await expect(page).toHaveURL("/channels");
-  await expect(dialog).toBeHidden();
   await page.goBack();
-  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Drafts");
+  await expect(heading).toHaveText("Drafts");
+
+  // Three times in and out, each time another way out. It is still one
+  // Back: an entry left behind by any of the three would be in its way.
+  await openScreen(page, "Channels");
+  await connect.click();
+  await expect(dialog).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await connect.click();
+  await dialog.getByRole("button", { name: "Mastodon" }).click();
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toBeHidden();
+  await connect.click();
+  await dialog.getByRole("button", { name: "Close" }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page).toHaveURL("/channels");
+  await page.goBack();
+  await expect(heading).toHaveText("Drafts");
+
+  // The entry of the dialog still says that the screen is under it when
+  // the page has been loaded again with the dialog open. Closing it goes
+  // back to the screen, and one Back leaves it. Kept in the memory of the
+  // page, that would be forgotten here, and the dialog would close the
+  // way it does on an address that was opened directly, which leaves an
+  // entry of the screen for this Back to stop at.
+  await openScreen(page, "Channels");
+  await connect.click();
+  await dialog.getByRole("button", { name: "Mastodon" }).click();
+  await page.reload();
+  await expect(dialog.getByLabel("Server")).toBeVisible();
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page).toHaveURL("/channels");
+  await page.goBack();
+  await expect(heading).toHaveText("Drafts");
+});
+
+test("closing the dialog on an address that was opened directly leads back to where the person came from", async ({
+  ownPage: page,
+}) => {
+  const heading = page.getByRole("heading", { level: 1 });
+  await expect(heading).toHaveText("Drafts");
+  // From the Drafts screen to the address of the dialog, as a bookmark or
+  // a link in a message leads to it: no button of the Channels screen
+  // opened it, and what is under its entry is not that screen.
+  await page.goto("/channels?add=true");
+  const dialog = page.getByRole("dialog", { name: "Connect an account" });
+  await expect(dialog).toBeVisible();
+
+  await page.keyboard.press("Escape");
+
+  // The person is on the screen that the dialog was over. A dialog that
+  // went back in the history here, as it does where the screen is under
+  // it, would have taken them off the screen: to the Drafts screen.
+  await expect(dialog).toBeHidden();
+  await expect(page).toHaveURL("/channels");
+  await expect(heading).toHaveText("Channels");
+  // And Back leads to where they came from. A dialog that added an entry
+  // when it closed would have this lead into the dialog again.
+  await page.goBack();
+  await expect(heading).toHaveText("Drafts");
+  await expect(page).toHaveURL("/");
 });
 
 test("cancelling at the consent page is put in words, and connects nothing", async ({
@@ -705,5 +768,22 @@ test("the command palette connects an account", async ({ ownPage: page }) => {
   await expect(dialog).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
-  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Channels");
+  const heading = page.getByRole("heading", { level: 1 });
+  await expect(heading).toHaveText("Channels");
+
+  // From the Channels screen itself, the dialog opens over the screen, as
+  // the button of the screen opens it. Closing it leaves the history as
+  // it was, and one Back leads to where the person was before: had the
+  // screen taken the place of the dialog's entry, as it does above, where
+  // the Drafts screen was under it, the screen would be in the history
+  // twice and this Back would change nothing.
+  await page.keyboard.press("ControlOrMeta+k");
+  await palette.getByRole("combobox").fill("connect");
+  await page.keyboard.press("Enter");
+  await expect(dialog).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(page).toHaveURL("/channels");
+  await page.goBack();
+  await expect(heading).toHaveText("Drafts");
 });

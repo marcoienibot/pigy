@@ -22,6 +22,33 @@ export function selectNoChannels(tables: Tables): boolean {
   return tables.channel.size === 0;
 }
 
+declare module "@tanstack/react-router" {
+  interface HistoryState {
+    /**
+     * On the entry of the dialog that connects an account: the entry under
+     * it in the history of the browser is the Channels screen without the
+     * dialog. See `overChannels`.
+     */
+    overChannels?: true;
+  }
+}
+
+/**
+ * What the entry of the dialog that connects an account says of itself in
+ * the history of the browser, when it was added on top of the Channels
+ * screen: by a button of that screen, or by the command palette while
+ * that screen was shown. Closing the dialog then goes back to the entry
+ * under it, which is the screen as it was, and leaves no second entry of
+ * the screen behind for Back to go through.
+ *
+ * An entry without it says nothing about what is under it: the dialog was
+ * opened by a link from another screen or from outside the app. The mark
+ * is in the state of the entry, which the browser keeps with it: it is
+ * still there when the page is loaded again, and it is not there in a tab
+ * that was given the address alone.
+ */
+export const overChannels = { overChannels: true } as const;
+
 /**
  * How a connection ended that has just brought the browser back, from the
  * moment the address said so until the Channels screen is on it. Kept

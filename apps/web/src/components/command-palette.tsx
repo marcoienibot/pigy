@@ -1,5 +1,9 @@
 import { environments } from "@pigy/core";
-import { useNavigate, useRouteContext } from "@tanstack/react-router";
+import {
+  useNavigate,
+  useRouteContext,
+  useRouter,
+} from "@tanstack/react-router";
 import {
   CalendarClock,
   Monitor,
@@ -26,6 +30,7 @@ import {
 } from "@/components/ui/command";
 import { Kbd } from "@/components/ui/kbd";
 import { environmentIcons } from "@/components/workspace-switch";
+import { overChannels } from "@/lib/channels";
 import { useNewDraft } from "@/lib/drafts";
 import {
   dialogIsOpen,
@@ -75,6 +80,7 @@ export function useOpenCommandPalette(): () => void {
 export function CommandPalette({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const navigate = useNavigate();
+  const router = useRouter();
   const newDraft = useNewDraft();
   const { theme: current, setTheme } = useTheme();
   const { workspace } = useRouteContext({ from: "/_app" });
@@ -128,7 +134,18 @@ export function CommandPalette({ children }: { children: ReactNode }) {
               <CommandItem
                 onSelect={run(
                   () =>
-                    void navigate({ to: "/channels", search: { add: true } }),
+                    void navigate({
+                      to: "/channels",
+                      search: { add: true },
+                      // On the Channels screen the dialog opens over the
+                      // screen, as its own button opens it, and closing
+                      // it leads back to the screen: the entry says so.
+                      // The palette does not open over a dialog, so the
+                      // screen is there without one.
+                      ...(router.history.location.pathname === "/channels" && {
+                        state: overChannels,
+                      }),
+                    }),
                 )}
               >
                 <UserPlus aria-hidden="true" />
