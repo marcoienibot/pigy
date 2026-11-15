@@ -10,7 +10,8 @@ import { type Network, networkSchema } from "./network/network.ts";
  *
  * 1. `POST /api/workspaces/<workspace ID>/connect` with a `ConnectRequest`
  *    answers with a `ConnectResponse`: the address to send the browser to.
- *    A refusal is a `ConnectError`.
+ *    A page reads it with `connectResponseSchemaFor(location.origin)`. A
+ *    refusal is a `ConnectError`.
  * 2. There the person consents, or not, and the network sends the browser
  *    back to pigy, which sends it on to `connectReturnPath` with the
  *    outcome in the query: `connectOutcomeSchema` describes it. That is
@@ -67,17 +68,43 @@ export const connectErrorSchema = errorResponseSchema.extend({
 
 export type ConnectError = z.infer<typeof connectErrorSchema>;
 
-/** The answer to a `ConnectRequest`. */
-export const connectResponseSchema = z.object({
-  /**
-   * Where to send the browser, as a navigation of the whole page: the
-   * network's own consent page, or in a sandbox workspace a simulated one
-   * that pigy serves.
-   */
-  url: z.string().min(1),
-});
+/**
+ * Whether `value` is an address that a browser may be sent to for a
+ * connection, by the app at `origin`: an HTTPS address, which is what the
+ * consent page of a network has, or an address of the app itself, which
+ * serves the simulated ones and is not reached over HTTPS in development.
+ * Anything else is not, such as a `javascript:` address, which a page that
+ * navigated to it would run.
+ */
+function isConsentAddress(value: string, origin: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.origin === origin;
+  } catch {
+    return false;
+  }
+}
 
-export type ConnectResponse = z.infer<typeof connectResponseSchema>;
+/**
+ * The answer to a `ConnectRequest`, as the app at `origin` gives it and as
+ * a page of that app reads it: `location.origin` there.
+ */
+export function connectResponseSchemaFor(origin: string) {
+  return z.object({
+    /**
+     * Where to send the browser, as a navigation of the whole page: the
+     * network's own consent page, or in a sandbox workspace a simulated one
+     * that pigy serves. An HTTPS address, or one of the app at `origin`.
+     */
+    url: z.string().refine((value) => isConsentAddress(value, origin), {
+      error: "Not an address to send a browser to",
+    }),
+  });
+}
+
+export type ConnectResponse = z.infer<
+  ReturnType<typeof connectResponseSchemaFor>
+>;
 
 /**
  * The path that the browser is sent to when a connection has ended, however

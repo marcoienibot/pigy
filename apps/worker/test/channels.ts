@@ -3,7 +3,7 @@ import { env } from "cloudflare:workers";
 import {
   type ConnectOutcome,
   connectOutcomeSchema,
-  connectResponseSchema,
+  connectResponseSchemaFor,
   connectReturnPath,
   disconnectResponseSchema,
   type Row,
@@ -47,7 +47,11 @@ export async function consentUrl(
     identifier,
   });
   expect(response.status).toBe(200);
-  return connectResponseSchema.parse(await response.json()).url;
+  // Read as a page of the app reads it, which is at this address in the
+  // tests.
+  return connectResponseSchemaFor("https://pigy.test").parse(
+    await response.json(),
+  ).url;
 }
 
 /** How a connection ended, from where the callback sends the browser. */

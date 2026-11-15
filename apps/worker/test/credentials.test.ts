@@ -1,4 +1,4 @@
-import { sandboxMastodonDomain } from "@pigy/core";
+import { connectResponseSchemaFor, sandboxMastodonDomain } from "@pigy/core";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { mastodonApps, oauthStates, sessions } from "../src/db/schema.ts";
 import { createVault } from "../src/vault.ts";
@@ -547,10 +547,13 @@ describe("a build for development", () => {
     });
 
     expect(response.status).toBe(200);
-    // The consent page is at the address that the app is reached at.
-    expect(new URL((await response.json<{ url: string }>()).url).origin).toBe(
-      local,
+    // The consent page is at the address that the app is reached at. That
+    // is not an HTTPS address here, and a page of the app at that address
+    // takes it all the same.
+    const { url } = connectResponseSchemaFor(local).parse(
+      await response.json(),
     );
+    expect(new URL(url).origin).toBe(local);
     // Sealed with the key from the repository, which version 0 marks.
     const [pending] = await test.db.select().from(oauthStates);
     expect(pending?.pending.startsWith("0.")).toBe(true);

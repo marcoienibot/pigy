@@ -4,7 +4,7 @@ import {
   channelLimits,
   connectCallbackPath,
   connectRequestSchema,
-  connectResponseSchema,
+  connectResponseSchemaFor,
   connectReturnPath,
   disconnectResponseSchema,
   idSchema,
@@ -186,6 +186,11 @@ export function channelRoutes(dependencies: AppDependencies): Hono<AppEnv> {
         // Anything else is the trouble of a server that may be fine later.
         throw new HTTPException(502, { message: error.message });
       });
+    // Checked before anything is kept of the connection: a page of the
+    // app sends the browser to this address.
+    const answer = connectResponseSchemaFor(origin).parse({
+      url: connection.reach.browserUrl(start.url, origin),
+    });
     await keepPending(
       drizzle(c.env.DB),
       vault,
@@ -198,11 +203,7 @@ export function channelRoutes(dependencies: AppDependencies): Hono<AppEnv> {
       },
       now(),
     );
-    return c.json(
-      connectResponseSchema.parse({
-        url: connection.reach.browserUrl(start.url, origin),
-      }),
-    );
+    return c.json(answer);
   });
 
   app.delete(
