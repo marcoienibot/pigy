@@ -31,8 +31,9 @@ export const connectRequestSchema = z.strictObject({
   network: networkSchema,
   /**
    * What the person typed to say where their account lives, on the networks
-   * that ask: the domain of the instance on Mastodon. Left out on the
-   * others.
+   * that ask: the domain of the instance on Mastodon, the handle on
+   * Bluesky. Left out on the others. A sandbox has what
+   * `sandboxIdentifiers` says.
    */
   identifier: z.string().max(maxConnectIdentifierLength).optional(),
 });
@@ -44,10 +45,11 @@ export type ConnectRequest = z.infer<typeof connectRequestSchema>;
  * is written for the person, and whose `field` says which input of a form
  * the message belongs to.
  *
- * - 400 with the field `identifier`: what they typed leads to no server
- *   that pigy can connect to. It is not a domain, the server is not one
- *   that pigy can post to, or, in a sandbox, it is not the simulated server
- *   of the sandbox: the message names that one. Trying again with the same
+ * - 400 with the field `identifier`: what they typed leads to no server or
+ *   account that pigy can connect to. It is not a domain or a handle, the
+ *   server is not one that pigy can post to, no account has the handle,
+ *   or, in a sandbox, the world of the sandbox does not have it: the
+ *   message says what it has. Trying again with the same
  *   text gives the same answer. The message goes next to the field. A
  *   network that asks for nothing has no such field, and a form shows the
  *   message with the form as a whole.
@@ -57,7 +59,8 @@ export type ConnectRequest = z.infer<typeof connectRequestSchema>;
  * - 502: the server of the network cannot be reached, or is in trouble.
  *   Trying again later can work. The message names the server, and goes
  *   with the form as a whole.
- * - 503: this pigy is not set up to connect accounts.
+ * - 503: this pigy is not set up to connect accounts, or the accounts of
+ *   the network: it lacks a key that it needs for them.
  *
  * And the answers of every route: 401 for somebody who is not signed in,
  * 404 for a workspace that is not theirs.
