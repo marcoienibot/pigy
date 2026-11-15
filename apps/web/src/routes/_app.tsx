@@ -105,8 +105,8 @@ function App() {
 
 /**
  * Shown when the app cannot start: nobody is signed in on this device and
- * the server cannot be asked, as without a connection, or a screen failed
- * and has no error screen of its own.
+ * the server cannot be asked, as without a connection, or answers with an
+ * error. Or a screen failed and has no error screen of its own.
  */
 function Failed({ error }: ErrorComponentProps) {
   const router = useRouter();

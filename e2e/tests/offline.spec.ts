@@ -10,10 +10,12 @@ import {
 import { expect, signIn, test } from "../fixtures.ts";
 
 // The app on a device without a connection: what the service worker has to
-// do for it to start, and what the app says where it cannot. Here the
-// whole browser is offline, with `context.setOffline()`, and not only the
-// app's own connection as in sync-drafts.spec.ts: the page, its scripts
-// and its styles have to come from the device.
+// do for it to start, and what the app says where it cannot. Where a test
+// has no connection, the whole browser is offline, with
+// `context.setOffline()`, and not only the app's own connection as in
+// sync-drafts.spec.ts: the page, its scripts and its styles have to come
+// from the device. Two tests are about what is not a missing connection: a
+// server that answers with an error, and a copy that was never filled.
 
 test("the service worker answers for the app once it is installed", async ({
   signedInPage: page,
@@ -173,6 +175,57 @@ test("somebody who is not signed in is told that pigy needs a connection", async
   // The connection is back, and nobody has to press "Try again".
   await context.setOffline(false);
   await expect(signInLink).toBeVisible();
+});
+
+test("an error of the server is not taken for a missing connection", async ({
+  page,
+}) => {
+  // The server answers, and what it says is that something went wrong.
+  // Nothing that the device could wait for changes that.
+  let failing = true;
+  await page.route("**/api/me", (route) =>
+    failing
+      ? route.fulfill({
+          status: 500,
+          contentType: "application/json",
+          body: JSON.stringify({
+            error: "UnexpectedError",
+            message: "The server made a mistake",
+          }),
+        })
+      : route.fallback(),
+  );
+
+  // The sign-in page says so, and still offers the way to Google: that is
+  // a request to the server like any other, and may well work.
+  await page.goto("/sign-in");
+  await expect(page.getByRole("status")).toContainText(
+    "Something went wrong on the server",
+  );
+  await expect(
+    page.getByRole("link", { name: "Sign in with Google" }),
+  ).toBeVisible();
+
+  // The app, where it starts, says what the server said, and not that it
+  // cannot reach it: it would then wait for a connection that is there.
+  await page.goto("/");
+  await expect(
+    page.getByRole("heading", { name: "Something went wrong" }),
+  ).toBeVisible();
+  await expect(page.getByRole("main")).toContainText(
+    "The server made a mistake",
+  );
+
+  // The server has recovered. The person tries again, and is where
+  // somebody who is not signed in belongs, without a word about the
+  // server.
+  failing = false;
+  await page.getByRole("button", { name: "Try again" }).click();
+  await expect(page).toHaveURL("/sign-in");
+  await expect(
+    page.getByRole("link", { name: "Sign in with Google" }),
+  ).toBeVisible();
+  await expect(page.getByRole("status")).toHaveCount(0);
 });
 
 test("the page that says that pigy cannot start goes on by itself when the connection is back", async ({

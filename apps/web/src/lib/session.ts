@@ -4,7 +4,13 @@ import {
   type Workspace,
   workspaceListResponseSchema,
 } from "@pigy/core";
-import { ApiError, fetchMe, fetchWorkspaces, signOut } from "@/lib/api";
+import {
+  ApiError,
+  fetchMe,
+  fetchWorkspaces,
+  signOut,
+  unanswered,
+} from "@/lib/api";
 import { forgetTabChoice, forgetWorkspaceChoice } from "@/lib/workspace";
 import { countUnsynced, deleteCopies } from "@/sync/indexed-db";
 import { closeWorkspaceSync } from "@/sync/workspace-sync";
@@ -53,7 +59,10 @@ function write({ me, workspaces }: Session, ended = false): void {
   localStorage.setItem(storageKey, JSON.stringify({ me, workspaces, ended }));
 }
 
-/** Asks the server. Null if nobody is signed in, an error if it is silent. */
+/**
+ * Asks the server. Null if nobody is signed in, and an error if it is
+ * silent or says that something went wrong.
+ */
 async function fetchSession(signal?: AbortSignal): Promise<Session | null> {
   const me = await fetchMe(signal);
   if (!me) return null;
@@ -68,9 +77,10 @@ async function fetchSession(signal?: AbortSignal): Promise<Session | null> {
 
 /**
  * Why `loadSession` has no answer: this device does not know who is
- * signed in, and the server did not say. That is the start without a
- * connection of somebody who has signed out, or who has never signed in on
- * this device.
+ * signed in, and no answer came from the server. That is the start without
+ * a connection of somebody who has signed out, or who has never signed in
+ * on this device. It is not a server that answers with an error: nothing
+ * that the device can wait for cures that.
  */
 export class SessionUnknown extends Error {
   constructor(cause: unknown) {
@@ -96,7 +106,8 @@ export function onSessionChange(listener: () => void): void {
  * server is asked in the background whether the device is still right: see
  * `checkSessionSoon`. If this device does not know, the server is asked
  * whatever `check` says, and nothing is shown before it has answered. If
- * it does not answer, this throws `SessionUnknown`.
+ * it does not answer, this throws `SessionUnknown`, and if it answers that
+ * something went wrong, the error that says so.
  */
 export async function loadSession(
   signal: AbortSignal,
@@ -116,7 +127,9 @@ export async function loadSession(
     if (stored) return null;
     // The router has given this navigation up, and wants no answer.
     if (signal.aborted) throw error;
-    throw new SessionUnknown(error);
+    // Only a request that got no answer says that the server cannot be
+    // reached. An answer that is an error is shown as what it is.
+    throw unanswered(error) ? new SessionUnknown(error) : error;
   }
   if (!fresh) return null;
   await adopt(fresh);

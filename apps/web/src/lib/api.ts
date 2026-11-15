@@ -31,7 +31,22 @@ export class ApiError extends Error {
   }
 }
 
-/** Calls the API and throws an `ApiError` unless it answers with success. */
+/**
+ * Whether a call to the API failed because no answer came: the device has
+ * no connection, or the server cannot be reached from it. `fetch` fails
+ * with a `TypeError` then, as the Fetch standard has it, and with nothing
+ * else. Every other failure is an answer: a status that says that
+ * something went wrong at the server, or a body that is not what the API
+ * sends. A connection that comes back does not cure those.
+ */
+export function unanswered(error: unknown): boolean {
+  return error instanceof TypeError;
+}
+
+/**
+ * Calls the API and throws an `ApiError` unless it answers with success.
+ * What `fetch` throws is passed on as it is: `unanswered` goes by it.
+ */
 async function request(
   path: string,
   init: {
