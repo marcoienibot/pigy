@@ -640,7 +640,9 @@ export async function authorize(
       consentPage({
         service,
         // The address of the client, not the name it gives itself: anybody
-        // can call their client anything.
+        // can call their client anything. The specification of atproto:
+        // "The full client_id URL should be displayed by default", and the
+        // name only for a client that the server has chosen to trust.
         client: pushed.clientId,
         scopes: pushed.scopes,
         accounts,

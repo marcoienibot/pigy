@@ -51,7 +51,8 @@ export function simulationPage({
 <title>${escapeHtml(title)}</title>
 <style>
   :root { color-scheme: light dark; font: 14px/1.5 system-ui, sans-serif; }
-  body { margin: 0; padding: 16px; }
+  /* An address or a scope is one long word, which must not make a page wider than a phone. */
+  body { margin: 0; overflow-wrap: anywhere; padding: 16px; }
   main { margin: 0 auto; max-width: 400px; }
   h1 { font-size: 18px; margin: 24px 0 4px; }
   p { margin: 0 0 16px; }
