@@ -7,12 +7,14 @@ import {
   draftRow,
   draftRows,
   editor,
+  expectElsewhere,
   expectSync,
   expectWorkspace,
   grace,
   localData,
   openScreen,
   switchTo,
+  workspaceSwitch,
   writeDraft,
 } from "../app.ts";
 import { expect, type Page, test } from "../fixtures.ts";
@@ -283,9 +285,11 @@ test("signing out counts the changes that were not synced in the workspace that 
   await writeDraft(page, isMobile, "Only on this device");
   await expectSync(page, "Offline · 2 changes");
 
-  // Live has nothing that waits, and says so.
+  // Live has nothing that waits, and says so. That is not all there is to
+  // say of this window, so the switch says what waits in the sandbox.
   await switchTo(page, "Live");
   await expectSync(page, "Offline");
+  await expectElsewhere(page, "Sandbox: Offline · 2 changes");
   await askToSignOut(page);
 
   const dialog = page.getByRole("alertdialog");
@@ -303,9 +307,11 @@ test("a change that could not be saved is not lost when the workspace changes, a
   await writeDraft(page, isMobile, "Written while there was room");
   await expectSync(page, "Synced");
   // Live is looked at once while the device can still write: that is when
-  // its copy is made.
+  // its copy is made. The sandbox holds nothing that waits, and the switch
+  // says nothing about it.
   await switchTo(page, "Live");
   await expectSync(page, "Synced");
+  await expectElsewhere(page, "");
   await switchTo(page, "Sandbox");
 
   // The device has no room left, and the next change exists only in the
@@ -317,9 +323,19 @@ test("a change that could not be saved is not lost when the workspace changes, a
   await backToList(page, isMobile);
 
   // Nothing is wrong with live, which is what the indicator is about now.
+  // "Synced" is not the whole story of this window, though: closing it
+  // would lose the change of the sandbox, and the switch says so.
   await switchTo(page, "Live");
   await expectSync(page, "Synced");
-  // Signing out would still lose the change of the sandbox.
+  await expectElsewhere(page, "Sandbox: Not saved · 1 change");
+  // The words are also where a phone has room for them: at the sandbox, in
+  // the choice that the switch opens.
+  await workspaceSwitch(page).click();
+  await expect(
+    page.getByRole("menuitemradio", { name: /^Sandbox/ }),
+  ).toContainText("Not saved · 1 change");
+  await page.keyboard.press("Escape");
+  // Signing out would lose it too.
   await askToSignOut(page);
   const dialog = page.getByRole("alertdialog");
   await expect(dialog).toContainText("1 change has not been synced");
@@ -334,10 +350,54 @@ test("a change that could not be saved is not lost when the workspace changes, a
   await editor(page).press("End");
   await page.keyboard.type(", and then some");
   await expectSync(page, "Synced");
+  // Now that nothing would be lost, the page goes without a question from
+  // the browser. One that it asked would be noted here, before the page
+  // is loaded again.
+  const questions: string[] = [];
+  page.on("dialog", (dialog) => {
+    questions.push(dialog.type());
+    void dialog.accept();
+  });
   await page.reload();
   await expect(editor(page)).toHaveValue(
     "Written with no room left, and then some",
   );
+  expect(questions).toEqual([]);
+});
+
+test("the browser asks before a window is closed that holds an unsaved change of the workspace that is not on screen", async ({
+  ownPage: page,
+  isMobile,
+}) => {
+  await writeDraft(page, isMobile, "Written while there was room");
+  await expectSync(page, "Synced");
+  // Live is looked at once while the device can still write: that is when
+  // its copy is made.
+  await switchTo(page, "Live");
+  await expectSync(page, "Synced");
+  await switchTo(page, "Sandbox");
+  await breakStorage(page);
+  await draftRow(page, "Written while there was room").click();
+  await editor(page).fill("Written with no room left");
+  await expectSync(page, "Not saved · 1 change");
+  await backToList(page, isMobile);
+  // On to live, where nothing is unsaved and the indicator says so.
+  await switchTo(page, "Live");
+  await expectSync(page, "Synced");
+
+  // The tab is closed, as a person closes it: the page has its say first.
+  // It asks, with the question of the browser, and the person stays.
+  const asked = page.waitForEvent("dialog");
+  await page.close({ runBeforeUnload: true });
+  const question = await asked;
+  expect(question.type()).toBe("beforeunload");
+  await question.dismiss();
+
+  // The window is still there, and so is what only it holds.
+  await switchTo(page, "Sandbox");
+  await expectSync(page, "Not saved · 1 change");
+  await draftRow(page, "Written with no room left").click();
+  await expect(editor(page)).toHaveValue("Written with no room left");
 });
 
 test("signing out counts a change that another tab could not save in the other workspace", async ({

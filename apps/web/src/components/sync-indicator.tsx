@@ -26,7 +26,8 @@ type Description = {
   reload?: true;
 };
 
-function describe({
+/** How sync is getting on in a workspace, in words for the person. */
+export function describeSync({
   connection,
   pending,
   unsaved,
@@ -99,7 +100,8 @@ function describe({
   }
 }
 
-const tones: Record<Description["tone"], string> = {
+/** The colour of the dot, also where the switch has one. */
+export const syncTones: Record<Description["tone"], string> = {
   good: "bg-emerald-500",
   busy: "bg-sky-500 motion-safe:animate-pulse",
   waiting: "bg-amber-500",
@@ -107,16 +109,17 @@ const tones: Record<Description["tone"], string> = {
 };
 
 /**
- * How sync is getting on, in a dot and a few words, with the rest on hover
- * or tap. In the sidebar it shows the words. In the header of a phone it is
- * only the dot.
+ * How sync is getting on in the workspace on screen, in a dot and a few
+ * words, with the rest on hover or tap. In the sidebar it shows the words.
+ * In the header of a phone it is only the dot. What the other workspace
+ * has to say is at the switch: `WorkspaceSwitch`.
  */
 export function SyncIndicator({
   placement,
 }: {
   placement: "sidebar" | "header";
 }) {
-  const { label, detail, tone, reload } = describe(useSyncState());
+  const { label, detail, tone, reload } = describeSync(useSyncState());
   const inSidebar = placement === "sidebar";
 
   return (
@@ -133,7 +136,7 @@ export function SyncIndicator({
       >
         <span
           aria-hidden="true"
-          className={cn("size-2 shrink-0 rounded-full", tones[tone])}
+          className={cn("size-2 shrink-0 rounded-full", syncTones[tone])}
         />
         {inSidebar && <span className="truncate">{label}</span>}
       </PopoverTrigger>

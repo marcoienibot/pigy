@@ -1,8 +1,13 @@
-import { type Environment, type Workspace, workspaceToShow } from "@pigy/core";
+import {
+  type Environment,
+  type SyncState,
+  type Workspace,
+  workspaceToShow,
+} from "@pigy/core";
 import { useRouteContext, useRouter } from "@tanstack/react-router";
-import { useCallback } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 import { toast } from "sonner";
-import { workspaceSync } from "@/sync/workspace-sync";
+import { onSyncChange, openStore, workspaceSync } from "@/sync/workspace-sync";
 
 /**
  * Which of the person's two workspaces the app shows: live, which posts to
@@ -120,4 +125,26 @@ export function useSwitchWorkspace(): (environment: Environment) => void {
     },
     [router, me, workspace, workspaces],
   );
+}
+
+/**
+ * The workspace that this tab does not show, and how sync is getting on in
+ * it. Undefined while the tab does not sync that workspace: it holds
+ * nothing of it then.
+ *
+ * A tab goes on syncing a workspace that it has shown, so it can hold
+ * changes of the one that is not on screen: some that are not sent yet, and
+ * some that it could not store, which exist in its memory alone. The sync
+ * indicator is about the workspace on screen, and this is how the shell
+ * finds out what it leaves unsaid.
+ */
+export function useOtherWorkspaceSync():
+  | { workspace: Workspace; sync: SyncState }
+  | undefined {
+  const { me, workspace, workspaces } = useRouteContext({ from: "/_app" });
+  const other = workspaces.find(({ id }) => id !== workspace.id);
+  const sync = useSyncExternalStore(onSyncChange, () =>
+    other ? openStore(me.user.id, other.id)?.getState() : undefined,
+  );
+  return other && sync ? { workspace: other, sync } : undefined;
 }

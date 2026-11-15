@@ -68,6 +68,60 @@ function forEveryTab(message: TabMessage): boolean {
   return message.type === "unsaved" || message.type === "unsaved?";
 }
 
+/** The stores that this tab has open, by the name of their copy. */
+const stores = new Map<string, SyncStore>();
+const watchers = new Set<() => void>();
+
+/**
+ * How many changes this tab holds that it could not store, in every
+ * workspace that it syncs. They are in its memory and nowhere else, so they
+ * are gone when the page is: closed, loaded again or left for another one.
+ */
+export function unsavedInTab(): number {
+  let count = 0;
+  for (const store of stores.values()) count += store.getState().unsaved;
+  return count;
+}
+
+/** Has the browser ask the person whether the page may go. */
+function ask(event: BeforeUnloadEvent): void {
+  event.preventDefault();
+  // What browsers went by before they went by the line above.
+  event.returnValue = true;
+}
+
+/** A store of this tab has changed, or the tab has another set of them. */
+function changed(): void {
+  // The browser asks before the page goes for as long as the tab holds
+  // what that would lose, whichever workspace is on screen. The listener
+  // is there only for that long: a browser may not put a page aside to
+  // come back to while it listens for this.
+  if (unsavedInTab() > 0) window.addEventListener("beforeunload", ask);
+  else window.removeEventListener("beforeunload", ask);
+  for (const watcher of [...watchers]) watcher();
+}
+
+/**
+ * The store of a workspace, if this tab syncs it and has opened its copy.
+ * For what looks at a workspace that is not on screen: asking does not
+ * start a sync.
+ */
+export function openStore(
+  userId: string,
+  workspaceId: string,
+): SyncStore | undefined {
+  return stores.get(copyName(userId, workspaceId));
+}
+
+/**
+ * Calls `listener` when a store of this tab has changed, and when the tab
+ * has opened or closed one. Returns how to stop.
+ */
+export function onSyncChange(listener: () => void): () => void {
+  watchers.add(listener);
+  return () => watchers.delete(listener);
+}
+
 async function open(
   userId: string,
   workspaceId: string,
@@ -148,6 +202,9 @@ async function open(
   window.addEventListener("online", online);
   window.addEventListener("pagehide", leaving);
   document.addEventListener("visibilitychange", visible);
+  stores.set(name, store);
+  store.subscribe(changed);
+  changed();
 
   return {
     store,
@@ -157,7 +214,10 @@ async function open(
       document.removeEventListener("visibilitychange", visible);
       waiting.abort();
       connection.stop();
+      // Which also ends what the store tells `changed`.
       store.close();
+      if (stores.get(name) === store) stores.delete(name);
+      changed();
       sharers.close();
       everyTab.close();
       storage.close();
@@ -218,11 +278,19 @@ export function syncUnsent(userId: string, workspaces: Workspace[]): void {
     .catch(report);
 }
 
-/** Stops every sync of this tab. */
+/**
+ * Stops every sync of this tab. For when the tab is done with what it
+ * holds: the person has signed out, here or in another tab, or the session
+ * has ended. Whoever calls this goes on to load the page again, and the
+ * browser does not ask about that: the stores no longer count, from this
+ * moment and not from the later one at which each of them has closed.
+ */
 export function closeWorkspaceSync(): void {
   for (const sync of syncs.values()) {
     void sync.then(({ close }) => close()).catch(() => {});
   }
   syncs.clear();
+  stores.clear();
+  changed();
   lookedForUnsent = false;
 }

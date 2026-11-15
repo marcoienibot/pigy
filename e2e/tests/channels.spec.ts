@@ -1,7 +1,12 @@
 import {
+  backToList,
+  breakStorage,
   channelRows,
   connectionOf,
   connectSimulated,
+  draftRow,
+  editor,
+  expectElsewhere,
   expectSync,
   expectWorkspace,
   grace,
@@ -9,6 +14,7 @@ import {
   openScreen,
   sandboxServer,
   switchTo,
+  writeDraft,
 } from "../app.ts";
 import { expect, type Page, signIn, test } from "../fixtures.ts";
 
@@ -238,6 +244,46 @@ test("a server in trouble and a pigy without keys are said at the form, not at t
     "This pigy is not set up to connect accounts. Whoever runs it has to give it the key",
   );
   await expect(server).not.toHaveAttribute("aria-invalid");
+});
+
+test("leaving for a network asks first while the window holds a change that it could not save", async ({
+  ownPage: page,
+  isMobile,
+}) => {
+  // The change is one of live, and the account is connected in the
+  // sandbox: what would be lost is not on screen then.
+  await switchTo(page, "Live");
+  await writeDraft(page, isMobile, "Written while there was room");
+  await expectSync(page, "Synced");
+  await breakStorage(page);
+  await draftRow(page, "Written while there was room").click();
+  await editor(page).fill("Written with no room left");
+  await expectSync(page, "Not saved · 1 change");
+  await backToList(page, isMobile);
+  await switchTo(page, "Sandbox");
+  await openScreen(page, "Channels");
+  await page.getByRole("button", { name: "Connect account" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: "Mastodon" }).click();
+  const next = dialog.getByRole("button", { name: "Continue to Mastodon" });
+
+  // The consent page is another page, and this one would be gone with
+  // what it holds. The browser asks, and the person stays.
+  const asked = page.waitForEvent("dialog");
+  await next.click();
+  const question = await asked;
+  expect(question.type()).toBe("beforeunload");
+  await question.dismiss();
+
+  // The form is theirs again, and not left waiting for a page that does
+  // not come.
+  await expect(next).toBeEnabled();
+  await expect(page).toHaveURL(/\/channels\?add=mastodon$/);
+  // The change is still in the window. The dialog is closed first: it
+  // hides the switch.
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toBeHidden();
+  await expectElsewhere(page, "Live: Not saved · 1 change");
 });
 
 test("disconnecting asks first, and says that the network took the access back", async ({

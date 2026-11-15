@@ -52,6 +52,7 @@ import { checkSession } from "@/lib/session";
 import { cn } from "@/lib/utils";
 import { showWorkspace } from "@/lib/workspace";
 import { useSynced, useSyncState } from "@/sync/react";
+import { unsavedInTab } from "@/sync/workspace-sync";
 
 type ChannelsSearch = {
   /**
@@ -571,6 +572,10 @@ function ConnectForm({
       // In place of this page, so that the way back from the network does
       // not lead into a form that has been sent.
       location.replace(url);
+      // While this window holds changes that it could not save, the
+      // browser asks first, and the person may stay: the form is theirs
+      // again then.
+      if (unsavedInTab() > 0) setBusy(false);
     } catch (failure) {
       setBusy(false);
       const next = refusalOf(failure, asked !== undefined);

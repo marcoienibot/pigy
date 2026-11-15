@@ -57,6 +57,15 @@ export async function switchTo(
   await expectWorkspace(page, name);
 }
 
+/**
+ * Waits until the switch says `note` of the workspace that the page does
+ * not show: what this window holds of it that is not saved or not sent, in
+ * the words of the sync indicator. With "", until it says nothing.
+ */
+export async function expectElsewhere(page: Page, note: string): Promise<void> {
+  await expect(workspaceSwitch(page)).toHaveAccessibleDescription(note);
+}
+
 /** The rows of the list of channels. */
 export function channelRows(page: Page): Locator {
   return page.getByRole("list", { name: "Channels" }).getByRole("listitem");
