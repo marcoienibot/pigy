@@ -14,6 +14,12 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { Kbd } from "@/components/ui/kbd";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import type { Channel } from "@/lib/channels";
 import { useShortcuts } from "@/lib/keyboard";
 import { networkInfo } from "@/lib/networks";
@@ -146,21 +152,28 @@ function Sent() {
             )}
           </EmptyState>
         ) : (
-          <ol
-            ref={list}
-            aria-label="Sent posts"
-            className="flex flex-col gap-3"
-          >
-            {posts.map((post) => (
-              <SentItem
-                key={post.id}
-                post={post}
-                sandbox={sandbox}
-                wanted={post.id === wanted}
-                onDelete={() => askToDelete(post)}
-              />
-            ))}
-          </ol>
+          <>
+            <ol
+              ref={list}
+              aria-label="Sent posts"
+              className="flex flex-col gap-3"
+            >
+              {posts.map((post) => (
+                <SentItem
+                  key={post.id}
+                  post={post}
+                  sandbox={sandbox}
+                  wanted={post.id === wanted}
+                  onDelete={() => askToDelete(post)}
+                />
+              ))}
+            </ol>
+            {/* Where the keys are said: a phone has none. */}
+            <p className="hidden items-center justify-center gap-1.5 text-xs text-muted-foreground md:flex">
+              <Kbd>↑</Kbd>
+              <Kbd>↓</Kbd> move through the posts ·<Kbd>⌫</Kbd> deletes one
+            </p>
+          </>
         )}
       </div>
       <DeleteDialog
@@ -235,15 +248,25 @@ function SentItem({
             )}
           </p>
           {canDelete(post) && (
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label="Delete post"
-              className="-mt-1 -mr-1.5"
-              onClick={onDelete}
-            >
-              <Trash2 aria-hidden="true" />
-            </Button>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="Delete post"
+                    className="-mt-1 -mr-1.5"
+                    onClick={onDelete}
+                  >
+                    <Trash2 aria-hidden="true" />
+                  </Button>
+                }
+              />
+              <TooltipContent>
+                Delete from pigy
+                <Kbd>⌫</Kbd>
+              </TooltipContent>
+            </Tooltip>
           )}
         </header>
         <p className="flex flex-wrap items-center gap-x-2 px-3 pt-1 pb-2 text-xs text-muted-foreground">
