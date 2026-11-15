@@ -58,6 +58,11 @@ async function boundedText(
  * took too long. Whether the request arrived is unknown then. An adapter
  * that sends what must not happen twice sees to that itself, the way
  * `Provider.publishStep` says.
+ *
+ * Only a failure of the network is taken for one. Whatever else `fetch`
+ * throws is thrown on as it is: it is a bug, or a check that failed, in
+ * whatever stands behind `fetch`, and saying that a host could not be
+ * reached would hide it.
  */
 export async function send(
   fetch: Fetch,
@@ -66,21 +71,31 @@ export async function send(
   init: RequestInit,
   { timeoutMs, maxBytes }: HttpLimits,
 ): Promise<HttpAnswer> {
+  const unreachable = (cause: unknown) =>
+    new ProviderError("retry", `${host} could not be reached.`, { cause });
+  const timeout = AbortSignal.timeout(timeoutMs);
   let response: Response;
-  let text: string | null;
   try {
     response = await fetch(url, {
       ...init,
       // A redirect is not followed: it could lead anywhere, and the request
       // carries credentials.
       redirect: "manual",
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: timeout,
     });
+  } catch (cause) {
+    // What a `fetch` that gets no answer fails with: a TypeError, and when
+    // the time is up, whatever the runtime makes of the signal.
+    if (!(cause instanceof TypeError) && !timeout.aborted) throw cause;
+    throw unreachable(cause);
+  }
+  let text: string | null;
+  try {
     text = await boundedText(response, maxBytes);
   } catch (cause) {
-    throw new ProviderError("retry", `${host} could not be reached.`, {
-      cause,
-    });
+    // An answer that breaks off on the way, or takes too long. Nothing
+    // else makes the reading of a body fail.
+    throw unreachable(cause);
   }
   const { status, headers } = response;
   if (text === null) {

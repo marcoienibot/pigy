@@ -1,6 +1,7 @@
+import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { errorResponseSchema, sandboxMastodonDomain } from "@pigy/core";
-import { simulationNotice } from "@pigy/simulators/world";
+import { createWorld, simulationNotice } from "@pigy/simulators/world";
 import { describe, expect, it } from "vitest";
 import { mastodonApps } from "../src/db/schema.ts";
 import { worldFetch } from "../src/sim/world.ts";
@@ -226,6 +227,82 @@ describe("where a workspace reaches the networks", () => {
         id: ofAdmin.sandbox,
       })(`https://${sandboxMastodonDomain}/api/v2/instance`),
     ).rejects.toThrow("is another workspace's");
+  });
+});
+
+describe("what goes wrong inside a simulated world", () => {
+  it("is not taken for a server that is out of reach when the world is somebody else's", async () => {
+    const { admin, ofAdmin } = await start();
+    const errors = expectErrors();
+    // What a mistake in the Worker, or in its data, would lead to: the
+    // world under the name of the admin's sandbox belongs to another
+    // person.
+    await runInDurableObject(
+      env.SIM_WORLD.getByName(ofAdmin.sandbox),
+      (_, state) => {
+        state.storage.kv.put("object/workspace", {
+          id: ofAdmin.sandbox,
+          ownerId: "somebody-else",
+        });
+      },
+    );
+
+    const response = await startConnect(admin, ofAdmin.sandbox, {
+      network: "mastodon",
+      identifier: sandboxMastodonDomain,
+    });
+
+    // A failure of pigy, and not the 502 of a server to try again later:
+    // the check is there to be heard of.
+    expect(response.status).toBe(500);
+    expect(errorResponseSchema.parse(await response.json())).toEqual({
+      error: "UnexpectedError",
+      message: "Something went wrong",
+    });
+    expect(errors).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        message: `The simulated world of workspace ${ofAdmin.sandbox} is another workspace's`,
+      }),
+    );
+  });
+
+  it("is a server out of reach when a simulated server loses its answer", async () => {
+    const { test, admin, ofAdmin } = await start();
+    expectErrors();
+    // The fault that a person arms in their sandbox to see what pigy does
+    // when a connection breaks.
+    await runInDurableObject(
+      env.SIM_WORLD.getByName(ofAdmin.sandbox),
+      (_, state) => {
+        createWorld({
+          storage: state.storage.kv,
+          now: () => test.clock.time,
+        }).faults.arm("mastodon", {
+          kind: "lost-response",
+          operation: "instance",
+        });
+      },
+    );
+
+    const response = await startConnect(admin, ofAdmin.sandbox, {
+      network: "mastodon",
+      identifier: sandboxMastodonDomain,
+    });
+
+    // That is what it is to the adapter, as it would be on the internet.
+    expect(response.status).toBe(502);
+    expect(errorResponseSchema.parse(await response.json()).message).toBe(
+      `${sandboxMastodonDomain} could not be reached.`,
+    );
+    // The fault has struck, and the same request works the next time.
+    expect(
+      (
+        await startConnect(admin, ofAdmin.sandbox, {
+          network: "mastodon",
+          identifier: sandboxMastodonDomain,
+        })
+      ).status,
+    ).toBe(200);
   });
 });
 

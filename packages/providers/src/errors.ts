@@ -28,7 +28,8 @@ export type ProviderErrorKind =
 
 /**
  * Every failure of a provider. Anything else that a provider throws is a
- * bug in it.
+ * bug in it, or what the `fetch` it was given threw that is no failure of
+ * a network: `send` of http.ts passes that on as it is.
  *
  * The message is for the person whose post or connection it is about. It
  * may quote what the network answered, cut to a sensible length and with

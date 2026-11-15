@@ -13,8 +13,31 @@ import type { Fetch } from "@pigy/core";
  * `fetch`: `pnpm dev` connects real accounts.
  */
 export function outboundFetch(mode: string): Fetch {
-  return mode === "e2e" ? refuseOutbound : (input, init) => fetch(input, init);
+  return mode === "e2e" ? refuseOutbound : runtimeFetch;
 }
+
+/**
+ * The runtime's own `fetch`, failing the way the Fetch standard has it when
+ * no answer comes: with a TypeError. That is what an adapter takes for a
+ * network that is out of reach, and nothing else. The Workers runtime fails
+ * with a plain error instead, such as "Network connection lost.", which an
+ * adapter could not tell from a bug in whatever it was given as `fetch`.
+ */
+const runtimeFetch: Fetch = async (input, init) => {
+  try {
+    return await fetch(input, init);
+  } catch (error) {
+    // A request that its own signal has ended fails with what the signal
+    // says, which is for whoever set the signal to read.
+    if (error instanceof TypeError || init?.signal?.aborted) throw error;
+    throw new TypeError(
+      error instanceof Error ? error.message : String(error),
+      {
+        cause: error,
+      },
+    );
+  }
+};
 
 /**
  * Answers in place of the host, the way a gateway does that cannot reach

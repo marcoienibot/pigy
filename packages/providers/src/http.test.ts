@@ -130,6 +130,45 @@ describe("send", () => {
     expect(error.message).toBe("mastodon.example could not be reached.");
   });
 
+  it("passes on what is not a failure of the network", async () => {
+    // What a `fetch` that is not the runtime's own can fail with: the one
+    // of a sandbox refuses a world that is another workspace's.
+    const refusal = new Error("This world is another workspace's");
+    const thrown = await send(
+      async () => {
+        throw refusal;
+      },
+      "mastodon.example",
+      url,
+      {},
+      limits,
+    ).catch((error: unknown) => error);
+    // Not a `retry` that says the host could not be reached: that would
+    // send a caller off to try again, and nobody would hear of the refusal.
+    expect(thrown).toBe(refusal);
+  });
+
+  it("asks to try again when the answer breaks off", async () => {
+    const cause = new Error("Network connection lost.");
+    const broken = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(cause);
+      },
+    });
+    const error = await failure(() =>
+      send(
+        async () => new Response(broken),
+        "mastodon.example",
+        url,
+        {},
+        limits,
+      ),
+    );
+    // Whatever the reading of a body fails with: only the network makes it
+    // fail.
+    expect(error).toMatchObject({ kind: "retry", cause });
+  });
+
   it("gives up on a host that takes too long", async () => {
     const error = await failure(() =>
       send(
