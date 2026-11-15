@@ -257,6 +257,17 @@ export async function endSession(): Promise<void> {
 }
 
 /**
+ * Whether this device holds a session that it takes to be good: the server
+ * has not said that it is over. The app shows the copies of such a session
+ * before the server has been asked, and deletes them when somebody else
+ * turns out to be signed in: see `check`.
+ */
+export function holdsSession(): boolean {
+  const stored = read();
+  return stored !== null && !stored.ended;
+}
+
+/**
  * The changes on this device that were kept when a session ended, and
  * whose they are. Null if there are none.
  */

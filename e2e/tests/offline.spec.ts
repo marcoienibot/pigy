@@ -7,15 +7,16 @@ import {
   serviceWorkerAnswersFor,
   writeDraft,
 } from "../app.ts";
-import { expect, signIn, test } from "../fixtures.ts";
+import { expect, type Page, signIn, test } from "../fixtures.ts";
 
 // The app on a device without a connection: what the service worker has to
 // do for it to start, and what the app says where it cannot. Where a test
 // has no connection, the whole browser is offline, with
 // `context.setOffline()`, and not only the app's own connection as in
 // sync-drafts.spec.ts: the page, its scripts and its styles have to come
-// from the device. Two tests are about what is not a missing connection: a
-// server that answers with an error, and a copy that was never filled.
+// from the device. Three tests are about what is not a missing connection:
+// two about a server that answers with an error, and one about a copy that
+// was never filled.
 
 test("the service worker answers for the app once it is installed", async ({
   signedInPage: page,
@@ -180,11 +181,13 @@ test("somebody who is not signed in is told that pigy needs a connection", async
   await expect(signInLink).toBeVisible();
 });
 
-test("an error of the server is not taken for a missing connection", async ({
-  page,
-}) => {
-  // The server answers, and what it says is that something went wrong.
-  // Nothing that the device could wait for changes that.
+/**
+ * Has the server answer `page` with an error when it is asked who is
+ * signed in, until `recover()` is called. The server answers, and what it
+ * says is that something went wrong: nothing that the device could wait
+ * for changes that.
+ */
+async function serverFails(page: Page) {
   let failing = true;
   await page.route("**/api/me", (route) =>
     failing
@@ -198,9 +201,22 @@ test("an error of the server is not taken for a missing connection", async ({
         })
       : route.fallback(),
   );
+  return {
+    recover(): void {
+      failing = false;
+    },
+  };
+}
+
+test("an error of the server is not taken for a missing connection", async ({
+  page,
+}) => {
+  const server = await serverFails(page);
 
   // The sign-in page says so, and still offers the way to Google: that is
-  // a request to the server like any other, and may well work.
+  // a request to the server like any other, and may well work. This
+  // device knows of nobody whose place the next person would take. The
+  // test below is about a device that does.
   await page.goto("/sign-in");
   await expect(page.getByRole("status")).toContainText(
     "Something went wrong on the server",
@@ -222,13 +238,41 @@ test("an error of the server is not taken for a missing connection", async ({
   // The server has recovered. The person tries again, and is where
   // somebody who is not signed in belongs, without a word about the
   // server.
-  failing = false;
+  server.recover();
   await page.getByRole("button", { name: "Try again" }).click();
   await expect(page).toHaveURL("/sign-in");
   await expect(
     page.getByRole("link", { name: "Sign in with Google" }),
   ).toBeVisible();
   await expect(page.getByRole("status")).toHaveCount(0);
+});
+
+test("the sign-in page offers no way to Google over a session that the device still holds", async ({
+  signedInPage: page,
+}) => {
+  // Somebody is signed in on this device, and the server fails when it is
+  // asked who: it has not said that the session is over.
+  const server = await serverFails(page);
+
+  // The sign-in page says that something went wrong, and that is all. A
+  // sign-in as somebody else would take the place of a session that
+  // nothing has ended: the app would delete what the device holds of it,
+  // changes that were never synced included, without the warning that
+  // this page gives when a session has ended.
+  await page.goto("/sign-in");
+  await expect(page.getByRole("status")).toHaveText(
+    "Something went wrong on the server of pigy. Try again in a moment.",
+  );
+  await expect(
+    page.getByRole("link", { name: "Sign in with Google" }),
+  ).toHaveCount(0);
+
+  // The server has recovered. The person tries again and is back in the
+  // app, signed in as before: the page has not ended the session either.
+  server.recover();
+  await page.getByRole("button", { name: "Try again" }).click();
+  await expect(page).toHaveURL("/");
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Drafts");
 });
 
 test("the page that says that pigy cannot start goes on by itself when the connection is back", async ({

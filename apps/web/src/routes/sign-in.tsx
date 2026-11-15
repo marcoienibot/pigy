@@ -15,7 +15,12 @@ import {
 import { Button, buttonVariants } from "@/components/ui/button";
 import { fetchMe, unanswered } from "@/lib/api";
 import { useOnline } from "@/lib/online";
-import { endSession, forgetSession, keptChanges } from "@/lib/session";
+import {
+  endSession,
+  forgetSession,
+  holdsSession,
+  keptChanges,
+} from "@/lib/session";
 
 type SignInSearch = {
   /** The path to open after signing in. */
@@ -37,7 +42,8 @@ export const Route = createFileRoute("/sign-in")({
   // answer of the server, as without a connection, it does not offer to
   // sign in: that leaves the app for the server, and would end on an
   // error page of the browser. A server that answers with an error can
-  // still be asked to sign somebody in.
+  // still be asked to sign somebody in. `signIn` says whether the page
+  // offers to.
   beforeLoad: async ({ search, abortController }) => {
     let me: Awaited<ReturnType<typeof fetchMe>>;
     try {
@@ -45,7 +51,16 @@ export const Route = createFileRoute("/sign-in")({
     } catch (error) {
       // The router has given this navigation up, and wants no answer.
       if (abortController.signal.aborted) throw error;
-      return { server: unanswered(error) ? "unreachable" : "failed" } as const;
+      if (unanswered(error)) {
+        return { server: "unreachable", signIn: false } as const;
+      }
+      // Not over a session that this device still takes to be good. The
+      // server has not said that it is over, so `endSession` below has
+      // not dealt with it: nothing has looked for changes that were never
+      // synced, and nothing has said that they are there. Whoever signed
+      // in as somebody else now would have them deleted without a word,
+      // as soon as the app has heard who is signed in.
+      return { server: "failed", signIn: !holdsSession() } as const;
     }
     if (me) {
       throw redirect({ href: safeReturnTo(search.returnTo), replace: true });
@@ -53,7 +68,7 @@ export const Route = createFileRoute("/sign-in")({
     // Nobody is signed in, so what this device holds of a session goes
     // before somebody else signs in here.
     await endSession();
-    return { server: "answered" } as const;
+    return { server: "answered", signIn: true } as const;
   },
   // What did not go: changes that were never synced.
   loader: () => keptChanges(),
@@ -70,7 +85,7 @@ const errorMessages: Record<SignInError, string> = {
 
 function SignIn() {
   const { returnTo, error } = Route.useSearch();
-  const { server } = Route.useRouteContext();
+  const { server, signIn } = Route.useRouteContext();
   const kept = Route.useLoaderData();
   const router = useRouter();
   // When the connection is back, there is no need to press the button.
@@ -96,37 +111,35 @@ function SignIn() {
         </p>
       )}
       {kept && <KeptChanges {...kept} />}
-      {server === "unreachable" ? (
+      {server === "unreachable" && (
         <p role="status" className="mt-4 rounded-lg border px-3 py-2 text-left">
           pigy cannot reach its server. Signing in takes a connection.
         </p>
-      ) : (
-        <>
-          {server === "failed" && (
-            <p
-              role="status"
-              className="mt-4 rounded-lg border px-3 py-2 text-left"
-            >
-              Something went wrong on the server of pigy. You can sign in, or
-              try again in a moment.
-            </p>
-          )}
-          {/* A plain link: signing in leaves the app for Google and comes
-              back with a page load. */}
-          <a
-            href={start}
-            className={buttonVariants({ size: "lg", className: "mt-6 w-full" })}
-          >
-            <GoogleLogo />
-            Sign in with Google
-          </a>
-        </>
+      )}
+      {server === "failed" && (
+        <p role="status" className="mt-4 rounded-lg border px-3 py-2 text-left">
+          Something went wrong on the server of pigy.{" "}
+          {signIn
+            ? "You can sign in, or try again in a moment."
+            : "Try again in a moment."}
+        </p>
+      )}
+      {signIn && (
+        // A plain link: signing in leaves the app for Google and comes
+        // back with a page load.
+        <a
+          href={start}
+          className={buttonVariants({ size: "lg", className: "mt-6 w-full" })}
+        >
+          <GoogleLogo />
+          Sign in with Google
+        </a>
       )}
       {server !== "answered" && (
         <Button
           variant="outline"
           size="lg"
-          className={server === "failed" ? "mt-3 w-full" : "mt-6 w-full"}
+          className={signIn ? "mt-3 w-full" : "mt-6 w-full"}
           onClick={() => router.invalidate()}
         >
           Try again
