@@ -140,6 +140,8 @@ Once the server keeps 1,000 rejections for a client, it takes no more mutations 
 
 A mutator takes the time from its transaction, which on the server is the server's clock. So a row that a client made for display before the answer can differ from the row that the patch brings, in `createdAt` for example. The patch is right.
 
+A client that runs its unconfirmed mutations for display chooses the time of each of them, and the time on its own clock is not good enough. That clock can be behind the server's, and even if it is not, the server gets to a mutation later than the client made it. The server will run the unconfirmed mutations in the order in which they were made, after everything that it has confirmed. So a client runs each of them at a time that is later than every time that a mutator has put into the rows it has from the server, and later than the time of the unconfirmed mutation before it: at the time at which the mutation was made by the client's clock if that is later than both, and otherwise one millisecond after the later of the two. Rows that are sorted by such a time then keep their order when a patch confirms a mutation. Without this, a row that the client has just changed can be shown as older than a row that the server changed before it, until its own confirmation arrives and it jumps. Section 6 has the one case that is left.
+
 Conflicts need no handling by a client. Mutations are applied in the order they reach the server, and a mutator works on the rows as they are then, so of two changes to the same field the later one wins, and changes to different fields both hold.
 
 ## 5. How the server works
@@ -159,5 +161,6 @@ This is not part of the contract, but it explains its edges.
 
 - Messages are not rate-limited, and nothing limits how much a workspace stores. Both are bounded only by what one signed-in user does to their own workspace.
 - A client cannot ask for part of a workspace: it holds all of it.
+- The server takes the time once for a `mutate` message. The mutations of one message therefore get the same time, as do those of two messages that arrive in the same millisecond, and the rows that they change cannot be told apart by it. A client that sorts rows by a time needs a second key for them, and that key can put them in another order than the one in which they were changed, which is the order that the client showed them in before they were confirmed.
 - When the schema version changes, a client of the new version drops its rows and says hello with the cursor `null`, unless it knows how to convert them. It keeps its client ID and its `lastMutationId`. Its unconfirmed mutations are sent as they are, and rejected if the new mutators do not take them.
 - If the data of a workspace is ever restored to an earlier state, clients whose cursor is ahead get a snapshot, but a client can stay ahead unnoticed if the workspace then catches up with its cursor. Restoring has to come with a way to make every client start over, such as a new schema version.

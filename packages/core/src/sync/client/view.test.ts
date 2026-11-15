@@ -1,10 +1,33 @@
 import { expect, it } from "vitest";
 import { draft, newId } from "../../../test/sync-browser.ts";
-import { applyChanges, emptyTables, type MutationCall } from "./copy.ts";
+import {
+  applyChanges,
+  emptyTables,
+  type MutationCall,
+  type Tables,
+} from "./copy.ts";
 import { viewOf } from "./view.ts";
 
 function setText(id: string, text: string, at = 0): MutationCall {
   return { name: "part.setText", args: { id, text }, at };
+}
+
+/** When `post` was last changed, as `view` has it. */
+function changed(view: Tables, { post }: ReturnType<typeof draft>): number {
+  const row = view.post.get(post.id);
+  if (!row) throw new Error("The view does not have the post");
+  return row.updatedAt;
+}
+
+/** `rows` after the server has changed `post` at `updatedAt`. */
+function confirmedAt(
+  rows: Tables,
+  { post }: ReturnType<typeof draft>,
+  updatedAt: number,
+): Tables {
+  return applyChanges(rows, false, [
+    { op: "put", table: "post", row: { ...post, updatedAt } },
+  ]);
 }
 
 it("shows the server's rows as they are when nothing is pending", () => {
@@ -60,6 +83,109 @@ it("leaves out a pending mutation that the rows no longer allow", () => {
 
   expect(view.post.has(post.id)).toBe(false);
   expect(view.post_part.has(part.id)).toBe(false);
+});
+
+it("keeps the order of two changes when the server confirms the first, on a device whose clock is behind", () => {
+  const first = draft("First");
+  const second = draft("Second");
+  const rows = applyChanges(emptyTables(), false, [
+    ...first.puts(),
+    ...second.puts(),
+  ]);
+  const editFirst = setText(first.part.id, "First, edited", 100);
+  const editSecond = setText(second.part.id, "Second, edited", 105);
+
+  const before = viewOf(rows, [editFirst, editSecond]);
+  expect(changed(before, first)).toBe(100);
+  expect(changed(before, second)).toBe(105);
+
+  // The server runs the first edit at 110 by its own clock, which is after
+  // the moment at which the device made the second one, by the device's.
+  const between = viewOf(confirmedAt(rows, first, 110), [editSecond]);
+
+  // The second edit was made last and will reach the server last. Had it
+  // kept the time of the device, the draft that it changed would be the
+  // older of the two until its own confirmation came, and jump back then.
+  expect(changed(between, first)).toBe(110);
+  expect(changed(between, second)).toBe(111);
+});
+
+it("runs a pending mutation after everything the server has, however far the clock of the device is behind", () => {
+  const old = draft("Old", 1_000_000);
+  const older = draft("Older", 900_000);
+  const rows = applyChanges(emptyTables(), false, [
+    ...old.puts(),
+    ...older.puts(),
+  ]);
+  const id = newId();
+
+  // A device that takes it for a quarter of an hour earlier makes a draft,
+  // and then edits the one that has not been changed for longest.
+  const view = viewOf(rows, [
+    {
+      name: "post.create",
+      args: { id, partId: newId(), text: "New" },
+      at: 100_000,
+    },
+    setText(older.part.id, "Older, edited", 100_005),
+  ]);
+
+  // The new draft is newer than every draft of the server, from the start.
+  expect(view.post.get(id)).toMatchObject({
+    createdAt: 1_000_001,
+    updatedAt: 1_000_001,
+  });
+  // And the mutations keep the order in which they were made.
+  expect(changed(view, older)).toBe(1_000_002);
+  // What the server has is not what was changed.
+  expect(changed(view, old)).toBe(1_000_000);
+});
+
+it("runs a pending mutation at the time of the device when its clock is ahead", () => {
+  const first = draft("First", 1_000);
+  const second = draft("Second", 900);
+  const rows = applyChanges(emptyTables(), false, [
+    ...first.puts(),
+    ...second.puts(),
+  ]);
+  const editFirst = setText(first.part.id, "First, edited", 5_000);
+  const editSecond = setText(second.part.id, "Second, edited", 5_010);
+
+  // Later than everything the server has, so nothing is moved: these are
+  // the times that the person sees until the server has said its own.
+  const before = viewOf(rows, [editFirst, editSecond]);
+  expect(changed(before, first)).toBe(5_000);
+  expect(changed(before, second)).toBe(5_010);
+
+  // The server's time for the first edit is earlier than the device's, and
+  // the second edit stays the later of the two.
+  const between = viewOf(confirmedAt(rows, first, 1_010), [editSecond]);
+  expect(changed(between, first)).toBe(1_010);
+  expect(changed(between, second)).toBe(5_010);
+});
+
+it("runs every pending mutation after the one before it, whatever the clock of the device did in between", () => {
+  const first = draft("First");
+  const second = draft("Second");
+  const third = draft("Third");
+  const rows = applyChanges(emptyTables(), false, [
+    ...first.puts(),
+    ...second.puts(),
+    ...third.puts(),
+  ]);
+
+  const view = viewOf(rows, [
+    setText(first.part.id, "First, edited", 200),
+    // In the same millisecond: the two would be told apart by nothing but
+    // their IDs, which say nothing of the order in which they were made.
+    setText(second.part.id, "Second, edited", 200),
+    // After the clock of the device was set back.
+    setText(third.part.id, "Third, edited", 150),
+  ]);
+
+  expect(changed(view, first)).toBe(200);
+  expect(changed(view, second)).toBe(201);
+  expect(changed(view, third)).toBe(202);
 });
 
 it("lets a pending mutation see what the ones before it did", () => {

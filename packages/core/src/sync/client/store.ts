@@ -519,7 +519,10 @@ export class SyncStore {
         // and those that were merged do what the ones they replace did. The
         // view runs the same mutations as before, so it stays as it is:
         // computing it again would render every screen again, with every
-        // keystroke.
+        // keystroke. One thing can differ, by a millisecond: a time that
+        // the view has moved forward, which is counted from the mutation
+        // before, and there is one fewer after a merge. No order depends on
+        // that, and the next view has it right.
         if (saved) rows = false;
       } else {
         // Another tab wrote in between and its message is still on its way.
