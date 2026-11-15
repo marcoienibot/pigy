@@ -11,6 +11,7 @@ import {
 } from "react";
 import { toast } from "sonner";
 import { EmptyState, Page } from "@/components/page";
+import { PublishPanel } from "@/components/publish-panel";
 import { SyncIndicator } from "@/components/sync-indicator";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
@@ -156,6 +157,21 @@ function Drafts() {
     deleted.current.push({ draft, notice });
   };
 
+  /**
+   * `draft` has been published, and is no longer a draft: the editor
+   * closes, as for a draft that is deleted, and the list comes back. The
+   * notice of the panel leads to the post on the Sent screen.
+   */
+  const published = (draft: Draft) => {
+    const index = drafts.indexOf(draft);
+    const neighbour = drafts[index + 1] ?? drafts[index - 1];
+    // Where to go from here is decided here, not by the effect above.
+    seen.current = undefined;
+    show(undefined);
+    // The keyboard stays in the list, next to where the draft was.
+    if (isWide() && neighbour) rowOf(neighbour.id)?.focus();
+  };
+
   /** The draft whose row in the list has the focus, if one has. */
   const focused = (event: KeyboardEvent) => {
     const row = (event.target as HTMLElement).closest<HTMLElement>(
@@ -286,6 +302,7 @@ function Drafts() {
               else show(undefined);
             }}
             onDelete={() => remove(open)}
+            onPublished={() => published(open)}
           />
         ) : openId ? (
           <EmptyState
@@ -459,12 +476,14 @@ function Editor({
   ref,
   onLeave,
   onDelete,
+  onPublished,
 }: {
   draft: Draft;
   ref: RefObject<HTMLTextAreaElement | null>;
   /** The person wants out of the field. */
   onLeave: () => void;
   onDelete: () => void;
+  onPublished: () => void;
 }) {
   const mutate = useMutate();
   const { text } = draft;
@@ -552,6 +571,7 @@ function Editor({
           }
         }}
       />
+      <PublishPanel draft={draft} onPublished={onPublished} />
     </>
   );
 }
@@ -603,6 +623,7 @@ function Shortcuts() {
         <Shortcut keys={["↵"]}>Write in the open draft</Shortcut>
         <Shortcut keys={["Esc"]}>Leave the text, then close the draft</Shortcut>
         <Shortcut keys={["⌫"]}>Delete the open draft</Shortcut>
+        <Shortcut keys={[modKey, "↵"]}>Publish the open draft</Shortcut>
         <Shortcut keys={[modKey, "Z"]}>Bring a deleted draft back</Shortcut>
         <Shortcut keys={[modKey, "K"]}>All commands</Shortcut>
       </dl>

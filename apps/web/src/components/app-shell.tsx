@@ -1,5 +1,13 @@
+import type { Environment } from "@pigy/core";
 import { Link, linkOptions, useRouteContext } from "@tanstack/react-router";
-import { CalendarClock, PenLine, Send, Settings, Share2 } from "lucide-react";
+import {
+  CalendarClock,
+  Globe,
+  PenLine,
+  Send,
+  Settings,
+  Share2,
+} from "lucide-react";
 import { type ReactNode, useEffect } from "react";
 import {
   CommandPalette,
@@ -15,13 +23,24 @@ import { modKey } from "@/lib/keyboard";
 import { dismissWorkspaceNotices } from "@/lib/notices";
 import { cn } from "@/lib/utils";
 
-const navItems = linkOptions([
+const allNavItems = linkOptions([
   { to: "/", label: "Drafts", icon: PenLine },
   { to: "/queue", label: "Queue", icon: CalendarClock },
   { to: "/sent", label: "Sent", icon: Send },
   { to: "/channels", label: "Channels", icon: Share2 },
+  { to: "/simulator", label: "Simulator", icon: Globe },
   { to: "/settings", label: "Settings", icon: Settings },
 ]);
+
+/**
+ * The screens of the navigation in `environment`. The simulator is the
+ * sandbox's: the live workspace has no simulated networks to show.
+ */
+export function navItemsOf(environment: Environment) {
+  return allNavItems.filter(
+    ({ to }) => environment === "sandbox" || to !== "/simulator",
+  );
+}
 
 /** Opens the command palette, and says which keys do the same. */
 function CommandsButton() {
@@ -92,6 +111,10 @@ function Notices() {
 }
 
 function Shell({ children }: { children: ReactNode }) {
+  // From the same place as the screens, so that the navigation changes
+  // with them and with the name of the workspace.
+  const { workspace } = useRouteContext({ from: "/_app" });
+  const navItems = navItemsOf(workspace.environment);
   return (
     // The bottom of a phone's screen is the tab bar's, below.
     <div className="flex h-dvh flex-col px-safe pt-safe md:pb-safe">

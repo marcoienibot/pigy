@@ -7,6 +7,7 @@ import {
 import {
   CalendarClock,
   Download,
+  Globe,
   Monitor,
   Moon,
   PenLine,
@@ -17,6 +18,7 @@ import {
   Share2,
   Sun,
   UserPlus,
+  Zap,
 } from "lucide-react";
 import { createContext, type ReactNode, use, useMemo, useState } from "react";
 import { type Theme, useTheme } from "@/components/theme-provider";
@@ -50,6 +52,7 @@ const screens = [
   { to: "/queue", label: "Queue", icon: CalendarClock },
   { to: "/sent", label: "Sent", icon: Send },
   { to: "/channels", label: "Channels", icon: Share2 },
+  { to: "/simulator", label: "Simulator", icon: Globe },
   { to: "/settings", label: "Settings", icon: Settings },
 ] as const;
 
@@ -88,6 +91,7 @@ export function CommandPalette({ children }: { children: ReactNode }) {
   const newDraft = useNewDraft();
   const { theme: current, setTheme } = useTheme();
   const { workspace } = useRouteContext({ from: "/_app" });
+  const sandbox = workspace.environment === "sandbox";
   const switchWorkspace = useSwitchWorkspace();
   // What is offered only when there is something to do: see the same two
   // in Settings.
@@ -161,6 +165,27 @@ export function CommandPalette({ children }: { children: ReactNode }) {
                 Connect an account
               </CommandItem>
             </CommandGroup>
+            {/* The simulator is the sandbox's: live has none. */}
+            {sandbox && (
+              <CommandGroup heading="Simulator">
+                <CommandItem
+                  keywords={["sandbox", "feed", "published"]}
+                  onSelect={run(() => void navigate({ to: "/simulator" }))}
+                >
+                  <Globe aria-hidden="true" />
+                  Simulated feeds
+                </CommandItem>
+                <CommandItem
+                  keywords={["sandbox", "fault", "failure", "error"]}
+                  onSelect={run(
+                    () => void navigate({ to: "/simulator/failures" }),
+                  )}
+                >
+                  <Zap aria-hidden="true" />
+                  Make the next publish fail
+                </CommandItem>
+              </CommandGroup>
+            )}
             <CommandGroup heading="Workspace">
               {environments
                 .filter((environment) => environment !== workspace.environment)
@@ -179,16 +204,18 @@ export function CommandPalette({ children }: { children: ReactNode }) {
                 })}
             </CommandGroup>
             <CommandGroup heading="Go to">
-              {screens.map(({ to, label, icon: Icon }) => (
-                <CommandItem
-                  key={to}
-                  value={`Go to ${label}`}
-                  onSelect={run(() => void navigate({ to }))}
-                >
-                  <Icon aria-hidden="true" />
-                  {label}
-                </CommandItem>
-              ))}
+              {screens
+                .filter(({ to }) => sandbox || to !== "/simulator")
+                .map(({ to, label, icon: Icon }) => (
+                  <CommandItem
+                    key={to}
+                    value={`Go to ${label}`}
+                    onSelect={run(() => void navigate({ to }))}
+                  >
+                    <Icon aria-hidden="true" />
+                    {label}
+                  </CommandItem>
+                ))}
             </CommandGroup>
             <CommandGroup heading="Theme">
               {themes.map(({ theme, label, icon: Icon }) => (
