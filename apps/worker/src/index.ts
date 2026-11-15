@@ -1,5 +1,6 @@
 import { createApp } from "./app.ts";
 import { developmentCredentialKeys } from "./development-keys.ts";
+import { outboundFetch } from "./outbound.ts";
 import { simWorldObject } from "./sim/object.ts";
 import { createSimulatedGoogle } from "./simulated-google.ts";
 import { workspaceObject } from "./workspace/object.ts";
@@ -18,7 +19,7 @@ const simulated =
   import.meta.env.MODE === "e2e";
 
 export default createApp({
-  fetch: (input, init) => fetch(input, init),
+  fetch: outboundFetch(import.meta.env.MODE),
   now,
   simulatedGoogle: simulated ? createSimulatedGoogle(now) : undefined,
   developmentCredentialKeys: simulated ? developmentCredentialKeys : undefined,
