@@ -217,6 +217,28 @@ export class SyncStore {
     });
   }
 
+  /**
+   * Reads the stored copy again if it has changed without this tab hearing
+   * of it. A tab that is closed, or dies, after it has stored a write and
+   * before its message to the others has left is never heard, so the
+   * messages only make the tabs find out sooner. The tab that holds the
+   * socket asks this now and then: nobody else would send what such a tab
+   * has left in the outbox.
+   */
+  reconcile(): Promise<void> {
+    return this.enqueue(async () => {
+      // Only the head: the rows are read when there is something to read.
+      const { result: version } = await this.options.storage.update((head) => ({
+        write: null,
+        result: head?.meta.version,
+      }));
+      if (this.closed || !this.copy || version === undefined) return;
+      if (version <= this.copy.head.meta.version) return;
+      await this.read();
+      this.refresh(true);
+    });
+  }
+
   /** For the tab that holds the socket: says how it is getting on. */
   setConnection(connection: ConnectionState): void {
     this.holding = true;

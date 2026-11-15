@@ -204,10 +204,12 @@ export class SyncConnection {
   /**
    * For when there is reason to think that the network has changed, such
    * as the browser saying so: connects now if it was waiting to, and makes
-   * sure that a socket which seems open still is.
+   * sure that a socket which seems open still is. It also looks for what
+   * other tabs have stored without this one hearing of it.
    */
   wake(): void {
     if (this.state !== "running") return;
+    this.reconcile();
     // Waiting for a pause to end, or for the server to say why the last
     // handshake failed: the next handshake is a better question.
     if (this.cancelRetry || this.cancelAccess) this.connect();
@@ -223,6 +225,10 @@ export class SyncConnection {
     } else {
       this.send();
     }
+  }
+
+  private reconcile(): void {
+    this.options.store.reconcile().catch(this.options.onError);
   }
 
   private end(connection?: ConnectionState): void {
@@ -604,6 +610,9 @@ export class SyncConnection {
     this.cancelPing = this.options.schedule(() => {
       this.worked();
       this.ping();
+      // A tab that was closed right after it stored a mutation has told
+      // nobody. This is how the mutation is found, and then sent.
+      this.reconcile();
       this.pingLater();
     }, syncTimings.pingEvery);
   }

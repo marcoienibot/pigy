@@ -15,7 +15,7 @@ import {
   syncSchemaVersion,
 } from "../protocol.ts";
 import { syncTimings } from "./connection.ts";
-import type { Head, Step } from "./copy.ts";
+import { appendMutations, type Head, type Step } from "./copy.ts";
 import type { SyncStore } from "./store.ts";
 
 /** The texts of the parts that `store` shows, in no particular order. */
@@ -797,6 +797,51 @@ it("checks a socket that seems open when it is told that the network has changed
 
   await device.advance(syncTimings.pong);
   expect(socket.closed).toBe(true);
+});
+
+it("finds a mutation that a tab has stored without telling anybody, and sends it", async () => {
+  const { device, store, socket } = await online();
+  const id = newId();
+  // What a tab leaves behind that is closed right after a change: the
+  // mutation is in the stored outbox, and the message to the other tabs
+  // never left.
+  await device.storage.update((head) => {
+    if (!head) throw new Error("The copy exists");
+    return appendMutations(head, [
+      { name: "post.delete", args: { id }, at: 0 },
+    ]);
+  });
+  await settle();
+  expect(socket.mutates).toEqual([]);
+
+  // Nobody writes after that, so no later message gives the missing one
+  // away. The tab with the socket looks by itself, as often as it pings.
+  await device.advance(syncTimings.pingEvery);
+
+  expect(socket.mutates).toEqual([
+    [{ id: 1, name: "post.delete", args: { id } }],
+  ]);
+  expect(store.getState().pending).toBe(1);
+});
+
+it("looks for what other tabs have stored when it is told that the network has changed", async () => {
+  const { device, socket, connection } = await online();
+  const id = newId();
+  await device.storage.update((head) => {
+    if (!head) throw new Error("The copy exists");
+    return appendMutations(head, [
+      { name: "post.delete", args: { id }, at: 0 },
+    ]);
+  });
+
+  // Also what a tab does that comes to the front: its timers may not have
+  // run for a while.
+  connection.wake();
+  await settle();
+
+  expect(socket.mutates).toEqual([
+    [{ id: 1, name: "post.delete", args: { id } }],
+  ]);
 });
 
 it("writes nothing for a socket that it has given up, however late the storage gets to it", async () => {
