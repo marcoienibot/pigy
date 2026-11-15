@@ -138,6 +138,30 @@ async function takenOn(): Promise<void> {
 }
 
 /**
+ * Whether a page that starts may ask a version that waits to take over.
+ * Not while a window holds changes that it could not store: it would have
+ * to stay as it is, under a worker of another build.
+ *
+ * The browser is asked who holds the lock, and the app has no screen
+ * before it has answered. It does not always answer: Chromium puts the
+ * question off for a page that it renders ahead of time, until somebody
+ * opens that page. So the answer is given the time that the take-over
+ * itself is given, and without one the page does not ask the version that
+ * waits: it starts as the version it is, whose files are all there. A
+ * question that fails is another matter: `unsavedInSomeWindow` takes it
+ * for a browser without Web Locks, and the page goes ahead, because no
+ * window could hold the lock there either.
+ */
+export function mayTakeOver(): Promise<boolean> {
+  return Promise.race([
+    unsavedInSomeWindow().then((unsaved) => !unsaved),
+    new Promise<boolean>((resolve) =>
+      setTimeout(() => resolve(false), takeOverMs),
+    ),
+  ]);
+}
+
+/**
  * Starts the service worker, before the app renders. If a newer version of
  * the app was waiting, it takes over now and the page is loaded again:
  * the promise does not resolve then. It rejects if the browser refuses to
@@ -161,9 +185,7 @@ export async function startServiceWorker(): Promise<void> {
   });
 
   const registration = await container.getRegistration();
-  // Not while a window holds changes that it could not store: it would
-  // have to stay as it is, under a worker of another build.
-  if (controlled && registration?.waiting && !(await unsavedInSomeWindow())) {
+  if (controlled && registration?.waiting && (await mayTakeOver())) {
     registration.waiting.postMessage(activateMessage);
     const tookOver = await Promise.race([
       replaced.then(() => true),
