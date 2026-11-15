@@ -1451,6 +1451,43 @@ describe("what an answer means", () => {
       expect(error.message).not.toContain(secret);
     }
   });
+
+  it("keeps the secrets of the connection out of what it quotes from a callback", async () => {
+    const sim = setup();
+    const start = await sim.provider.beginConnect({
+      redirectUri,
+      identifier: domain,
+    });
+    const { codeVerifier = "", clientSecret = "" } = start.pending as Record<
+      string,
+      string
+    >;
+    // A code that is good, in a callback that reports an error all the
+    // same: no server sends that, but the callback is whatever address the
+    // browser was sent to.
+    const callback = await answerConsent(sim.simulator.fetch, start.url, {
+      account: sim.ada.id,
+    });
+    const code = callback.searchParams.get("code") ?? "";
+    const error = await failure(() =>
+      sim.provider.completeConnect({
+        pending: start.pending,
+        params: new URLSearchParams({
+          state: start.state,
+          code,
+          error: "server_error",
+          error_description: `Failed for ${clientSecret} with ${code} and ${codeVerifier}`,
+        }),
+      }),
+    );
+    // The test would prove nothing with a secret that is empty.
+    for (const secret of [clientSecret, code, codeVerifier]) {
+      expect(secret).not.toBe("");
+    }
+    expect(error.message).toBe(
+      "mastodon.example did not connect the account: Failed for [removed] with [removed] and [removed]",
+    );
+  });
 });
 
 describe("disconnecting", () => {

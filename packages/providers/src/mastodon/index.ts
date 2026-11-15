@@ -759,10 +759,13 @@ export function createMastodonProvider({
       }
       const code = params.get("code");
       if (error || !code) {
-        const said = quotable(
-          params.get("error_description") ?? error ?? "",
-          [],
-        );
+        // The callback is the word of whoever sent the browser back, and
+        // may repeat what the connection is made with.
+        const said = quotable(params.get("error_description") ?? error ?? "", [
+          clientSecret,
+          ...(codeVerifier ? [codeVerifier] : []),
+          ...(code ? [code] : []),
+        ]);
         throw new ProviderError(
           "fail",
           `${domain} did not connect the account${said ? `: ${said}` : "."}`,

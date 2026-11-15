@@ -304,6 +304,49 @@ describe("what leaves the app", () => {
     for (const secret of secrets) expect(left).not.toContain(secret);
   });
 
+  it("holds no secret that a network repeats when it sends the browser back", async () => {
+    const test = setup();
+    const { browser, text } = recording(test);
+    await signIn(test, browser, { email: adminEmail });
+    const workspaces = await workspaceIds(browser);
+    const url = await consentUrl(browser, workspaces.live, realMastodonDomain);
+    const callback = new URL(await consentAtNetwork(test, url));
+    // What the server could repeat: the secret that pigy registered with,
+    // and the code that it has just given out, which is still good.
+    const [app] = test.network.world
+      .table<{ clientSecret: string }>("mastodon", "app")
+      .all();
+    const secrets = [
+      app?.clientSecret ?? "",
+      callback.searchParams.get("code") ?? "",
+    ];
+    // A server, or something in front of it, that reports a failure and
+    // describes it with what it was sent.
+    callback.searchParams.set("error", "server_error");
+    callback.searchParams.set(
+      "error_description",
+      `Could not authorize ${secrets.join(" with ")}`,
+    );
+
+    const outcome = outcomeOf(await browser.fetch(pathOf(callback)));
+
+    expect(outcome).toEqual({
+      connect: "failed",
+      network: "mastodon",
+      workspace: workspaces.live,
+    });
+    const left = text();
+    // The log has what the server said, so that is where a secret would be.
+    expect(left).toContain(
+      "mastodon.test did not connect the account: Could not authorize [removed] with [removed]",
+    );
+    for (const secret of secrets) {
+      // The test would prove nothing with a secret that is empty.
+      expect(secret).not.toBe("");
+      expect(left).not.toContain(secret);
+    }
+  });
+
   it("holds no secret of a simulated account either", async () => {
     const test = setup();
     const { browser, client, text } = recording(test);
