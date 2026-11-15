@@ -1,6 +1,7 @@
 import type { Fetch } from "@pigy/core";
 import type { Bindings } from "../env.ts";
 import type { WorkspaceIdentity } from "../workspace/store.ts";
+import type { WorldRequest } from "./object.ts";
 
 /**
  * The Worker's side of the simulated worlds: the only way into their
@@ -21,11 +22,28 @@ export class WorldHostMissing extends TypeError {
 }
 
 /**
+ * Whether `error` is the runtime's own failure of a call into a Durable
+ * Object, and not what the code of the object threw: the connection to the
+ * object was lost, a deploy has reset the object, the object has more to do
+ * than it can take. The runtime marks such an error, with `retryable` or
+ * with `overloaded`: "Error handling" in the documentation of Durable
+ * Objects. An error from the code of an object has neither mark.
+ */
+function isInfrastructureFailure(error: unknown): error is Error {
+  return (
+    error instanceof Error &&
+    (("retryable" in error && error.retryable === true) ||
+      ("overloaded" in error && error.overloaded === true))
+  );
+}
+
+/**
  * A `fetch` that the simulated world of the sandbox `workspace` answers.
  * It never leaves the Worker: a request goes to the Durable Object of the
  * world and to nothing else, whatever its address. It fails as a `fetch`
  * does that got no answer, with a TypeError, for a host that the world
- * does not have and for an answer that a fault made a simulator lose.
+ * does not have, for an answer that a fault made a simulator lose, and for
+ * a world that the runtime could not reach or get an answer from.
  * Anything else that it throws is a failure of pigy's, not of a network.
  */
 export function worldFetch(
@@ -35,11 +53,30 @@ export function worldFetch(
   if (workspace.environment !== "sandbox") {
     throw new Error(`The ${workspace.environment} workspace has no simulation`);
   }
+  const ask = async (request: WorldRequest) => {
+    try {
+      return await namespace
+        .getByName(workspace.id)
+        .request(workspace, request);
+    } catch (error) {
+      // The way to the world is to a sandbox what the internet is to a live
+      // workspace, and this is a connection that broke on it: nothing is
+      // wrong with the request, and it may well work later. Whether it
+      // arrived is as unknown as on the internet. Only what the runtime
+      // marks as its own is taken for that. What the object threw is a bug
+      // in it or in a simulator, and stays one.
+      if (!isInfrastructureFailure(error)) throw error;
+      throw new TypeError(
+        `The simulated world could not be reached: ${error.message}`,
+        { cause: error },
+      );
+    }
+  };
   return async (input, init) => {
     const request = new Request(input, init);
     // What a network sees of a request, and nothing else of it, such as
     // the signal that would end it.
-    const answer = await namespace.getByName(workspace.id).request(workspace, {
+    const answer = await ask({
       url: request.url,
       method: request.method,
       headers: [...request.headers],

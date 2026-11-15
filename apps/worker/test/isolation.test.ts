@@ -2,7 +2,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { errorResponseSchema, sandboxMastodonDomain } from "@pigy/core";
 import { createWorld, simulationNotice } from "@pigy/simulators/world";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { mastodonApps } from "../src/db/schema.ts";
 import { WorldHostMissing, worldFetch } from "../src/sim/world.ts";
 import {
@@ -256,7 +256,91 @@ function armLostAnswer(
   );
 }
 
+/**
+ * Makes every call into a simulated world fail with `failure`, in the
+ * place of the runtime: the Worker gets a stub that fails, and no object is
+ * asked.
+ */
+function failWorlds(failure: Error) {
+  const stub = { request: () => Promise.reject(failure) };
+  const failing = vi
+    .spyOn(env.SIM_WORLD, "getByName")
+    .mockReturnValue(
+      stub as unknown as ReturnType<typeof env.SIM_WORLD.getByName>,
+    );
+  onTestFinished(() => failing.mockRestore());
+}
+
 describe("what goes wrong inside a simulated world", () => {
+  it.each([
+    ["was lost on the way, or reset by a deploy", "retryable"],
+    ["has more to do than it can take", "overloaded"],
+  ] as const)(
+    "is a server out of reach when the world %s",
+    async (_name, mark) => {
+      const { test, admin, ofAdmin } = await start();
+      expectErrors();
+      // What the runtime fails a call into an object with when the trouble is
+      // its own, between the Worker and the object. A test cannot break the
+      // runtime, so the error is made here, with the mark that the runtime
+      // puts on such a one: "Error handling" in the documentation of Durable
+      // Objects.
+      failWorlds(
+        Object.assign(new Error("Network connection lost."), { [mark]: true }),
+      );
+
+      const response = await startConnect(admin, ofAdmin.sandbox, {
+        network: "mastodon",
+        identifier: sandboxMastodonDomain,
+      });
+
+      // As for a live workspace whose server does not answer: nothing is
+      // wrong with what was entered, and trying again later can work.
+      expect(response.status).toBe(502);
+      expect(errorResponseSchema.parse(await response.json()).message).toBe(
+        `${sandboxMastodonDomain} could not be reached.`,
+      );
+      // To an adapter it is a `fetch` that got no answer, and not for good
+      // like a host that the world does not have. What the runtime said is
+      // kept, for whoever reads the log.
+      const sandbox = await identityOf(test, ofAdmin.sandbox);
+      const error = await worldFetch(
+        env.SIM_WORLD,
+        sandbox,
+      )(`https://${sandboxMastodonDomain}/api/v2/instance`).catch(
+        (thrown: unknown) => thrown,
+      );
+      expect(error).toBeInstanceOf(TypeError);
+      expect(error).not.toBeInstanceOf(WorldHostMissing);
+      expect(error).toMatchObject({
+        cause: { message: "Network connection lost.", [mark]: true },
+      });
+    },
+  );
+
+  it("is not taken for a server that is out of reach when the object of the world fails", async () => {
+    const { admin, ofAdmin } = await start();
+    const errors = expectErrors();
+    // A bug in a simulator or in the object, as it comes out of an object:
+    // the runtime says that it was thrown over there, which is no mark of
+    // trouble of its own.
+    failWorlds(
+      Object.assign(new Error("A simulator has a bug"), { remote: true }),
+    );
+
+    const response = await startConnect(admin, ofAdmin.sandbox, {
+      network: "mastodon",
+      identifier: sandboxMastodonDomain,
+    });
+
+    // A failure of pigy, to be heard of, and not a server to try again
+    // later.
+    expect(response.status).toBe(500);
+    expect(errors).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ message: "A simulator has a bug" }),
+    );
+  });
+
   it("is not taken for a server that is out of reach when the world is somebody else's", async () => {
     const { admin, ofAdmin } = await start();
     const errors = expectErrors();
