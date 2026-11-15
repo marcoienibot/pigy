@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.sw.tsbuildinfo",
+    // What a service worker has, which is not what a page has.
+    "lib": ["ES2023", "WebWorker"],
+    "types": []
+  },
+  // With its tests, which run in Node and use nothing of it.
+  "include": ["src/sw"]
+}

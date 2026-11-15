@@ -2,6 +2,7 @@
   "files": [],
   "references": [
     { "path": "./tsconfig.app.json" },
+    { "path": "./tsconfig.sw.json" },
     { "path": "./tsconfig.node.json" }
   ],
   // Repeated from tsconfig.app.json for the shadcn CLI, which only reads this file.
