@@ -224,7 +224,8 @@ export function worldPageUrl(url: string, origin: string): string {
  * if it stands for none that a browser may open.
  *
  * A browser may open the pages that are there for a person, which are the
- * ones where they consent to a connection: `/oauth/authorize` on Mastodon.
+ * ones where they consent to a connection: `/oauth/authorize`, on Mastodon
+ * and on the authorization servers of Bluesky alike.
  * The rest of a simulated network is its API, which is for the adapters.
  */
 export function worldPage(path: string, search: string): URL | undefined {
