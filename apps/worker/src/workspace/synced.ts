@@ -47,6 +47,8 @@ const synced = {
       status: channels.status,
       connectedAt: channels.connectedAt,
       expiresAt: channels.expiresAt,
+      limits: channels.limits,
+      limitsCheckedAt: channels.limitsCheckedAt,
     },
   },
 } satisfies {

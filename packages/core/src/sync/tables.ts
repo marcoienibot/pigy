@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { idSchema } from "../id.ts";
+import { limitsSchema } from "../network/limits.ts";
 import { networkSchema } from "../network/network.ts";
 
 /**
@@ -120,6 +121,15 @@ export const channelRowSchema = z.strictObject({
    * network where it does. Null where no end is known.
    */
   expiresAt: timeSchema.nullable(),
+  /**
+   * What the account may post, as its network said when it was last asked:
+   * `validateContent` checks content against it, in the browser while
+   * somebody types and on the server before a post is sent. Null until the
+   * network has answered once.
+   */
+  limits: limitsSchema.nullable(),
+  /** When the network last said so. Null with `limits`. */
+  limitsCheckedAt: timeSchema.nullable(),
 });
 
 /** The schema of a row of every synced table, by the name of the table. */

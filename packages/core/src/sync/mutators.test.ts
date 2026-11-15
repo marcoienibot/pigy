@@ -215,7 +215,25 @@ function account(fields: Record<string, unknown> = {}) {
     avatarUrl: "https://mastodon.example/avatars/ada.png",
     profileUrl: "https://mastodon.example/@ada",
     expiresAt: null,
+    limits,
     ...fields,
+  };
+}
+
+/** What the instance of the account lets it post. */
+const limits = {
+  network: "mastodon",
+  maxCharacters: 500,
+  charactersPerUrl: 23,
+} as const;
+
+/** The channel that `account()` is stored as when it is connected at `at`. */
+function channel(at: number, fields: Record<string, unknown> = {}) {
+  return {
+    ...account(fields),
+    status: "connected",
+    connectedAt: at,
+    limitsCheckedAt: at,
   };
 }
 
@@ -224,9 +242,7 @@ it("stores a connected account as a channel that is good to use", () => {
 
   workspace.mutate("channel.connect", account(), 1000, "server");
 
-  expect(workspace.rows("channel")).toEqual([
-    { ...account(), status: "connected", connectedAt: 1000 },
-  ]);
+  expect(workspace.rows("channel")).toEqual([channel(1000)]);
 });
 
 it("brings the channel of an account up to date when the account is connected again", () => {
@@ -239,6 +255,7 @@ it("brings the channel of an account up to date when the account is connected ag
     network: "mastodon",
     status: "needs_reconnect",
     connectedAt: 1000,
+    limitsCheckedAt: 1000,
   });
 
   // The server makes up a new ID every time: it does not know whether the
@@ -252,12 +269,69 @@ it("brings the channel of an account up to date when the account is connected ag
 
   // One channel, under the ID it had, because posts refer to it by that.
   expect(workspace.rows("channel")).toEqual([
-    {
-      ...account({ name: "Ada", expiresAt: 9000 }),
-      status: "connected",
-      connectedAt: 5000,
-    },
+    channel(5000, { name: "Ada", expiresAt: 9000 }),
   ]);
+});
+
+it("keeps the limits of a channel when its account is connected again and the network does not say", () => {
+  const workspace = memoryWorkspace();
+  workspace.mutate("channel.connect", account(), 1000, "server");
+
+  // The network was out of reach when it was asked what the account may
+  // post. What it said last time is better than nothing.
+  workspace.mutate(
+    "channel.connect",
+    account({ limits: null }),
+    5000,
+    "server",
+  );
+
+  expect(workspace.rows("channel")).toEqual([
+    { ...channel(5000), limitsCheckedAt: 1000 },
+  ]);
+});
+
+it("stores a channel without limits when the network has never said", () => {
+  const workspace = memoryWorkspace();
+
+  workspace.mutate(
+    "channel.connect",
+    account({ limits: null }),
+    1000,
+    "server",
+  );
+
+  expect(workspace.rows("channel")).toEqual([
+    { ...channel(1000, { limits: null }), limitsCheckedAt: null },
+  ]);
+});
+
+it("replaces the limits of a channel, and says when", () => {
+  const workspace = memoryWorkspace();
+  workspace.mutate("channel.connect", account(), 1000, "server");
+  const longer = { ...limits, maxCharacters: 5000 };
+
+  workspace.mutate(
+    "channel.setLimits",
+    { id: channelId, limits: longer },
+    7000,
+    "server",
+  );
+
+  expect(workspace.rows("channel")).toEqual([
+    { ...channel(1000, { limits: longer }), limitsCheckedAt: 7000 },
+  ]);
+  // The channel can be disconnected while its network is asked.
+  expect(
+    rejectionOf(() =>
+      workspace.mutate(
+        "channel.setLimits",
+        { id: otherChannelId, limits },
+        8000,
+        "server",
+      ),
+    ),
+  ).toBe("not_found");
 });
 
 it.each([
@@ -296,9 +370,7 @@ it("refuses to give a new channel the ID of another", () => {
 
   // Storing it would have replaced the channel of the first account.
   expect(code).toBe("already_exists");
-  expect(workspace.rows("channel")).toEqual([
-    { ...account(), status: "connected", connectedAt: 1000 },
-  ]);
+  expect(workspace.rows("channel")).toEqual([channel(1000)]);
 });
 
 it.each([
@@ -308,6 +380,8 @@ it.each([
   ["a network that pigy does not know", { network: "myspace" }],
   ["a status", { status: "needs_reconnect" }],
   ["an empty handle", { handle: "" }],
+  // Limits name their network, and say nothing that pigy does not know.
+  ["limits of no network", { limits: { maxCharacters: 500 } }],
 ])("refuses to store a channel with %s", (_name, fields) => {
   const workspace = memoryWorkspace();
 
@@ -332,6 +406,7 @@ it("removes a channel, and accepts that it is gone already", () => {
 
 it.each([
   ["channel.connect", account()],
+  ["channel.setLimits", { id: channelId, limits }],
   ["channel.disconnect", { id: channelId }],
 ])("refuses %s from a client", (name, args) => {
   const workspace = memoryWorkspace();
@@ -342,9 +417,7 @@ it.each([
   expect(rejectionOf(() => workspace.mutate(name, args, 2000, "client"))).toBe(
     "not_allowed",
   );
-  expect(workspace.rows("channel")).toEqual([
-    { ...account(), status: "connected", connectedAt: 1000 },
-  ]);
+  expect(workspace.rows("channel")).toEqual([channel(1000)]);
 });
 
 it("lets the server run what a client may", () => {

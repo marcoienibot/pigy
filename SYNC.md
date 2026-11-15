@@ -1,6 +1,6 @@
 # pigy sync protocol
 
-How a client keeps a copy of a workspace and changes it. Protocol version 2, schema version 2.
+How a client keeps a copy of a workspace and changes it. Protocol version 2, schema version 3.
 
 This document is the contract between the server and any client: the browser store of the app, or anything else. It is meant to be enough to write a client from. The message schemas, the row schemas, the mutators, the limits and the versions are code in `packages/core/src/sync`, and a client should use them rather than copy them. The server is `apps/worker/src/workspace`. `apps/worker/test/sync-client.ts` is a small client written from this document, which the tests of the server use. The client of the app is `packages/core/src/sync/client`, and what it takes from a browser is in `apps/web/src/sync`.
 
@@ -38,7 +38,7 @@ Every message is one text frame with one JSON object, which has a `type`. A fiel
 **`hello`** is the first message on every socket, and is sent once.
 
 ```json
-{ "type": "hello", "protocolVersion": 2, "schemaVersion": 2, "clientId": "0192…", "cursor": 42, "lastMutationId": 7 }
+{ "type": "hello", "protocolVersion": 2, "schemaVersion": 3, "clientId": "0192…", "cursor": 42, "lastMutationId": 7 }
 ```
 
 `cursor` is the `to` of the last patch that the client has applied, or `null` if it has applied no patch. `lastMutationId` is the `lastMutationId` of the last patch that the client has applied, or 0 if it has applied no patch. It says that the client knows what became of its mutations up to that one, and the server forgets what it kept to tell the client: see section 4.
@@ -95,7 +95,7 @@ Steps 1 to 4 belong in one transaction of the local store: the rows, the cursor,
 **`error`** says what the client did wrong. The server then closes the socket with the code 4400.
 
 ```json
-{ "type": "error", "code": "version_mismatch", "message": "…", "protocolVersion": 2, "schemaVersion": 2 }
+{ "type": "error", "code": "version_mismatch", "message": "…", "protocolVersion": 2, "schemaVersion": 3 }
 ```
 
 `protocolVersion` and `schemaVersion` are what the server speaks. The codes:
@@ -137,17 +137,19 @@ Some mutators are the server's own. A client that sends one has it rejected with
 | Name | Does |
 | --- | --- |
 | `channel.connect` | Stores an account that was just connected as a channel with the status `connected`. An account that has a channel keeps it, under the ID it had |
+| `channel.setLimits` | Replaces what the account of a channel may post, when its network has been asked again |
 | `channel.disconnect` | Removes a channel. Does nothing if the channel is gone |
 
 They are the server's because a channel stands for something that only the server has: the credentials of the account. A channel that a client made up would have none, and one that a client dropped would leave them behind, still good at the network. So an account is connected and disconnected over HTTP, through the routes that `packages/core/src/connect.ts` describes, and a client learns of the outcome as it learns of every change.
 
 ### Channels
 
-A row of `channel` is a connected account: its network, the network's ID of the account, the handle, the name, the addresses of its picture and of its page, the status, when it was connected and when its access ends. A workspace has at most one channel per network and account. The credentials are no part of the row. They are in a column that is not synced, and no message carries them.
+A row of `channel` is a connected account: its network, the network's ID of the account, the handle, the name, the addresses of its picture and of its page, the status, when it was connected, when its access ends, and what the account may post. A workspace has at most one channel per network and account. The credentials are no part of the row. They are in a column that is not synced, and no message carries them.
 
 - `status` is `connected`, or `needs_reconnect` once the network has refused the access of the channel. Connecting the account again brings the channel back to `connected`, under the same ID.
 - `avatarUrl` and `profileUrl` are HTTPS addresses that a browser can open, or null. They are null for every account of a simulated network, which has no addresses.
 - `expiresAt` is null on the networks whose access does not end, such as Mastodon.
+- `limits` is what the account may post, as its network said at `limitsCheckedAt`: the object that `validateContent` in `packages/core` checks content against, which names its network. The server asks when the account is connected, and again before it publishes to the channel if the answer is more than a day old. Both are null for a channel whose network has not answered yet. A client that counts characters while somebody types goes by `limits`, and does not refuse what it cannot check: the server checks before it sends.
 
 Every mutation that a client sends is processed exactly once, and one of three things happens: it changes rows, it changes nothing, or it is rejected. All three are final. A mutation is also rejected, not refused as a message, if its name is unknown (`unknown_mutation`), its arguments are not what the mutator takes (`invalid_arguments`), or its mutator fails on it, which is a bug in the server (`internal_error`). Otherwise a client would send it again for ever, and none of its later mutations would get through. It is another matter when the database of the workspace fails under a mutator, because it is full, for example: sent again later, the mutation can go through. The server then processes nothing of the message and closes the socket with 1011.
 

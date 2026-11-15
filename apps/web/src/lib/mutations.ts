@@ -9,9 +9,10 @@ const refused: Record<MutatorName, string> = {
   "post.create": "A new draft was not saved",
   "part.setText": "An edit was not saved",
   "post.delete": "A draft was not deleted",
-  // Only the server runs these two, so no copy holds one that the app
+  // Only the server runs the ones below, so no copy holds one that the app
   // made. They are named all the same: the list is of every mutator.
   "channel.connect": "An account was not connected",
+  "channel.setLimits": "The limits of an account were not updated",
   "channel.disconnect": "An account was not disconnected",
 };
 

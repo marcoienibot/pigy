@@ -938,6 +938,7 @@ function connectedAccount(fields: { name?: string } = {}) {
     avatarUrl: null,
     profileUrl: "https://mastodon.example/@ada",
     expiresAt: null,
+    limits: null,
     ...fields,
   };
 }

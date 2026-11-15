@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { idSchema } from "../id.ts";
+import { limitsSchema } from "../network/limits.ts";
 import { channelRowSchema, maxPartTextLength } from "./tables.ts";
 import type { Transaction } from "./transaction.ts";
 
@@ -140,9 +141,17 @@ export const mutators = {
    * for it already, that channel is brought up to date and keeps its ID,
    * and `id` is not used. The server runs this when a network has handed it
    * the access to the account, and stores that access with the channel.
+   *
+   * `limits` is what the network said the account may post, or null if it
+   * could not be asked: a channel that has limits from before keeps them
+   * then.
    */
   "channel.connect": mutator(
-    channelRowSchema.omit({ status: true, connectedAt: true }),
+    channelRowSchema.omit({
+      status: true,
+      connectedAt: true,
+      limitsCheckedAt: true,
+    }),
     (tx, channel) => {
       const existing = tx
         .find("channel", "accountId", channel.accountId)
@@ -158,7 +167,30 @@ export const mutators = {
         id: existing?.id ?? channel.id,
         status: "connected",
         connectedAt: tx.now,
+        limits: channel.limits ?? existing?.limits ?? null,
+        limitsCheckedAt: channel.limits
+          ? tx.now
+          : (existing?.limitsCheckedAt ?? null),
       });
+    },
+    { serverOnly: true },
+  ),
+
+  /**
+   * Stores what the account of a channel may post, as its network has just
+   * said. The server runs this when it has asked the network again.
+   */
+  "channel.setLimits": mutator(
+    z.strictObject({ id: idSchema, limits: limitsSchema }),
+    (tx, { id, limits }) => {
+      const channel = tx.get("channel", id);
+      if (!channel) {
+        throw new MutationRejected(
+          "not_found",
+          "This account is no longer connected",
+        );
+      }
+      tx.put("channel", { ...channel, limits, limitsCheckedAt: tx.now });
     },
     { serverOnly: true },
   ),

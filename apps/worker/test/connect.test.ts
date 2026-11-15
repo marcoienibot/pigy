@@ -85,11 +85,37 @@ it("connects a simulated account to a sandbox without leaving the Worker", async
       connectedAt: test.clock.time.getTime(),
       // A token of Mastodon's does not run out.
       expiresAt: null,
+      // What the simulated server lets its accounts post, read from it.
+      limits: { network: "mastodon", maxCharacters: 500, charactersPerUrl: 23 },
+      limitsCheckedAt: test.clock.time.getTime(),
     },
   ]);
   // Everything was answered by the simulated world of the sandbox: nothing
   // went to where the real networks are.
   expect(test.network.requests).toEqual([]);
+});
+
+it("connects an account whose limits cannot be read, without them", async () => {
+  const { test, browser, workspaces } = await start();
+  const warnings = expectWarnings();
+  const url = await consentUrl(browser, workspaces.live, realMastodonDomain);
+  const callback = await consentAtNetwork(test, url);
+  // The server fails the next time it is asked about itself, which is when
+  // the app asks what the account may post: it has handed over the access
+  // by then.
+  test.network.mastodon.arm({ kind: "server-error", operation: "instance" });
+
+  const outcome = outcomeOf(await browser.fetch(pathOf(callback)));
+
+  // The access was given, and is not thrown away for a question that can
+  // be asked again later.
+  expect(outcome.connect).toBe("connected");
+  expect(await channelsOf(browser, workspaces.live)).toMatchObject([
+    { status: "connected", limits: null, limitsCheckedAt: null },
+  ]);
+  expect(warnings).toHaveBeenCalledWith(
+    `The limits of an account were not read: ${realMastodonDomain} is having trouble (HTTP 503).`,
+  );
 });
 
 it("connects a real account to a live workspace through the fetch of the app", async () => {

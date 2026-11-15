@@ -1,6 +1,7 @@
 import {
   channelStatuses,
   environments,
+  type Limits,
   networks,
   postStatuses,
   type RejectionCode,
@@ -62,6 +63,8 @@ export const channels = sqliteTable(
     status: text("status", { enum: channelStatuses }).notNull(),
     connectedAt: integer("connected_at").notNull(),
     expiresAt: integer("expires_at"),
+    limits: text("limits", { mode: "json" }).$type<Limits>(),
+    limitsCheckedAt: integer("limits_checked_at"),
 
     // The columns below are not synced: synced.ts does not list them, so
     // they never leave the object. `connectChannel` of store.ts writes them

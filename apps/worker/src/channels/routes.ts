@@ -13,7 +13,12 @@ import {
   sandboxServers,
   uuidv7,
 } from "@pigy/core";
-import { type Account, type Json, ProviderError } from "@pigy/providers";
+import {
+  type Account,
+  type Json,
+  type Provider,
+  ProviderError,
+} from "@pigy/providers";
 import { drizzle } from "drizzle-orm/d1";
 import { type Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -331,6 +336,25 @@ async function giveBack(
 }
 
 /**
+ * What the account that was just connected may post, or null if the network
+ * does not say. It never throws: the account is connected by now, and a
+ * channel without limits gets them when something is published to it.
+ */
+async function limitsOf(provider: Provider, credentials: Json) {
+  try {
+    return await provider.limits(credentials);
+  } catch (error) {
+    if (error instanceof ProviderError) {
+      // Its message holds no secret.
+      console.warn(`The limits of an account were not read: ${error.message}`);
+    } else {
+      console.error("The limits of an account were not read", loggable(error));
+    }
+    return null;
+  }
+}
+
+/**
  * Under `/connect`: where a network sends the browser back to, with the
  * answer to a connection that began with `POST …/connect`.
  *
@@ -417,6 +441,7 @@ export function connectCallbackRoutes(
       const channel = {
         network,
         ...channelOf(account, access.expiresAt, connection.reach, now()),
+        limits: await limitsOf(connection.provider, access.credentials),
       };
       const stored = await connectChannel(c.env.WORKSPACE, workspace, channel, {
         credentials: await vault.seal(
