@@ -4,7 +4,7 @@ import { errorResponseSchema, sandboxMastodonDomain } from "@pigy/core";
 import { createWorld, simulationNotice } from "@pigy/simulators/world";
 import { describe, expect, it } from "vitest";
 import { mastodonApps } from "../src/db/schema.ts";
-import { worldFetch } from "../src/sim/world.ts";
+import { WorldHostMissing, worldFetch } from "../src/sim/world.ts";
 import {
   channelsOf,
   connectInSandbox,
@@ -25,6 +25,7 @@ import {
   realMastodonDomain,
   setup,
   signedIn,
+  type TestSetup,
 } from "./helpers.ts";
 import { identityOf, workspaceIds } from "./sync-client.ts";
 
@@ -230,6 +231,29 @@ describe("where a workspace reaches the networks", () => {
   });
 });
 
+/**
+ * Arms the fault that a person arms in their sandbox to see what pigy does
+ * when a connection breaks: the simulated Mastodon server of the world
+ * loses its answer to the next request for its description.
+ */
+function armLostAnswer(
+  { clock }: Pick<TestSetup, "clock">,
+  workspaceId: string,
+) {
+  return runInDurableObject(
+    env.SIM_WORLD.getByName(workspaceId),
+    (_, state) => {
+      createWorld({
+        storage: state.storage.kv,
+        now: () => clock.time,
+      }).faults.arm("mastodon", {
+        kind: "lost-response",
+        operation: "instance",
+      });
+    },
+  );
+}
+
 describe("what goes wrong inside a simulated world", () => {
   it("is not taken for a server that is out of reach when the world is somebody else's", async () => {
     const { admin, ofAdmin } = await start();
@@ -266,23 +290,39 @@ describe("what goes wrong inside a simulated world", () => {
     );
   });
 
+  it("tells a host that the world does not have from an answer that got lost", async () => {
+    const { test, ofAdmin } = await start();
+    const sandbox = await identityOf(test, ofAdmin.sandbox);
+    const fetch = worldFetch(env.SIM_WORLD, sandbox);
+    const failure = (host: string) =>
+      fetch(`https://${host}/api/v2/instance`).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+    // A world with its server, and a fault that waits for the next request
+    // to that server.
+    expect(await failure(sandboxMastodonDomain)).toBeUndefined();
+    await armLostAnswer(test, ofAdmin.sandbox);
+
+    const missing = await failure(realMastodonDomain);
+    const lost = await failure(sandboxMastodonDomain);
+
+    // Both fail the way a `fetch` does, and only the first is for good.
+    expect(missing).toBeInstanceOf(WorldHostMissing);
+    expect(missing).toMatchObject({ host: realMastodonDomain });
+    expect(lost).toBeInstanceOf(TypeError);
+    expect(lost).not.toBeInstanceOf(WorldHostMissing);
+    // The request for the host that no network of the world has went to
+    // none of them: the fault was still there for the request after it.
+    expect(lost).toMatchObject({
+      message: "The simulated Mastodon lost its answer on the way back",
+    });
+  });
+
   it("is a server out of reach when a simulated server loses its answer", async () => {
     const { test, admin, ofAdmin } = await start();
     expectErrors();
-    // The fault that a person arms in their sandbox to see what pigy does
-    // when a connection breaks.
-    await runInDurableObject(
-      env.SIM_WORLD.getByName(ofAdmin.sandbox),
-      (_, state) => {
-        createWorld({
-          storage: state.storage.kv,
-          now: () => test.clock.time,
-        }).faults.arm("mastodon", {
-          kind: "lost-response",
-          operation: "instance",
-        });
-      },
-    );
+    await armLostAnswer(test, ofAdmin.sandbox);
 
     const response = await startConnect(admin, ofAdmin.sandbox, {
       network: "mastodon",

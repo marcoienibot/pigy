@@ -195,6 +195,20 @@ describe("the hosts it answers for", () => {
     ).rejects.toThrow(TypeError);
   });
 
+  it("says which hosts are its own", () => {
+    const { simulator } = setup();
+    simulator.addInstance("social.test");
+    expect(simulator.owns(domain)).toBe(true);
+    expect(simulator.owns("social.test")).toBe(true);
+    // The hosts that `fetch` fails for, above.
+    expect(simulator.owns("mastodon.social")).toBe(false);
+    expect(simulator.owns(`${domain}:8443`)).toBe(false);
+    // No part of a domain, and nothing that is in the world under
+    // another kind of key.
+    expect(simulator.owns("example")).toBe(false);
+    expect(simulator.owns("")).toBe(false);
+  });
+
   it("has only instances with names that cannot exist", () => {
     const { simulator } = setup();
     // A simulated instance must never be taken for a real server.

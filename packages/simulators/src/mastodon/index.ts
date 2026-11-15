@@ -90,6 +90,13 @@ export type MastodonSimulator = {
    */
   fetch: Fetch;
   /**
+   * Whether `host` is one of this simulator's own: the domain of an
+   * instance of the world. `host` is that of an address, as `URL.host` has
+   * it. Whoever has the simulators of several networks asks each, and
+   * hands a request to the one that owns its host.
+   */
+  owns(host: string): boolean;
+  /**
    * Adds an instance to the world. Its domain must be under `.example`,
    * `.test` or `.invalid`, which are reserved: no real server has such a
    * name, so a simulated instance can never be taken for a real one, and a
@@ -428,6 +435,9 @@ export function createMastodonSimulator(world: SimWorld): MastodonSimulator {
         ? apiError(404, "Not Found")
         : html(404, "<!doctype html><title>Not found</title>");
     },
+
+    // A host with a port is no domain of an instance, so it is not owned.
+    owns: (host) => state.instances.get(host) !== undefined,
 
     addInstance(domain, options = {}) {
       if (!reservedDomain.test(domain)) {

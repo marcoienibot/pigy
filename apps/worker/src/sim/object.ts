@@ -22,12 +22,14 @@ export type WorldRequest = {
 };
 
 /**
- * What a simulated network answers a request with, whole as well.
- * `unreachable` stands for the failure of a `fetch` that got no answer: the
- * world has no such host, or a fault made the answer get lost.
+ * What a simulated network answers a request with, whole as well. The
+ * other two stand for the failure of a `fetch` that got no answer:
+ * `noSuchHost` if no network of the world has the host of the request,
+ * which is for good, and `unreachable` if a fault made the answer get lost.
  */
 export type WorldAnswer =
   | { status: number; headers: [string, string][]; body: ArrayBuffer }
+  | { noSuchHost: string }
   | { unreachable: string };
 
 // The accounts that a new world has, for a person to connect as.
@@ -72,8 +74,6 @@ export function simWorldObject({ now }: { now: Clock }) {
         return undefined;
       }
       const world = createWorld({ storage: this.ctx.storage.kv, now });
-      // The simulators of the networks. The one that has the host of the
-      // request answers: each fails for every host that is not its own.
       const mastodon = createMastodonSimulator(world);
       if (!this.ctx.storage.kv.get(seededKey)) {
         mastodon.addInstance(sandboxMastodonDomain);
@@ -82,16 +82,26 @@ export function simWorldObject({ now }: { now: Clock }) {
         }
         this.ctx.storage.kv.put(seededKey, true);
       }
+      // The simulators of the networks. Each says which hosts are its own,
+      // and the one that owns the host of the request answers it. They are
+      // not tried in turn: a simulator fails for a host that is not its own
+      // the same way as for an answer that a fault loses, so going on to
+      // the next would take a fault of one network for a host of another.
+      const simulators = [mastodon];
+      const { host } = new URL(url);
+      const simulator = simulators.find((candidate) => candidate.owns(host));
+      if (!simulator) return { noSuchHost: host };
       try {
-        const response = await mastodon.fetch(url, { method, headers, body });
+        const response = await simulator.fetch(url, { method, headers, body });
         return {
           status: response.status,
           headers: [...response.headers],
           body: await response.arrayBuffer(),
         };
       } catch (error) {
-        // What `fetch` fails with when no answer comes. Anything else is a
-        // bug in a simulator, and is not passed off as the network's.
+        // What `fetch` fails with when no answer comes: the simulator has
+        // lost its answer, as a fault told it to. Anything else is a bug in
+        // a simulator, and is not passed off as the network's.
         if (error instanceof TypeError) return { unreachable: error.message };
         throw error;
       }

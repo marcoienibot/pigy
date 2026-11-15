@@ -8,10 +8,25 @@ import type { WorkspaceIdentity } from "../workspace/store.ts";
  */
 
 /**
+ * What the `fetch` of a simulated world fails with for a host that the
+ * world does not have. It is a TypeError, which is what a `fetch` fails
+ * with when a host cannot be reached, so an adapter takes it for that.
+ * Unlike on the internet it is for good: a world has the hosts that it
+ * has, and trying again later finds the same.
+ */
+export class WorldHostMissing extends TypeError {
+  constructor(readonly host: string) {
+    super(`The simulated world has no host ${host}`);
+  }
+}
+
+/**
  * A `fetch` that the simulated world of the sandbox `workspace` answers.
  * It never leaves the Worker: a request goes to the Durable Object of the
- * world and to nothing else, whatever its address, and a host that the
- * world does not have fails as one that cannot be reached.
+ * world and to nothing else, whatever its address. It fails as a `fetch`
+ * does that got no answer, with a TypeError, for a host that the world
+ * does not have and for an answer that a fault made a simulator lose.
+ * Anything else that it throws is a failure of pigy's, not of a network.
  */
 export function worldFetch(
   namespace: Bindings["SIM_WORLD"],
@@ -35,7 +50,8 @@ export function worldFetch(
         `The simulated world of workspace ${workspace.id} is another workspace's`,
       );
     }
-    // What `fetch` does when a host cannot be reached.
+    if ("noSuchHost" in answer) throw new WorldHostMissing(answer.noSuchHost);
+    // What `fetch` does when a connection breaks.
     if ("unreachable" in answer) throw new TypeError(answer.unreachable);
     const { status, headers, body } = answer;
     // An answer with one of these statuses has no body, not even an empty

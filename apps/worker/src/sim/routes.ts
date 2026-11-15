@@ -4,7 +4,7 @@ import { requireUser } from "../auth/guards.ts";
 import type { AppDependencies, AppEnv } from "../env.ts";
 import { handleNotFound } from "../errors.ts";
 import { workspacesOf } from "../workspace/workspaces.ts";
-import { worldFetch, worldPage } from "./world.ts";
+import { WorldHostMissing, worldFetch, worldPage } from "./world.ts";
 
 /**
  * Under `/sim/network`: the pages of the simulated networks, where a person
@@ -45,8 +45,7 @@ export function simRoutes(dependencies: AppDependencies): Hono<AppEnv> {
         ...(c.req.method === "POST" && { body: await c.req.arrayBuffer() }),
       });
     } catch (error) {
-      // The world has no such host.
-      if (error instanceof TypeError) return handleNotFound(c);
+      if (error instanceof WorldHostMissing) return handleNotFound(c);
       throw error;
     }
   });
