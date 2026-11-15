@@ -590,10 +590,19 @@ export function createMastodonProvider({
    * So a status that reads differently, stands elsewhere, is seen by
    * others or has more than text is never taken for the one that is looked
    * for. What can be taken for it is a status that is the same in all of
-   * that and newer than this delivery: the person posted the same by hand
-   * since, or a second delivery of the same text went to the account at
-   * the same time. Posting next to that would make two statuses that
-   * nobody can tell apart, so taking it is right too.
+   * that and newer than this delivery. The caller runs the deliveries to
+   * an account one after the other, as the contract of `publishStep` asks,
+   * so that is no post of another delivery: the person has posted the same
+   * since, by hand or with another app. Posting next to that would make
+   * two statuses that nobody can tell apart, so taking it is right.
+   *
+   * It holds only under that rule. Two deliveries that begin together with
+   * the same first part note the same status, and the second takes the
+   * first part of the other for its own: it replies to it, and deleting
+   * either delivery deletes it. A status says nothing of the request that
+   * made it, so nothing here can tell the two apart. Only a first part is
+   * at stake. A later one replies to the part before it, which no other
+   * delivery has.
    *
    * Not found is a status that somebody has edited or deleted since. The
    * part is then posted again.

@@ -297,13 +297,23 @@ export type Provider = {
    *    that began and left no outcome from being run again by itself. No
    *    provider of this kind exists yet. The first settles how.
    *
-   * Two things no provider can see to, so the caller does:
+   * Three things no provider can see to, so the caller does:
    *
    * - A step is run again only when the run before it is over. A request
    *   that is still on its way, or still being worked on, shows nowhere
    *   yet. So there is one run at a time per key, and after `retry` the
    *   caller waits: until the time the error names, and when it names
    *   none, longer than a network takes over a request.
+   * - Deliveries to one account run one after the other. The first step
+   *   of a delivery is run only when every delivery to the account that
+   *   began before it has ended: it is done, or it has failed and will
+   *   not be taken up again from its recorded progress. A provider tells
+   *   what a delivery has published from everything else on the account
+   *   by what its first step recorded, such as where the account's posts
+   *   stood. Two deliveries that begin together with the same first part
+   *   record the same, and one takes the other's post for its own: it
+   *   replies to it, and the post goes when either delivery is deleted.
+   *   No provider can tell the two apart.
    * - What a person has deleted or changed on the network since is no
    *   longer what a step looks for, and may be published again.
    */

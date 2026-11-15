@@ -278,7 +278,7 @@ Simulator state lives in a `SimWorldDO` per user, so one person's simulated post
 ## 8. Publishing pipeline
 
 1. A post becomes due: the user chose "now", or the WorkspaceDO alarm fired.
-2. The WorkspaceDO marks the post `sending` and starts one `PublishWorkflow` per target, with an ID derived from the target so that a second start is a no-op.
+2. The WorkspaceDO marks the post `sending` and starts one `PublishWorkflow` per target, with an ID derived from the target so that a second start is a no-op. A target whose channel has another delivery under way waits for it to end, as described below.
 3. The workflow runs durable steps, each with at most one request that changes something on a network: upload each media item, publish part 1, publish part 2 as a reply, and so on. Each result is written back to the WorkspaceDO as it happens, so the UI shows progress live.
 4. Transient failures (rate limit, server error, timeout) retry with backoff. Permanent failures (invalid content, revoked access) stop, mark the target `error` with a readable reason, and send a notification. So does a failure that leaves open whether a post was published, on a network where pigy cannot find out: the reason then asks the person to look before they retry.
 5. If a thread fails midway, the sent parts stay recorded. "Retry" continues from the failed part and never re-posts a sent one.
@@ -295,6 +295,8 @@ How the workflow and an adapter share the work:
   - `reconnect` ends it and marks the channel.
   - `uncertain` ends it with the message, which asks the person to look at the account. The workflow does not run the step again by itself. If the person finds nothing and presses "Retry", the step runs again from the recorded progress, and sends.
 - Before a step is run again, the run before it has to be over: a request that is still on its way to a network, or still being worked on there, shows nowhere yet. So a target has one run at a time, and the backoff after `retry` starts at a minute, which is longer than an adapter waits for an answer.
+- The deliveries to one channel run one at a time. A target takes its first step only when every target of the same channel that began before it has ended, and until then it waits its turn in the WorkspaceDO, which starts the workflows. An adapter tells the posts of a delivery from everything else on the account by what its first step recorded: Mastodon's by the status that was the account's newest then. Two deliveries to one account that begin together, "Hi" with the reply "a" and "Hi" with the reply "b", record the same status, and the second takes the "Hi" of the first for its own. It replies to it with "b", so one thread holds parts of both, and deleting either post in pigy deletes the first status of the other. No adapter can prevent that. One at a time, each delivery records where the account stands after the one before it has ended.
+- A target has ended, for that rule, when it is done, or when it has failed and is not taken up again. A failed target that "Retry" can still continue has not ended: it goes on from what it recorded when it began, and what has gone to the channel since is newer than that. On Mastodon only a target without a published part is concerned, because a later part is found as the reply to the part before it, which no other delivery has. Phase 3b decides how such a target and the rule go together: later targets of the channel wait until it is retried or dismissed, or they pass, and a "Retry" after that starts over as a new delivery, which no longer finds a first part whose answer was lost.
 - A step may ask for a wait before the next one, which is how Threads gets the time to prepare a post, and how media will get the time to be processed.
 - The progress lists the published parts one by one. "Retry" starts a new run from the progress that was recorded, with the same key.
 - The key names the delivery: the ID of the target. It is what Mastodon's idempotency keys are made from, so publishing a post a second time on purpose takes a new key.
@@ -310,7 +312,7 @@ Avoiding duplicates when a step is run again. A step may have reached the networ
 
 What this guarantees: no part is published twice, however late a step is run again, as long as the run before it is over and what it published is still on the network as it was published. A status that the person has edited or deleted in the meantime is not found, and is posted again.
 
-The rule by which Mastodon's adapter finds a status cannot take another post for the one it looks for unless that post says the same in the same place to the same readers, has nothing but its text, and is newer than the delivery: the person posted the text by hand in the meantime, or a second delivery of the same text went to the same account at the same time. The two would have been duplicates.
+The rule by which Mastodon's adapter finds a status cannot take another post for the one it looks for unless that post says the same in the same place to the same readers, has nothing but its text, and is newer than the delivery: the person posted the text in the meantime, by hand or with another app. The two would have been duplicates. It is never the post of another delivery of pigy's, because the deliveries to a channel run one at a time. Without that rule the claim would not hold.
 
 The text of a status is not the text that was sent. Mastodon drops the whitespace around it, and it writes every mention of an account that it finds the way the account is written: on mastodon.example, `@ADA@mastodon.example` is saved as `@ada`, and `@gargron@mastodon.social` as `@Gargron@mastodon.social`. Which accounts a server finds, only the server knows, so the adapter does not rewrite as Mastodon does. It compares the two texts with every mention reduced to its name in lower case. A status that differs from a part only in the case or the domain of a mention is therefore taken for it. It still has to be the account's own, newer than the delivery and in the same place, so only the person can have written it, by hand, and it reads as the part does.
 
@@ -482,6 +484,7 @@ To confirm when the relevant phase starts:
 - Whether Bluesky video upload works with the OAuth scopes pigy requests.
 - LinkedIn's behaviour on duplicate content, and the current API version string.
 - How a LinkedIn step that was cut off after it sent is kept from being run again, see the end of section 8.
+- How the publishing workflow keeps the deliveries to one channel to one at a time, and what "Retry" does with a failed target that has published no part once later deliveries have gone to the channel, see section 8.
 - Current media size and duration limits per network.
 - Workflows support in the Workers Vitest pool, which has had isolation caveats. WebSockets to Durable Objects were confirmed in phase 2a: they work, hibernation included.
 - Whether usage fits the Cloudflare free plan.
