@@ -72,6 +72,8 @@ it("answers the first hello of a client with a snapshot", async () => {
     post: [{ id: postId, status: "draft", createdAt, updatedAt: createdAt }],
     post_part: [{ id: partId, postId, position: 0, text: "Hello" }],
     channel: [],
+    post_target: [],
+    target_part_result: [],
   });
 });
 
@@ -453,7 +455,7 @@ it("answers mutations that were all rejected, and tells nobody else", async () =
   client.send({
     type: "mutate",
     mutations: [
-      { id: client.nextMutationId++, name: "post.publish", args: {} },
+      { id: client.nextMutationId++, name: "post.archive", args: {} },
       {
         id: client.nextMutationId++,
         name: "post.create",

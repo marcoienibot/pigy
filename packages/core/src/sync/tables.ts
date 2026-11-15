@@ -58,6 +58,15 @@ export const postPartRowSchema = z.strictObject({
   text: z.string().max(maxPartTextLength),
 });
 
+/** `parts`, which are those of one post, in the order they are read in. */
+export function inReadingOrder<Part extends { id: string; position: number }>(
+  parts: readonly Part[],
+): Part[] {
+  return [...parts].sort(
+    (a, b) => a.position - b.position || (a.id < b.id ? -1 : 1),
+  );
+}
+
 /** Whether pigy can act for the account of a channel. */
 export const channelStatuses = [
   /** It can, as far as pigy knows. */
@@ -132,11 +141,99 @@ export const channelRowSchema = z.strictObject({
   limitsCheckedAt: timeSchema.nullable(),
 });
 
+/** How far the delivery of a post to one channel has come. */
+export const targetStatuses = [
+  /** The channel is chosen. Nobody has asked for the post to be sent. */
+  "pending",
+  /**
+   * The post is to be sent, and the target waits its turn: the deliveries
+   * to one channel go out one after the other.
+   */
+  "queued",
+  /** The post is on its way to the channel. */
+  "sending",
+  /** Every part is published. */
+  "sent",
+  /**
+   * The delivery failed, and `error` says why. The parts that were
+   * published before stay published, and are listed. It can be tried again.
+   */
+  "error",
+  /**
+   * The delivery ended and nobody knows how: a part may be published
+   * without pigy knowing. A person has to look at the account before they
+   * ask for another try. `error` says so.
+   */
+  "uncertain",
+] as const;
+
+export const targetStatusSchema = z.enum(targetStatuses);
+
+export type TargetStatus = z.infer<typeof targetStatusSchema>;
+
+/** The longest values that a target and the result of a part hold. */
+export const targetLimits = {
+  errorLength: 1000,
+  remoteIdLength: 300,
+} as const;
+
+/**
+ * The delivery of a post to one channel. A post has at most one target per
+ * channel. The target outlives its channel: when the account is
+ * disconnected, `channelId` names a channel that is no longer there.
+ */
+export const postTargetRowSchema = z.strictObject({
+  id: idSchema,
+  postId: idSchema,
+  channelId: idSchema,
+  status: targetStatusSchema,
+  /**
+   * How often the delivery was begun: 0 until the first time, and one more
+   * for every time it is taken up again after a failure.
+   */
+  attempt: z.number().int().nonnegative(),
+  /**
+   * Why the delivery failed, for the person. Null unless the status is
+   * `error` or `uncertain`.
+   */
+  error: z.string().min(1).max(targetLimits.errorLength).nullable(),
+  /**
+   * When the delivery was last asked for, by publishing the post or by
+   * trying the target again. The targets of one channel are sent in this
+   * order. Null while the target is `pending`.
+   */
+  queuedAt: timeSchema.nullable(),
+  /** When the last part was published. Null unless the status is `sent`. */
+  sentAt: timeSchema.nullable(),
+});
+
+/**
+ * Where one part of a post stands on the network of a target, once it is
+ * published there. A thread goes out part by part, and so do these rows.
+ */
+export const targetPartResultRowSchema = z.strictObject({
+  id: idSchema,
+  targetId: idSchema,
+  partId: idSchema,
+  /**
+   * The network's ID of the post that the part is in. Parts that a network
+   * joins into one post share it.
+   */
+  remoteId: z.string().min(1).max(targetLimits.remoteIdLength),
+  /**
+   * A link to the post for people, or null: where the network gives none,
+   * and for a simulated network, whose posts no browser can open.
+   */
+  url: httpsUrlSchema.nullable(),
+});
+
 /** The schema of a row of every synced table, by the name of the table. */
 export const rowSchemas = {
   post: postRowSchema,
   post_part: postPartRowSchema,
   channel: channelRowSchema,
+  post_target: postTargetRowSchema,
+  target_part_result: targetPartResultRowSchema,
 } as const;
 
 export type TableName = keyof typeof rowSchemas;

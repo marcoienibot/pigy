@@ -151,7 +151,7 @@ it("accepts the deletion of a post that does not exist", () => {
 });
 
 it.each([
-  "post.publish",
+  "post.archive",
   // Properties that every object has. They are not mutators.
   "constructor",
   "toString",
@@ -432,4 +432,671 @@ it("lets the server run what a client may", () => {
   );
 
   expect(workspace.rows("post")).toHaveLength(1);
+});
+
+// Targets: where a post goes, and how far each delivery has come.
+
+const targetId = "01932c07-0000-7000-8000-000000000008";
+const otherTargetId = "01932c07-0000-7000-8000-000000000009";
+const resultId = "01932c07-0000-7000-8000-00000000000a";
+const otherResultId = "01932c07-0000-7000-8000-00000000000b";
+
+/**
+ * A workspace with two connected accounts and a draft of two parts, at the
+ * time 1000. No mutator adds a part yet, so the second is stored directly.
+ */
+function withDraft() {
+  const workspace = memoryWorkspace();
+  workspace.mutate("channel.connect", account(), 1000, "server");
+  workspace.mutate(
+    "channel.connect",
+    account({ id: otherChannelId, accountId: "2@mastodon.example" }),
+    1000,
+    "server",
+  );
+  workspace.mutate("post.create", { id: postId, partId, text: "One" }, 1000);
+  workspace.put("post_part", {
+    id: otherPartId,
+    postId,
+    position: 1,
+    text: "Two",
+  });
+  return workspace;
+}
+
+/** `withDraft()`, with the draft going to the first account. */
+function withTarget() {
+  const workspace = withDraft();
+  workspace.mutate("target.add", { id: targetId, postId, channelId }, 2000);
+  return workspace;
+}
+
+/** `withTarget()`, published, and with its delivery begun. */
+function sending() {
+  const workspace = withTarget();
+  workspace.mutate("post.publish", { id: postId }, 3000);
+  workspace.mutate("target.start", { id: targetId }, 4000, "server");
+  return workspace;
+}
+
+type Workspace = ReturnType<typeof memoryWorkspace>;
+
+const statusOf = (workspace: Workspace) => workspace.rows("post")[0]?.status;
+
+/** The targets of the post by their channel, as status and attempt. */
+const targetsOf = (workspace: Workspace) =>
+  Object.fromEntries(
+    workspace
+      .rows("post_target")
+      .map(({ channelId: channel, status, attempt }) => [
+        channel,
+        `${status} ${attempt}`,
+      ]),
+  );
+
+it("chooses a channel for a draft", () => {
+  const workspace = withTarget();
+
+  expect(workspace.rows("post_target")).toEqual([
+    {
+      id: targetId,
+      postId,
+      channelId,
+      status: "pending",
+      attempt: 0,
+      error: null,
+      queuedAt: null,
+      sentAt: null,
+    },
+  ]);
+  // Where a draft goes is part of the draft.
+  expect(workspace.rows("post")[0]?.updatedAt).toBe(2000);
+});
+
+it("keeps the target that came first when a channel is chosen twice", () => {
+  const workspace = withTarget();
+
+  // A second device chose the same channel before it had heard of the
+  // first, and made up an ID of its own.
+  workspace.mutate(
+    "target.add",
+    { id: otherTargetId, postId, channelId },
+    5000,
+  );
+
+  expect(workspace.rows("post_target").map(({ id }) => id)).toEqual([targetId]);
+  // Nothing changed, so the draft is as old as it was.
+  expect(workspace.rows("post")[0]?.updatedAt).toBe(2000);
+});
+
+it("takes a channel back from a draft, by the post and the channel", () => {
+  const workspace = withTarget();
+
+  workspace.mutate("target.remove", { postId, channelId }, 5000);
+  // Two devices can take the same channel back.
+  workspace.mutate("target.remove", { postId, channelId }, 6000);
+
+  expect(workspace.rows("post_target")).toEqual([]);
+  expect(workspace.rows("post")[0]?.updatedAt).toBe(5000);
+});
+
+it.each([
+  [
+    "a post that is gone",
+    { id: targetId, postId: otherPostId, channelId },
+    "not_found",
+  ],
+  [
+    "an account that is not connected",
+    { id: targetId, postId, channelId: otherPostId },
+    "not_found",
+  ],
+  [
+    "the ID of another target",
+    { id: targetId, postId, channelId: otherChannelId },
+    "already_exists",
+  ],
+])("refuses to send a draft to %s", (_name, args, code) => {
+  const workspace = withTarget();
+
+  expect(rejectionOf(() => workspace.mutate("target.add", args))).toBe(code);
+  expect(workspace.rows("post_target")).toHaveLength(1);
+});
+
+it("publishes a draft: the post is sending and its targets wait their turn", () => {
+  const workspace = withTarget();
+  workspace.mutate(
+    "target.add",
+    { id: otherTargetId, postId, channelId: otherChannelId },
+    2500,
+  );
+
+  workspace.mutate("post.publish", { id: postId }, 3000);
+
+  expect(workspace.rows("post")).toEqual([
+    { id: postId, status: "sending", createdAt: 1000, updatedAt: 3000 },
+  ]);
+  expect(workspace.rows("post_target")).toMatchObject([
+    { id: targetId, status: "queued", attempt: 0, queuedAt: 3000 },
+    { id: otherTargetId, status: "queued", attempt: 0, queuedAt: 3000 },
+  ]);
+});
+
+it("refuses to publish a draft that goes nowhere", () => {
+  const workspace = withDraft();
+
+  expect(
+    rejectionOf(() => workspace.mutate("post.publish", { id: postId })),
+  ).toBe("no_channels");
+  expect(statusOf(workspace)).toBe("draft");
+});
+
+it("publishes a post once", () => {
+  const workspace = withTarget();
+  workspace.mutate("post.publish", { id: postId }, 3000);
+
+  // A second device pressed the button too, or the same one twice.
+  expect(
+    rejectionOf(() => workspace.mutate("post.publish", { id: postId }, 3500)),
+  ).toBe("not_a_draft");
+  expect(workspace.rows("post_target")[0]?.queuedAt).toBe(3000);
+});
+
+it("leaves a post as it is from the moment it is published", () => {
+  const workspace = withTarget();
+  workspace.mutate("post.publish", { id: postId }, 3000);
+
+  // What goes out is what was there when publishing was asked for: every
+  // step of a delivery is handed the same content.
+  expect(
+    rejectionOf(() =>
+      workspace.mutate("part.setText", { id: partId, text: "Other" }),
+    ),
+  ).toBe("not_a_draft");
+  expect(
+    rejectionOf(() => workspace.mutate("target.remove", { postId, channelId })),
+  ).toBe("not_a_draft");
+  expect(
+    rejectionOf(() =>
+      workspace.mutate("target.add", {
+        id: otherTargetId,
+        postId,
+        channelId: otherChannelId,
+      }),
+    ),
+  ).toBe("not_a_draft");
+  // Deleted now, it would leave posts on the networks that nothing in
+  // pigy knows of.
+  expect(
+    rejectionOf(() => workspace.mutate("post.delete", { id: postId })),
+  ).toBe("sending");
+  expect(workspace.rows("post_part")[0]?.text).toBe("One");
+  expect(workspace.rows("post_target")).toHaveLength(1);
+});
+
+it("begins a delivery when no other to the channel is under way", () => {
+  const workspace = sending();
+  // A second post to the same account, published after the first.
+  workspace.mutate(
+    "post.create",
+    { id: otherPostId, partId: resultId, text: "Next" },
+    4100,
+  );
+  workspace.mutate(
+    "target.add",
+    { id: otherTargetId, postId: otherPostId, channelId },
+    4200,
+  );
+  workspace.mutate("post.publish", { id: otherPostId }, 4300);
+
+  expect(workspace.rows("post_target")).toMatchObject([
+    { id: targetId, status: "sending", attempt: 1 },
+    { id: otherTargetId, status: "queued", attempt: 0 },
+  ]);
+  // An adapter cannot tell two deliveries to one account apart that go out
+  // together, so the second waits whoever asks.
+  expect(
+    rejectionOf(() =>
+      workspace.mutate("target.start", { id: otherTargetId }, 4400, "server"),
+    ),
+  ).toBe("not_current");
+  // A delivery begins once.
+  expect(
+    rejectionOf(() =>
+      workspace.mutate("target.start", { id: targetId }, 4400, "server"),
+    ),
+  ).toBe("not_current");
+
+  workspace.mutate(
+    "target.end",
+    { id: targetId, attempt: 1, status: "sent" },
+    5000,
+    "server",
+  );
+  workspace.mutate("target.start", { id: otherTargetId }, 5100, "server");
+
+  expect(workspace.rows("post_target")).toMatchObject([
+    { id: targetId, status: "sent" },
+    { id: otherTargetId, status: "sending", attempt: 1 },
+  ]);
+});
+
+it("records the parts of a delivery as they are published", () => {
+  const workspace = sending();
+  const first = { id: resultId, remoteId: "111", url: "https://m.example/111" };
+  const second = { id: otherResultId, remoteId: "112", url: null };
+
+  workspace.mutate(
+    "target.progress",
+    { id: targetId, attempt: 1, parts: [first] },
+    5000,
+    "server",
+  );
+
+  expect(workspace.rows("target_part_result")).toEqual([
+    { ...first, targetId, partId },
+  ]);
+
+  // The report after the second part lists both. The first keeps its row:
+  // the ID that is passed for it this time is one that nobody has seen.
+  workspace.mutate(
+    "target.progress",
+    {
+      id: targetId,
+      attempt: 1,
+      parts: [{ ...first, id: otherTargetId }, second],
+    },
+    6000,
+    "server",
+  );
+
+  expect(workspace.rows("target_part_result")).toEqual([
+    { ...first, targetId, partId },
+    { ...second, targetId, partId: otherPartId },
+  ]);
+  // The delivery goes on: nothing has ended.
+  expect(targetsOf(workspace)).toEqual({ [channelId]: "sending 1" });
+  expect(statusOf(workspace)).toBe("sending");
+});
+
+it("refuses a report of more parts than the post has", () => {
+  const workspace = sending();
+  const part = (id: string) => ({ id, remoteId: "1", url: null });
+
+  expect(
+    rejectionOf(() =>
+      workspace.mutate(
+        "target.progress",
+        {
+          id: targetId,
+          attempt: 1,
+          parts: [part(resultId), part(otherResultId), part(otherTargetId)],
+        },
+        5000,
+        "server",
+      ),
+    ),
+  ).toBe("invalid_arguments");
+  // Nothing of a mutation that is refused stays.
+  expect(workspace.rows("target_part_result")).toEqual([]);
+});
+
+it.each([
+  ["sent", { status: "sent" }, { error: null, sentAt: 5000 }, "sent"],
+  [
+    "failed",
+    { status: "error", error: "No", reconnect: false },
+    { error: "No", sentAt: null },
+    "error",
+  ],
+  [
+    "of unknown outcome",
+    { status: "uncertain", error: "Look", reconnect: false },
+    { error: "Look", sentAt: null },
+    "error",
+  ],
+] as const)(
+  "ends a delivery as %s, and the post with its last target",
+  (_name, end, target, post) => {
+    const workspace = sending();
+
+    workspace.mutate(
+      "target.end",
+      { id: targetId, attempt: 1, ...end },
+      5000,
+      "server",
+    );
+
+    expect(workspace.rows("post_target")).toMatchObject([
+      { status: end.status, attempt: 1, ...target },
+    ]);
+    expect(workspace.rows("post")).toMatchObject([
+      { status: post, updatedAt: 5000 },
+    ]);
+    // The channel is as good as it was.
+    expect(workspace.rows("channel")[0]?.status).toBe("connected");
+  },
+);
+
+it("keeps a post sending until the last of its targets has ended", () => {
+  const workspace = withTarget();
+  workspace.mutate(
+    "target.add",
+    { id: otherTargetId, postId, channelId: otherChannelId },
+    2500,
+  );
+  workspace.mutate("post.publish", { id: postId }, 3000);
+  workspace.mutate("target.start", { id: targetId }, 4000, "server");
+  workspace.mutate("target.start", { id: otherTargetId }, 4001, "server");
+
+  workspace.mutate(
+    "target.end",
+    {
+      id: targetId,
+      attempt: 1,
+      status: "error",
+      error: "No",
+      reconnect: false,
+    },
+    5000,
+    "server",
+  );
+
+  // One has failed and the other is on its way: the post is not over, and
+  // has not changed.
+  expect(workspace.rows("post")).toMatchObject([
+    { status: "sending", updatedAt: 3000 },
+  ]);
+
+  workspace.mutate(
+    "target.end",
+    { id: otherTargetId, attempt: 1, status: "sent" },
+    6000,
+    "server",
+  );
+
+  // Its targets ended differently, so the post is in `error`. Which of
+  // them arrived, the targets say.
+  expect(workspace.rows("post")).toMatchObject([
+    { status: "error", updatedAt: 6000 },
+  ]);
+  expect(targetsOf(workspace)).toEqual({
+    [channelId]: "error 1",
+    [otherChannelId]: "sent 1",
+  });
+});
+
+it("marks the channel when a delivery ends because its access is refused", () => {
+  const workspace = sending();
+
+  workspace.mutate(
+    "target.end",
+    {
+      id: targetId,
+      attempt: 1,
+      status: "error",
+      error: "Connect the account again",
+      reconnect: true,
+    },
+    5000,
+    "server",
+  );
+
+  expect(
+    workspace.rows("channel").map(({ id, status }) => [id, status]),
+  ).toEqual([
+    [channelId, "needs_reconnect"],
+    [otherChannelId, "connected"],
+  ]);
+});
+
+it("tries a delivery that failed again, at the end of the queue", () => {
+  const workspace = sending();
+  workspace.mutate(
+    "target.progress",
+    {
+      id: targetId,
+      attempt: 1,
+      parts: [{ id: resultId, remoteId: "111", url: null }],
+    },
+    4500,
+    "server",
+  );
+  workspace.mutate(
+    "target.end",
+    {
+      id: targetId,
+      attempt: 1,
+      status: "error",
+      error: "No",
+      reconnect: false,
+    },
+    5000,
+    "server",
+  );
+
+  workspace.mutate("target.retry", { id: targetId }, 6000);
+
+  // It waits its turn like a delivery that is new, and keeps what it has
+  // published: the next attempt goes on from there.
+  expect(workspace.rows("post_target")).toEqual([
+    {
+      id: targetId,
+      postId,
+      channelId,
+      status: "queued",
+      attempt: 1,
+      error: null,
+      queuedAt: 6000,
+      sentAt: null,
+    },
+  ]);
+  expect(workspace.rows("target_part_result")).toHaveLength(1);
+  expect(workspace.rows("post")).toMatchObject([
+    { status: "sending", updatedAt: 6000 },
+  ]);
+
+  workspace.mutate("target.start", { id: targetId }, 7000, "server");
+
+  expect(targetsOf(workspace)).toEqual({ [channelId]: "sending 2" });
+});
+
+it.each(["pending", "queued", "sending", "sent"] as const)(
+  "refuses to try a delivery again that is %s",
+  (status) => {
+    const workspace = withTarget();
+    const [target] = workspace.rows("post_target");
+    if (!target) throw new Error("The draft has no target");
+    workspace.put("post_target", { ...target, status });
+
+    expect(
+      rejectionOf(() => workspace.mutate("target.retry", { id: targetId })),
+    ).toBe("not_failed");
+    expect(workspace.rows("post_target")[0]?.status).toBe(status);
+  },
+);
+
+it("refuses to try a delivery again whose account is disconnected", () => {
+  const workspace = sending();
+  workspace.mutate(
+    "target.end",
+    {
+      id: targetId,
+      attempt: 1,
+      status: "error",
+      error: "No",
+      reconnect: false,
+    },
+    5000,
+    "server",
+  );
+  workspace.mutate("channel.disconnect", { id: channelId }, 6000, "server");
+
+  expect(
+    rejectionOf(() => workspace.mutate("target.retry", { id: targetId }, 7000)),
+  ).toBe("not_found");
+  // What has ended stays, for the record, with the reason it had.
+  expect(workspace.rows("post_target")).toMatchObject([
+    { status: "error", error: "No", channelId },
+  ]);
+});
+
+it("refuses the report of a delivery that is no longer under way", () => {
+  const workspace = sending();
+  const progress = {
+    id: targetId,
+    attempt: 1,
+    parts: [{ id: resultId, remoteId: "111", url: null }],
+  };
+  const sent = { id: targetId, attempt: 1, status: "sent" } as const;
+  workspace.mutate(
+    "target.end",
+    {
+      id: targetId,
+      attempt: 1,
+      status: "error",
+      error: "No",
+      reconnect: false,
+    },
+    5000,
+    "server",
+  );
+
+  // The delivery has ended: a report that comes after it changes nothing.
+  for (const [name, args] of [
+    ["target.progress", progress],
+    ["target.end", sent],
+  ] as const) {
+    expect(
+      rejectionOf(() => workspace.mutate(name, args, 5500, "server")),
+    ).toBe("not_current");
+  }
+
+  // Nor does a report of the first attempt once a second is under way: a
+  // run that pigy gave up on must not speak for the one that took over.
+  workspace.mutate("target.retry", { id: targetId }, 6000);
+  workspace.mutate("target.start", { id: targetId }, 7000, "server");
+  for (const [name, args] of [
+    ["target.progress", progress],
+    ["target.end", sent],
+  ] as const) {
+    expect(
+      rejectionOf(() => workspace.mutate(name, args, 7500, "server")),
+    ).toBe("not_current");
+  }
+  expect(targetsOf(workspace)).toEqual({ [channelId]: "sending 2" });
+  expect(workspace.rows("target_part_result")).toEqual([]);
+});
+
+it("ends what was to go to an account that is disconnected", () => {
+  const workspace = sending();
+  // A second post is a draft that goes to the same account, a third waits
+  // behind the first, and a fourth went there before.
+  const ids = [
+    ["01932c07-0000-7000-8000-000000000011", "pending"],
+    ["01932c07-0000-7000-8000-000000000012", "queued"],
+    ["01932c07-0000-7000-8000-000000000013", "sent"],
+  ] as const;
+  for (const [id, status] of ids) {
+    workspace.put("post", { id, status: "draft", createdAt: 0, updatedAt: 0 });
+    workspace.put("post_target", {
+      id,
+      postId: id,
+      channelId,
+      status,
+      attempt: 0,
+      error: null,
+      queuedAt: null,
+      sentAt: null,
+    });
+  }
+  workspace.mutate(
+    "target.progress",
+    {
+      id: targetId,
+      attempt: 1,
+      parts: [{ id: resultId, remoteId: "111", url: null }],
+    },
+    4500,
+    "server",
+  );
+
+  workspace.mutate("channel.disconnect", { id: channelId }, 6000, "server");
+
+  const message = "The account was disconnected before the post was sent.";
+  expect(
+    workspace
+      .rows("post_target")
+      .map(({ id, status, error }) => [id, status, error]),
+  ).toEqual([
+    // The delivery that was under way fails, and so does the one that
+    // waited. Neither can go on without the access that went with the
+    // channel.
+    [targetId, "error", message],
+    [ids[1][0], "error", message],
+    // What was sent stays as it is. The draft simply goes there no more.
+    [ids[2][0], "sent", null],
+  ]);
+  // What the first had published is still published, and still listed.
+  expect(workspace.rows("target_part_result")).toHaveLength(1);
+  // Each post has the status that its targets leave it with.
+  expect(
+    Object.fromEntries(
+      workspace.rows("post").map(({ id, status }) => [id, status]),
+    ),
+  ).toEqual({
+    [postId]: "error",
+    [ids[0][0]]: "draft",
+    [ids[1][0]]: "error",
+    [ids[2][0]]: "draft",
+  });
+});
+
+it("deletes a post that has ended with its targets and what they published", () => {
+  const workspace = sending();
+  workspace.mutate(
+    "target.progress",
+    {
+      id: targetId,
+      attempt: 1,
+      parts: [{ id: resultId, remoteId: "111", url: null }],
+    },
+    4500,
+    "server",
+  );
+  workspace.mutate(
+    "target.end",
+    { id: targetId, attempt: 1, status: "sent" },
+    5000,
+    "server",
+  );
+
+  workspace.mutate("post.delete", { id: postId }, 6000);
+
+  expect(workspace.rows("post")).toEqual([]);
+  expect(workspace.rows("post_part")).toEqual([]);
+  expect(workspace.rows("post_target")).toEqual([]);
+  expect(workspace.rows("target_part_result")).toEqual([]);
+});
+
+it.each([
+  ["target.start", { id: targetId }],
+  ["target.progress", { id: targetId, attempt: 1, parts: [] }],
+  ["target.end", { id: targetId, attempt: 1, status: "sent" }],
+])("refuses %s from a client", (name, args) => {
+  const workspace = sending();
+  // Back to where `target.start` would apply.
+  const [target] = workspace.rows("post_target");
+  if (!target) throw new Error("The post has no target");
+  if (name === "target.start") {
+    workspace.put("post_target", { ...target, status: "queued" });
+  }
+  const before = workspace.rows("post_target");
+
+  // What a delivery has done is the word of the server, which did it. A
+  // client that could say so would mark as sent what never left.
+  expect(rejectionOf(() => workspace.mutate(name, args, 5000, "client"))).toBe(
+    "not_allowed",
+  );
+  expect(workspace.rows("post_target")).toEqual(before);
 });

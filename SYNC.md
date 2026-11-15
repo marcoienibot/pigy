@@ -7,7 +7,7 @@ This document is the contract between the server and any client: the browser sto
 ## 1. Model
 
 - A **workspace** is one user's data in one environment. Everybody has two, `live` and `sandbox`. `GET /api/workspaces` lists them, as `{ "workspaces": [{ "id": "…", "environment": "live" }, { "id": "…", "environment": "sandbox" }] }`, and creates them the first time.
-- The **synced tables** of a workspace are the part of it that clients hold a copy of: `post`, `post_part` and `channel` so far. `packages/core/src/sync/tables.ts` describes their rows. A row has an `id`, a UUID version 7 in lowercase, that is unique in its table.
+- The **synced tables** of a workspace are the part of it that clients hold a copy of: `post`, `post_part`, `channel`, `post_target` and `target_part_result` so far. `packages/core/src/sync/tables.ts` describes their rows. A row has an `id`, a UUID version 7 in lowercase, that is unique in its table.
 - A client never writes rows. It sends **mutations**: the name of a mutator and its arguments, such as `post.create`. The server runs the mutator, and what it does to the rows is what counts. A client may run the same mutator, from `packages/core/src/sync/mutators.ts`, on its own copy first, to show the change before the server has answered.
 - The server applies mutations one at a time, in the order they arrive. Each mutation that changes something is one change and gets a **sequence number**: the changes of a workspace are numbered 1, 2, 3 and so on. A **cursor** is a sequence number, and a client whose cursor is N has exactly the rows that the server had after change N. Cursor 0 is the empty workspace.
 - A **client** is one local copy: its rows, its cursor, the mutations it has made that the server has not confirmed, and the ID of the last one that the server has confirmed. It has a **client ID**, a UUID version 7 that it makes up once, and it numbers its mutations 1, 2, 3 and so on. The server remembers the last mutation it has processed for each client ID, which is what makes it safe to send a mutation twice. A client keeps its copy and its client ID for one workspace: another workspace is another copy with another ID.
@@ -128,7 +128,11 @@ The mutators, their arguments and what they refuse are in `packages/core/src/syn
 | --- | --- | --- |
 | `post.create` | `id`, `partId`, `text` | Creates a draft with its first part. Rejected with `already_exists` if either ID is taken |
 | `part.setText` | `id`, `text` | Replaces the text of a part. Rejected with `not_found` if the part is gone, with `not_a_draft` if its post is past being a draft |
-| `post.delete` | `id` | Deletes a post and its parts. Does nothing if the post is gone |
+| `post.delete` | `id` | Deletes a post with its parts, its targets and their results. Does nothing if the post is gone. Rejected with `sending` while the post is being sent |
+| `target.add` | `id`, `postId`, `channelId` | Chooses a channel for a draft to go to: adds a target with the status `pending`. Does nothing if the draft goes there already. Rejected with `not_found` if the post or the channel is gone, with `not_a_draft` if the post is past being a draft, with `already_exists` if the ID is taken |
+| `target.remove` | `postId`, `channelId` | Takes a channel back from a draft. Does nothing if the draft does not go there. Rejected with `not_found` if the post is gone, with `not_a_draft` if it is past being a draft |
+| `post.publish` | `id` | Asks for a draft to be sent to its channels now. Rejected with `not_found` if the post is gone, with `not_a_draft` if it is past being a draft, with `no_channels` if it has no target |
+| `target.retry` | `id` | Asks for a delivery that failed to be tried again. Rejected with `not_found` if the target or its channel is gone, with `not_failed` unless the target is in `error` or `uncertain` |
 
 Whoever creates a row makes up its ID, so a client can create rows while it is offline. `uuidv7` in `packages/core` makes one.
 
@@ -138,7 +142,10 @@ Some mutators are the server's own. A client that sends one has it rejected with
 | --- | --- |
 | `channel.connect` | Stores an account that was just connected as a channel with the status `connected`. An account that has a channel keeps it, under the ID it had |
 | `channel.setLimits` | Replaces what the account of a channel may post, when its network has been asked again |
-| `channel.disconnect` | Removes a channel. Does nothing if the channel is gone |
+| `channel.disconnect` | Removes a channel. Does nothing if the channel is gone. Its targets go the way "Publishing" below says |
+| `target.start` | Begins the delivery of a target that waited its turn: `sending`, in a new attempt |
+| `target.progress` | Adds the results of the parts that a delivery has published |
+| `target.end` | Ends a delivery as `sent`, `error` or `uncertain`, and marks the channel as `needs_reconnect` if its access was refused |
 
 They are the server's because a channel stands for something that only the server has: the credentials of the account. A channel that a client made up would have none, and one that a client dropped would leave them behind, still good at the network. So an account is connected and disconnected over HTTP, through the routes that `packages/core/src/connect.ts` describes, and a client learns of the outcome as it learns of every change.
 
@@ -150,6 +157,35 @@ A row of `channel` is a connected account: its network, the network's ID of the 
 - `avatarUrl` and `profileUrl` are HTTPS addresses that a browser can open, or null. They are null for every account of a simulated network, which has no addresses.
 - `expiresAt` is null on the networks whose access does not end, such as Mastodon.
 - `limits` is what the account may post, as its network said at `limitsCheckedAt`: the object that `validateContent` in `packages/core` checks content against, which names its network. The server asks when the account is connected, and again before it publishes to the channel if the answer is more than a day old. Both are null for a channel whose network has not answered yet. A client that counts characters while somebody types goes by `limits`, and does not refuse what it cannot check: the server checks before it sends.
+
+### Publishing
+
+A post is published to channels. Where it goes is a row of `post_target` for each channel: a **target**, the delivery of the post to that channel. A post has at most one target per channel. What a delivery has published is a row of `target_part_result` for each part: the network's ID of the post that the part is in, and a link to it.
+
+A client chooses the channels of a draft with `target.add` and `target.remove`, and asks for the post to be sent with `post.publish`. That is all it does. The server sends, and the client sees the rows change:
+
+1. `post.publish` makes the post `sending` and every target `queued`, with `queuedAt` set. A client that runs the mutator shows this at once.
+2. The server begins each delivery when its channel is free: the target is `sending` and its `attempt` is 1. The deliveries to one channel go out one at a time, in the order of `queuedAt`, so a target can stay `queued` while a post that was published before it is on its way to the same account. The targets of one post go to different channels and do not wait for each other.
+3. A row of `target_part_result` appears for each part as it is published, the first part first. A thread is seen going out part by part.
+4. The delivery ends: the target is `sent`, with `sentAt`, or `error` or `uncertain`, with the reason in `error`, a text for the person. If the network no longer takes the access of the channel, the channel is `needs_reconnect` in the same change.
+5. When the last target of the post has ended, the post is `sent` if all of them are, and `error` otherwise. A post whose targets ended differently is in `error`: the targets say which of them arrived.
+
+The statuses of a target:
+
+| Status | Meaning |
+| --- | --- |
+| `pending` | The channel is chosen and nobody has asked for the post to be sent |
+| `queued` | The post is to be sent. The target waits for the server to begin, or for a delivery to the same channel that came before it |
+| `sending` | The delivery is under way |
+| `sent` | Every part is published |
+| `error` | The delivery failed. `error` says why. The parts that were published stay published, and keep their results |
+| `uncertain` | The delivery ended and nobody knows how: a part may be on the network without a result. `error` asks the person to look at the account before they try again |
+
+- **What is checked.** Before anything is sent to a channel, the server checks the post against the `limits` of the channel, with `validateContent`. A post that does not pass is not sent there: the target ends in `error` with what is wrong, and the other targets go on. A client can run the same check before it offers to publish.
+- **Trying again.** `target.retry` puts a target that is in `error` or `uncertain` back to `queued`, at the end of the queue of its channel, and its post back to `sending`. The next attempt goes on after the parts that have results and does not send those again. After `uncertain` the person should have looked first: if the missing part is on the network after all, trying again publishes it a second time on a network where pigy cannot look.
+- **What cannot be changed.** A post that is not a draft cannot be edited, and its channels cannot be changed. A post that is `sending` cannot be deleted either: `post.delete` is rejected with `sending` until every target has ended. Afterwards it can, which removes the post from pigy and nothing from the networks.
+- **A channel that is disconnected.** Its `pending` targets are deleted: the drafts no longer go there. Its targets that are `queued` or `sending` end in `error`. Its targets that had ended stay as they are, with a `channelId` that names no channel any more. A client shows such a target without the account, and `target.retry` is rejected for it with `not_found`.
+- **Who writes what.** `target.start`, `target.progress` and `target.end` are the server's, like the mutators of a channel: what a delivery did is the word of whoever did it.
 
 Every mutation that a client sends is processed exactly once, and one of three things happens: it changes rows, it changes nothing, or it is rejected. All three are final. A mutation is also rejected, not refused as a message, if its name is unknown (`unknown_mutation`), its arguments are not what the mutator takes (`invalid_arguments`), or its mutator fails on it, which is a bug in the server (`internal_error`). Otherwise a client would send it again for ever, and none of its later mutations would get through. It is another matter when the database of the workspace fails under a mutator, because it is full, for example: sent again later, the mutation can go through. The server then processes nothing of the message and closes the socket with 1011.
 

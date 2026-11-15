@@ -2,7 +2,13 @@ import type { Row, TableName } from "@pigy/core";
 import { eq } from "drizzle-orm";
 import type { DrizzleSqliteDODatabase } from "drizzle-orm/durable-sqlite";
 import type { SQLiteColumn, SQLiteTable } from "drizzle-orm/sqlite-core";
-import { channels, postParts, posts } from "./schema.ts";
+import {
+  channels,
+  postParts,
+  posts,
+  postTargets,
+  targetPartResults,
+} from "./schema.ts";
 
 /**
  * The synced tables and, for each, its synced columns: the ones that clients
@@ -49,6 +55,29 @@ const synced = {
       expiresAt: channels.expiresAt,
       limits: channels.limits,
       limitsCheckedAt: channels.limitsCheckedAt,
+    },
+  },
+  post_target: {
+    table: postTargets,
+    columns: {
+      id: postTargets.id,
+      postId: postTargets.postId,
+      channelId: postTargets.channelId,
+      status: postTargets.status,
+      attempt: postTargets.attempt,
+      error: postTargets.error,
+      queuedAt: postTargets.queuedAt,
+      sentAt: postTargets.sentAt,
+    },
+  },
+  target_part_result: {
+    table: targetPartResults,
+    columns: {
+      id: targetPartResults.id,
+      targetId: targetPartResults.targetId,
+      partId: targetPartResults.partId,
+      remoteId: targetPartResults.remoteId,
+      url: targetPartResults.url,
     },
   },
 } satisfies {

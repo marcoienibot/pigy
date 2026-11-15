@@ -6,6 +6,7 @@ import {
   postStatuses,
   type RejectionCode,
   tableNames,
+  targetStatuses,
 } from "@pigy/core";
 import {
   index,
@@ -88,6 +89,56 @@ export const channels = sqliteTable(
     uniqueIndex("channel_network_account_id_idx").on(
       table.network,
       table.accountId,
+    ),
+  ],
+);
+
+/** The delivery of a post to one channel. */
+export const postTargets = sqliteTable(
+  "post_target",
+  {
+    id: text("id").primaryKey(),
+    postId: text("post_id")
+      .notNull()
+      .references(() => posts.id),
+    // No reference to the channel: a target that has ended outlives the
+    // channel it went to.
+    channelId: text("channel_id").notNull(),
+    status: text("status", { enum: targetStatuses }).notNull(),
+    attempt: integer("attempt").notNull(),
+    error: text("error"),
+    queuedAt: integer("queued_at"),
+    sentAt: integer("sent_at"),
+  },
+  (table) => [
+    // A post goes to a channel once.
+    uniqueIndex("post_target_post_id_channel_id_idx").on(
+      table.postId,
+      table.channelId,
+    ),
+    index("post_target_channel_id_idx").on(table.channelId),
+  ],
+);
+
+/** Where a part of a post stands on the network of a target. */
+export const targetPartResults = sqliteTable(
+  "target_part_result",
+  {
+    id: text("id").primaryKey(),
+    targetId: text("target_id")
+      .notNull()
+      .references(() => postTargets.id),
+    partId: text("part_id")
+      .notNull()
+      .references(() => postParts.id),
+    remoteId: text("remote_id").notNull(),
+    url: text("url"),
+  },
+  (table) => [
+    // A part is published to a target once.
+    uniqueIndex("target_part_result_target_id_part_id_idx").on(
+      table.targetId,
+      table.partId,
     ),
   ],
 );

@@ -19,6 +19,8 @@ export function memoryWorkspace() {
     post: new Map(),
     post_part: new Map(),
     channel: new Map(),
+    post_target: new Map(),
+    target_part_result: new Map(),
   };
 
   const transaction = (now: number): Transaction => ({
@@ -52,6 +54,8 @@ export function memoryWorkspace() {
         post: new Map(before.post),
         post_part: new Map(before.post_part),
         channel: new Map(before.channel),
+        post_target: new Map(before.post_target),
+        target_part_result: new Map(before.target_part_result),
       };
       try {
         applyMutation(transaction(now), name, args, source);

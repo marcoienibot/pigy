@@ -188,6 +188,58 @@ it("runs every pending mutation after the one before it, whatever the clock of t
   expect(changed(view, third)).toBe(202);
 });
 
+it("runs a pending mutation after every time that the server has put into a channel or a target", () => {
+  const { post, part, puts } = draft("Text", 1_000);
+  const channel = {
+    id: newId(),
+    network: "mastodon",
+    accountId: "1@mastodon.example",
+    handle: "@ada@mastodon.example",
+    name: "Ada Lovelace",
+    avatarUrl: null,
+    profileUrl: null,
+    status: "connected",
+    connectedAt: 2_000,
+    expiresAt: null,
+    limits: { network: "mastodon", maxCharacters: 500, charactersPerUrl: 23 },
+    limitsCheckedAt: 3_000,
+  } as const;
+  const target = {
+    id: newId(),
+    postId: newId(),
+    channelId: channel.id,
+    status: "sent",
+    attempt: 1,
+    error: null,
+    queuedAt: 4_000,
+    sentAt: 5_000,
+  } as const;
+  const edit = [setText(part.id, "Edited", 10)];
+  const edited = (rows: Tables) => viewOf(rows, edit).post.get(post.id);
+
+  // The server ran a mutation at each of these times, and will run the
+  // edit after all of them: the clock of the device, which says 10, is far
+  // behind. Each row is looked at by itself, so that no column is missed.
+  const rows = applyChanges(emptyTables(), false, puts());
+  expect(edited(rows)?.updatedAt).toBe(1_001);
+  const connected = applyChanges(rows, false, [
+    { op: "put", table: "channel", row: { ...channel, limitsCheckedAt: null } },
+  ]);
+  expect(edited(connected)?.updatedAt).toBe(2_001);
+  const asked = applyChanges(rows, false, [
+    { op: "put", table: "channel", row: channel },
+  ]);
+  expect(edited(asked)?.updatedAt).toBe(3_001);
+  const queued = applyChanges(rows, false, [
+    { op: "put", table: "post_target", row: { ...target, sentAt: null } },
+  ]);
+  expect(edited(queued)?.updatedAt).toBe(4_001);
+  const sent = applyChanges(rows, false, [
+    { op: "put", table: "post_target", row: target },
+  ]);
+  expect(edited(sent)?.updatedAt).toBe(5_001);
+});
+
 it("lets a pending mutation see what the ones before it did", () => {
   const id = newId();
   const partId = newId();

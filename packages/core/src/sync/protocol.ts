@@ -134,6 +134,8 @@ export const changeSchema = z.union([
   putSchema("post"),
   putSchema("post_part"),
   putSchema("channel"),
+  putSchema("post_target"),
+  putSchema("target_part_result"),
   z.strictObject({
     op: z.literal("delete"),
     table: z.enum(tableNames),

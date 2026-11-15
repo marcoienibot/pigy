@@ -111,6 +111,8 @@ export class SyncClient {
     post: new Map(),
     post_part: new Map(),
     channel: new Map(),
+    post_target: new Map(),
+    target_part_result: new Map(),
   };
   private socket: WebSocket | undefined;
   /** Messages that no test has looked at yet. */
@@ -258,10 +260,7 @@ export class SyncClient {
       if (seen.has(key)) throw new Error(`${key} is in the patch twice`);
       seen.add(key);
       if (change.op === "delete") this.rows[change.table].delete(id);
-      else if (change.table === "post") this.rows.post.set(id, change.row);
-      else if (change.table === "post_part") {
-        this.rows.post_part.set(id, change.row);
-      } else this.rows.channel.set(id, change.row);
+      else this.put(change.table, change.row);
     }
     this.cursor = to;
     // A patch tells of the rejections among the mutations that it confirms,
@@ -290,6 +289,10 @@ export class SyncClient {
     };
   }
 
+  private put<Table extends TableName>(table: Table, row: Row<Table>): void {
+    this.rows[table].set(row.id, row);
+  }
+
   /** The rows of a table in the local copy, in the order of their IDs. */
   table<Table extends TableName>(table: Table): Row<Table>[] {
     return [...this.rows[table].values()].sort((a, b) =>
@@ -303,6 +306,8 @@ export class SyncClient {
       post: this.table("post"),
       post_part: this.table("post_part"),
       channel: this.table("channel"),
+      post_target: this.table("post_target"),
+      target_part_result: this.table("target_part_result"),
     };
   }
 }

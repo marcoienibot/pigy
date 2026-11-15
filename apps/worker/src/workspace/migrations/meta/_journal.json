@@ -36,6 +36,13 @@
       "when": 1794729239192,
       "tag": "0004_limits",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1794729482738,
+      "tag": "0005_targets",
+      "breakpoints": true
     }
   ]
 }

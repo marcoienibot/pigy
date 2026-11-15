@@ -8,12 +8,19 @@ import type { MutatorName } from "@pigy/core";
 const refused: Record<MutatorName, string> = {
   "post.create": "A new draft was not saved",
   "part.setText": "An edit was not saved",
-  "post.delete": "A draft was not deleted",
+  "post.delete": "A post was not deleted",
+  "target.add": "An account was not added to a draft",
+  "target.remove": "An account was not taken off a draft",
+  "post.publish": "A post was not published",
+  "target.retry": "A post was not sent again",
   // Only the server runs the ones below, so no copy holds one that the app
   // made. They are named all the same: the list is of every mutator.
   "channel.connect": "An account was not connected",
   "channel.setLimits": "The limits of an account were not updated",
   "channel.disconnect": "An account was not disconnected",
+  "target.start": "A post was not sent",
+  "target.progress": "A published post was not recorded",
+  "target.end": "The outcome of a post was not recorded",
 };
 
 /** What to call a refused change that was made by the mutator `name`. */

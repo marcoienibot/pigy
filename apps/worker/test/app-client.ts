@@ -181,5 +181,7 @@ export function shown(store: SyncStore) {
     post: table("post"),
     post_part: table("post_part"),
     channel: table("channel"),
+    post_target: table("post_target"),
+    target_part_result: table("target_part_result"),
   };
 }
