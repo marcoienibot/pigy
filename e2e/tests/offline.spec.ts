@@ -94,7 +94,10 @@ test("a screen that is opened by its address works without a connection", async 
 /**
  * One path for every pattern in `assets.run_worker_first`, read from where
  * Cloudflare reads them: a path that is added there is tested here without
- * anybody thinking of it.
+ * anybody thinking of it. Tested is the service worker of the build that
+ * has the list. A device that still runs the one of the release before
+ * does not know a pattern that is new: AGENTS.md, "A new path of the
+ * Worker".
  */
 function workerPaths(): string[] {
   const config = readFileSync(

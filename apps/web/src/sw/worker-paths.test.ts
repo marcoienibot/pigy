@@ -2,12 +2,13 @@ import { expect, it } from "vitest";
 import { workerPaths } from "./worker-paths.ts";
 
 // What apps/worker/wrangler.jsonc has.
-const pigy = workerPaths(["/api/*", "/sim/*", "/sync/*"]);
+const pigy = workerPaths(["/api/*", "/connect/*", "/sim/*", "/sync/*"]);
 
 it.each([
   "/api/me",
   // `*` goes across slashes.
   "/api/auth/google/callback",
+  "/connect/mastodon/callback",
   "/sim/google/authorize",
   "/sync/0192f0e6-7a55-7000-8000-000000000001",
   // Nothing after the slash is still something that the pattern covers.

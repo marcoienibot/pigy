@@ -123,7 +123,8 @@ const files = {
 const build: Build = {
   version: "2",
   files: Object.keys(files),
-  workerFirst: ["/api/*", "/sim/*", "/sync/*"],
+  // What apps/worker/wrangler.jsonc has.
+  workerFirst: ["/api/*", "/connect/*", "/sim/*", "/sync/*"],
 };
 
 describe("installing", () => {
@@ -428,6 +429,13 @@ describe("answering", () => {
       "navigate",
     ],
     ["a navigation to the sync endpoint", "/sync/0192f0e6", "navigate"],
+    // Where a network sends the browser back to when an account has been
+    // connected. The app shell would drop the code that it comes with.
+    [
+      "a navigation to the callback of a network",
+      "/connect/mastodon/callback?code=1&state=2",
+      "navigate",
+    ],
     ["a request to the API", "/api/me", "cors"],
     // A script that is handed a page fails in a way that says nothing. The
     // file of a build before this one is not this build's to answer for.
