@@ -22,6 +22,14 @@ export function editor(page: Page): Locator {
   return page.getByRole("textbox", { name: "Draft text" });
 }
 
+/** Where the caret is in the text of the open draft, or the selection. */
+export function selectionOf(page: Page): Promise<[number, number]> {
+  return editor(page).evaluate((field: HTMLTextAreaElement) => [
+    field.selectionStart,
+    field.selectionEnd,
+  ]);
+}
+
 /**
  * Leaves the editor for the list. On a desktop the list is next to the
  * editor, so there is nothing to leave.
@@ -77,6 +85,9 @@ export async function connectionOf(page: Page) {
   const open = new Set<WebSocketRoute>();
   // Every sync socket that the page has tried to open, cut off or not.
   const attempts: string[] = [];
+  // The changes of the page that wait here for `release()`, each as the
+  // function that sends it on. Null while changes pass.
+  let held: (() => void)[] | null = null;
 
   await page.routeWebSocket(/\/sync\//, (socket) => {
     attempts.push(socket.url());
@@ -86,8 +97,16 @@ export async function connectionOf(page: Page) {
       return;
     }
     open.add(socket);
-    // From here on, messages pass in both directions.
-    socket.connectToServer();
+    // From here on, what the server says passes by itself, and what the
+    // page says is passed on below.
+    const server = socket.connectToServer();
+    socket.onMessage((message) => {
+      const pass = () => server.send(message);
+      const isChange =
+        typeof message === "string" && JSON.parse(message).type === "mutate";
+      if (held && isChange) held.push(pass);
+      else pass();
+    });
   });
   await page.route("**/api/**", (route) =>
     api ? route.fallback() : route.abort(),
@@ -109,6 +128,23 @@ export async function connectionOf(page: Page) {
       api = options.api === true;
       for (const socket of open) await socket.close();
       open.clear();
+    },
+
+    /**
+     * Holds back the changes that the page sends from now on, until
+     * `release()`. Everything else passes, so the page goes on hearing
+     * what others change: a test can look at the page while it has a
+     * change that the server has not seen, for as long as it takes. The
+     * app gives a socket up that leaves a change unanswered for 15 seconds.
+     */
+    hold(): void {
+      held = [];
+    },
+
+    /** Sends the changes on that were held back, and lets changes pass. */
+    release(): void {
+      for (const pass of held ?? []) pass();
+      held = null;
     },
 
     /**

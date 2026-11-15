@@ -7,6 +7,7 @@ import {
   editor,
   expectSync,
   localData,
+  selectionOf,
   syncSockets,
   writeDraft,
 } from "../app.ts";
@@ -234,18 +235,44 @@ test("what is typed stays when the same draft is changed elsewhere", async ({
   await draftRow(page, "Shared draft").click();
   await draftRow(other, "Shared draft").click();
 
-  // Typed here while the connection is down, and changed there.
+  // Typed here while the connection is down, with the caret left in the
+  // middle of the text, and changed there.
   await connection.cut();
   await editor(page).fill("What I am typing right now");
+  await page.keyboard.press("Home");
+  for (let moved = 0; moved < 6; moved += 1) {
+    await page.keyboard.press("ArrowRight");
+  }
+  expect(await selectionOf(page)).toEqual([6, 6]);
   await editor(other).fill("Changed on the other device");
   await expectSync(other, "Synced");
-  await connection.restore();
 
-  // The change from the other device arrives first and does not replace
-  // the text under the cursor. Then this device's text is the later one.
+  // The connection is back, and the change from the other device arrives.
+  // The text that was typed here is held back on its way to the server, so
+  // that the moment lasts in which the copy has the other device's text
+  // under an edit that the server has not seen. The indicator says when it
+  // has come: online, with one change to send.
+  connection.hold();
+  await connection.restore();
+  await expectSync(page, "Syncing 1 change");
+  // Had the text from elsewhere taken the place of the typed one, it would
+  // be on screen now, and the caret would be at its end.
+  await expect(editor(page)).toHaveValue("What I am typing right now");
+  expect(await selectionOf(page)).toEqual([6, 6]);
+
+  // Then this device's text is the later one, everywhere.
+  connection.release();
   await expectSync(page, "Synced");
   await expect(editor(page)).toHaveValue("What I am typing right now");
   await expect(editor(other)).toHaveValue("What I am typing right now");
+
+  // With nothing being typed here, a change from elsewhere does replace
+  // the text. A browser puts the caret at the end of a field whose text is
+  // set, and the editor puts it back where the person had it.
+  await editor(other).fill("Changed again on the other device");
+  await expect(editor(page)).toHaveValue("Changed again on the other device");
+  expect(await selectionOf(page)).toEqual([6, 6]);
+  await expect(editor(page)).toBeFocused();
 });
 
 test("a change that the device cannot save is not called saved", async ({
@@ -436,9 +463,14 @@ test("a window that is too old for the server says that it has to be reloaded", 
   // The server of this test is the same version as the app, so the test
   // answers the hello in its place, as a server would that speaks a later
   // version of the protocol: with an error and the code 4400.
-  let sockets = 0;
+  const sockets: string[] = [];
   await page.routeWebSocket(/\/sync\//, (socket) => {
-    sockets += 1;
+    sockets.push(new URL(socket.url()).pathname);
+    if (sockets.at(-1) === "/sync/marker") {
+      // Not a socket of the app: see below.
+      void socket.close();
+      return;
+    }
     socket.onMessage(() => {
       socket.send(
         JSON.stringify({
@@ -469,7 +501,18 @@ test("a window that is too old for the server says that it has to be reloaded", 
   // It does not connect again before it has updated itself, not even
   // when the browser says that the network is back, which makes a client
   // that is waiting to try again do so at once.
-  await page.evaluate(() => window.dispatchEvent(new Event("online")));
+  //
+  // A socket that the app opens is counted here only when the browser has
+  // told the test of it, which is later. So the test opens a socket of its
+  // own after the event, as a marker: the route hears of sockets in the
+  // order in which the page opens them, and once it has heard of the
+  // marker, it has heard of every socket that the event made the app open.
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event("online"));
+    new WebSocket(`${location.origin.replace(/^http/, "ws")}/sync/marker`);
+  });
+  await expect.poll(() => sockets.at(-1)).toBe("/sync/marker");
+  // The socket that was refused, and the marker.
+  expect(sockets).toHaveLength(2);
   await expectSync(page, "Reload to update");
-  expect(sockets).toBe(1);
 });
