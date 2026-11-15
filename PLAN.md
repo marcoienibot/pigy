@@ -51,7 +51,7 @@ pigy is an invite-only web app for writing a post once and publishing it to Link
 │ TanStack DB (rows in memory) │◄────────►│  /api/auth/*   sign-in with Google      │
 │ IndexedDB (rows + outbox)    │          │  /api/admin/*  the allowlist            │
 │                              │          │  /api/v1/*     public REST API          │
-│ Service worker (shell, push) │◄────────►│  /sync         WebSocket to WorkspaceDO │
+│ Service worker (shell, push) │◄────────►│  /sync/*       WebSocket to WorkspaceDO │
 └──────────────────────────────┘ WebSocket│  /connect/*    OAuth to the networks    │
                                           │  /m/*          signed media URLs        │
                                           │  /sim/*        simulated services       │
@@ -90,17 +90,19 @@ Tooling: pnpm workspaces, strict TypeScript, Biome, Vitest, Playwright, Wrangler
 
 ## 4. Local-first sync
 
-The UI never waits for the network. It reads from memory, writes locally first, and syncs in the background.
+The UI never waits for the network. It reads from memory, writes locally first, and syncs in the background. [SYNC.md](SYNC.md) is the protocol between client and server, in enough detail to write a client from.
 
 - **Source of truth**: one `WorkspaceDO` per workspace. All writes go through it in a single order.
 - **Client state**: every row of the workspace is held in TanStack DB collections and mirrored to IndexedDB. A cold start renders from IndexedDB before any request finishes.
-- **Writes**: named mutators such as `post.create`, `post.setText` and `post.schedule` live in `packages/core`. The client runs them optimistically. The Durable Object runs the same code as the authority. The REST API calls the same mutators, so an API write shows up in open tabs immediately.
-- **Idempotency**: IDs are generated on the client (UUIDv7). Each client numbers its mutations, and the Durable Object remembers the last number applied per client, so a replay is a no-op.
-- **Transport**: one WebSocket per device, using Durable Object hibernation so idle connections cost nothing. One tab holds the socket and shares updates with other tabs over BroadcastChannel.
-- **Catch-up**: every committed write appends to a change log with an increasing sequence number. A reconnecting client sends its last sequence number and receives what it missed. A client that is too far behind gets a fresh snapshot.
+- **Writes**: named mutators such as `post.create`, `part.setText` and `post.schedule` live in `packages/core`. They are synchronous functions over a small transaction interface: read a row, find rows by a column, write a row, delete a row, the time. The client runs them optimistically. The Durable Object runs the same code as the authority. The REST API calls the same mutators, so an API write shows up in open tabs immediately.
+- **Idempotency**: IDs are generated on the client (UUIDv7). Each client numbers its mutations, and the Durable Object remembers the last number applied per client, so a replay is a no-op and a gap is refused.
+- **Transport**: one WebSocket per device, to `/sync/<workspace ID>`, using Durable Object hibernation so idle connections cost nothing. One tab holds the socket and shares updates with other tabs over BroadcastChannel.
+- **Catch-up**: every committed write gets an increasing sequence number and an entry in a change log, which names the rows that changed. A reconnecting client sends its last sequence number and receives the current state of the rows that changed since. The log covers the last 1,000 changes: a client that is further behind gets a fresh snapshot.
+- **Confirmation**: the message that carries the changes of a client's mutation also says that the mutation was processed, so the client can replace its own version of the change with the server's in one step.
 - **Offline**: mutations queue in an IndexedDB outbox and replay in order on reconnect. A rejected mutation rolls back and shows an error on the affected post.
 - **Conflicts**: the server applies mutations in arrival order, last write wins per field. State guards reject impossible edits, such as changing a post that is already sending.
 - **Secrets**: channel credentials are never synced. Each table has an explicit list of synced columns, and a test fails if a credential field appears in any sync message.
+- **Versions**: the protocol and the synced schema each have a version number. A client that says hello with another version is told so, and updates itself.
 
 **Library choice.** TanStack DB is the client store. The sync protocol is ours and small. Alternatives considered:
 
@@ -108,9 +110,9 @@ The UI never waits for the network. It reads from memory, writes locally first, 
 | --- | --- |
 | Zero | Needs Postgres and its own server process, so it cannot run on Workers alone |
 | LiveStore | Event-sourced. The scheduler and REST API would have to take part in the event log, which is a larger change of model than this app needs |
-| Replicache | Fits well, but is in maintenance mode. Kept as the fallback client if the spike fails |
+| Replicache | Fits well, but is in maintenance mode, and it brings a protocol of its own, which the server does not speak |
 
-**Spike before committing** (first task of phase 2). Build drafts only, then check: cold start renders from IndexedDB with the network disabled, an offline edit survives a reload and syncs later, two tabs converge, and an API write appears live. If TanStack DB cannot do this cleanly, switch the client to Replicache and keep the Durable Object side.
+**Spike before committing** (first task of phase 2b). Build drafts only, then check: cold start renders from IndexedDB with the network disabled, an offline edit survives a reload and syncs later, two tabs converge, and an API write appears live. The protocol was fixed with the server, in phase 2a, and does not depend on the client library. So if TanStack DB cannot do this cleanly, the fallback is a small client store of our own that speaks the same protocol. An earlier draft named Replicache as the fallback: that would mean replacing the protocol and the server side of sync with Replicache's.
 
 ## 5. Data model
 
@@ -141,7 +143,8 @@ The UI never waits for the network. It reads from memory, writes locally first, 
 | `schedule_slot`, `settings` | Weekly queue slots, timezone, queue paused flag |
 | `metric` | Likes, reposts, replies, quotes and views per target over time |
 | `notification` | In-app notification inbox |
-| `change_log`, `client_mutation` | Sync bookkeeping |
+| `change_log`, `client_mutation` | Sync bookkeeping: which rows each of the latest changes touched, and the last mutation applied per client |
+| `workspace` | One row: which workspace the object holds, and the sequence number of its last change |
 
 Post status follows Buffer: `draft`, `scheduled`, `sending`, `sent`, `error`. A post whose targets ended differently reports `error` and lists each target's own status.
 
@@ -249,7 +252,8 @@ Avoiding duplicates when a retry follows an uncertain result:
 - Sign-in is refused unless the email is in `allowed_email` or in the `ADMIN_EMAILS` variable. The check runs for every new session and again on every request, so a change of role applies to the next request. Removing an email also deletes that user's sessions. So does a sign-in that is refused: when Google reports an address for a known account that is not invited or not verified, the sessions that account has on any device end, because they would go on working with the address it had before. The stored address is left as it was, since nothing is stored about an address that is not invited. A sign-in that succeeds also ends the sessions of any other account stored with the same address: Google has just said that the address belongs to the account signing in, so the account that had it before has lost it.
 - The first admin comes from `ADMIN_EMAILS`. The addresses in it are always admins and cannot be changed from the settings page, where admins manage the rest of the allowlist. Nobody can change their own entry. An entry that is not an email address is ignored and logged.
 - A person who is not invited sees a plain "pigy is invite-only" page. Nothing is stored about them.
-- A request that changes something and is authenticated by the cookie must carry the app's own `Origin`.
+- A request that changes something and is authenticated by the cookie must carry the app's own `Origin`. So must the handshake of the sync WebSocket, which is a GET: a browser sends the cookie with a handshake that any site starts.
+- The session is checked when a sync socket is opened, not while it is open. A socket therefore lasts five minutes, after which the client has to open a new one. That bounds how long a session that has ended, by sign-out or by removal from the allowlist, can go on using a socket. Telling every workspace about every session that ends would close them sooner, but sessions end in many places, and one that was missed would leave a socket open for good.
 - The address Google redirects back to is built from the address the app is reached at, so it works unchanged on `localhost`, on `workers.dev` and on a custom domain. Each has to be registered with the Google client.
 - Without Google credentials nobody can sign in: the production build has no other way in. Section 7 covers the simulated Google of development and tests.
 
@@ -306,7 +310,8 @@ REST under `/api/v1`, described by an OpenAPI document generated from the same Z
 ## 16. Security
 
 - Channel tokens are encrypted at rest with a key held as a Worker secret, with a key version for rotation.
-- OAuth uses state and PKCE everywhere. Cookie-authenticated writes check the origin.
+- OAuth uses state and PKCE everywhere. Cookie-authenticated writes and the WebSocket handshake check the origin.
+- A workspace is reached only through the Worker, which looks it up by its ID and the signed-in user together. The Durable Object never sees the request of the client: the Worker makes a new one. The object also remembers which workspace and owner it was first used for and refuses any other, so a mistake in the Worker's routing cannot hand one person's data to another.
 - Mastodon instance domains and asset URLs come from users, so they are validated, HTTPS only, and size-capped.
 - Media links for Threads are signed and expire.
 - Signing out wipes the local IndexedDB copy.
@@ -330,6 +335,8 @@ Each phase ends with something that works and is covered by tests. Sizes are rel
 | 9 | Phone features | M | Push notifications, in-app inbox, share target, install prompts |
 | 10 | Engagement stats | S | Stats collected and shown on sent posts |
 | 11 | Hardening and launch | M | Deployment from CI, security review, reconnect flows, logging and alerts, backups checked, setup guide, friends invited |
+
+Phase 2 is built in two steps. 2a is the server side: workspaces, the `WorkspaceDO`, the mutators, and the sync protocol with its tests. 2b is the client: the browser store, IndexedDB, the offline outbox, the drafts screen and the PWA shell.
 
 Until deployment is set up in phase 11, every phase is built and verified locally against the simulated networks. Connecting real networks and installing on a phone need the deployed address.
 
@@ -360,7 +367,7 @@ Mastodon and Bluesky need no developer registration. VAPID keys, the Bluesky sig
 
 | Risk | Mitigation |
 | --- | --- |
-| TanStack DB with a custom sync protocol is newer ground than the rest of the stack | Spike at the start of phase 2, with Replicache as the fallback client |
+| TanStack DB with a custom sync protocol is newer ground than the rest of the stack | Spike at the start of phase 2b. The protocol does not depend on the library, so the fallback is a small client store of our own |
 | atproto OAuth libraries are written for Node and may not run on Workers | Spike at the start of the Bluesky work. Candidates: `@atcute/oauth-node-client`, then `@bskyprism/atproto-oauth-client-cloudflare-workers`. Last resort: Bluesky app passwords |
 | Threads is limited to testers | Fine for friends. Opening it up needs Meta's app review |
 | LinkedIn tokens die after 60 days | Reminder a week before, one-tap reconnect |
@@ -375,7 +382,7 @@ To confirm when the relevant phase starts:
 - Whether Bluesky video upload works with the OAuth scopes pigy requests.
 - LinkedIn's behaviour on duplicate content, and the current API version string.
 - Current media size and duration limits per network.
-- Workflows and WebSocket support in the Workers Vitest pool, which has had isolation caveats.
+- Workflows support in the Workers Vitest pool, which has had isolation caveats. WebSockets to Durable Objects were confirmed in phase 2a: they work, hibernation included.
 - Whether usage fits the Cloudflare free plan.
 
 ## 20. Moving to a custom domain later
