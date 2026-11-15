@@ -50,10 +50,13 @@ import { unsavedInSomeWindow, whenSaved } from "@/sync/workspace-sync";
  *   Shift went past. The page looks, and loads itself again if so: see
  *   `takenOn`.
  *
- * The window that is loaded again without having asked is never the one
- * that somebody is typing in: what makes a new version take over is a
- * window that starts or a button that is pressed, and that is where the
- * person is.
+ * The other windows are loaded again without having been asked. That is
+ * seldom where the person is: what makes a new version take over is a
+ * window that starts or a button that is pressed, and that is where they
+ * are. Not always, as with the installed app next to a tab of pigy: what
+ * such a window loses is what was on screen only, such as a form that is
+ * half filled in. What was typed into a draft is stored. PLAN.md section
+ * 19 lists it.
  */
 
 /**
