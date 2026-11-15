@@ -203,12 +203,23 @@ export const test = base.extend<{
   // the server of the run from its start to its end, the last test of a
   // run included: see server.ts.
   ownServer: [
-    async ({ baseURL }, use) => {
+    async ({ baseURL }, use, testInfo) => {
       if (!baseURL) throw new Error("baseURL is not set");
       const port = Number(new URL(baseURL).port);
-      await expectOwnServer(port);
+      const check = async () => {
+        try {
+          await expectOwnServer(port);
+        } catch (error) {
+          // A test that expects to fail, as those of network-guard.spec.ts
+          // do, would take this failure for the one that it expects, and
+          // pass.
+          testInfo.expectedStatus = "passed";
+          throw error;
+        }
+      };
+      await check();
       await use(undefined);
-      await expectOwnServer(port);
+      await check();
     },
     { auto: true },
   ],
