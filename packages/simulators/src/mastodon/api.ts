@@ -192,6 +192,10 @@ function statusJson(state: State, status: Status, source = false) {
  * Whether `account` may see `status`. Everybody sees what is public or
  * unlisted. The rest is seen by its author. Mastodon also shows it to
  * followers and to who is mentioned, which the simulation has none of.
+ *
+ * GUESS: a status with the visibility "direct" that mentions nobody is
+ * accepted like any other and seen by its author alone. The documentation
+ * does not say what Mastodon does with one.
  */
 function visibleTo(status: Status, account: MastodonAccount | null): boolean {
   return (
@@ -244,8 +248,8 @@ export async function createStatus(
     const earlier = state.idempotency.get(keyId);
     if (earlier && earlier.expiresAt > now) {
       const made = state.statuses.get(earlier.statusId);
-      // From the code: a status that was deleted since is looked up and
-      // not found.
+      // GUESS, from the code, which the documentation does not cover: a
+      // status that was deleted since is looked up and not found.
       return made
         ? json(200, statusJson(state, made))
         : apiError(404, "Record not found");

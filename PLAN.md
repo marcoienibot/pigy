@@ -460,14 +460,17 @@ To confirm when the relevant phase starts:
 - Workflows support in the Workers Vitest pool, which has had isolation caveats. WebSockets to Durable Objects were confirmed in phase 2a: they work, hibernation included.
 - Whether usage fits the Cloudflare free plan.
 
-Open since phase 3a, all of it about Mastodon and none of it confirmed against a real server, because the live conformance run has not been made yet. The first run settles most of it. The places are marked GUESS in `packages/simulators/src/mastodon`:
+Open since phase 3a, all of it about Mastodon and none of it confirmed against a real server, because the live conformance run has not been made yet. The first run settles most of it. Where the simulator had to assume an answer, the place in `packages/simulators/src/mastodon` is marked GUESS, and every such mark is in this list. The rest of the list is about the adapter and the run itself:
 
 - That the live run works at all: it is written and has never been started.
 - That a status with the visibility `direct` and no mention is accepted and seen by its author alone, which the live run relies on.
 - What counts as a link. pigy and the simulator take any top-level domain of two or more ASCII letters, Mastodon only the ones that exist. Mastodon's development branch has also replaced the pattern that 4.5 uses. A text that pigy counts as shorter than Mastodon does is refused by Mastodon, with a message that says so.
 - That grapheme clusters are counted alike by the browser, the Workers runtime and Mastodon's Ruby. They follow the same standard in versions that differ, which matters for the newest emoji only.
 - How Mastodon answers a token request of a client without a scope when the client has not registered `read`, and whether servers that speak Mastodon's API without being Mastodon (GoToSocial, Pleroma, Akkoma) answer the check of a registration in a way the adapter understands. The adapter asks for a scope by name and takes any refusal other than `invalid_client` to mean that the registration is still known.
-- That a wrong authorization request ends on a page of the instance and not in a redirect, that a revocation without a token is refused, and that a repeated idempotency key for a status that was deleted since is answered with 404.
+- That a wrong authorization request ends on a page of the instance and not in a redirect, and that an authorization code lasts ten minutes.
+- That a revocation without a token is refused, and that revoking a token which the instance does not know is not an error.
+- That a repeated idempotency key for a status that was deleted since is answered with 404.
+- What Mastodon answers for an address it does not have. The simulator answers 404, with JSON under `/api/` and with a page elsewhere.
 - Mastodon gives out the same token again for the same client, account and scopes. If one Mastodon account is connected to two workspaces, disconnecting one revokes the token of the other, which then has to be connected again. To decide in phase 3b: accept it, or revoke only when no other channel uses the token.
 - The limits that Mastodon keeps per IP address are not simulated. Registrations are limited to 5 in 10 minutes per address, and Cloudflare Workers share theirs with others. The adapter reports it as a failure to try again later.
 

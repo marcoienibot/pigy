@@ -266,8 +266,9 @@ export async function authorize(
 }
 
 /**
- * The token of a client for an account and a set of scopes. Mastodon gives
- * out the one that exists before it makes another.
+ * The token of a client for an account and a set of scopes. GUESS, from
+ * Mastodon's settings for Doorkeeper, `reuse_access_token`: it gives out
+ * the one that exists before it makes another.
  */
 function tokenFor(
   state: State,
@@ -400,7 +401,8 @@ export async function revoke(
     "unauthorized_client",
     "You are not authorized to revoke this token",
   );
-  // The documentation has a request without a token refused.
+  // GUESS, from the documentation, which RFC 7009 would have otherwise: a
+  // request without a token is refused.
   if (!value) return forbidden;
   const found = state.world.findToken<MastodonToken>("mastodon", value);
   // GUESS, from RFC 7009, which Mastodon names: a token that the instance

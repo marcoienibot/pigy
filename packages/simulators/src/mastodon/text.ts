@@ -199,6 +199,8 @@ function findMentions(text: string): (Range & { username: string })[] {
   return mentions;
 }
 
+// GUESS: that Ruby, which Mastodon counts with, and this runtime find the
+// same grapheme clusters. Both follow Unicode, in versions that may differ.
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 /**
