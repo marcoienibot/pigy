@@ -108,6 +108,7 @@ The UI never waits for the network. It reads from memory, writes locally first, 
 
 - **The view** is computed, never stored: the rows of the server with the unconfirmed mutations run on top, by the mutators that the server runs. A patch changes the rows of the server, and the next view has the unconfirmed mutations on the new rows. A mutation that the new rows no longer allow drops out of the view, the way the server will reject it. A workspace has hundreds to a few thousand rows, so computing the view again on every change costs nothing that anybody notices.
 - **Every change of the stored copy is one transaction** of IndexedDB, described by a pure function from what is stored to what to write: applying a patch, adding a mutation and giving it its ID, marking mutations as sent, starting over. The same description of the write goes to the other tabs, which apply it to what they hold in memory. A tab that finds it has missed one reads the copy again.
+- **What is decided in the transaction.** A write waits its turn behind other work on the storage, and the copy can change in that time. So whether a write is still wanted is decided inside its transaction, on what is stored then. A patch is not written for a socket that the tab has given up, or for a copy that has started over under another client ID.
 - **React** reads the store through `useSyncExternalStore`: `useSynced(select)` for rows, `useMutate()` to change them. No screen has a loading state for synced data.
 
 Alternatives considered:

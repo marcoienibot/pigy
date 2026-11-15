@@ -12,7 +12,7 @@ import {
   syncProtocolVersion,
   syncSchemaVersion,
 } from "../protocol.ts";
-import { applyPatch, nextBatch } from "./copy.ts";
+import { applyPatch, type Head, nextBatch, type Step } from "./copy.ts";
 import type { ConnectionState, SyncStore } from "./store.ts";
 
 /** A WebSocket, as far as the connection uses one. */
@@ -126,6 +126,11 @@ export class SyncConnection {
   private awaiting: number | undefined;
   /** The messages so far of a patch that is still arriving. */
   private parts: PatchMessage[] = [];
+  /**
+   * The client ID that the hello of the socket named: what the server says
+   * on the socket is about the copy of that client.
+   */
+  private clientId: string | undefined;
   /** How many times in a row connecting has failed. */
   private failures = 0;
   /** Whether the next mutations are being read from the outbox. */
@@ -258,6 +263,40 @@ export class SyncConnection {
     this.connect();
   }
 
+  /**
+   * Reads the copy again and connects again: what the socket and this tab
+   * know of the copy is not what is stored.
+   */
+  private async resync(): Promise<void> {
+    const generation = this.generation;
+    await this.options.store.reload();
+    if (this.state === "running" && generation === this.generation) {
+      this.reconnect();
+    }
+  }
+
+  /**
+   * A step that changes the copy for the socket that is open now. The
+   * storage may get to it later, after other work of this tab or of
+   * another one. By then the socket may have been given up, or the copy may
+   * have started over as another client, here or in the tab that has taken
+   * the socket over: what the socket said is not about the copy as it is.
+   * So this is decided in the transaction, where the copy cannot change any
+   * more, and before anything is worked out to write: the outcome is
+   * `stale` and nothing is stored.
+   */
+  private forSocket<Result>(
+    step: (head: Head) => Step<Result>,
+  ): (head: Head) => Step<Result | "stale"> {
+    const { generation, clientId } = this;
+    return (head) =>
+      this.state === "running" &&
+      generation === this.generation &&
+      head.meta.clientId === clientId
+        ? step(head)
+        : { write: null, result: "stale" };
+  }
+
   /** Connects again after a pause, which grows with every failure. */
   private retry(): void {
     this.drop();
@@ -270,6 +309,7 @@ export class SyncConnection {
 
   private hello(): void {
     const { clientId, cursor, lastMutationId } = this.options.store.head.meta;
+    this.clientId = clientId;
     this.socket?.send(
       JSON.stringify({
         type: "hello",
@@ -323,24 +363,26 @@ export class SyncConnection {
     if (!first) return;
     const { store } = this.options;
     const generation = this.generation;
-    const outcome = await store.transact((head) =>
-      applyPatch(
-        head,
-        {
-          from: first.from,
-          to: first.to,
-          changes: parts.flatMap(({ changes }) => changes),
-          lastMutationId: first.lastMutationId,
-          rejected: first.rejected,
-        },
-        store.newClientId(),
+    const outcome = await store.transact(
+      this.forSocket((head) =>
+        applyPatch(
+          head,
+          {
+            from: first.from,
+            to: first.to,
+            changes: parts.flatMap(({ changes }) => changes),
+            lastMutationId: first.lastMutationId,
+            rejected: first.rejected,
+          },
+          store.newClientId(),
+        ),
       ),
     );
     if (this.state !== "running" || generation !== this.generation) return;
-    if (outcome === "gap") {
-      // A patch was missed, or another tab has moved the stored cursor.
-      await store.reload();
-      if (generation === this.generation) this.reconnect();
+    if (outcome === "gap" || outcome === "stale") {
+      // A patch was missed, or another tab has moved the stored cursor or
+      // started the copy over.
+      await this.resync();
       return;
     }
     if (outcome === "start-over") {
@@ -380,15 +422,18 @@ export class SyncConnection {
     // then forgot that it has made these mutations, it would give their IDs
     // to others, which the server would take for repeats.
     store
-      .transact((head) => nextBatch(head, store.newClientId()), {
-        durable: true,
-      })
+      .transact(
+        this.forSocket((head) => nextBatch(head, store.newClientId())),
+        { durable: true },
+      )
       .then((batch) => {
         this.taking = false;
         if (!current()) {
           // The socket is another one by now. It was not served while this
           // was reading.
           this.send();
+        } else if (batch === "stale") {
+          return this.resync();
         } else if (batch === "start-over") {
           this.reconnect();
         } else if (batch) {

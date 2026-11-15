@@ -42,6 +42,26 @@ async function online(device = browser()) {
   return { device, ...tab };
 }
 
+/**
+ * Holds back the next write to the storage of `device` until the function
+ * that is returned is called. The writes that are made in the meantime are
+ * not held: they pass it, as they pass a write that waits behind other
+ * work of its tab.
+ */
+function holdNextWrite(device: ReturnType<typeof browser>): () => void {
+  const { storage } = device;
+  const { update } = storage;
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  storage.update = (step, options) => {
+    storage.update = update;
+    return held.then(() => update(step, options));
+  };
+  return release;
+}
+
 it("says hello as a client that has nothing, then as one that knows where it is", async () => {
   const device = browser();
   const first = await device.holder();
@@ -654,6 +674,69 @@ it("checks a socket that seems open when it is told that the network has changed
 
   await device.advance(syncTimings.pong);
   expect(socket.closed).toBe(true);
+});
+
+it("writes nothing for a socket that it has given up, however late the storage gets to it", async () => {
+  const device = browser();
+  const one = await online(device);
+  const firstClientId = one.store.head.meta.clientId;
+  // The server has processed two mutations of this copy.
+  one.store.mutate("post.delete", { id: newId() });
+  one.store.mutate("post.delete", { id: newId() });
+  await settle();
+  await one.socket.send(patch({ from: 0, to: 0, lastMutationId: 2 }));
+  const two = await device.tab();
+
+  // A snapshot arrives in the first tab, and its write has to wait. Before
+  // the storage gets to it, the tab gives the socket up.
+  const release = holdNextWrite(device);
+  await one.socket.send(
+    patch({
+      from: null,
+      to: 9,
+      changes: draft("Late").puts(),
+      lastMutationId: 2,
+    }),
+  );
+  one.connection.stop();
+
+  // The second tab takes the socket over, with an edit of its own, which
+  // is mutation 3 of the copy.
+  const id = newId();
+  const partId = newId();
+  two.store.mutate("post.create", { id, partId, text: "Kept" });
+  await settle();
+  void two.connection.run();
+  await settle();
+  await device.socket.open();
+  // It meets a server that was restored to a state in which this client
+  // has sent nothing, so the copy starts over: the edit is mutation 1 of a
+  // new client.
+  await device.socket.send(patch({ from: null, to: 3, lastMutationId: 0 }));
+  const { clientId } = two.store.head.meta;
+  expect(clientId).not.toBe(firstClientId);
+  expect(two.store.head.outbox.map((mutation) => mutation.id)).toEqual([1]);
+
+  // Now the storage gets to the snapshot of the first tab. Written, it
+  // would say that the server has processed two mutations of a client that
+  // has made one. The copy would start over once more, this time without
+  // the edit: it would be taken for one that the server has processed.
+  release();
+  await settle();
+
+  expect((await device.storage.read())?.head).toMatchObject({
+    meta: { clientId, cursor: null, lastMutationId: 0 },
+    outbox: [{ id: 1, name: "post.create" }],
+  });
+  expect(texts(two.store)).toEqual(["Kept"]);
+  // The edit reaches the server, on the socket of the copy that started
+  // over.
+  await device.socket.open();
+  await device.socket.send(patch({ from: null, to: 3, lastMutationId: 0 }));
+  expect(device.socket.mutates).toEqual([
+    [{ id: 1, name: "post.create", args: { id, partId, text: "Kept" } }],
+  ]);
+  expect(device.errors).toEqual([]);
 });
 
 it("closes the socket and stays away when it is stopped", async () => {
