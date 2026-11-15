@@ -7,12 +7,14 @@ import {
 } from "@pigy/core";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  type CredentialSource,
   type Json,
   type Provider,
   ProviderError,
   type PublishProgress,
   type PublishRunner,
   publish,
+  withCredentials,
 } from "../../src/index.ts";
 import { type Leftover, removeAll } from "./cleanup.ts";
 
@@ -40,7 +42,12 @@ export type Simulation = {
    * taken the code of the callback.
    */
   arm(
-    kind: "rate-limit" | "server-error" | "lost-response" | "token-revoked",
+    kind:
+      | "rate-limit"
+      | "server-error"
+      | "lost-response"
+      | "token-revoked"
+      | "token-expired",
     during?: "publish" | "connect",
   ): void;
   /** The texts of the posts in the world, oldest first. */
@@ -67,7 +74,11 @@ export type Harness = {
    * parts joined into one post. PLAN.md section 6 has it per network.
    */
   thread: "chain" | "joined";
-  /** Credentials of the test account that work. */
+  /**
+   * Credentials of the test account that work. On a network whose access
+   * is renewed, the tests renew them where the network asks, and use what
+   * the refresh returned from then on: `accessOf`.
+   */
   credentials: Json;
   /** Credentials of the right form that the network refuses. */
   refusedCredentials: Json;
@@ -137,6 +148,41 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
     // leave anything behind, and here the deleting is tested in CI too.
     const cleanup: Leftover[] = [];
     let keys = 0;
+    const sources = new WeakMap<Harness, CredentialSource>();
+
+    /**
+     * The credentials of the test account as a caller keeps them: what a
+     * refresh returns takes the place of what it started from, and is
+     * used from then on. A network that renews by replacing the refresh
+     * token, as Bluesky does, refuses the old one for good.
+     */
+    function accessOf(harness: Harness): CredentialSource {
+      const known = sources.get(harness);
+      if (known) return known;
+      let current = harness.credentials;
+      const source: CredentialSource = {
+        credentials: async () => current,
+        refresh: async (refused) => {
+          // Another refresh has replaced them.
+          if (refused !== current) return current;
+          if (!harness.provider.refresh) {
+            throw new Error(
+              "A provider that cannot refresh has asked for a refresh",
+            );
+          }
+          current = (await harness.provider.refresh(refused)).credentials;
+          return current;
+        },
+      };
+      sources.set(harness, source);
+      return source;
+    }
+
+    /** Calls `call` with the credentials of the test account. */
+    const withAccess = <Result>(
+      harness: Harness,
+      call: (credentials: Json) => Promise<Result>,
+    ) => withCredentials(accessOf(harness), call);
 
     afterEach(() => removeAll(cleanup.splice(0)));
 
@@ -160,7 +206,7 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
         key?: string;
       } = {},
     ) {
-      const { provider, credentials } = harness;
+      const { provider } = harness;
       const inner = options.runner ?? runnerOf(harness);
       const seen = new Set(options.from?.parts.map(({ id }) => id));
       const runner: PublishRunner = {
@@ -174,7 +220,10 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
               cleanup.push({
                 id,
                 url,
-                remove: () => provider.deletePost(credentials, id),
+                remove: () =>
+                  withAccess(harness, (credentials) =>
+                    provider.deletePost(credentials, id),
+                  ),
               });
             }
             return progress;
@@ -184,23 +233,7 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
       const key = options.key ?? `${harness.tag}-${++keys}`;
       const progress = await publish(
         provider,
-        {
-          credentials: async () => credentials,
-          // This has never run: Mastodon cannot refresh, and its adapter
-          // never asks to. The pull request for Bluesky is the first that
-          // gets here, and has to show that a test fails when its adapter
-          // does not ask for a refresh of a token that is refused early.
-          refresh: async (refused) => {
-            if (!provider.refresh) {
-              throw new Error(
-                "A provider that cannot refresh has asked for a refresh",
-              );
-            }
-            return (await provider.refresh(refused)).credentials;
-          },
-          content,
-          key,
-        },
+        { ...accessOf(harness), content, key },
         runner,
         options.from ?? null,
       );
@@ -689,18 +722,20 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
       const content: PostContent = { parts: [{ text: "Never published" }] };
 
       it("asks for a new connection when the network refuses the credentials", async () => {
-        const { provider, refusedCredentials, secrets, tag } = await setup();
+        const harness = await setup();
+        const { refusedCredentials, secrets } = harness;
+        // All the way, with what a caller does about the refusal: a
+        // provider whose access can be renewed asks for a refresh first,
+        // which the network refuses too.
         const error = await failure(() =>
-          provider.publishStep({
-            credentials: refusedCredentials,
-            content,
-            key: `${tag}-refused`,
-            progress: null,
-          }),
+          publishParts({ ...harness, credentials: refusedCredentials }, [
+            "Never published",
+          ]),
         );
         expect(error.kind).toBe("reconnect");
         for (const secret of secrets)
           expect(error.message).not.toContain(secret);
+        expect(harness.simulation?.published() ?? []).toEqual([]);
       });
 
       it("asks for a new connection when the stored credentials are not its own", async () => {
@@ -765,6 +800,28 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
         }
         expect(simulation.published()).toEqual([]);
       });
+
+      it("renews the access when the network refuses it before its time", async ({
+        skip,
+      }) => {
+        const harness = await setup();
+        const { provider, simulation } = harness;
+        if (!simulation) return skip("Arming a fault takes a simulation");
+        if (!provider.refresh) {
+          return skip("The access to this network is not renewed");
+        }
+        const text = `${harness.tag} A post after a token that ended early`;
+        simulation.arm("token-expired");
+        // The step that was refused renews the access and is made again
+        // with the new one: nothing else asks the person.
+        const { progress } = await publishParts(harness, [text]);
+        expect(progress.done).toBe(true);
+        expect(simulation.published()).toEqual([text]);
+        // What the refresh returned is what the account is reached with now.
+        expect(await accessOf(harness).credentials()).not.toEqual(
+          harness.credentials,
+        );
+      });
     });
 
     describe("access over time", () => {
@@ -782,12 +839,13 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
           publishParts({ ...harness, credentials }, [text]);
         const day = 24 * 60 * 60 * 1000;
 
-        // Of the three cases only the last has ever run: an access to
-        // Mastodon is not refreshed and has no end. The pull request for
-        // Bluesky is the first with a refresh, the one for LinkedIn the
-        // first with an end. Each has to show that its case can fail: for
-        // an adapter whose refresh returns credentials that do not work,
-        // and for one that names an end which the network does not keep.
+        // The second of the three cases has never run: an access to
+        // Mastodon has no end, and one to Bluesky is refreshed. The pull
+        // request for LinkedIn is the first with an end, and has to show
+        // that this fails for an adapter that names an end which the
+        // network does not keep. The first case fails for an adapter whose
+        // refresh returns credentials that do not work, which the pull
+        // request for Bluesky has shown.
         if (provider.refresh && access.refreshAt) {
           // Refreshed when it is due, the access goes on.
           simulation.advance(

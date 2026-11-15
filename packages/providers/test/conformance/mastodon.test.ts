@@ -85,13 +85,19 @@ describeProvider("Mastodon, simulated", async () => {
     sleep: async (seconds) => world.advance(seconds * 1000),
     simulation: {
       consent,
-      arm: (kind, during = "publish") =>
+      arm: (kind, during = "publish") => {
+        // An access to Mastodon does not end, so the specification does
+        // not ask for this of a provider that has no refresh.
+        if (kind === "token-expired") {
+          throw new Error("A token of Mastodon does not expire");
+        }
         simulator.arm({
           kind,
           // With the code exchanged for a token, the adapter asks whose
           // token it is.
           operation: during === "connect" ? "account" : "publish",
-        }),
+        });
+      },
       published: () => feed(world, ["mastodon"]).map(({ post }) => post.text),
       publishRequests,
       now: world.now,

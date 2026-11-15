@@ -1,0 +1,68 @@
+import type { Clock, Fetch } from "@pigy/core";
+import {
+  type BlueskyClientKey,
+  type BlueskyCredentials,
+  createBlueskyProvider,
+} from "../../src/bluesky/index.ts";
+import type { Harness } from "./spec.ts";
+
+/**
+ * The harness of a run against a Bluesky that cannot be looked into or
+ * tampered with: the real one. It has the credentials of one account,
+ * the client that they were issued to, and nothing else.
+ *
+ * Unlike Mastodon, Bluesky has no posts that only their author sees: what
+ * the run posts is public until the test that made it deletes it, which is
+ * at once.
+ */
+export function blueskyLiveHarness(options: {
+  fetch: Fetch;
+  now: Clock;
+  /**
+   * The client that the credentials were issued to: the address of its
+   * metadata, which Bluesky reads, and its keys, which that holds.
+   */
+  clientId: string;
+  keys: readonly BlueskyClientKey[];
+  /** The handle of the account. */
+  handle: string;
+  credentials: BlueskyCredentials;
+  /** Marks the posts of the run. */
+  tag: string;
+  sleep(seconds: number): Promise<void>;
+}): Harness {
+  const { fetch, now, clientId, keys, handle, credentials, tag, sleep } =
+    options;
+  // Of the form of tokens, and none that Bluesky has issued.
+  const unknownToken = "pigy-conformance-run-not-a-token";
+  return {
+    provider: createBlueskyProvider({
+      fetch,
+      now,
+      clientIdFor: () => clientId,
+      keys,
+    }),
+    // The address that the client lists. Nothing is ever sent there: the
+    // run cannot consent.
+    redirectUri: new URL("/connect/bluesky/callback", clientId).href,
+    identifier: handle,
+    thread: "chain",
+    credentials,
+    refusedCredentials: {
+      ...credentials,
+      accessToken: unknownToken,
+      refreshToken: unknownToken,
+    },
+    revokes: true,
+    secrets: [
+      credentials.accessToken,
+      credentials.refreshToken,
+      credentials.dpopKey.d,
+      ...keys.map(({ privateKey }) => privateKey.d),
+      unknownToken,
+    ],
+    tag,
+    sleep,
+    simulation: undefined,
+  };
+}

@@ -12,6 +12,12 @@ import { fileURLToPath } from "node:url";
 
 // What each network's run reads from the environment.
 const networks = {
+  bluesky: [
+    "PIGY_LIVE_BLUESKY_HANDLE",
+    "PIGY_LIVE_BLUESKY_CLIENT_ID",
+    "PIGY_LIVE_BLUESKY_CLIENT_KEY",
+    "PIGY_LIVE_BLUESKY_CREDENTIALS",
+  ],
   mastodon: [
     "PIGY_LIVE_MASTODON_INSTANCE",
     "PIGY_LIVE_MASTODON_ACCESS_TOKEN",
