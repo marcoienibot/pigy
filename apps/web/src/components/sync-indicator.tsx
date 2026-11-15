@@ -1,4 +1,5 @@
 import type { SyncState } from "@pigy/core";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -8,6 +9,7 @@ import {
   PopoverTitle,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { reloadToUpdate } from "@/lib/service-worker";
 import { cn } from "@/lib/utils";
 import { useSyncState } from "@/sync/react";
 
@@ -121,6 +123,9 @@ export function SyncIndicator({
 }) {
   const { label, detail, tone, reload } = describeSync(useSyncState());
   const inSidebar = placement === "sidebar";
+  // The reload first asks the server for the version to load, which can
+  // take a moment.
+  const [reloading, setReloading] = useState(false);
 
   return (
     <Popover>
@@ -150,7 +155,14 @@ export function SyncIndicator({
           <PopoverDescription>{detail}</PopoverDescription>
         </PopoverHeader>
         {reload && (
-          <Button size="sm" onClick={() => window.location.reload()}>
+          <Button
+            size="sm"
+            disabled={reloading}
+            onClick={() => {
+              setReloading(true);
+              void reloadToUpdate();
+            }}
+          >
             Reload
           </Button>
         )}

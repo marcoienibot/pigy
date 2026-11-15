@@ -2,6 +2,7 @@ import { createRouter, RouterProvider } from "@tanstack/react-router";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { ThemeProvider } from "@/components/theme-provider";
+import { startServiceWorker } from "@/lib/service-worker";
 import { onSessionChange } from "@/lib/session";
 import { routeTree } from "./routeTree.gen";
 import "./styles.css";
@@ -24,6 +25,12 @@ onSessionChange(() => void router.invalidate());
 
 const root = document.getElementById("root");
 if (!root) throw new Error("Missing #root element");
+
+// Before anything is on screen: if a newer version of the app is installed
+// and waiting, this page gives way to it here, and nothing below runs.
+await startServiceWorker().catch((error: unknown) =>
+  console.error("Service worker", error),
+);
 
 createRoot(root).render(
   <StrictMode>

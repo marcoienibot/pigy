@@ -5,11 +5,12 @@ import {
   redirect,
   useRouter,
 } from "@tanstack/react-router";
-import { useEffect } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import { AppShell } from "@/components/app-shell";
 import { PublicPage } from "@/components/page";
 import { Button } from "@/components/ui/button";
 import { useOnline } from "@/lib/online";
+import { checkForUpdate } from "@/lib/service-worker";
 import { checkSession, loadSession, SessionUnknown } from "@/lib/session";
 import { chosenWorkspace } from "@/lib/workspace";
 import { SyncProvider } from "@/sync/react";
@@ -78,6 +79,17 @@ function App() {
     check();
     return store.subscribe(check);
   }, [store]);
+
+  // This window is too old for the server or for the local copy, and says
+  // "Reload to update". The version that the reload is to bring is fetched
+  // now, so that it is there when the person reloads.
+  const outdated = useSyncExternalStore(
+    store.subscribe,
+    () => store.getState().outdated,
+  );
+  useEffect(() => {
+    if (outdated) void checkForUpdate();
+  }, [outdated]);
 
   return (
     <SyncProvider store={store}>

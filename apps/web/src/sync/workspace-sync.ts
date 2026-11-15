@@ -279,6 +279,22 @@ export function syncUnsent(userId: string, workspaces: Workspace[]): void {
 }
 
 /**
+ * Resolves when this tab holds no change that it could not store, in any
+ * workspace that it syncs: at once, unless the device has failed one. For
+ * whoever is about to load the page again, which would lose such a change.
+ */
+export async function whenSaved(): Promise<void> {
+  if (unsavedInTab() === 0) return;
+  await new Promise<void>((resolve) => {
+    const stop = onSyncChange(() => {
+      if (unsavedInTab() > 0) return;
+      stop();
+      resolve();
+    });
+  });
+}
+
+/**
  * Stops every sync of this tab. For when the tab is done with what it
  * holds: the person has signed out, here or in another tab, or the session
  * has ended. Whoever calls this goes on to load the page again, and the
