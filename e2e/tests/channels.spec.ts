@@ -443,11 +443,19 @@ test("leaving for a network asks first while the window holds a change that it c
 
   // The consent page is another page, and this one would be gone with
   // what it holds. The browser asks, and the person stays.
-  const asked = page.waitForEvent("dialog");
+  //
+  // The answer is in place before the click, and is not given after it:
+  // a click returns only when the navigations that it began have got
+  // somewhere. If the server answers fast enough, leaving for the consent
+  // page is one of them, and it gets nowhere before the question is
+  // answered. A test that answered after the click would wait for itself.
+  const questions: string[] = [];
+  page.once("dialog", (question) => {
+    questions.push(question.type());
+    void question.dismiss();
+  });
   await next.click();
-  const question = await asked;
-  expect(question.type()).toBe("beforeunload");
-  await question.dismiss();
+  await expect.poll(() => questions).toEqual(["beforeunload"]);
 
   // The form is theirs again, and not left waiting for a page that does
   // not come.
