@@ -462,6 +462,20 @@ describe("exchanging a code", () => {
     expect(await second.json()).toMatchObject({ error: "invalid_grant" });
   });
 
+  it("accepts a code once, also from two requests at the same time", async () => {
+    const sim = setup();
+    const { app, code } = await consented(sim);
+    // Both are on their way before either is answered. Checking the
+    // verifier takes a moment, in which the other request gets its turn.
+    const responses = await Promise.all([
+      tokenRequest(sim, app, code),
+      tokenRequest(sim, app, code),
+    ]);
+    expect(responses.map(({ status }) => status).sort()).toEqual([200, 400]);
+    const refused = responses.find(({ status }) => status === 400);
+    expect(await refused?.json()).toMatchObject({ error: "invalid_grant" });
+  });
+
   it("accepts a code for ten minutes", async () => {
     const sim = setup();
     const { app, code } = await consented(sim);

@@ -385,8 +385,11 @@ export async function token(
   }
 
   // A code is good for one token. It is used up only now, when nothing can
-  // refuse the request any more, and before anything else is awaited, so
-  // that of two requests with the same code only one gets here.
+  // refuse the request any more. Another request may have used it up while
+  // this one waited for the digest, so it is looked up once more, and
+  // nothing is awaited between that and using it up: of two requests with
+  // the same code, only one gets past here.
+  if (!state.codes.get(code)) return invalidGrant;
   state.codes.delete(code);
   return tokenResponse(tokenFor(state, app, grant.accountId, grant.scopes));
 }
