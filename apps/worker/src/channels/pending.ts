@@ -28,8 +28,24 @@ export type PendingConnection = {
   pending: Json;
 };
 
-// What a sealed `pending` belongs to: the row it is stored in.
-const context = (state: string) => ["oauth_state", state];
+/**
+ * What a sealed `pending` belongs to: the row it is stored in, with
+ * everything the row says about whose connection it is. Somebody who can
+ * write to the table and has no key can then not hand the connection of one
+ * session, workspace or network to another: it no longer opens.
+ */
+const context = ({
+  state,
+  sessionId,
+  workspaceId,
+  network,
+}: Omit<PendingConnection, "pending">) => [
+  "oauth_state",
+  state,
+  sessionId,
+  workspaceId,
+  network,
+];
 
 /** Keeps a connection that has begun, for `pendingLifetimeMs`. */
 export async function keepPending(
@@ -44,7 +60,7 @@ export async function keepPending(
     db.delete(oauthStates).where(lte(oauthStates.expiresAt, now)),
     db.insert(oauthStates).values({
       ...connection,
-      pending: await vault.seal(context(connection.state), pending),
+      pending: await vault.seal(context(connection), pending),
       expiresAt: new Date(now.getTime() + pendingLifetimeMs),
     }),
   ]);
@@ -75,6 +91,6 @@ export async function takePending(
   return {
     ...taken,
     // Checked by the adapter, against its own schema.
-    pending: (await vault.open(context(state), taken.pending)) as Json,
+    pending: (await vault.open(context(taken), taken.pending)) as Json,
   };
 }

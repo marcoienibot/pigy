@@ -1,6 +1,6 @@
 import { sandboxMastodonDomain } from "@pigy/core";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
-import { mastodonApps, oauthStates } from "../src/db/schema.ts";
+import { mastodonApps, oauthStates, sessions } from "../src/db/schema.ts";
 import { createVault } from "../src/vault.ts";
 import {
   channelsOf,
@@ -23,6 +23,7 @@ import {
   credentialKeys,
   expectErrors,
   expectWarnings,
+  invite,
   realMastodonDomain,
   setup,
   signedIn,
@@ -32,6 +33,8 @@ import {
   urlOf,
 } from "./helpers.ts";
 import { SyncClient, workspaceIds } from "./sync-client.ts";
+
+const memberEmail = "member@example.com";
 
 /** A signed-in admin and their workspaces. */
 async function start(options: Parameters<typeof setup>[0] = {}) {
@@ -120,10 +123,97 @@ it("stores the secrets of a connection sealed, and nowhere in the clear", async 
   // one who finishes is the one who began.
   expect(
     await vault.open(
-      ["oauth_state", pending?.state ?? ""],
+      [
+        "oauth_state",
+        pending?.state ?? "",
+        pending?.sessionId ?? "",
+        workspaces.live,
+        "mastodon",
+      ],
       pending?.pending ?? "",
     ),
   ).toMatchObject({ codeVerifier: expect.any(String) });
+});
+
+describe("a connection that has begun", () => {
+  /**
+   * The admin and a member, and a connection that the admin has begun in
+   * their live workspace and that the server has answered.
+   */
+  async function begun() {
+    const context = await start();
+    await invite(context.test, memberEmail);
+    const member = await signedIn(context.test, { email: memberEmail });
+    const url = await consentUrl(
+      context.browser,
+      context.workspaces.live,
+      realMastodonDomain,
+    );
+    const callback = pathOf(await consentAtNetwork(context.test, url));
+    const [row] = await context.test.db.select().from(oauthStates);
+    if (!row) throw new Error("Nothing was kept of the connection");
+    return { ...context, member, callback, row };
+  }
+
+  type Begun = Awaited<ReturnType<typeof begun>>;
+
+  // What somebody can do who writes to the database and has no key: a row
+  // says whose connection it is, and they change what it says.
+  it.each([
+    [
+      "another session",
+      async ({ test, member, callback, row }: Begun) => {
+        const all = await test.db.select({ id: sessions.id }).from(sessions);
+        // The admin and the member have a session each.
+        const other = all.find(({ id }) => id !== row.sessionId);
+        await test.db.update(oauthStates).set({ sessionId: other?.id ?? "" });
+        return member.fetch(callback);
+      },
+    ],
+    [
+      "another workspace",
+      async ({ test, browser, workspaces, callback }: Begun) => {
+        await test.db
+          .update(oauthStates)
+          .set({ workspaceId: workspaces.sandbox });
+        return browser.fetch(callback);
+      },
+    ],
+    [
+      "another network",
+      async ({ test, browser, callback }: Begun) => {
+        await test.db.update(oauthStates).set({ network: "bluesky" });
+        return browser.fetch(callback.replace("/mastodon/", "/bluesky/"));
+      },
+    ],
+  ])("does not open for %s than it was sealed for", async (_name, tamper) => {
+    const context = await begun();
+    const { test, browser, member, workspaces } = context;
+    const warnings = expectWarnings();
+    const asked = test.network.requests.length;
+
+    const outcome = outcomeOf(await tamper(context));
+
+    // It was found, since the row says that it is this one's, and it did
+    // not open. So it names no workspace: nothing in the row is believed.
+    expect(outcome.connect).toBe("failed");
+    expect(outcome.workspace).toBeUndefined();
+    expect(warnings).toHaveBeenCalledExactlyOnceWith(
+      "A connection could not be finished: The value was not sealed with this key and for this place",
+    );
+    // No adapter was handed what was kept, so no server was asked, and
+    // nobody has a channel.
+    expect(test.network.requests).toHaveLength(asked);
+    const ofMember = await workspaceIds(member);
+    for (const [who, workspace] of [
+      [browser, workspaces.live],
+      [browser, workspaces.sandbox],
+      [member, ofMember.live],
+      [member, ofMember.sandbox],
+    ] as const) {
+      expect(await channelsOf(who, workspace)).toEqual([]);
+    }
+  });
 });
 
 describe("what leaves the app", () => {
