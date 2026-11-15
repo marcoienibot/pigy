@@ -20,6 +20,8 @@ export type HttpAnswer = {
   headers: Headers;
   /** The body, if it is JSON. Undefined otherwise. */
   json: unknown;
+  /** The body as text, whatever it is. */
+  text: string;
 };
 
 /** The body of `response`, or null if it is longer than `maxBytes`. */
@@ -119,7 +121,7 @@ export async function send(
   } catch {
     json = undefined;
   }
-  return { status, headers, json };
+  return { status, headers, json, text };
 }
 
 /**

@@ -5,6 +5,7 @@
   "sideEffects": false,
   "exports": {
     ".": "./src/index.ts",
+    "./bluesky": "./src/bluesky/index.ts",
     "./mastodon": "./src/mastodon/index.ts"
   },
   "scripts": {
