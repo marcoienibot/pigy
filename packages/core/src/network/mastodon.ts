@@ -4,7 +4,8 @@
  * app/validators/status_length_validator.rb: every link counts as a fixed
  * number of characters, a mention counts without its domain, and what is
  * left is counted in grapheme clusters, so an emoji made of several code
- * points is one character.
+ * points is one character. What a mention is comes from the code that the
+ * validator calls, app/lib/extractor.rb.
  *
  * What counts as a link follows the pattern Mastodon 4.5 uses, with one
  * difference: Mastodon accepts only the top-level domains that exist, and
@@ -50,9 +51,13 @@ const wordChar = String.raw`[\p{L}\p{M}\p{Nd}\p{Pc}]`;
 
 // A mention with a domain, as Account::MENTION_RE: "@name@example.com".
 const remoteMentionPattern = new RegExp(
-  String.raw`(^|[^=\/\p{L}\p{M}\p{Nd}\p{Pc}])@([a-z0-9_]+(?:[.-]+[a-z0-9_]+)*)@${wordChar}+(?:[.-]+${wordChar}+)*`,
+  String.raw`(^|[^=\/\p{L}\p{M}\p{Nd}\p{Pc}])@([a-z0-9_]+(?:[.-]+[a-z0-9_]+)*)@(${wordChar}+(?:[.-]+${wordChar}+)*)`,
   "giu",
 );
+
+// The longest domain that Mastodon takes in a mention, in characters. With
+// a longer one the text is no mention, and counts in full.
+const maxMentionDomainLength = 253;
 
 // What must not follow a mention: Mastodon then takes it for something else,
 // such as "@name@example.com@more" or an address with accented letters.
@@ -93,9 +98,12 @@ export function countMastodonCharacters(
         mention: string,
         before: string,
         username: string,
+        domain: string,
         offset: number,
         whole: string,
       ) =>
+        // Ruby counts the length of a text in code points.
+        Array.from(domain).length > maxMentionDomainLength ||
         afterMentionPattern.test(whole.slice(offset + mention.length))
           ? mention
           : `${before}@${username}`,

@@ -6,10 +6,11 @@ import { escapeHtml } from "../world/pages.ts";
  *
  * Written from https://docs.joinmastodon.org/user/posting/ and, where that
  * leaves a question open, from the code it describes:
- * app/validators/status_length_validator.rb, the link pattern in
- * config/initializers/twitter_regex.rb and app/lib/text_formatter.rb, all
- * as of Mastodon 4.5. It shares nothing with the counting in @pigy/core,
- * on purpose: the two are meant to catch each other's mistakes.
+ * app/validators/status_length_validator.rb, app/lib/extractor.rb, the link
+ * pattern in config/initializers/twitter_regex.rb and
+ * app/lib/text_formatter.rb, all as of Mastodon 4.5. It shares nothing with
+ * the counting in @pigy/core, on purpose: the two are meant to catch each
+ * other's mistakes.
  *
  * GUESS, to confirm against a real server: Mastodon takes a link only if
  * its top-level domain exists. This takes any of two or more ASCII letters.
@@ -181,13 +182,18 @@ const mention = new RegExp(
 const notAfterMention =
   /^(?:[@＠]|[\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u00FF\u0100-\u024F\u0253-\u0254\u0256-\u0257\u0259\u025B\u0263\u0268\u026F\u0272\u0289\u028B\u02BB\u1E00-\u1EFF]|[\u0300-\u036F]|:\/\/)/u;
 
+// Extractor::MAX_DOMAIN_LENGTH: what has a longer domain is no mention.
+const longestDomain = 253;
+
 /** The mentions in `text`, each with the name before the domain. */
 function findMentions(text: string): (Range & { username: string })[] {
   const mentions: (Range & { username: string })[] = [];
   for (const match of text.matchAll(mention)) {
     const end = match.index + match[0].length;
     if (notAfterMention.test(text.slice(end))) continue;
-    const [username = ""] = (match[1] ?? "").split("@");
+    const [username = "", domain = ""] = (match[1] ?? "").split("@");
+    // Ruby's `length` is the number of code points, not of code units.
+    if ([...domain].length > longestDomain) continue;
     mentions.push({ start: match.index, end, username });
   }
   return mentions;

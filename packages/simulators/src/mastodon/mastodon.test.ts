@@ -796,6 +796,30 @@ describe("posting a status", () => {
     ).toBe(200);
   });
 
+  it("counts a mention in full when its domain is too long to be one", async () => {
+    const sim = setup();
+    const { token } = await connect(sim);
+    // With its domain left out this would be two characters. Mastodon takes
+    // it for plain text, which is over the 500 of the instance.
+    const { response, status } = await publish(sim, token, {
+      status: `@a@${"b".repeat(501)}`,
+    });
+    expect(response.status).toBe(422);
+    expect(status.error).toBe(
+      "Validation failed: Text character limit of 500 exceeded",
+    );
+    expect(feed(sim.world)).toEqual([]);
+    // With the longest domain that a mention can have, it counts as "@a":
+    // 497 letters, a space and those two are exactly 500.
+    expect(
+      (
+        await publish(sim, token, {
+          status: `${"c".repeat(497)} @a@${"b".repeat(253)}`,
+        })
+      ).response.status,
+    ).toBe(200);
+  });
+
   it("answers a repeated idempotency key with the status it made", async () => {
     const sim = setup();
     const { token } = await connect(sim);

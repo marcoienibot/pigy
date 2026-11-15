@@ -85,6 +85,19 @@ describe("countMastodonCharacters", () => {
     expect(count("@alice@example.com@more")).toBe(23);
   });
 
+  it("counts a mention in full when its domain is longer than a domain can be", () => {
+    // Mastodon takes no mention whose domain has more than 253 characters.
+    expect(count(`@a@${"b".repeat(253)}`)).toBe("@a".length);
+    expect(count(`@a@${"b".repeat(254)}`)).toBe("@a@".length + 254);
+    // Characters, not code units: each of these letters takes two.
+    expect(count(`@a@${"\u{1D41A}".repeat(253)}`)).toBe("@a".length);
+    expect(count(`@a@${"\u{1D41A}".repeat(254)}`)).toBe("@a@".length + 254);
+    // The mentions around it still count without their domains.
+    expect(count(`@a@x.example @a@${"b".repeat(254)} @c@x.example`)).toBe(
+      "@a ".length + "@a@".length + 254 + " @c".length,
+    );
+  });
+
   it("does not count the whitespace around the text", () => {
     // Mastodon removes it before it stores, and counts, the text.
     expect(count("  Hello \n\n")).toBe(5);

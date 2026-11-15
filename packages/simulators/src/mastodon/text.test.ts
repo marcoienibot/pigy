@@ -98,6 +98,15 @@ describe("countableLength", () => {
     );
   });
 
+  it("counts a mention with a domain of more than 253 characters in full", () => {
+    // From the code: such a text is no mention to Mastodon.
+    expect(count(`@ada@${"m".repeat(253)}`)).toBe("@ada".length);
+    expect(count(`@ada@${"m".repeat(254)}`)).toBe("@ada@".length + 254);
+    // Characters, not code units: each of these letters takes two.
+    expect(count(`@ada@${"\u{1D41A}".repeat(253)}`)).toBe("@ada".length);
+    expect(count(`@ada@${"\u{1D41A}".repeat(254)}`)).toBe("@ada@".length + 254);
+  });
+
   it("counts an address that only looks like a mention as it is", () => {
     expect(count("ada@mastodon.example")).toBe(20);
     expect(count("@ada@mastodon.example@x")).toBe(23);
