@@ -75,6 +75,8 @@ pigy is an invite-only web app for writing a post once and publishing it to Link
 
 Everything is one Worker deployment. The React app is served as Worker static assets.
 
+A sandbox workspace has a second Durable Object next to its `WorkspaceDO`, the `SimWorldDO`: the simulated networks as that workspace sees them. Section 7 has it.
+
 ### Repository layout
 
 ```
@@ -102,6 +104,7 @@ The UI never waits for the network. It reads from memory, writes locally first, 
 - **Offline**: mutations queue in an IndexedDB outbox and are sent in order on reconnect. Mutations that only repeat one another, such as the text of a part on every keystroke, become one while they wait. A rejected mutation rolls back, and a notice says what was refused and why. The notice is not on the post, as an earlier draft of this plan had it: the post is often gone, which is why the mutation was refused. The Durable Object keeps the reason until the client has seen it, so the notice is shown also when the answer that carried it was lost, and the client keeps it until the person has dismissed it.
 - **Conflicts**: the server applies mutations in arrival order, last write wins per field. State guards reject impossible edits, such as changing a post that is already sending.
 - **Secrets**: channel credentials are never synced. Each table has an explicit list of synced columns, and a test fails if a credential field appears in any sync message.
+- **Mutators of the server's own**: a row that stands for something only the server has is changed by mutators that a client may not send. A channel is one: it is made and removed together with its credentials, over HTTP. Clients receive what such a mutator did like any other change.
 - **Versions**: the protocol and the synced schema each have a version number. A client that says hello with another version is told so, and updates itself.
 
 **The client store.** The store is our own code, not a library. `packages/core/src/sync/client` holds everything that needs no browser, and `apps/web/src/sync` what does: IndexedDB, the BroadcastChannel, the Web Lock, the WebSocket and the React hooks.
@@ -140,14 +143,14 @@ Alternatives considered:
 | `workspace` | ID, owner, environment (live or sandbox) |
 | `api_key` | Workspace, name, visible prefix, SHA-256 hash, scopes, last used, expiry, revoked |
 | `push_subscription` | Web push endpoints per user and device |
-| `mastodon_app` | OAuth client per Mastodon instance, shared by all users of the live environment. A cache: the adapter replaces an entry that the instance no longer knows |
-| `oauth_state` | What an adapter needs to finish a connection that has begun, kept under the `state` of the callback for a few minutes. It holds secrets: a PKCE verifier, and for Mastodon the client secret |
+| `mastodon_app` | OAuth client per Mastodon instance: one for all users of the live environment, and one for each simulated instance of every sandbox, whose world is its own. Sealed, see section 16. A cache: the adapter replaces an entry that the instance no longer knows, and one that no longer opens |
+| `oauth_state` | What an adapter needs to finish a connection that has begun, kept under the `state` of the callback for ten minutes, with the session that began it and the workspace it is for. It holds secrets, a PKCE verifier and for Mastodon the client secret, so it is sealed too |
 
 **WorkspaceDO SQLite (per workspace)**
 
 | Table | Purpose |
 | --- | --- |
-| `channel` | Network, account ID, handle, name, avatar, status, the limits of the account, when to refresh the access and when it ends, encrypted credentials |
+| `channel` | Network, account ID, handle, name, avatar, profile link, status, when it was connected, when to refresh the access and when it ends, sealed credentials. The limits of the account join them with the publishing that reads them |
 | `post` | Status, mode, due time, source (UI or API), tags, timestamps |
 | `post_part` | Ordered text of each part |
 | `part_media` | Media attached to a part, with alt text |
@@ -189,7 +192,7 @@ Notes that shape the design:
 
 | Part | What it is |
 | --- | --- |
-| Connecting | `beginConnect` takes pigy's callback address and, on networks with no single place to sign in, what the person typed to say where their account lives. It returns the address to send the browser to, the `state` that the callback will carry, and `pending`: what to keep under that state until then. `completeConnect` takes `pending` and the parameters of the callback and returns the account for display (ID, handle, name, avatar, profile link) and the access. It is called once per callback and fails for good whatever went wrong: the code in a callback is good for one exchange, so the person begins again |
+| Connecting | `beginConnect` takes pigy's callback address and, on networks with no single place to sign in, what the person typed to say where their account lives. It returns the address to send the browser to, the `state` that the callback will carry, and `pending`: what to keep under that state until then. `completeConnect` takes `pending` and the parameters of the callback and returns the account for display (ID, handle, name, avatar, profile link) and the access. It is called once per callback and fails for good whatever went wrong: the code in a callback is good for one exchange, so the person begins again. A failure says whether the person declined, which is no failure to them |
 | Access | The credentials, opaque and stored encrypted, with two times: `refreshAt`, when to call `refresh`, and `expiresAt`, when the access ends unless it is refreshed. Either is null where it does not apply. Only adapters of networks that can renew an access have `refresh`. It is called by a timer when `refreshAt` comes, and at once when a method fails with `refresh`, one refresh at a time per channel. `disconnect` gives the access back where the network has a way |
 | Limits | `limits` asks what the account may post. The answer is data that names its network, defined in `packages/core` with the counting that goes with it: `countCharacters` and `validateContent` are pure and run in the browser too. Adapters do not validate. They send what they are given, and the network is the judge |
 | Publishing | `publishStep` takes the content, a key that names the delivery, and the progress that the step before returned. It makes at most one request that changes something and returns the new progress: the parts that are published, each with its ID and link, whether the post is done, how long to wait before the next step, and the adapter's own notes. The progress is stored as it is, so it holds no secret. A step can be run again at any time without publishing a part twice. Section 8 has the rules |
@@ -231,6 +234,32 @@ What was decided along the way, and why:
 - **`refresh` is a kind of its own.** A token can be refused before the time pigy has for it: the clocks differ, or a refresh for another post replaced it while this step ran. `reconnect` would mark a healthy channel as broken, and `retry` would hand the step the same token until the workflow gave up.
 - **A connection is never completed twice.** The code in a callback is good for one exchange. A failure halfway may have spent it, so asking the caller to try again would promise what cannot be kept.
 
+### Connecting and disconnecting
+
+The Worker's side of the first row of the table above, built in phase 3b-1. `packages/core/src/connect.ts` has the requests and the answers.
+
+| Route | What it does |
+| --- | --- |
+| `POST /api/workspaces/<workspace ID>/connect` | Takes the network and, where the network asks, what the person typed. Calls `beginConnect`, keeps `pending` in `oauth_state`, and answers with the address to send the browser to. A refusal carries a message for the person: 400 for what they typed, 502 for a server that is out of reach or in trouble, 503 for a pigy without keys |
+| `GET /connect/<network>/callback` | Where the network sends the browser back to. Takes `pending` out of `oauth_state`, calls `completeConnect`, stores the channel with its sealed credentials, and sends the browser on to `/channels?connect=…` |
+| `DELETE /api/workspaces/<workspace ID>/channels/<channel ID>` | Calls `disconnect` with the credentials of the channel and removes the channel. Answers whether the network took the access back |
+
+What was decided, and why:
+
+- **A connection ends in the session that began it.** The callback is a request that another site starts, so it is believed only for its `state`: random, made by the adapter, kept on the server, good once, and found only for the session that began. Otherwise somebody could connect an account of their own, keep the answer of the network to themselves, and have another person open it: that person's workspace would then post to the first one's account. A callback in another session finds nothing and uses nothing up.
+- **The outcome travels as a word, not as a message.** The callback answers with a redirect to `/channels`, with `connect` set to `connected`, `cancelled`, `expired` or `failed`, and with the network, the workspace and the channel where they are known. What a network said goes to the log. A message in an address would be shown by the page as pigy's own, and anybody can make up an address.
+- **Disconnecting always removes the channel.** The access is given back first, where the network has a way. If that fails, because the network is out of reach or the credentials no longer open, the channel goes all the same, and the answer says that the access may still stand: a channel that could only be removed while its network answers could stay for ever.
+- **One account may be connected to several workspaces, and they share its access.** Nothing stops two people from connecting the same account, and Mastodon gives out the same token for the same registration and account. Disconnecting in one workspace revokes that token, so the channel of the other needs connecting again when it is next used. This is accepted. Keeping the token while another workspace uses it would take an index of which workspace holds which account, kept in step with every `WorkspaceDO`, and it would leave pigy with access to an account that somebody has just disconnected. Section 8 has what else such a pair of channels can do.
+- **A channel gets only the addresses that a browser can open.** The picture and the page of a simulated account are on a host that exists in its world alone, so a channel of a sandbox has neither.
+- **Channels change only through mutators that clients cannot send**, `channel.connect` and `channel.disconnect`. See section 4.
+
+Where the next steps attach:
+
+- **The limits of an account** are not stored yet. The publishing pipeline reads them first, so it adds them to the channel: `limits` is asked when an account is connected and again from time to time.
+- **The status `needs_reconnect`** exists, and connecting an account again clears it. Nothing sets it yet: the publishing pipeline does, with a mutator of the server's own, when an adapter fails with `reconnect`.
+- **Refreshing credentials.** `refreshAt` is stored with the credentials, in a column that is not synced, and nothing reads it: Mastodon has nothing to refresh. The first network that has adds the alarm of the `WorkspaceDO` and the one-refresh-at-a-time rule of this section. The object holds the credentials sealed and has the Worker's secrets, so it can open them with `src/vault.ts` as the routes do.
+- **Reading credentials to publish.** `channelAccess` of `src/workspace/workspaces.ts` returns the sealed credentials of a channel, and `vaultFor` opens them. A step of the publishing workflow does both where it calls the adapter. That is also the place to seal credentials again that an older key sealed, so that an old key can be dropped: see section 16.
+
 ## 7. Sandbox and simulators
 
 ### Simulators
@@ -266,9 +295,18 @@ The simulators of the networks are part of the production build, because the san
 - A simulator makes no requests, and fails for every host that is not its own.
 - A simulated Mastodon instance has a domain under `.example`, `.test` or `.invalid`. Such a name cannot exist on the internet, so a simulated instance is never taken for a real one, and a request that was meant for it and left the Worker by mistake reaches nobody. The other three networks have fixed hosts, where this cannot be done.
 - Every secret of a simulated network begins with `pigy-sim-`, and a world finds no token that it did not issue. A real credential that reaches a simulator is refused before it is compared with anything.
-- Which `fetch` an adapter gets is decided by the environment of the workspace, live or sandbox, and by nothing in a request.
+- Which `fetch` an adapter gets is decided by the environment of the workspace, live or sandbox, and by nothing in a request. `reachOf` in `apps/worker/src/network/reach.ts` is the one place that decides, and every adapter in the Worker is made through it. A sandbox gets a `fetch` that leads into its world and nowhere else, whatever host a request names. A live workspace gets the `fetch` that the app was built with.
 
-The sandbox gives the Mastodon adapter a store for registrations of its own, per world: the same simulated instance exists in every user's world, each with its own registered clients.
+The sandbox gives the Mastodon adapter a store for registrations of its own, per world: the same simulated instance exists in every user's world, each with its own registered clients. The registrations are in the same table as the real ones, `mastodon_app` of D1, under the ID of the sandbox workspace where the real ones are under `live`. They are pigy's own records, not part of a network, so they are not in the world.
+
+### The simulated world of a sandbox
+
+Every sandbox workspace has a `SimWorldDO`, named after the ID of the workspace, which holds its world in the storage of the object. `apps/worker/src/sim` has it.
+
+- A new world starts with one Mastodon instance, `mastodon.example`, and three accounts to connect as. `sandboxMastodonDomain` in `packages/core` is the name, for the app to offer.
+- The Worker is the only way in, and the object makes no requests. A request crosses into it whole, as plain data, and so does its answer: a body that is passed as a stream stays open across the call until somebody reads it.
+- Like the `WorkspaceDO`, the object remembers which workspace it was first used for and answers no other. It answers no live workspace at all.
+- The pages of a simulated network that are there for a person, which are the ones where they consent to a connection, are served by the Worker under `/sim/network/<host>/…`. The address names no world: it is that of the sandbox of whoever is signed in. So no address shows one person the world of another, and the API of a simulated network cannot be reached from a browser at all.
 
 The Google simulator is the first one, built in phase 1, and differs from the others in two ways:
 
@@ -287,7 +325,7 @@ Its consent page is served by the Worker under `/sim/google/*`. Without Google c
 - Sandbox API keys (`pigy_test_…`) hit the sandbox, so scripts can be developed without posting for real.
 - Simulated Google sign-in is compiled out of production. Real sign-in is always required, including for the sandbox.
 
-Simulator state lives in a `SimWorldDO` per user, so one person's simulated posts are never visible to another.
+Simulator state lives in a `SimWorldDO` per sandbox workspace, and so per user: one person's simulated posts are never visible to another.
 
 ## 8. Publishing pipeline
 
@@ -301,7 +339,7 @@ How the workflow and an adapter share the work:
 
 - The content is checked with `validateContent` before the first step. What fails is not sent.
 - A step of the workflow is one call of `publishStep`. It returns the progress as plain JSON, which is the recorded result of the step and the input of the next. `publish` in `packages/providers` is the loop: it takes the workflow's `step.do` and `step.sleep` and names the steps by their position, the same on a replay.
-- The credentials are asked of the WorkspaceDO inside every step, also when a step is run again. A post can take longer than credentials last, and the WorkspaceDO replaces them: by its alarm when `refreshAt` comes, and at once when a step fails with `refresh`.
+- The credentials are asked of the WorkspaceDO inside every step, also when a step is run again. A post can take longer than credentials last, and the WorkspaceDO replaces them: by its alarm when `refreshAt` comes, and at once when a step fails with `refresh`. The WorkspaceDO hands them out sealed, as it stores them, and the step opens them where it calls the adapter: section 16.
 - A `ProviderError` says what the workflow does:
   - `retry` runs the step again with the same input, after the time the network named if it named one.
   - `refresh` has the WorkspaceDO renew the credentials at once, whatever `refreshAt` says, and runs the step again with the new ones. `publish` does this inside the same workflow step. If the stored credentials are no longer the ones that were refused, another refresh has replaced them, and they are used as they are. A refresh that the network refuses, or new credentials that are refused too, mean `reconnect`.
@@ -411,7 +449,7 @@ REST under `/api/v1`, described by an OpenAPI document generated from the same Z
 | Sync client | Vitest | The rules of SYNC.md for a client, against a server that the tests play: pending mutations on top of patches, confirmation and rejection, the outbox and what it merges, starting over, every close code, several tabs |
 | End to end | Playwright against the local Worker, built as for production except that sign-in is simulated | Simulated Google sign-in, allowlist refusal, sandbox onboarding, connecting four simulated accounts, cross-post with override, thread and image, schedule and fast-forward, offline draft then sync, several tabs and devices, installability checks, phone viewports |
 
-**No real network in CI.** In test runs, any outbound request to a host that is not simulated throws, so a test that reaches for a real service fails.
+**No real network in CI.** In test runs, any outbound request to a host that is not simulated throws, so a test that reaches for a real service fails. The build that the end-to-end tests run against has no `fetch` that leads outside: sign-in and the sandboxes are answered inside the Worker, and what a live workspace asks of a network is answered by a guard, `apps/worker/src/outbound.ts`, with an error.
 
 **Keeping the simulators honest.** The adapter conformance spec can also run against the real services with dedicated test accounts. That run is manual or nightly, never part of pull request CI, and it deletes what it posts. If the real service and the simulator disagree, the simulator is fixed.
 
@@ -423,8 +461,8 @@ The conformance suite runs in Node, like the other tests of the packages, and no
 
 ## 16. Security
 
-- Channel tokens are encrypted at rest with a key held as a Worker secret, with a key version for rotation.
-- OAuth uses state and PKCE everywhere. Cookie-authenticated writes and the WebSocket handshake check the origin.
+- Channel tokens are encrypted at rest with a key held as a Worker secret, with a key version for rotation. The same goes for what else pigy keeps of secrets that are not its own: its registrations with Mastodon instances, and what a connection that has begun needs to finish. The details follow this list.
+- OAuth uses state and PKCE everywhere. The state of a connection is kept on the server, is good once, and only in the session that began. Cookie-authenticated writes and the WebSocket handshake check the origin.
 - A workspace is reached only through the Worker, which looks it up by its ID and the signed-in user together. The Durable Object never sees the request of the client: the Worker makes a new one. The object also remembers which workspace and owner it was first used for and refuses any other, so a mistake in the Worker's routing cannot hand one person's data to another.
 - Mastodon instance domains and asset URLs come from users, so they are validated, HTTPS only, and size-capped. An adapter follows no redirects, gives up on a host that does not answer, and reads a bounded amount of every answer. What a network says in an error may reach a message, a log or the screen only without the secrets of the request.
 - The addresses of avatars and profiles come from the networks. Only HTTPS addresses are passed on.
@@ -433,6 +471,14 @@ The conformance suite runs in Node, like the other tests of the packages, and no
 - Signing out deletes what the device holds of the person: the local copies in IndexedDB and what it remembers of the session. If there are changes that were not synced, the app says so first and asks.
 - So does learning that the session has ended, by expiry or because an invitation was withdrawn. There is one exception. A session ends without the person's doing, and a copy can hold changes that were made offline and never synced: deleting it would lose work that nobody chose to lose. Such a copy is kept. It is not shown to anybody, and the sign-in page says that it is there, whose it is and how many changes it holds. They are synced when the same person signs in again. They are deleted when somebody else signs in on the device, or when whoever is at the device says so on the sign-in page.
 - A content security policy, and an audit trail of publishes per workspace.
+
+**Sealing.** `apps/worker/src/vault.ts` seals a value before it is stored and opens it when it is needed, with AES-256-GCM and a new random nonce each time.
+
+- The keys are the Worker secret `CREDENTIAL_KEYS`: a list of `<version>:<key>`. The key with the highest version seals, and each key opens what it sealed. A sealed value begins with the version of its key.
+- A key is replaced by adding one with a higher version and keeping the old one. What the old key sealed is sealed again only when it is next written, so the old key stays for as long as anything is left that it sealed. Dropping it earlier costs a new registration with each Mastodon instance, which happens by itself, and a new connection of each channel that it sealed. Sealing the credentials of a channel again when they are read, so that an old key runs out of use, belongs to the publishing pipeline, which is the first to read them often.
+- A value is sealed for the place it is stored in: the workspace, network and account of a channel, the scope and domain of a registration, the state of a connection. It does not open in another place, so somebody who can write to a database and has no key cannot give one channel the credentials of another.
+- The Worker seals and opens, in the routes that call an adapter. The `WorkspaceDO` stores the credentials of a channel as it gets them and has no part in it. Credentials in the clear exist in memory only, between an adapter and the vault, and are in no log, no error, no sync message and no answer.
+- Without keys nothing can be sealed, and then nothing is stored instead: no account can be connected, and the request to begin is refused before anything is asked of a network. A build for development and tests has a key from the repository for that case, so that a fresh clone needs no setup. It is not part of a production build, which is checked for it, and it is used only where the app is reached locally.
 
 ## 17. Phases
 
@@ -455,7 +501,13 @@ Each phase ends with something that works and is covered by tests. Sizes are rel
 
 Phase 2 is built in three steps. 2a is the server side: workspaces, the `WorkspaceDO`, the mutators, and the sync protocol with its tests. 2b is the client: the sync store, IndexedDB, the offline outbox, the tabs of a browser, and the drafts screen. 2c is the PWA shell: the service worker, the manifest, starting the app without a network, and installing it. Until 2c the data is there without a network and the app itself is not: a page that is open goes on working offline, and loading it takes the server.
 
-Phase 3 is built in steps too. 3a is in the packages only: the provider interface, what the simulators share, and Mastodon as the first network, with its adapter, its simulator and the conformance suite. The steps after it put that to use in the Worker: the channels with their encrypted credentials, the routes that connect an account, the publishing workflow, the simulated world of each sandbox user, the Live/Sandbox switch, the simulated feeds and the failure panel. Then Bluesky, LinkedIn and Threads follow, each the way Mastodon was built.
+Phase 3 is built in steps too. 3a is in the packages only: the provider interface, what the simulators share, and Mastodon as the first network, with its adapter, its simulator and the conformance suite. The steps after it put that to use in the Worker:
+
+- 3b-1, the server side of channels: the synced table `channel` with its sealed credentials, the routes that connect and disconnect an account, the simulated world of each sandbox, and the guard that keeps the end-to-end build off the network. Section 6 has the routes and what was decided.
+- 3b-2, the publishing pipeline: targets, the workflow, results. It adds the limits of an account to its channel, sets `needs_reconnect`, and reads the credentials of a channel inside each step.
+- 3b-3, the web side: the Channels screen, the Live/Sandbox switch, publishing from the composer, the simulated feeds and the failure panel.
+
+Then Bluesky, LinkedIn and Threads follow, each the way Mastodon was built.
 
 Until deployment is set up in phase 11, every phase is built and verified locally against the simulated networks. Connecting real networks and installing on a phone need the deployed address.
 
@@ -480,7 +532,7 @@ Each network in phase 3 is built in the same order: conformance spec, simulator,
 | Meta developer app | Threads use case. Add each friend as a Threads tester. They accept the invite in their Threads settings |
 | Test accounts | One per network for the live conformance run |
 
-Mastodon and Bluesky need no developer registration. VAPID keys, the Bluesky signing key and the token encryption key are generated during setup and stored as Worker secrets.
+Mastodon and Bluesky need no developer registration. VAPID keys, the Bluesky signing key and the token encryption key are generated during setup and stored as Worker secrets. The token encryption key is `CREDENTIAL_KEYS`, in the form `1:<key>`, with the output of `openssl rand -base64 32` as the key.
 
 ## 19. Risks and things to verify
 
@@ -507,7 +559,7 @@ To confirm when the relevant phase starts:
 - Whether Bluesky video upload works with the OAuth scopes pigy requests.
 - LinkedIn's behaviour on duplicate content, and the current API version string.
 - How a LinkedIn step that was cut off after it sent is kept from being run again, see the end of section 8.
-- How the publishing workflow keeps the deliveries to one channel to one at a time, what "Retry" does with a failed target that has published no part once later deliveries have gone to the channel, and whether an account may be connected as two channels in two workspaces, whose deliveries nothing keeps apart, see section 8.
+- How the publishing workflow keeps the deliveries to one channel to one at a time, and what "Retry" does with a failed target that has published no part once later deliveries have gone to the channel, see section 8. An account may be connected as two channels in two workspaces: phase 3b-1 allows it, see section 6. Nothing keeps the deliveries of the two apart, which is still as section 8 says.
 - Current media size and duration limits per network.
 - Workflows support in the Workers Vitest pool, which has had isolation caveats. WebSockets to Durable Objects were confirmed in phase 2a: they work, hibernation included.
 - Whether usage fits the Cloudflare free plan.
@@ -523,7 +575,7 @@ Open since phase 3a, all of it about Mastodon and none of it confirmed against a
 - That a revocation without a token is refused, and that revoking a token which the instance does not know is not an error.
 - That a repeated idempotency key for a status that was deleted since is answered with 404.
 - What Mastodon answers for an address it does not have. The simulator answers 404, with JSON under `/api/` and with a page elsewhere.
-- Mastodon gives out the same token again for the same client, account and scopes. If one Mastodon account is connected to two workspaces, disconnecting one revokes the token of the other, which then has to be connected again. To decide in phase 3b: accept it, or revoke only when no other channel uses the token.
+- Mastodon gives out the same token again for the same client, account and scopes. If one Mastodon account is connected to two workspaces, disconnecting one revokes the token of the other, which then has to be connected again. Phase 3b-1 has decided to accept that: section 6 says why. What is left to confirm is that Mastodon does give out the same token, which the simulator assumes.
 - That the adapter finds a status which it has posted. It goes by the list of the account's own statuses, walked forward with `min_id`, and by the source of a status, which has to be the text that was sent, without the whitespace around it and with nothing changed but the case of a mention and the domain of one that names the instance itself. Both are as the documentation and Mastodon's code have them. Three cases are known in which Mastodon changes more, and such a part is posted again when its answer is lost: a mention under a domain that stands for another, which Mastodon replaces by that one, a mention of an account whose server answers for it under another name, and a text like `@a@b.example@c`, which can be saved as `@a@c`. A live run does not show whether they hold: inside the hour Mastodon answers a repeated request by its key as well, and a live run cannot wait an hour. To confirm by hand: lose an answer, wait, and run the step again.
 - That the account's own setting for the visibility of its statuses is `source.privacy` in the answer to `verify_credentials`, also for a token with the scope `profile` alone, and that a limited account says `limited` there. Both are from Mastodon's code. An account that is limited in the middle of a delivery posts the parts that follow as "unlisted", where the step looks for the visibility it recorded: such a part is posted again when its answer is lost.
 - That every server pigy posts to lists a status with `visibility`, `spoiler_text` and `media_attachments`. A step fails, and posts nothing, at a server that leaves one of them out.
