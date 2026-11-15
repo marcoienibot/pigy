@@ -7,7 +7,12 @@ import {
 import { useRouteContext, useRouter } from "@tanstack/react-router";
 import { useCallback, useSyncExternalStore } from "react";
 import { toast } from "sonner";
-import { onSyncChange, openStore, workspaceSync } from "@/sync/workspace-sync";
+import {
+  onSyncChange,
+  openStore,
+  unsavedInTab,
+  workspaceSync,
+} from "@/sync/workspace-sync";
 
 /**
  * Which of the person's two workspaces the app shows: live, which posts to
@@ -142,4 +147,14 @@ export function useOtherWorkspaceSync():
     other ? openStore(me.user.id, other.id)?.getState() : undefined,
   );
   return other && sync ? { workspace: other, sync } : undefined;
+}
+
+/**
+ * How many changes this tab holds that it could not store, in both
+ * workspaces: `unsavedInTab`. They are in its memory and nowhere else, so
+ * a reload would lose them, and whatever reloads waits for them to be
+ * stored. What offers a reload does not offer it while there are any.
+ */
+export function useUnsavedInTab(): number {
+  return useSyncExternalStore(onSyncChange, unsavedInTab);
 }

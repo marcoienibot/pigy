@@ -6,10 +6,12 @@ import {
 } from "@tanstack/react-router";
 import {
   CalendarClock,
+  Download,
   Monitor,
   Moon,
   PenLine,
   Plus,
+  RefreshCw,
   Send,
   Settings,
   Share2,
@@ -32,6 +34,7 @@ import { Kbd } from "@/components/ui/kbd";
 import { environmentIcons } from "@/components/workspace-switch";
 import { overChannels } from "@/lib/channels";
 import { useNewDraft } from "@/lib/drafts";
+import { useInstall } from "@/lib/install";
 import {
   dialogIsOpen,
   modKey,
@@ -39,7 +42,12 @@ import {
   useShortcuts,
   withMod,
 } from "@/lib/keyboard";
-import { environmentLabels, useSwitchWorkspace } from "@/lib/workspace";
+import { reloadToUpdate, useUpdateReady } from "@/lib/service-worker";
+import {
+  environmentLabels,
+  useSwitchWorkspace,
+  useUnsavedInTab,
+} from "@/lib/workspace";
 
 const screens = [
   { to: "/", label: "Drafts", icon: PenLine },
@@ -85,6 +93,12 @@ export function CommandPalette({ children }: { children: ReactNode }) {
   const { theme: current, setTheme } = useTheme();
   const { workspace } = useRouteContext({ from: "/_app" });
   const switchWorkspace = useSwitchWorkspace();
+  // What is offered only when there is something to do: see the same two
+  // in Settings.
+  const install = useInstall();
+  const updateReady = useUpdateReady();
+  const unsaved = useUnsavedInTab();
+  const update = updateReady && unsaved === 0;
 
   useKeyDown((event) => {
     if (withMod(event) && event.key.toLowerCase() === "k") {
@@ -194,6 +208,22 @@ export function CommandPalette({ children }: { children: ReactNode }) {
                 </CommandItem>
               ))}
             </CommandGroup>
+            {(install || update) && (
+              <CommandGroup heading="App">
+                {install && (
+                  <CommandItem onSelect={run(install)}>
+                    <Download aria-hidden="true" />
+                    Install pigy
+                  </CommandItem>
+                )}
+                {update && (
+                  <CommandItem onSelect={run(() => void reloadToUpdate())}>
+                    <RefreshCw aria-hidden="true" />
+                    Reload to update pigy
+                  </CommandItem>
+                )}
+              </CommandGroup>
+            )}
           </CommandList>
           <div className="flex items-center justify-end gap-3 border-t px-3 py-2 text-xs text-muted-foreground">
             <span className="flex items-center gap-1">

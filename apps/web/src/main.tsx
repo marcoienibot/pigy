@@ -6,6 +6,8 @@ import { startServiceWorker } from "@/lib/service-worker";
 import { onSessionChange } from "@/lib/session";
 import { routeTree } from "./routeTree.gen";
 import "./styles.css";
+// Listens for the browser's offer to install pigy, which comes once.
+import "@/lib/install";
 
 const router = createRouter({
   routeTree,
