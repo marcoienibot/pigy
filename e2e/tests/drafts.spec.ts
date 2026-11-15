@@ -86,6 +86,49 @@ test("a deleted draft can be brought back", async ({
   await expect(draftRows(page)).toHaveCount(2);
 });
 
+test("Enter and Backspace are about the row that has the focus", async ({
+  ownPage: page,
+  isMobile,
+}) => {
+  test.skip(isMobile, "Shortcuts are for a keyboard next to the list");
+  await writeDraft(page, isMobile, "Older");
+  await writeDraft(page, isMobile, "Newer");
+
+  // The newer draft is open, and its row is the first. Tab moves the
+  // focus to the row below, which opens nothing.
+  await draftRow(page, "Newer").click();
+  await expect(editor(page)).toHaveValue("Newer");
+  await page.keyboard.press("Tab");
+  await expect(draftRow(page, "Older")).toBeFocused();
+  await expect(editor(page)).toHaveValue("Newer");
+
+  // The row with the focus and the row of the open draft are two things
+  // now, and they have to look like two: the keys below go by the first.
+  // The pointer is moved off the list, where it would colour a row too.
+  await page.mouse.move(0, 0);
+  const background = (text: string) =>
+    draftRow(page, text).evaluate(
+      (row) => getComputedStyle(row).backgroundColor,
+    );
+  expect(await background("Older")).not.toBe(await background("Newer"));
+
+  // Enter does what it does on any link: it opens the draft of the row.
+  await page.keyboard.press("Enter");
+  await expect(editor(page)).toHaveValue("Older");
+  await expect(draftRow(page, "Older")).toHaveAttribute("aria-current", "page");
+
+  // Back up to the other row, which is not the open one any more.
+  // Backspace deletes the draft of that row, not the one on screen.
+  await page.keyboard.press("Shift+Tab");
+  await expect(draftRow(page, "Newer")).toBeFocused();
+  await page.keyboard.press("Backspace");
+  await expect(draftRow(page, "Newer")).toHaveCount(0);
+  await expect(editor(page)).toHaveValue("Older");
+  await expect(draftRows(page)).toHaveCount(1);
+  // The focus has not gone with the row: it is on the one that is left.
+  await expect(draftRow(page, "Older")).toBeFocused();
+});
+
 test("moving through the drafts does not ask the server who is signed in every time", async ({
   ownPage: page,
   isMobile,

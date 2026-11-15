@@ -113,6 +113,10 @@ function Drafts() {
       const next = isWide() ? neighbour?.id : undefined;
       show(next);
       if (next) rowOf(next)?.focus();
+    } else if (neighbour && rowOf(draft.id) === document.activeElement) {
+      // The focus would go with the row, and the next key press would be
+      // about the open draft. It stays in the list.
+      rowOf(neighbour.id)?.focus();
     }
     mutate("post.delete", { id: draft.id });
     // Nothing to bring back of a draft without text.
@@ -127,6 +131,14 @@ function Drafts() {
       },
     });
     deleted.current = { draft, notice };
+  };
+
+  /** The draft whose row in the list has the focus, if one has. */
+  const focused = (event: KeyboardEvent) => {
+    const row = (event.target as HTMLElement).closest<HTMLElement>(
+      "[data-draft]",
+    );
+    return drafts.find((draft) => draft.id === row?.dataset.draft);
   };
 
   /** Opens the draft that is `step` rows from the open one. */
@@ -152,13 +164,13 @@ function Drafts() {
         move(-1);
         break;
       case "enter": {
-        // On a link or a button, Enter is theirs, unless it is the row of
-        // a draft: that one is open already.
+        // On a link or a button, Enter is theirs. The row of a draft is a
+        // link that opens it, and Tab can take the focus to any row. Only
+        // on the row of the draft that is open already is there nothing
+        // left for the link to do: there Enter goes on into the text.
         const target = event.target as HTMLElement;
         if (!open) return;
-        if (target.closest("a, button") && !target.closest("[data-draft]")) {
-          return;
-        }
+        if (target.closest("a, button") && focused(event) !== open) return;
         // At the end of the text, to go on writing.
         editor.current?.focus();
         editor.current?.setSelectionRange(open.text.length, open.text.length);
@@ -169,10 +181,14 @@ function Drafts() {
         show(undefined);
         break;
       case "backspace":
-      case "delete":
-        if (!open) return;
-        remove(open);
+      case "delete": {
+        // The draft that the keyboard is on: the row with the focus, which
+        // Tab can take away from the open draft, and otherwise that one.
+        const draft = focused(event) ?? open;
+        if (!draft) return;
+        remove(draft);
         break;
+      }
       default:
         return;
     }
@@ -277,10 +293,14 @@ function DraftList({ drafts }: { drafts: Draft[] }) {
             search={{ draft: draft.id }}
             data-draft={draft.id}
             // The router marks the link of the open draft as the current
-            // page: its address is the one in the address bar.
+            // page: its address is the one in the address bar. That row is
+            // filled. The focus of the keyboard is a ring, which Tab moves
+            // to other rows: Enter and Backspace go by the ring, so the two
+            // must not look the same.
             className={cn(
               "block border-b px-4 py-2 outline-none",
-              "hover:bg-accent/60 focus-visible:bg-accent",
+              "hover:bg-accent/60",
+              "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
               "aria-[current=page]:bg-accent",
             )}
           >
