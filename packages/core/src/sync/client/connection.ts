@@ -135,7 +135,10 @@ export class SyncConnection {
    * on the socket is about the copy of that client.
    */
   private clientId: string | undefined;
-  /** How many times in a row connecting has failed. */
+  /**
+   * How many times in a row a socket has failed before it had shown that
+   * it works: see `worked()`.
+   */
   private failures = 0;
   /** Whether the next mutations are being read from the outbox. */
   private taking = false;
@@ -288,6 +291,19 @@ export class SyncConnection {
   }
 
   /**
+   * The socket has shown that it works: the next failure is the first
+   * again. An answer to the hello does not show it. A server that fails on
+   * a `mutate`, because the database of the workspace is full, for example,
+   * answers every hello and fails again when the mutation is sent again,
+   * and the pause has to grow with that as with any failure. So a socket
+   * works when a `mutate` has been answered on it, or when it has lasted as
+   * long as it takes to send the first ping.
+   */
+  private worked(): void {
+    this.failures = 0;
+  }
+
+  /**
    * A step that changes the copy for the socket that is open now. The
    * storage may get to it later, after other work of this tab or of
    * another one. By then the socket may have been given up, or the copy may
@@ -403,7 +419,6 @@ export class SyncConnection {
     }
     if (!this.ready) {
       this.ready = true;
-      this.failures = 0;
       this.cancelAnswer?.();
       this.cancelAnswer = undefined;
       store.setConnection("online");
@@ -413,6 +428,7 @@ export class SyncConnection {
       this.awaiting = undefined;
       this.cancelAnswer?.();
       this.cancelAnswer = undefined;
+      this.worked();
     }
     this.send();
   }
@@ -567,6 +583,7 @@ export class SyncConnection {
 
   private pingLater(): void {
     this.cancelPing = this.options.schedule(() => {
+      this.worked();
       this.ping();
       this.pingLater();
     }, syncTimings.pingEvery);

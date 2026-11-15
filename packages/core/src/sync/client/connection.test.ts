@@ -483,11 +483,52 @@ it("pauses longer after every failure, and starts from the short pause after a s
   const count = device.sockets.length;
   expect(count).toBe(syncTimings.retry.length + 2);
 
-  // An answer to a hello is a success.
+  // A socket that has lasted until its first ping is a success. An answer
+  // to its hello alone is not: the next test says why.
   await device.socket.open();
   await device.socket.send(patch({ from: 0, to: 0 }));
   expect(store.getState().connection).toBe("online");
+  await device.advance(syncTimings.pingEvery);
   await device.socket.close(syncCloseCodes.failure);
+  await device.advance(syncTimings.retry[0]);
+  expect(device.sockets).toHaveLength(count + 1);
+});
+
+it("pauses longer every time the server fails on a mutation that is sent again", async () => {
+  const { device, store, socket } = await online();
+  store.mutate("post.delete", { id: newId() });
+  await settle();
+  expect(socket.mutates).toHaveLength(1);
+  // The database of the workspace is full, which is the example of SYNC.md
+  // for the code 1011: the server answers every hello, and fails on the
+  // mutation every time it is sent.
+  await socket.close(syncCloseCodes.failure);
+
+  for (const pause of syncTimings.retry.slice(0, 4)) {
+    const count = device.sockets.length;
+    // Not a moment before the pause is over, which is longer than the one
+    // before: the hello that was answered in between is no success.
+    await device.advance(pause - 1);
+    expect(device.sockets).toHaveLength(count);
+    await device.advance(1);
+    expect(device.sockets).toHaveLength(count + 1);
+    await device.socket.open();
+    await device.socket.send(patch({ from: 0, to: 0 }));
+    expect(store.getState().connection).toBe("online");
+    expect(device.socket.mutates).toHaveLength(1);
+    await device.socket.close(syncCloseCodes.failure);
+  }
+
+  // The server is well again, and answers the mutation.
+  await device.advance(syncTimings.retry[4]);
+  await device.socket.open();
+  await device.socket.send(patch({ from: 0, to: 0 }));
+  await device.socket.send(patch({ from: 0, to: 1, lastMutationId: 1 }));
+  expect(store.getState().pending).toBe(0);
+
+  // That is a success: the failure after it is the first one again.
+  await device.socket.close(syncCloseCodes.failure);
+  const count = device.sockets.length;
   await device.advance(syncTimings.retry[0]);
   expect(device.sockets).toHaveLength(count + 1);
 });

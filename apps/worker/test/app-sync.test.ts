@@ -144,8 +144,10 @@ it("shows a rejection once, also when the answer that carried it was lost", asyn
   ]);
 
   // The next hello says that the client has seen it: it is not told again.
+  // The pause before it is the second one. The socket in between has only
+  // had its hello answered, which does not make it one that works.
   await tab.link.lose();
-  tab.link.pass(syncTimings.retry[0]);
+  tab.link.pass(syncTimings.retry[1]);
   await synced(tab.store);
   expect(tab.store.getRejections()).toHaveLength(1);
 });
