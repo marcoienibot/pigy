@@ -1,5 +1,9 @@
 import { runInDurableObject } from "cloudflare:test";
-import { errorResponseSchema, type Fetch } from "@pigy/core";
+import {
+  disconnectResponseSchema,
+  errorResponseSchema,
+  type Fetch,
+} from "@pigy/core";
 import { describe, expect, it } from "vitest";
 import {
   channelsOf,
@@ -68,6 +72,45 @@ const failingRevocation = (network: Fetch): Fetch => {
       : network(input, init);
 };
 
+/**
+ * The server of the tests, with a gate at its revocations. Once the gate
+ * is armed, the next revocation stops there until `release` is called:
+ * on its way to the server, or, with `answered`, on the way back, when
+ * the server has taken the token back and pigy does not know yet.
+ * `reached` settles when the request has got that far.
+ */
+function gatedRevocation(where: "on the way" | "answered") {
+  let armed = false;
+  let reach = () => {};
+  let release = () => {};
+  const reached = new Promise<void>((resolve) => {
+    reach = resolve;
+  });
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const interceptNetwork = (network: Fetch): Fetch => {
+    return async (input, init) => {
+      if (!armed || !urlOf(input).endsWith("/oauth/revoke")) {
+        return network(input, init);
+      }
+      armed = false;
+      const answer = where === "answered" && (await network(input, init));
+      reach();
+      await released;
+      return answer || network(input, init);
+    };
+  };
+  return {
+    interceptNetwork,
+    arm() {
+      armed = true;
+    },
+    reached,
+    release: () => release(),
+  };
+}
+
 it("removes the channel and gives its access back to the network", async () => {
   const { browser, workspaces, channel } = await connected();
   const client = new SyncClient();
@@ -134,6 +177,35 @@ it("removes a channel whose access the network does not take back", async () => 
       .tokens("mastodon")
       .filter(({ accountId }) => accountId !== null),
   ).toMatchObject([{ revoked: false }]);
+});
+
+it("gives the access back when nobody waits for the answer", async () => {
+  const revocation = gatedRevocation("on the way");
+  const { test, browser, workspaces } = await start(revocation);
+  const { channel = "" } = await connectLive(test, browser, workspaces.live);
+  revocation.arm();
+
+  // Somebody who clicks and closes the tab: the channel is removed, the
+  // request to take the token back is on its way, and nobody reads the
+  // answer.
+  const unread = disconnect(browser, workspaces.live, channel);
+  await revocation.reached;
+  expect(await storedAccess(workspaces.live)).toEqual([]);
+  // The runtime ends what is left of such a request, except the work that
+  // it was asked to keep going. So that work has to be there by now, and
+  // it is all that this test waits for.
+  const kept = [...test.keptAlive];
+  expect(kept).toHaveLength(1);
+  revocation.release();
+  await Promise.all(kept);
+
+  // It was the revocation, to its end: the token is worth nothing.
+  expect(accountTokens(test)).toMatchObject([{ revoked: true }]);
+  // Somebody who does wait is still told.
+  const response = await unread;
+  expect(disconnectResponseSchema.parse(await response.json())).toEqual({
+    revoked: true,
+  });
 });
 
 it.each([
@@ -264,45 +336,6 @@ it("leaves the channel with its access when the workspace fails to remove it", a
 });
 
 describe("an account that is connected again while it is disconnected", () => {
-  /**
-   * The server of the tests, with a gate at its revocations. Once the gate
-   * is armed, the next revocation stops there until `release` is called:
-   * on its way to the server, or, with `answered`, on the way back, when
-   * the server has taken the token back and pigy does not know yet.
-   * `reached` settles when the request has got that far.
-   */
-  function gatedRevocation(where: "on the way" | "answered") {
-    let armed = false;
-    let reach = () => {};
-    let release = () => {};
-    const reached = new Promise<void>((resolve) => {
-      reach = resolve;
-    });
-    const released = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const interceptNetwork = (network: Fetch): Fetch => {
-      return async (input, init) => {
-        if (!armed || !urlOf(input).endsWith("/oauth/revoke")) {
-          return network(input, init);
-        }
-        armed = false;
-        const answer = where === "answered" && (await network(input, init));
-        reach();
-        await released;
-        return answer || network(input, init);
-      };
-    };
-    return {
-      interceptNetwork,
-      arm() {
-        armed = true;
-      },
-      reached,
-      release: () => release(),
-    };
-  }
-
   it("keeps the new channel and its access, and gives back the one it had", async () => {
     const revocation = gatedRevocation("answered");
     const { test, browser, workspaces } = await start(revocation);

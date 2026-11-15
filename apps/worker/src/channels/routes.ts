@@ -205,12 +205,17 @@ export function channelRoutes(dependencies: AppDependencies): Hono<AppEnv> {
     return c.json(answer);
   });
 
+  const noSuchChannel = () =>
+    new HTTPException(404, { message: "There is no such channel" });
+
   app.delete(
     "/workspaces/:workspaceId/channels/:channelId",
     signedIn,
     async (c) => {
       const workspace = await workspaceOf(c);
       const channelId = c.req.param("channelId");
+      if (!idSchema.safeParse(channelId).success) throw noSuchChannel();
+
       // The channel goes first, and hands over the access that it held in
       // the same transaction of its workspace. So what is given back below
       // is what the channel had when it went, and no channel is left with
@@ -227,28 +232,56 @@ export function channelRoutes(dependencies: AppDependencies): Hono<AppEnv> {
       // tell, since the token is the same. That channel turns out to need
       // connecting again when it is next used, like the channel of another
       // workspace that shared the access.
-      const removed = idSchema.safeParse(channelId).success
-        ? await disconnectChannel(c.env.WORKSPACE, workspace, channelId)
-        : undefined;
-      if (!removed || (!removed.ok && removed.code === "not_found")) {
-        throw new HTTPException(404, { message: "There is no such channel" });
-      }
-      if (!removed.ok) throw new Error(`Not disconnected: ${removed.message}`);
+      const disconnecting = (async () => {
+        const removed = await disconnectChannel(
+          c.env.WORKSPACE,
+          workspace,
+          channelId,
+        );
+        if (!removed.ok) return removed;
+        // Whether or not the network takes the access back, the channel is
+        // gone: one that could only be removed while its network answers,
+        // or while its credentials open, could stay for ever.
+        const { origin } = new URL(c.req.url);
+        const vault = vaultFor(c.env, developmentCredentialKeys, origin);
+        const revoked =
+          vault !== undefined &&
+          (await giveBack(workspace, removed.access, {
+            env: c.env,
+            fetch,
+            now,
+            vault,
+          }));
+        return { ok: true as const, revoked };
+      })();
+      // From the removal on, the work goes to its end whether or not
+      // anybody waits for the answer. The runtime drops what is left of a
+      // request when its client goes away, unless it was asked to keep it
+      // going, and the removal is where the credentials leave the
+      // workspace: somebody who clicks and closes the tab would leave an
+      // access that nobody gives back, and that nothing is left to give
+      // back with. A second request finds no channel.
+      //
+      // Two cases are left, and are accepted. In both, the access stands
+      // at the network until the person takes it back there, and pigy has
+      // kept nothing of it:
+      //
+      // - The answer of the workspace is lost on its way, after the
+      //   workspace has removed the channel. The credentials went with it.
+      // - The revocation fails once the person has left, or takes longer
+      //   than the 30 seconds that the runtime gives a request whose client
+      //   is gone. Nobody is there to be told.
+      //
+      // Closing them would take a place for credentials that wait to be
+      // revoked, outside the channel, and something that tries again later.
+      c.executionCtx.waitUntil(disconnecting);
 
-      // Whether or not the network takes the access back, the channel is
-      // gone: one that could only be removed while its network answers, or
-      // while its credentials open, could stay for ever.
-      const { origin } = new URL(c.req.url);
-      const vault = vaultFor(c.env, developmentCredentialKeys, origin);
-      const revoked =
-        vault !== undefined &&
-        (await giveBack(workspace, removed.access, {
-          env: c.env,
-          fetch,
-          now,
-          vault,
-        }));
-      return c.json(disconnectResponseSchema.parse({ revoked }));
+      const outcome = await disconnecting;
+      if (!outcome.ok && outcome.code === "not_found") throw noSuchChannel();
+      if (!outcome.ok) throw new Error(`Not disconnected: ${outcome.message}`);
+      return c.json(
+        disconnectResponseSchema.parse({ revoked: outcome.revoked }),
+      );
     },
   );
 

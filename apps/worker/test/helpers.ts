@@ -1,3 +1,4 @@
+import { createExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { type Fetch, type MeResponse, meResponseSchema } from "@pigy/core";
 import { createGoogleSimulator } from "@pigy/simulators/google";
@@ -141,11 +142,33 @@ export function setup(
     }
   };
   configure(secrets);
+  // What the app has handed to `waitUntil`, in any of its requests.
+  const keptAlive: Promise<unknown>[] = [];
+  /**
+   * The execution context of a request, as the runtime gives every request
+   * one. It notes what the app asks to be kept going.
+   */
+  const executionContext = () => {
+    const context = createExecutionContext();
+    const waitUntil = context.waitUntil.bind(context);
+    context.waitUntil = (promise) => {
+      keptAlive.push(promise);
+      waitUntil(promise);
+    };
+    return context;
+  };
   return {
     clock,
     google,
     network,
     db: drizzle(env.DB),
+    /**
+     * The work that the app has asked the runtime to keep going, with
+     * `waitUntil`. It is all that goes on of a request once its client is
+     * gone. In a test everything goes on, so a test that is about a client
+     * that left waits for this and for nothing else of the request.
+     */
+    keptAlive,
     /**
      * Gives the app other secrets from the next request on, as a new
      * deployment does: its data stays. Undefined takes a secret away.
@@ -154,7 +177,8 @@ export function setup(
     /** A browser with no cookies yet. */
     browser: (browserOrigin = origin) =>
       new Browser(
-        (request) => app.request(request, undefined, bindings),
+        (request) =>
+          app.request(request, undefined, bindings, executionContext()),
         browserOrigin,
       ),
     /**
