@@ -59,6 +59,8 @@ export type Table<Row> = {
   delete(id: string): void;
   /** Every row, in ascending order of ID. */
   all(): Row[];
+  /** Every row with its ID, in ascending order of ID. */
+  entries(): [string, Row][];
 };
 
 /**
@@ -74,5 +76,10 @@ export function table<Row>(storage: SimStorage, name: string): Table<Row> {
       storage.delete(prefix + id);
     },
     all: () => Array.from(storage.list({ prefix }), ([, row]) => row as Row),
+    entries: () =>
+      Array.from(storage.list({ prefix }), ([key, row]): [string, Row] => [
+        key.slice(prefix.length),
+        row as Row,
+      ]),
   };
 }

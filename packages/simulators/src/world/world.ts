@@ -85,7 +85,9 @@ export type SimWorld = {
   posts<Post extends SimPost = SimPost>(network: Network): Table<Post>;
   /**
    * Issues a token, with a value that is made here. There is no way to put
-   * a token from elsewhere into a world.
+   * a token from elsewhere into a world. The tokens of the network whose
+   * end has passed are forgotten then, revoked or not, so that a world does
+   * not keep every token that it has issued.
    */
   issueToken<Token extends SimToken = SimToken>(
     fields: Omit<Token, "token" | "revoked">,
@@ -97,9 +99,15 @@ export type SimWorld = {
   ): Token | undefined;
   /** The tokens of a network. */
   tokens<Token extends SimToken = SimToken>(network: Network): Token[];
-  /** Takes a token back. It stays on record, as revoked. */
+  /**
+   * Takes a token back. It stays on record, as revoked, until its end has
+   * passed and the network issues another.
+   */
   revokeToken(network: Network, value: string): void;
-  /** Ends a token now, as if its time were up. It stays on record. */
+  /**
+   * Ends a token now, as if its time were up. It stays on record until the
+   * network issues another.
+   */
   expireToken(network: Network, value: string): void;
   /**
    * Whether a token is still good: not taken back, and not past its end by
@@ -149,7 +157,13 @@ export function createWorld({
         token: simulatedSecret(),
         revoked: false,
       } as Token;
-      tokenTable<Token>(token.network).put(token.token, token);
+      const tokens = tokenTable<Token>(token.network);
+      const now = world.now().getTime();
+      for (const [value, issued] of tokens.entries()) {
+        const end = issued.expiresAt ?? null;
+        if (end !== null && end <= now) tokens.delete(value);
+      }
+      tokens.put(token.token, token);
       return token;
     },
     findToken<Token extends SimToken>(network: Network, value: string) {

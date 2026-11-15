@@ -18,6 +18,7 @@ import {
   type BlueskyAccount,
   type BlueskyToken,
   type Client,
+  forget,
   type Pds,
   type PushedRequest,
   revokeSession,
@@ -547,6 +548,7 @@ export async function pushRequest(
     );
   }
 
+  forget(state.challenges, (until) => until <= now);
   state.challenges.put(challenge, now + challengeMemoryMs);
   const pushed: PushedRequest = {
     id: `req-${base64Url(crypto.getRandomValues(new Uint8Array(16)))}`,
@@ -562,6 +564,7 @@ export async function pushRequest(
     clientJkt: auth.jkt,
     expiresAt: now + requestLifetimeMs,
   };
+  forget(state.requests, ({ expiresAt }) => expiresAt <= now);
   state.requests.put(pushed.id, pushed);
   if (checked.lost) lose();
   return json(
@@ -661,11 +664,13 @@ export async function authorize(
       return refuse(400, "Choose one of the accounts of this server.");
     }
     const code = simulatedSecret();
+    const now = state.world.now().getTime();
+    forget(state.codes, ({ expiresAt }) => expiresAt <= now);
     state.codes.put(code, {
       code,
       request: pushed,
       did: account.id,
-      expiresAt: state.world.now().getTime() + codeLifetimeMs,
+      expiresAt: now + codeLifetimeMs,
       sessionId: null,
     });
     redirect.searchParams.set("code", code);

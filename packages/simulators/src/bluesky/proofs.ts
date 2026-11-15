@@ -7,7 +7,7 @@ import {
   jwtVerify,
 } from "jose";
 import { base64Url } from "../world/encoding.ts";
-import type { Client, State } from "./state.ts";
+import { type Client, forget, type State } from "./state.ts";
 
 /**
  * What the simulated servers check of the signed proofs that a client
@@ -40,10 +40,13 @@ const span = (state: State) =>
 
 /** The nonce that the server at `host` hands out now. */
 export function currentNonce(state: State, host: string): string {
-  const key = `${host}/${span(state)}`;
+  const now = span(state);
+  const key = `${host}/${now}`;
   const known = state.nonces.get(key);
   if (known) return known;
   const nonce = base64Url(crypto.getRandomValues(new Uint8Array(16)));
+  // The nonces of every server that no proof may carry any more.
+  forget(state.nonces, (_, id) => Number(id.split("/").at(-1)) < now - 1);
   state.nonces.put(key, nonce);
   return nonce;
 }
@@ -64,6 +67,7 @@ function isFirstUse(state: State, kind: string, jti: string): boolean {
   const now = state.world.now().getTime();
   const until = state.replays.get(key);
   if (until !== undefined && until > now) return false;
+  forget(state.replays, (end) => end <= now);
   state.replays.put(key, now + 2 * proofToleranceSeconds * 1000);
   return true;
 }

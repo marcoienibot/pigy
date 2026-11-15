@@ -166,6 +166,32 @@ describe("the tokens of a world", () => {
     expect(found?.revoked).toBe(false);
   });
 
+  it("forgets the tokens whose end has passed when it issues another, and keeps the rest", () => {
+    const { world } = setup();
+    const hour = 60 * 60 * 1000;
+    const ended = world.issueToken({
+      ...fields,
+      expiresAt: start.getTime() + hour,
+    });
+    const revoked = world.issueToken({
+      ...fields,
+      expiresAt: start.getTime() + 3 * hour,
+    });
+    world.revokeToken("mastodon", revoked.token);
+    const lasting = world.issueToken(fields);
+    world.advance(2 * hour);
+    // Until another is issued, the world has all of them.
+    expect(world.tokens("mastodon")).toHaveLength(3);
+    const issued = world.issueToken(fields);
+    expect(
+      world
+        .tokens("mastodon")
+        .map(({ token }) => token)
+        .sort(),
+    ).toEqual([revoked.token, lasting.token, issued.token].sort());
+    expect(world.findToken("mastodon", ended.token)).toBeUndefined();
+  });
+
   it("calls a token that is both revoked and past its end revoked", () => {
     const { world } = setup();
     const token = world.issueToken({ ...fields, expiresAt: start.getTime() });

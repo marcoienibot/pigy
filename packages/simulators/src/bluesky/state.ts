@@ -221,6 +221,20 @@ export function accountByHandle(
   return state.accounts.all().find(({ domain }) => domain === wanted);
 }
 
+/**
+ * Deletes the rows of `table` that `expired` says have had their time.
+ * What a simulator keeps for a while is forgotten when it writes to the
+ * table again, so that a world does not grow with every request.
+ */
+export function forget<Row>(
+  table: Table<Row>,
+  expired: (row: Row, id: string) => boolean,
+): void {
+  for (const [id, row] of table.entries()) {
+    if (expired(row, id)) table.delete(id);
+  }
+}
+
 /** Ends a session: its tokens are refused from now on. */
 export function revokeSession(state: State, session: Session): void {
   state.world.revokeToken("bluesky", session.accessToken);

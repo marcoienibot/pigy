@@ -1055,6 +1055,56 @@ describe("the repository of an account", () => {
   });
 });
 
+describe("what the world keeps", () => {
+  it("forgets what has had its time when it writes, and does not grow with every request", async () => {
+    const sim = await setup();
+    // Everything that a client does with a server, which leaves something
+    // for a while: proofs and assertions, nonces, code challenges, pushed
+    // requests that nobody answers, codes, and tokens.
+    const round = async () => {
+      const tokens = await connected(sim);
+      await createRecord(sim, tokens.access_token, post("Hi"));
+      await sim.pigy.refresh(issuer, tokens.refresh_token);
+      await sim.pigy.push(issuer);
+    };
+    await round();
+    sim.world.advance(2 * day);
+    await round();
+
+    const now = sim.world.now().getTime();
+    const rows = <Row>(name: string) =>
+      sim.world.table<Row>("bluesky", name).entries();
+    for (const [name, until] of [
+      ["replay", (row: number) => row],
+      ["challenge", (row: number) => row],
+      ["request", (row: { expiresAt: number }) => row.expiresAt],
+      ["code", (row: { expiresAt: number }) => row.expiresAt],
+    ] as const) {
+      const kept = rows<never>(name);
+      // There is something to forget: the second round made some.
+      expect(kept.length, name).toBeGreaterThan(0);
+      for (const [id, row] of kept) {
+        expect(until(row), `${name} ${id}`).toBeGreaterThan(now);
+      }
+    }
+    // A server takes its nonce of now and the one before it.
+    const span = 2 * minute;
+    for (const [id] of rows<string>("nonce")) {
+      expect(Number(id.split("/").at(-1)), id).toBeGreaterThanOrEqual(
+        Math.floor(now / span) - 1,
+      );
+    }
+    // The access tokens of the first round have ended. Its refresh tokens
+    // have not: they are kept, as revoked, for as long as a replay of one
+    // has to be told from a token that the server never issued.
+    const tokens = sim.world.tokens("bluesky");
+    expect(tokens.length).toBeGreaterThan(0);
+    for (const token of tokens) {
+      expect(token.expiresAt ?? Number.POSITIVE_INFINITY).toBeGreaterThan(now);
+    }
+  });
+});
+
 describe("faults", () => {
   it("expires a token before its time, which a refresh cures", async () => {
     const sim = await setup();
