@@ -166,7 +166,7 @@ Notes that shape the design:
 
 - **LinkedIn** needs reserved characters escaped in the post text, a dated version header that must be bumped about once a year, and link previews supplied by us (title and thumbnail), because it does not fetch them for API posts.
 - **Bluesky** needs links, mentions and hashtags marked up with UTF-8 byte offsets, and link cards built by us. Connection uses atproto OAuth as a confidential client, with the signing key stored as a Worker secret.
-- **Threads** publishes in two steps: create a container, wait for it to be ready, then publish it. Media must be reachable at a public URL, so `/m/*` serves R2 objects through signed, expiring links.
+- **Threads** publishes in two steps: create a container, wait for it to be ready, then publish it. A container that is not published within 24 hours expires. Media must be reachable at a public URL, so `/m/*` serves R2 objects through signed, expiring links.
 - **Mastodon** limits vary per instance. pigy reads them from the instance and validates against the real values.
 - **Link previews**: a shared service fetches a URL's title, description and image once, caches it, and feeds LinkedIn and Bluesky.
 - **Token refresh** runs inside the WorkspaceDO, one refresh at a time per channel. Bluesky refresh tokens are single-use, so two parallel refreshes would lock the account out. It runs when the alarm reaches the time the adapter named, whether or not the channel is in use: a Threads channel that nobody posts to for 60 days would otherwise lapse. It also runs at once when an adapter says that the network has refused a token before that time.
@@ -196,13 +196,13 @@ How the four networks map onto it. Mastodon is built. The other three columns ar
 | `expiresAt` | None | None known | 60 days after issue | 60 days after the last refresh |
 | `disconnect` | Revokes the token | Revokes the tokens | To decide | Nothing to call |
 | `limits` | Read from the instance | Fixed: 300 graphemes | Fixed: 3000 | Fixed: 500 |
-| Steps of `publishStep` | One that notes where the account's statuses stand and who is to see the post, then one per part: look for the status, and post it if it is not there, as a reply to the part before. More steps that only look, where the account has posted more since than one list holds | Two per part: choose the record key, then write the record with the references to the first and the previous part | One for the whole post: the parts joined | Per part: create a container, wait, publish it |
+| Steps of `publishStep` | One that notes where the account's statuses stand and who is to see the post, then one per part: look for the status, and post it if it is not there, as a reply to the part before. More steps that only look, where the account has posted more since than one list holds | Two per part: choose the record key, then write the record with the references to the first and the previous part | One for the whole post: the parts joined | Per part: create a container, wait, read its status, publish it. A new container, in a step of its own, if it has expired |
 | Adapter's notes between steps | The account's ID, the status after which the next part is looked for, and the visibility of the parts | The record key in use, and the reference of each part | None | The container in use |
-| A step that is run again | Finds the status it posted among the account's own, or posts it | Writes the record under the same key | Sends again. It cannot look | Publishes the same container |
+| A step that is run again | Finds the status it posted among the account's own, or posts it | Writes the record under the same key | Sends again. It cannot look | Reads the status of the container first. Published: finds the post among the account's own and publishes nothing. Expired: creates a new container, which is a recorded step of its own, and publishes that one in the step after. Ready: publishes it |
 | `readPost` | Yes | Yes | No: reading takes a permission that LinkedIn restricts | Yes |
 | What asks for `refresh` | Nothing | An access token that the server refuses | Nothing | A token that Threads refuses as expired |
 | What asks for `reconnect` | 401, a missing scope | A refresh that is refused | 401 | An invalid token that cannot be refreshed |
-| What asks for `uncertain` | Nothing | Nothing | A request to post that ends without a clear answer | Nothing known |
+| What asks for `uncertain` | Nothing | Nothing | A request to post that ends without a clear answer | A container that is published and whose post cannot be found (to verify) |
 
 The handle of a LinkedIn account is its name: LinkedIn gives pigy no other. The time of a refresh for Threads, and how Bluesky tells a token that has expired from one that was revoked, are for those adapters to settle.
 
@@ -307,7 +307,7 @@ Avoiding duplicates when a step is run again. A step may have reached the networ
 | --- | --- | --- |
 | Mastodon | The account's ID, its newest status and the visibility that every part is posted with, by a first step that sends nothing. For a later part, the part before it | Looks through the account's statuses that are newer than that for one with the text of the part that replies to the part before it, or to nothing for the first part. In the text, neither the case nor the domain of a mention counts. The status also has to have the recorded visibility, and nothing besides its text: no media, poll, quote or content warning. Takes it for the part if it is there, posts if it is not. The `Idempotency-Key`, made from target and part, is sent as well: Mastodon remembers it for an hour |
 | Bluesky | The record key, generated by a step of its own | Writes the same record under the same key |
-| Threads | The container ID, by the step that creates the container | Publishes the same container, which publishes only once |
+| Threads | The container ID, by the step that creates the container | Reads the status of the container before it publishes. `PUBLISHED`: an earlier run has published it, so the step publishes nothing and finds the post among the account's own. `EXPIRED`, which a container is that was not published within 24 hours: the step publishes nothing and creates a new container. That is a step of its own, so the new ID is recorded before anything is published with it. `FINISHED`: it publishes. Meta does not document what publishing a published container answers, so a step never does that knowingly (to verify, section 19) |
 | LinkedIn | Nothing that would help: LinkedIn lets pigy read no posts and takes no key | Sends. Because that is not safe, a request that ends without a clear answer is not retried: the step fails with `uncertain`, and a person looks. Inside about ten minutes LinkedIn refuses the same content again, which the adapter can take for success (to verify) |
 
 What this guarantees: no part is published twice, however late a step is run again, as long as the run before it is over and what it published is still on the network as it was published. A status that the person has edited or deleted in the meantime is not found, and is posted again.
@@ -481,6 +481,11 @@ Mastodon and Bluesky need no developer registration. VAPID keys, the Bluesky sig
 To confirm when the relevant phase starts:
 
 - Whether Threads reply chains need the `threads_manage_replies` permission.
+- For Threads, what a publishing step that is run again relies on, see section 8. Meta documents that the status of a container is read with `GET /{container-id}?fields=status,error_message`, that a container which is not published within 24 hours is `EXPIRED`, and that a published one is `PUBLISHED`. It does not document the rest:
+  - What publishing a container that is already published answers: the post again, a second post, or an error.
+  - How the post of a published container is found. The status names no post. The step would look through the account's posts, `GET /{user-id}/threads`, and through its replies, which Meta lists apart from them, for one with the text of the part in the same place, as Mastodon's adapter does. Then the first step has to record where the account's posts stand, and the rule of one delivery at a time per channel applies here too.
+  - Whether a container still says `PUBLISHED` when it is read days after it was published, or says `EXPIRED` or is gone by then. If it does not, the step cannot tell a part that was published from one that was not, and has to fail with `uncertain`.
+  - Whether a request to publish that Threads is still working on shows as `PUBLISHED` or as `FINISHED`. The workflow waits before it runs a step again, as for Mastodon.
 - Whether Bluesky video upload works with the OAuth scopes pigy requests.
 - LinkedIn's behaviour on duplicate content, and the current API version string.
 - How a LinkedIn step that was cut off after it sent is kept from being run again, see the end of section 8.
@@ -530,6 +535,7 @@ Posts, drafts, schedules and stats are unaffected.
 - Typefully API: https://typefully.com/docs/api
 - Threads long-lived tokens: https://developers.facebook.com/docs/threads/get-started/long-lived-tokens
 - Threads app setup and testers: https://developers.facebook.com/docs/development/create-an-app/threads-use-case
+- Threads publishing, and the status of a container: https://developers.facebook.com/docs/threads/posts and https://developers.facebook.com/docs/threads/troubleshooting
 - atproto OAuth: https://atproto.com/guides/oauth and https://docs.bsky.app/docs/advanced-guides/oauth-client
 - Bluesky video: https://docs.bsky.app/docs/tutorials/video
 - LinkedIn access tiers: https://learn.microsoft.com/en-us/linkedin/marketing/increasing-access
