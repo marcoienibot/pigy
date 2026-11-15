@@ -10,6 +10,15 @@ function createDraft(store: SyncStore, text: string) {
   return ids;
 }
 
+/** A promise that the test resolves, for a storage that takes its time. */
+function gate() {
+  let open = () => {};
+  const passed = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  return { passed, open };
+}
+
 /** The texts of the parts that `store` shows, in no particular order. */
 function texts(store: SyncStore): string[] {
   return [...store.getView().post_part.values()].map(({ text }) => text).sort();
@@ -73,8 +82,8 @@ it("stores what was typed into a part as one mutation", async () => {
   for (const text of ["H", "He", "Hey"]) {
     store.mutate("part.setText", { id: partId, text });
   }
-  // Until they are stored they are three, and the view runs all of them.
-  expect(store.getState().pending).toBe(4);
+  // They are one before they are stored too: the draft and its text.
+  expect(store.getState().pending).toBe(2);
   expect(texts(store)).toEqual(["Hey"]);
   const view = store.getView();
 
@@ -262,6 +271,84 @@ it("says that a mutation is not stored when storing it fails, and tries again by
     { id: 1, name: "post.create" },
   ]);
   expect(texts(store)).toEqual(["Kept"]);
+});
+
+it("counts what was typed into a part as one change while it cannot be stored", async () => {
+  const device = browser();
+  const { store } = await device.tab();
+  const { partId } = createDraft(store, "");
+  await settle();
+  const { update } = device.storage;
+  device.storage.update = () => Promise.reject(new Error("The disk is full"));
+
+  for (const text of ["H", "He", "Hey"]) {
+    store.mutate("part.setText", { id: partId, text });
+    // As when typing: storing the one key has failed before the next.
+    await settle();
+  }
+
+  // One change that is not saved, not one for every key: that is what the
+  // person is told, and what signing out says it would lose.
+  expect(device.errors).toHaveLength(3);
+  expect(store.getState()).toMatchObject({ pending: 2, unsaved: 1 });
+  expect(texts(store)).toEqual(["Hey"]);
+
+  // And it is stored as the one change, with the text that was typed last.
+  device.storage.update = update;
+  await device.advance(saveRetryMs);
+  expect((await device.storage.read())?.head.outbox).toMatchObject([
+    { id: 1, name: "post.create" },
+    { id: 2, name: "part.setText", args: { id: partId, text: "Hey" } },
+  ]);
+  expect(store.getState()).toMatchObject({ pending: 2, unsaved: 0 });
+});
+
+it("leaves a mutation as it is while it is being stored", async () => {
+  const device = browser();
+  const { store } = await device.tab();
+  const { partId } = createDraft(store, "");
+  await settle();
+  // A storage that takes its time: it stores nothing before the test says.
+  const { update } = device.storage;
+  let slow = gate();
+  let fails = false;
+  device.storage.update = async (step, options) => {
+    await slow.passed;
+    if (fails) throw new Error("The disk is full");
+    return update(step, options);
+  };
+
+  store.mutate("part.setText", { id: partId, text: "H" });
+  // The store has begun to store that text, and more is typed meanwhile.
+  await settle();
+  store.mutate("part.setText", { id: partId, text: "He" });
+  store.mutate("part.setText", { id: partId, text: "Hey" });
+  expect(texts(store)).toEqual(["Hey"]);
+  slow.open();
+  await settle();
+
+  // "H" is what was stored first, and it left the memory of the tab as
+  // that. Had the later text taken its place there, the text would have
+  // left with it, and the part would show "H" from here on.
+  expect(texts(store)).toEqual(["Hey"]);
+  expect((await device.storage.read())?.head.outbox).toMatchObject([
+    { id: 1, name: "post.create" },
+    { id: 2, name: "part.setText", args: { id: partId, text: "Hey" } },
+  ]);
+  expect(store.getState()).toMatchObject({ pending: 2, unsaved: 0 });
+
+  // The same when storing fails: the text that was typed while the store
+  // was trying stays, and the two are one change once it has failed.
+  slow = gate();
+  fails = true;
+  store.mutate("part.setText", { id: partId, text: "Hey y" });
+  await settle();
+  store.mutate("part.setText", { id: partId, text: "Hey yo" });
+  store.mutate("part.setText", { id: partId, text: "Hey you" });
+  slow.open();
+  await settle();
+  expect(texts(store)).toEqual(["Hey you"]);
+  expect(store.getState()).toMatchObject({ pending: 3, unsaved: 1 });
 });
 
 it("stores a mutation that a person makes in a tab that is too old for the copy", async () => {

@@ -13,6 +13,7 @@ import {
   type Meta,
   type MutationCall,
   openCopy,
+  replaces,
   type Step,
   type StoredRejection,
   type Tables,
@@ -110,6 +111,11 @@ export class SyncStore {
   };
   /** Mutations that are shown and not stored yet, oldest first. */
   private readonly unsaved: MutationCall[] = [];
+  /**
+   * How many of them, from the oldest, an attempt to store them has taken.
+   * Until it is over they stay as they are: they are what it stores.
+   */
+  private saving = 0;
   /** Whether the last attempt to store `unsaved` failed. */
   private saveFailed = false;
   private cancelSaveRetry: (() => void) | undefined;
@@ -194,7 +200,17 @@ export class SyncStore {
    * rejection is added to `getRejections()`.
    */
   mutate<Name extends MutatorName>(name: Name, args: MutatorArgs<Name>): void {
-    this.unsaved.push({ name, args, at: this.options.now().getTime() });
+    const call = { name, args, at: this.options.now().getTime() };
+    const last = this.unsaved.at(-1);
+    // By the rule of the outbox, before the mutation gets there: what is
+    // typed into a part stays one change while it cannot be stored, however
+    // many keys it takes. Otherwise the app would count every key as a
+    // change that is not saved, and show each by running all of them.
+    if (last && this.unsaved.length > this.saving && replaces(call, last)) {
+      this.unsaved[this.unsaved.length - 1] = call;
+    } else {
+      this.unsaved.push(call);
+    }
     this.refresh(true);
     this.save();
   }
@@ -300,6 +316,7 @@ export class SyncStore {
       this.saveQueued = false;
       const calls = this.unsaved.slice();
       if (calls.length === 0) return;
+      this.saving = calls.length;
       // They leave `unsaved` in the same moment as they enter the outbox
       // in memory, so the view never has them twice or not at all.
       await this.run(
@@ -307,6 +324,7 @@ export class SyncStore {
         { own: true },
         () => {
           this.unsaved.splice(0, calls.length);
+          this.saving = 0;
           this.saveFailed = false;
         },
       );
@@ -316,6 +334,17 @@ export class SyncStore {
       // The mutations stay in `unsaved` and on screen. The app is told
       // that they are not stored, and they are tried again: after a pause,
       // or with the next mutation, whichever comes first.
+      //
+      // The attempt no longer holds them, so the last of them can be
+      // replaced again: by the next mutation, or by the one that was made
+      // right after it while the attempt ran.
+      const taken = this.saving;
+      this.saving = 0;
+      const last = this.unsaved[taken - 1];
+      const next = this.unsaved[taken];
+      if (last && next && replaces(next, last)) {
+        this.unsaved.splice(taken - 1, 1);
+      }
       this.saveFailed = true;
       this.refresh(false);
       if (this.saveQueued) return;

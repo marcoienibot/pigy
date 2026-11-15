@@ -285,10 +285,12 @@ test("a change that the device cannot save is not called saved", async ({
   // The device has no room left: the local copy cannot be written.
   const storage = await breakStorage(page);
   await draftRow(page, "Written while there was room").click();
-  await editor(page).fill("Written with no room left");
+  await editor(page).fill("Written with no room");
+  await page.keyboard.type(" left");
 
   // The connection is fine, and that is not what the indicator is about
-  // now: the change is in this window and nowhere else.
+  // now: the change is in this window and nowhere else. It is one change,
+  // the text of the draft, although it took several keys.
   await expectSync(page, "Not saved · 1 change");
   await backToList(page, isMobile);
   await page
