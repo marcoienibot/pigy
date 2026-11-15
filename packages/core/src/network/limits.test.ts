@@ -71,6 +71,16 @@ describe("limitsSchema", () => {
     expect(limitsSchema.parse(limits)).toEqual(limits);
   });
 
+  it("accepts the limits of Bluesky, and not those of one network under the name of another", () => {
+    const bluesky = { network: "bluesky", maxCharacters: 300, maxBytes: 3000 };
+    expect(limitsSchema.parse(bluesky)).toEqual(bluesky);
+    // The network decides how a text is counted, so limits that name one
+    // network and hold the fields of another are nobody's.
+    expect(
+      limitsSchema.safeParse({ ...limits, network: "bluesky" }).success,
+    ).toBe(false);
+  });
+
   it("refuses limits that name no network, or carry something unknown", () => {
     const { network: _, ...withoutNetwork } = limits;
     expect(limitsSchema.safeParse(withoutNetwork).success).toBe(false);

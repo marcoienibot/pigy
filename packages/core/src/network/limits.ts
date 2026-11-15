@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { countBlueskyCharacters, utf8Length } from "./bluesky.ts";
 import type { PostContent } from "./content.ts";
 import { countMastodonCharacters } from "./mastodon.ts";
 
@@ -24,7 +25,25 @@ export const mastodonLimitsSchema = z.strictObject({
   charactersPerUrl: z.number().int().nonnegative(),
 });
 
+/**
+ * The limits of an account on Bluesky. They are the same for every account:
+ * the schema of a post sets them, `blueskyMaxCharacters` and
+ * `blueskyMaxBytes`. They are data all the same, so that a channel holds
+ * the limits that its network had when it was asked.
+ */
+export const blueskyLimitsSchema = z.strictObject({
+  network: z.literal("bluesky"),
+  /** The most characters in one post: grapheme clusters. */
+  maxCharacters: z.number().int().positive(),
+  /**
+   * The most bytes that the text of one post takes in UTF-8. A text can be
+   * within `maxCharacters` and over this.
+   */
+  maxBytes: z.number().int().positive(),
+});
+
 export const limitsSchema = z.discriminatedUnion("network", [
+  blueskyLimitsSchema,
   mastodonLimitsSchema,
 ]);
 
@@ -33,10 +52,18 @@ export type Limits = z.infer<typeof limitsSchema>;
 /** The length of `text` as the network of `limits` counts it. */
 export function countCharacters(limits: Limits, text: string): number {
   switch (limits.network) {
+    case "bluesky":
+      return countBlueskyCharacters(text);
     case "mastodon":
       return countMastodonCharacters(text, limits.charactersPerUrl);
   }
 }
+
+// What a message calls a network.
+const networkNames: { readonly [Name in Limits["network"]]: string } = {
+  bluesky: "Bluesky",
+  mastodon: "Mastodon",
+};
 
 /** Something that keeps content from being published to a network. */
 export type ContentIssue = {
@@ -47,6 +74,11 @@ export type ContentIssue = {
 } & (
   | { code: "empty" }
   | { code: "too_long"; characters: number; maxCharacters: number }
+  /**
+   * The text is within the characters that the network allows and takes
+   * more bytes than it allows: on a network that limits both.
+   */
+  | { code: "too_many_bytes"; bytes: number; maxBytes: number }
 );
 
 /**
@@ -76,6 +108,21 @@ export function validateContent(
         characters,
         maxCharacters,
         message: `${subject} is ${characters} characters long. The limit is ${maxCharacters}.`,
+      });
+      return;
+    }
+    // Asked only where the characters fit. A text that is too long is
+    // told so, and shortening it is what cures both.
+    if (!("maxBytes" in limits)) return;
+    const bytes = utf8Length(text);
+    const { maxBytes } = limits;
+    if (bytes > maxBytes) {
+      issues.push({
+        part,
+        code: "too_many_bytes",
+        bytes,
+        maxBytes,
+        message: `${subject} takes ${bytes} bytes, which is more than the ${maxBytes} that ${networkNames[limits.network]} allows. Emoji and letters with accents take several each.`,
       });
     }
   });
