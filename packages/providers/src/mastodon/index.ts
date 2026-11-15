@@ -1,8 +1,8 @@
 import {
   type Clock,
+  comparableMastodonText,
   type Fetch,
   type Limits,
-  stripMastodonText,
 } from "@pigy/core";
 import { z } from "zod";
 import { ProviderError, quotable } from "../errors.ts";
@@ -522,9 +522,20 @@ export function createMastodonProvider({
    *   this delivery is taken for it, however alike.
    * - It replies to the part before this one, or to nothing if this is the
    *   first.
-   * - Its text is the text of the part, as Mastodon stores it. That takes
-   *   the source of the status: its HTML is not the text, a mention has no
-   *   domain there.
+   * - Its text is the text of the part. That takes the source of the
+   *   status: its HTML is not the text, a mention has no domain there. The
+   *   source is not the text that was sent either. Mastodon writes every
+   *   mention of an account that it finds the way the account is written,
+   *   and which accounts it finds, only the server knows. So the two are
+   *   compared in the form of `comparableMastodonText`, in which neither
+   *   the case nor the domain of a mention counts.
+   *
+   * That comparison lets in a status which differs from the part in the
+   * case or the domain of a mention, "@ada@other.example" for
+   * "@ada@mastodon.example", and in nothing else. Such a status still has
+   * to fit in all the rest: the account's own, newer than this delivery, in
+   * the same place, with every other character the same. Only the person
+   * can have written it, by hand and since, and it reads as the part does.
    *
    * So a status that reads differently, or stands elsewhere, is never taken
    * for the one that is looked for. What can be taken for it is a status
@@ -547,7 +558,7 @@ export function createMastodonProvider({
     replyTo: string | null,
     text: string,
   ) {
-    const stored = stripMastodonText(text);
+    const wanted = comparableMastodonText(text);
     // `min_id` lists the statuses that follow one, where `since_id` would
     // list the newest. "0" is below every ID: the account had no status.
     const cursor = after ?? "0";
@@ -562,7 +573,8 @@ export function createMastodonProvider({
     if (!newest || newest.id === cursor) return null;
     for (const status of statuses.reverse()) {
       if ((status.in_reply_to_id ?? null) !== replyTo) continue;
-      if ((await sourceText(credentials, status.id)) === stored) {
+      const source = await sourceText(credentials, status.id);
+      if (source !== null && comparableMastodonText(source) === wanted) {
         return { status };
       }
     }

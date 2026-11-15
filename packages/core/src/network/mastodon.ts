@@ -49,11 +49,17 @@ const linkPattern = new RegExp(
 // What Ruby calls a word character.
 const wordChar = String.raw`[\p{L}\p{M}\p{Nd}\p{Pc}]`;
 
-// A mention with a domain, as Account::MENTION_RE: "@name@example.com".
-const remoteMentionPattern = new RegExp(
-  String.raw`(^|[^=\/\p{L}\p{M}\p{Nd}\p{Pc}])@([a-z0-9_]+(?:[.-]+[a-z0-9_]+)*)@(${wordChar}+(?:[.-]+${wordChar}+)*)`,
-  "giu",
-);
+// The two halves of a mention, as in Account::MENTION_RE: the name, which
+// does not begin in the middle of a word, a path or a parameter, and the
+// domain.
+const mentionName = String.raw`(^|[^=\/\p{L}\p{M}\p{Nd}\p{Pc}])@([a-z0-9_]+(?:[.-]+[a-z0-9_]+)*)`;
+const mentionDomain = `@(${wordChar}+(?:[.-]+${wordChar}+)*)`;
+
+// A mention with a domain: "@name@example.com".
+const remoteMentionPattern = new RegExp(mentionName + mentionDomain, "giu");
+
+// Every mention, with a domain or without: "@name" too.
+const mentionPattern = new RegExp(`${mentionName}(?:${mentionDomain})?`, "giu");
 
 // The longest domain that Mastodon takes in a mention, in characters. With
 // a longer one the text is no mention, and counts in full.
@@ -74,6 +80,35 @@ let graphemes: Intl.Segmenter | undefined;
  */
 export function stripMastodonText(text: string): string {
   return text.replace(/^[\0\t\n\v\f\r ]+|[\0\t\n\v\f\r ]+$/g, "");
+}
+
+/**
+ * `text` in a form that is the same before and after Mastodon saves it, to
+ * tell whether a status holds a text that was sent. The source of a status
+ * is not that text. Mastodon drops the whitespace around it, and it writes
+ * every mention of an account that it finds the way the account is written,
+ * app/services/process_mentions_service.rb: on mastodon.example,
+ * "@ADA@mastodon.example" becomes "@ada", "@gargron@mastodon.social" becomes
+ * "@Gargron@mastodon.social", and a domain that stands for another becomes
+ * that one.
+ *
+ * Which accounts a server finds, only the server knows. So this does not
+ * rewrite as Mastodon does. It reduces every mention to what both spellings
+ * share, the name in lower case. It takes for a mention what Mastodon
+ * rewrites, which is more than what `countMastodonCharacters` counts as
+ * one. Two texts with the same form therefore differ at most in the case
+ * and the domains of their mentions.
+ *
+ * Not covered: an account whose server answers for it under another name,
+ * which Mastodon then writes, and "@a@b.example@c", which Mastodon may save
+ * as the mention "@a@c".
+ */
+export function comparableMastodonText(text: string): string {
+  return stripMastodonText(text).replace(
+    mentionPattern,
+    (_mention: string, before: string, username: string) =>
+      `${before}@${username.toLowerCase()}`,
+  );
 }
 
 /**

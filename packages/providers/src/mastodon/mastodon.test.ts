@@ -824,6 +824,45 @@ describe("a step that may have posted already", () => {
     expect(sim.requests.filter(posts)).toHaveLength(1);
   });
 
+  it("finds a part whose mentions Mastodon has written its own way", async () => {
+    const sim = setup();
+    const { credentials } = await connect(sim);
+    sim.simulator.addInstance("other.example");
+    sim.simulator.addAccount("other.example", "Bob");
+    // Mastodon finds both accounts and writes them as they are written:
+    // its own without the domain, the other with the capital letter. The
+    // source of the status is then no longer the text that was sent.
+    const post = delivery(sim, credentials, {
+      parts: [{ text: `@ADA@${domain} and @bob@other.example, look` }],
+    });
+    await post.step();
+    sim.simulator.arm({ kind: "lost-response", operation: "publish" });
+    expect((await failure(post.step)).kind).toBe("retry");
+    // Beyond the hour in which the key alone would have found the status.
+    sim.world.advance(twoHours);
+
+    const { parts } = await post.part();
+    expect(texts(sim)).toEqual(["@ada and @Bob@other.example, look"]);
+    expect(parts[0]?.id).toBe(feed(sim.world)[0]?.post.id);
+    expect(sim.requests.filter(posts)).toHaveLength(1);
+  });
+
+  it("takes no status that mentions somebody else", async () => {
+    const sim = setup();
+    const { credentials } = await connect(sim);
+    sim.simulator.addAccount(domain, "bob");
+    const post = delivery(sim, credentials, {
+      parts: [{ text: "Thank you, @ada" }],
+    });
+    await post.step();
+    // The domain and the case of a mention do not count when a status is
+    // looked for. The name does.
+    await postByHand(sim, credentials, "Thank you, @bob");
+
+    expect((await post.part()).done).toBe(true);
+    expect(texts(sim)).toEqual(["Thank you, @bob", "Thank you, @ada"]);
+  });
+
   it("posts what never arrived", async () => {
     const sim = setup();
     const { credentials } = await connect(sim);

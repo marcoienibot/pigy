@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { countMastodonCharacters, stripMastodonText } from "./mastodon.ts";
+import {
+  comparableMastodonText,
+  countMastodonCharacters,
+  stripMastodonText,
+} from "./mastodon.ts";
 
 const count = (text: string) => countMastodonCharacters(text, 23);
 
@@ -110,6 +114,48 @@ describe("stripMastodonText", () => {
   it("removes less than trim does", () => {
     // Ruby's strip leaves a no-break space where it is.
     expect(stripMastodonText(" \u00a0a\u00a0\t")).toBe("\u00a0a\u00a0");
+  });
+});
+
+describe("comparableMastodonText", () => {
+  const same = (sent: string, saved: string) =>
+    comparableMastodonText(sent) === comparableMastodonText(saved);
+
+  it("is the same for a text and for what Mastodon saves of it", () => {
+    // Each pair is a text and what mastodon.example makes of it when it
+    // finds the accounts: process_mentions_service.rb.
+    expect(same("@ada@mastodon.example hi", "@ada hi")).toBe(true);
+    expect(same("Hi @ADA!", "Hi @ada!")).toBe(true);
+    expect(same("@gargron@mastodon.social", "@Gargron@mastodon.social")).toBe(
+      true,
+    );
+    // A domain that stands for another one.
+    expect(same("cc @bob@example.com.", "cc @bob@social.example.com.")).toBe(
+      true,
+    );
+    expect(same("@a@x.example,@B@y.example\n@c", "@A,@b@y.example\n@C")).toBe(
+      true,
+    );
+    expect(same("  Hello \n", "Hello")).toBe(true);
+    // Mastodon rewrites a mention also where it does not count it as one:
+    // before "://" and with a domain that is too long.
+    expect(same("@ADA://x", "@ada://x")).toBe(true);
+    const long = "b".repeat(254);
+    expect(same(`@ADA@${long}`, `@ada@${long}`)).toBe(true);
+  });
+
+  it("differs for texts that differ in anything else", () => {
+    expect(same("Hi @ada", "Hi @bob")).toBe(false);
+    expect(same("Hi @ada", "Hi ada")).toBe(false);
+    expect(same("Hello", "hello")).toBe(false);
+    expect(same("a b", "a  b")).toBe(false);
+    // Not mentions, so Mastodon leaves them as they are: an address, the
+    // end of a path and of a parameter.
+    expect(same("mail@ADA", "mail@ada")).toBe(false);
+    expect(same("https://x.example/@ADA", "https://x.example/@ada")).toBe(
+      false,
+    );
+    expect(same("?to=@ada@x.example", "?to=@ada")).toBe(false);
   });
 });
 
