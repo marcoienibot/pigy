@@ -26,40 +26,50 @@ function workerFirst(): string[] {
 }
 
 /**
- * The port that `pnpm preview:e2e` serves the e2e build on:
- * `PIGY_E2E_PORT`, or 4173. `pnpm e2e` sets the variable for the server it
- * starts, see e2e/playwright.config.ts.
+ * Where `pnpm preview:e2e` serves the e2e build: at 127.0.0.1, on the port
+ * of `PIGY_E2E_PORT`, or 4173 when it is unset. Port 0 has the system choose
+ * a port, and Vite says in its output which one: that is how `pnpm e2e`
+ * learns its port when it is given none, see e2e/playwright.config.ts.
+ *
+ * One address and not `localhost`, which can be 127.0.0.1 or ::1: the
+ * browser of the tests is made to go to 127.0.0.1 alone, so the server has
+ * to be there, and a server at ::1 on the same port is never asked.
+ * Without `strictPort`, a port that is taken would be swapped for the next
+ * one, where the browser tests do not look.
  */
-function e2ePort(): number {
+function e2ePreview() {
   const value = process.env.PIGY_E2E_PORT ?? "4173";
   const port = Number(value);
-  if (!/^\d+$/.test(value) || port < 1 || port > 65535) {
+  if (!/^\d+$/.test(value) || port > 65535) {
     throw new Error(`PIGY_E2E_PORT is "${value}", which is not a port`);
   }
-  return port;
+  return { host: "127.0.0.1", port, strictPort: true };
 }
 
 /**
- * Writes a new random ID into every e2e build, at /e2e-build.txt. The
- * browser tests compare what the server on their port serves there with
- * the file in this checkout's build, and so find out when they talk to the
- * build of another checkout: see e2e/server.ts. A digest of the build would
- * not tell them, because two checkouts of the same commit build the same
- * files. The production build has none, which scripts/check-build.mjs
- * checks by the text that the file begins with.
+ * Writes a new random ID into every e2e build, at /e2e-build.txt, and says
+ * it in the output of the build. The browser tests take the ID from that
+ * output and compare it with what the server on their port serves there,
+ * and with the file in this checkout's build, and so find out when they
+ * talk to the build of another checkout, or when their own was built over:
+ * see e2e/server.ts. A digest of the build would not tell them, because two
+ * checkouts of the same commit build the same files. The production build
+ * has none, which scripts/check-build.mjs checks by the text that the ID
+ * begins with.
  */
 function e2eBuildId(): Plugin {
+  const id = `pigy-e2e-build ${randomUUID()}`;
   return {
     name: "pigy:e2e-build-id",
     apply: "build",
     // The Worker is built by the same command, as another environment.
     applyToEnvironment: (environment) => environment.name === "client",
     generateBundle() {
-      this.emitFile({
-        type: "asset",
-        fileName: "e2e-build.txt",
-        source: `pigy-e2e-build ${randomUUID()}`,
-      });
+      this.emitFile({ type: "asset", fileName: "e2e-build.txt", source: id });
+    },
+    writeBundle() {
+      // e2e/playwright.config.ts reads this line.
+      console.log(`The ID of this e2e build is "${id}".`);
     },
   };
 }
@@ -75,9 +85,7 @@ export default defineConfig(({ mode }) => {
     build: {
       outDir: e2e ? "dist-e2e" : "dist",
     },
-    // Without `strictPort`, a port that is taken would be swapped for the
-    // next one, where the browser tests do not look.
-    ...(e2e && { preview: { port: e2ePort(), strictPort: true } }),
+    ...(e2e && { preview: e2ePreview() }),
     plugins: [
       // Must come before the React plugin.
       tanstackRouter({ target: "react", autoCodeSplitting: true }),

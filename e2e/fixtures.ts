@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import dns from "node:dns";
 import {
   type Browser,
   type BrowserContext,
@@ -9,7 +10,13 @@ import {
   type TestInfo,
   type WebSocketRoute,
 } from "@playwright/test";
-import { expectOwnServer } from "./server.ts";
+import {
+  expectOwnServer,
+  loopback,
+  OtherServer,
+  portFromEnvironment,
+  recordOtherServer,
+} from "./server.ts";
 
 /**
  * The admin of the app under test. The e2e build has no configuration, so
@@ -156,6 +163,56 @@ async function guardNetwork(
 }
 
 /**
+ * `lookup` of `dns.promises`, with `localhost` leading to `loopback` alone,
+ * where the server of the run listens. The rest is looked up by `lookup`.
+ */
+function onlyLoopback(
+  lookup: typeof dns.promises.lookup,
+): typeof dns.promises.lookup {
+  const address = { address: loopback, family: 4 };
+  return ((hostname: string, options?: number | dns.LookupOptions) => {
+    if (hostname.toLowerCase() !== "localhost") {
+      return lookup(hostname, options as dns.LookupOptions);
+    }
+    const { family, all } =
+      typeof options === "number"
+        ? { family: options, all: false }
+        : (options ?? {});
+    if (family === 6 || family === "IPv6") {
+      if (all) return Promise.resolve([]);
+      return Promise.reject(
+        Object.assign(new Error(`localhost leads to ${loopback} alone`), {
+          code: "ENOTFOUND",
+        }),
+      );
+    }
+    return Promise.resolve(all ? [address] : address);
+  }) as typeof dns.promises.lookup;
+}
+
+/** `base`, whose own requests go where the browser goes. */
+const pinned = base.extend<Record<never, never>, { loopbackOnly: undefined }>({
+  // Playwright's own requests, those of `page.request` and
+  // `context.request`, are sent from the worker, which looks `localhost` up
+  // as ::1 and 127.0.0.1 and tries ::1 first, then the other. The server of
+  // the run listens at `loopback` alone, and the browser goes there alone,
+  // so these requests must too: a server at the other address on the same
+  // port would answer them. Playwright looks hosts up with
+  // `dns.promises.lookup`, which is replaced for as long as the worker
+  // runs. own-server.spec.ts proves that it takes effect.
+  loopbackOnly: [
+    // biome-ignore lint/correctness/noEmptyPattern: Playwright reads what a fixture needs from this pattern, and this one needs nothing.
+    async ({}, use) => {
+      const { lookup } = dns.promises;
+      dns.promises.lookup = onlyLoopback(lookup);
+      await use(undefined);
+      dns.promises.lookup = lookup;
+    },
+    { scope: "worker", auto: true },
+  ],
+});
+
+/**
  * The `test` that every spec imports, in place of the one from
  * "@playwright/test".
  *
@@ -169,7 +226,7 @@ async function guardNetwork(
  * not the build that the run started, before it or after it: on a machine
  * with several checkouts it can be another one's. See server.ts.
  */
-export const test = base.extend<{
+export const test = pinned.extend<{
   ownServer: undefined;
   networkGuard: undefined;
   /** `page`, signed in as the admin. For tests that are not about sign-in. */
@@ -203,17 +260,24 @@ export const test = base.extend<{
   // the server of the run from its start to its end, the last test of a
   // run included: see server.ts.
   ownServer: [
-    async ({ baseURL }, use, testInfo) => {
-      if (!baseURL) throw new Error("baseURL is not set");
-      const port = Number(new URL(baseURL).port);
+    // biome-ignore lint/correctness/noEmptyPattern: Playwright reads what a fixture needs from this pattern, and this one needs nothing.
+    async ({}, use, testInfo) => {
+      // global-setup.ts has checked both, which the server of the run said.
+      const port = portFromEnvironment();
+      const build = process.env.PIGY_E2E_BUILD;
+      if (!port || build === undefined) {
+        throw new Error("PIGY_E2E_PORT or PIGY_E2E_BUILD is not set");
+      }
       const check = async () => {
         try {
-          await expectOwnServer(port);
+          await expectOwnServer(port, build, "testing");
         } catch (error) {
           // A test that expects to fail, as those of network-guard.spec.ts
           // do, would take this failure for the one that it expects, and
           // pass.
           testInfo.expectedStatus = "passed";
+          // A retry that passes must not make the run pass.
+          if (error instanceof OtherServer) recordOtherServer(error);
           throw error;
         }
       };
