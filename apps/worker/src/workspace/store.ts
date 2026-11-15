@@ -407,6 +407,13 @@ export class WorkspaceStore {
   /**
    * What `apply` does, for a caller that has opened the transaction and
    * says whose the mutations are.
+   *
+   * Every mutation is run at a time of its own, later than the one before
+   * it: the clock's, or one millisecond after the time of the mutation
+   * before if the clock has not moved on since, or has gone back. So the
+   * times that mutators put into rows say in which order the mutations
+   * were run, also for those of one message, and across restarts: the
+   * last time is stored with the workspace.
    */
   private run(
     mutations: MutatorCall[],
@@ -414,9 +421,10 @@ export class WorkspaceStore {
     source: MutationSource,
   ): (Refusal | null)[] {
     const before = this.record();
-    let seq = before.seq;
+    let { seq, time } = before;
     const outcomes = mutations.map((mutation) => {
-      const tx = new RecordingTransaction(this.db, now);
+      time = Math.max(now, time + 1);
+      const tx = new RecordingTransaction(this.db, time);
       try {
         // A transaction within the transaction: SQLite undoes what the
         // mutator wrote if it throws.
@@ -448,15 +456,15 @@ export class WorkspaceStore {
       return null;
     });
 
-    if (seq > before.seq) {
-      // The log is kept from growing by dropping what is older than the
-      // window. A cursor from before the floor can no longer be served
-      // from the log.
-      const logFloor = Math.max(before.logFloor, seq - changeLogWindow);
-      if (logFloor > before.logFloor) {
-        this.db.delete(changeLog).where(lte(changeLog.seq, logFloor)).run();
-      }
-      this.db.update(workspaceRecord).set({ seq, logFloor }).run();
+    // The log is kept from growing by dropping what is older than the
+    // window. A cursor from before the floor can no longer be served from
+    // the log.
+    const logFloor = Math.max(before.logFloor, seq - changeLogWindow);
+    if (logFloor > before.logFloor) {
+      this.db.delete(changeLog).where(lte(changeLog.seq, logFloor)).run();
+    }
+    if (time > before.time) {
+      this.db.update(workspaceRecord).set({ seq, logFloor, time }).run();
     }
     return outcomes;
   }
@@ -495,7 +503,11 @@ export class WorkspaceStore {
 
   private record() {
     const record = this.db
-      .select({ seq: workspaceRecord.seq, logFloor: workspaceRecord.logFloor })
+      .select({
+        seq: workspaceRecord.seq,
+        logFloor: workspaceRecord.logFloor,
+        time: workspaceRecord.time,
+      })
       .from(workspaceRecord)
       .get();
     if (!record) throw new Error("The object is not tied to a workspace yet");

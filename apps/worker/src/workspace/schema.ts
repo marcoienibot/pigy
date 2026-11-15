@@ -104,6 +104,11 @@ export const workspaceRecord = sqliteTable("workspace", {
   seq: integer("seq").notNull(),
   /** `change_log` is complete for the changes after this one. */
   logFloor: integer("log_floor").notNull(),
+  /**
+   * The time that the last mutation was run at, in milliseconds since the
+   * epoch. The next one is run later than that, whatever the clock says.
+   */
+  time: integer("time").notNull().default(0),
 });
 
 /** Which rows each of the latest changes wrote or deleted. */

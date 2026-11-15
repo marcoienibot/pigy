@@ -22,6 +22,13 @@
       "when": 1794718693219,
       "tag": "0002_channels",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1794729085580,
+      "tag": "0003_server_time",
+      "breakpoints": true
     }
   ]
 }

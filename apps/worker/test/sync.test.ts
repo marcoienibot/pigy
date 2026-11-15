@@ -138,6 +138,51 @@ it("applies the mutations of a message in order", async () => {
   expect(client.table("post_part")[0]?.text).toBe("Three");
 });
 
+it("runs every mutation at a later time than the one before it", async () => {
+  const { test, workspace, client } = await connected();
+  const start = test.clock.time.getTime();
+  /** Creates `count` posts in one message, and returns their IDs. */
+  const create = (count: number) => {
+    const ids = Array.from({ length: count }, () => newId());
+    client.send({
+      type: "mutate",
+      mutations: ids.map((id) =>
+        client.mutation("post.create", { id, partId: newId(), text: "" }),
+      ),
+    });
+    return ids;
+  };
+  const createdAt = (id: string) =>
+    client.table("post").find((post) => post.id === id)?.createdAt;
+
+  // Two drafts that were made offline arrive in one message. The clock does
+  // not move while the message is handled, and they still get two times:
+  // sorted by time, they stay in the order in which they were made.
+  const [first = "", second = ""] = create(2);
+  await client.patch();
+  expect(createdAt(first)).toBe(start);
+  expect(createdAt(second)).toBe(start + 1);
+
+  // A message that arrives in the same millisecond goes on from there.
+  const [third = ""] = create(1);
+  await client.patch();
+  expect(createdAt(third)).toBe(start + 2);
+
+  // The time is stored: an object that starts again does not begin at the
+  // clock, which here has not moved, and not when the clock has gone back.
+  await evictDurableObject(objectOf(workspace));
+  test.advance(-60_000);
+  const [fourth = ""] = create(1);
+  await client.patch();
+  expect(createdAt(fourth)).toBe(start + 3);
+
+  // Once the clock is ahead again, the time is the clock's.
+  test.advance(120_000);
+  const [fifth = ""] = create(1);
+  await client.patch();
+  expect(createdAt(fifth)).toBe(start + 60_000);
+});
+
 it("brings two clients to the same state after they changed the same row at once", async () => {
   const { browser, workspace, client: first } = await connected();
   const { partId } = await createPost(first, "Draft");
