@@ -81,7 +81,7 @@ Everything is one Worker deployment. The React app is served as Worker static as
 apps/web          React app, service worker, PWA manifest
 apps/worker       Hono routes, Durable Objects, Workflows, D1 migrations
 packages/core     Shared domain code: schemas, mutators, validation, text utilities, limits
-packages/providers   LinkedIn, Mastodon, Bluesky and Threads adapters
+packages/providers   The contract with a network, and the LinkedIn, Mastodon, Bluesky and Threads adapters
 packages/simulators  Simulated versions of the four networks, Google sign-in and web push
 e2e               Playwright tests
 ```
@@ -126,14 +126,14 @@ The UI never waits for the network. It reads from memory, writes locally first, 
 | `workspace` | ID, owner, environment (live or sandbox) |
 | `api_key` | Workspace, name, visible prefix, SHA-256 hash, scopes, last used, expiry, revoked |
 | `push_subscription` | Web push endpoints per user and device |
-| `mastodon_app` | OAuth client per Mastodon instance, shared by all users |
-| `oauth_state` | Short-lived state and PKCE verifier for account connection |
+| `mastodon_app` | OAuth client per Mastodon instance, shared by all users of the live environment. A cache: the adapter replaces an entry that the instance no longer knows |
+| `oauth_state` | What an adapter needs to finish a connection that has begun, kept under the `state` of the callback for a few minutes. It holds secrets: a PKCE verifier, and for Mastodon the client secret |
 
 **WorkspaceDO SQLite (per workspace)**
 
 | Table | Purpose |
 | --- | --- |
-| `channel` | Service, account ID, handle, name, avatar, status, token expiry, encrypted credentials |
+| `channel` | Network, account ID, handle, name, avatar, status, the limits of the account, when to refresh the access and when it ends, encrypted credentials |
 | `post` | Status, mode, due time, source (UI or API), tags, timestamps |
 | `post_part` | Ordered text of each part |
 | `part_media` | Media attached to a part, with alt text |
@@ -150,7 +150,7 @@ Post status follows Buffer: `draft`, `scheduled`, `sending`, `sent`, `error`. A 
 
 ## 6. The four networks
 
-Each adapter in `packages/providers` implements one interface: connect, refresh credentials, validate, upload media, publish a part, fetch stats. Adapters receive `fetch`, the clock and an identity resolver as arguments. They never use globals, which is what lets the sandbox and the tests swap in simulators.
+Each adapter in `packages/providers` implements one interface, `Provider` in `src/provider.ts`, and callers know nothing of a network beyond it. An adapter is made by a function of its own, which takes `fetch` and the clock and whatever is the network's own: the registration of the operator's app for LinkedIn and Threads, the signing key and an identity resolver for Bluesky, a store for its registrations with instances for Mastodon. Adapters never use globals, which is what lets the sandbox and the tests swap in simulators. An adapter keeps nothing between calls: what has to last is handed to the caller as JSON that only the adapter understands, and is checked against the adapter's own schema when it comes back.
 
 | | LinkedIn | Mastodon | Bluesky | Threads |
 | --- | --- | --- | --- | --- |
@@ -170,6 +170,45 @@ Notes that shape the design:
 - **Mastodon** limits vary per instance. pigy reads them from the instance and validates against the real values.
 - **Link previews**: a shared service fetches a URL's title, description and image once, caches it, and feeds LinkedIn and Bluesky.
 - **Token refresh** runs inside the WorkspaceDO, one refresh at a time per channel. Bluesky refresh tokens are single-use, so two parallel refreshes would lock the account out.
+
+### The provider interface
+
+| Part | What it is |
+| --- | --- |
+| Connecting | `beginConnect` takes pigy's callback address and, on networks with no single place to sign in, what the person typed to say where their account lives. It returns the address to send the browser to, the `state` that the callback will carry, and `pending`: what to keep under that state until then. `completeConnect` takes `pending` and the parameters of the callback and returns the account for display (ID, handle, name, avatar, profile link) and the access |
+| Access | The credentials, opaque and stored encrypted, with two times: `refreshAt`, from when on to call `refresh` before using them, and `expiresAt`, when the access ends unless it is refreshed. Either is null where it does not apply. Only adapters of networks that can renew an access have `refresh`. `disconnect` gives the access back where the network has a way |
+| Limits | `limits` asks what the account may post. The answer is data that names its network, defined in `packages/core` with the counting that goes with it: `countCharacters` and `validateContent` are pure and run in the browser too. Adapters do not validate. They send what they are given, and the network is the judge |
+| Publishing | `publishStep` takes the content, a key that names the delivery, and the progress that the step before returned. It makes at most one request that changes something and returns the new progress: the parts that are published, each with its ID and link, whether the post is done, how long to wait before the next step, and the adapter's own notes. Section 8 has the rules |
+| Reading and deleting | `readPost` returns the text and what the post replies to, on networks that let pigy read. `deletePost` is fine with a post that is gone |
+| Errors | Every failure is a `ProviderError` with one of three kinds: `retry` (with the time the network named, if any), `fail` (with a message for the person) and `reconnect`. Messages may quote the network, without the secrets of the request |
+
+How the four networks map onto it. Mastodon is built. The other three columns are the design that the interface was checked against, for whoever builds them to check in turn:
+
+| | Mastodon | Bluesky | LinkedIn | Threads |
+| --- | --- | --- | --- | --- |
+| What the adapter is made with | A store for registrations | Client metadata address, signing key, identity resolver | Client ID and secret, API version | App ID and secret |
+| What the person types | The domain of the instance | The handle | Nothing | Nothing |
+| `beginConnect` | Reads the instance, registers pigy there if it has not, PKCE where the instance has it | Resolves the handle to its server, pushes the authorization request with PKCE and DPoP | Builds the address | Builds the address |
+| `pending` holds | State, domain, the registration, PKCE verifier | State, account and server, PKCE verifier, DPoP key | State | State |
+| `completeConnect` | Code for token, then `verify_credentials` | Code for tokens, checks the account is the one that was resolved, reads the profile | Code for token, then `userinfo` | Code for a short-lived token, that for a long-lived one, then the profile |
+| Account ID | Account ID and domain | DID | `sub` | User ID |
+| `refreshAt` and `refresh` | None | Shortly before the access token ends. Refresh tokens are single-use | None | Some days after issue. Not before a day has passed |
+| `expiresAt` | None | None known | 60 days after issue | 60 days after the last refresh |
+| `disconnect` | Revokes the token | Revokes the tokens | To decide | Nothing to call |
+| `limits` | Read from the instance | Fixed: 300 graphemes | Fixed: 3000 | Fixed: 500 |
+| Steps of `publishStep` | One per part: post the status, as a reply to the part before | Two per part: choose the record key, then write the record with the references to the first and the previous part | One for the whole post: the parts joined | Per part: create a container, wait, publish it |
+| Adapter's notes between steps | None | The record key in use, and the reference of each part | None | The container in use |
+| `readPost` | Yes | Yes | No: reading takes a permission that LinkedIn restricts | Yes |
+| What asks for `reconnect` | 401, a missing scope | A refresh that is refused | 401 | An invalid token that cannot be refreshed |
+
+The handle of a LinkedIn account is its name: LinkedIn gives pigy no other. The time of a refresh for Threads, and how Bluesky tells a token that has expired from one that was revoked, are for those adapters to settle.
+
+What was decided along the way, and why:
+
+- **No validation inside adapters.** The browser has to validate while somebody types, and it cannot import the adapters, so the rules live in `packages/core`. Keeping adapters out of it also means that the conformance suite can send what the validation would stop, and see the network refuse it.
+- **Credentials carry what revoking them takes.** On Mastodon that is the registration the token was issued to. The stored registration of an instance can then change, or be lost, without breaking a channel.
+- **Optional methods for what a network cannot do.** `refresh` and `readPost` are missing from an adapter rather than present and failing, so the type says what a caller can count on.
+- **Scopes for media are asked for now.** A registration with a Mastodon instance cannot gain a scope later. Asking for `write:media` in phase 3 spares everybody a second connection in phase 7.
 
 ## 7. Sandbox and simulators
 
@@ -191,6 +230,24 @@ Each simulator:
 - Has a controllable clock.
 
 Adapters keep calling the real hostnames. The injected `fetch` decides whether the request leaves the Worker or is handled in-process by a simulator. The adapter code that runs in tests is the code that runs in production.
+
+What the simulators of the networks share is written once, in `packages/simulators/src/world`:
+
+- **The world**: the accounts, tokens and posts of all networks in one form, behind a storage of keys and values that is read and written at once. It has the shape of the storage of a Durable Object with SQLite, so the `SimWorldDO` passes its own. A simulator keeps nothing outside the world and is made anew for every request. `feed` lists what is published, for the simulated feeds page.
+- **The clock**: the one the world is made with, plus what `advance` has added, which is kept in the world.
+- **Faults**: armed ahead of time, for a network and optionally for one kind of request, and struck by the next request they apply to. The kinds are `rate-limit`, `server-error`, `lost-response`, `token-expired`, `token-revoked` and `slow-processing`. A simulator applies the ones its network can suffer from: Mastodon has no tokens that expire, and nothing that processes slowly until it has media.
+- **The consent page**: where a person chooses which simulated account to connect, marked as a simulation. `answerConsent` answers it without a browser.
+
+A simulator is written from the network's documentation and shares no code with the adapter or with the validation in `packages/core`: a simulator that is more lenient than the service hides the mistakes it is there to find. Where the documentation is silent and something had to be assumed, the code says GUESS, for a live run to confirm.
+
+The simulators of the networks are part of the production build, because the sandbox runs on them. So they are built to act on a simulated world and on nothing else:
+
+- A simulator makes no requests, and fails for every host that is not its own.
+- A simulated Mastodon instance has a domain under `.example`, `.test` or `.invalid`. Such a name cannot exist on the internet, so a simulated instance is never taken for a real one, and a request that was meant for it and left the Worker by mistake reaches nobody. The other three networks have fixed hosts, where this cannot be done.
+- Every secret of a simulated network begins with `pigy-sim-`, and a world finds no token that it did not issue. A real credential that reaches a simulator is refused before it is compared with anything.
+- Which `fetch` an adapter gets is decided by the environment of the workspace, live or sandbox, and by nothing in a request.
+
+The sandbox gives the Mastodon adapter a store for registrations of its own, per world: the same simulated instance exists in every user's world, each with its own registered clients.
 
 The Google simulator is the first one, built in phase 1, and differs from the others in two ways:
 
@@ -219,11 +276,21 @@ Simulator state lives in a `SimWorldDO` per user, so one person's simulated post
 4. Transient failures (rate limit, server error, timeout) retry with backoff. Permanent failures (invalid content, revoked access) stop, mark the target `error` with a readable reason, and send a notification.
 5. If a thread fails midway, the sent parts stay recorded. "Retry" continues from the failed part and never re-posts a sent one.
 
+How the workflow and an adapter share the work:
+
+- The content is checked with `validateContent` before the first step. What fails is not sent.
+- A step of the workflow is one call of `publishStep`. It returns the progress as plain JSON, which is the recorded result of the step and the input of the next. `publish` in `packages/providers` is the loop: it takes the workflow's `step.do` and `step.sleep` and names the steps by their position, the same on a replay.
+- The credentials are asked of the WorkspaceDO inside every step, also when a step is run again. A post can take longer than credentials last, and the WorkspaceDO refreshes them when `refreshAt` has passed.
+- A `ProviderError` says what the workflow does: `retry` runs the step again with the same input, after the time the network named if it named one, `fail` ends the target with the message, `reconnect` ends it and marks the channel.
+- A step may ask for a wait before the next one, which is how Threads gets the time to prepare a post, and how media will get the time to be processed.
+- The progress lists the published parts one by one. "Retry" starts a new run from the progress that was recorded, with the same key.
+- The key names the delivery: the ID of the target. It is what Mastodon's idempotency keys are made from, so publishing a post a second time on purpose takes a new key.
+
 Avoiding duplicates when a retry follows an uncertain result:
 
 | Network | Mechanism |
 | --- | --- |
-| Mastodon | `Idempotency-Key` header derived from target and part |
+| Mastodon | `Idempotency-Key` header derived from target and part. Mastodon remembers a key for an hour |
 | Bluesky | The record key is generated and stored before the call, so a retry writes the same record |
 | Threads | The container ID is stored before publishing, and a container publishes only once |
 | LinkedIn | No idempotency key. Rely on LinkedIn's duplicate-content rejection and treat it as success (to verify) |
@@ -240,7 +307,7 @@ Avoiding duplicates when a retry follows an uncertain result:
 - **Upload**: the browser uploads in chunks through the Worker into an R2 multipart upload. Uploads are resumable, which matters on phones.
 - **Images**: up to 4 per part, alt text per image. When a network's size limit is smaller than the original, the Cloudflare Images binding produces a smaller variant at publish time.
 - **Video**: one per part. Workers cannot transcode, so the client reads the file's format, size and duration and blocks a video that a selected network would reject, naming the network and the reason.
-- **Limits** for every network live in one module in `packages/core`, filled from each network's docs when the phase starts. Mastodon's come from the instance.
+- **Limits** for every network live in one module in `packages/core`, `src/network/limits.ts`, filled from each network's docs when the phase starts. Mastodon's come from the instance. The limits for text are there since phase 3, with the counting. Those for media join them in phase 7.
 - **API uploads**: `POST /api/v1/media`, or a public URL in `assets` as in Buffer. Fetched URLs are size-capped and type-checked.
 - **Retention**: originals are deleted from R2 a set number of days after every target has been sent. A thumbnail is kept.
 
@@ -296,7 +363,7 @@ REST under `/api/v1`, described by an OpenAPI document generated from the same Z
 | Layer | Tool | What it proves |
 | --- | --- | --- |
 | Unit | Vitest | Grapheme counting, link and mention detection, LinkedIn escaping, thread splitting, queue slot maths, validation rules |
-| Adapter conformance | Vitest in the Workers runtime | One spec per network: connect, publish text, images, video and threads, refresh tokens, map every error class. Runs against the simulator |
+| Adapter conformance | Vitest in Node | One spec for all networks, run once per network: connect, validate, publish text, images, video and threads, read back, delete, refresh tokens, map every error class, publish nothing twice. Runs against the simulator |
 | Pipeline | Vitest in the Workers runtime with local D1, Durable Objects, R2 and Workflows | API call to alarm to workflow to simulator. Asserts final statuses, sync messages and the push notification. Injects faults, including the lost-response case, and asserts no duplicate post |
 | Sync | Vitest in the Workers runtime | Two clients converge, the offline outbox replays once, snapshot fallback works, one user cannot reach another's workspace, credentials never appear in sync messages |
 | End to end | Playwright against the local Worker, built as for production except that sign-in is simulated | Simulated Google sign-in, allowlist refusal, sandbox onboarding, connecting four simulated accounts, cross-post with override, thread and image, schedule and fast-forward, offline draft then sync, installability checks, phone viewports |
@@ -305,6 +372,10 @@ REST under `/api/v1`, described by an OpenAPI document generated from the same Z
 
 **Keeping the simulators honest.** The adapter conformance spec can also run against the real services with dedicated test accounts. That run is manual or nightly, never part of pull request CI, and it deletes what it posts. If the real service and the simulator disagree, the simulator is fixed.
 
+The run is started by `pnpm --filter @pigy/providers conformance:live <network>`, with the credentials of the test account in the environment. The script is the only way to start it, and refuses in CI. It posts with the least visibility the network has: on Mastodon, posts that only the account itself sees. In CI the same specification also runs against the simulator with the harness of the live run, which has one account and no way to look into the network, so that the live run does not break unnoticed between the times somebody starts it.
+
+The conformance suite runs in Node, like the other tests of the packages, and not in the Workers runtime as an earlier draft of this plan had it. The adapters use nothing but web-standard APIs, the live run needs Node to reach the network, and the pipeline tests run the same adapters in the Workers runtime.
+
 **CI (GitHub Actions)**: lint, typecheck, unit and Workers-runtime tests, Playwright with traces on failure, build. From phase 11, merges to `main` also apply D1 migrations and deploy.
 
 ## 16. Security
@@ -312,7 +383,9 @@ REST under `/api/v1`, described by an OpenAPI document generated from the same Z
 - Channel tokens are encrypted at rest with a key held as a Worker secret, with a key version for rotation.
 - OAuth uses state and PKCE everywhere. Cookie-authenticated writes and the WebSocket handshake check the origin.
 - A workspace is reached only through the Worker, which looks it up by its ID and the signed-in user together. The Durable Object never sees the request of the client: the Worker makes a new one. The object also remembers which workspace and owner it was first used for and refuses any other, so a mistake in the Worker's routing cannot hand one person's data to another.
-- Mastodon instance domains and asset URLs come from users, so they are validated, HTTPS only, and size-capped.
+- Mastodon instance domains and asset URLs come from users, so they are validated, HTTPS only, and size-capped. An adapter follows no redirects, gives up on a host that does not answer, and reads a bounded amount of every answer. What a network says in an error may reach a message, a log or the screen only without the secrets of the request.
+- The addresses of avatars and profiles come from the networks. Only HTTPS addresses are passed on.
+- The simulated networks are part of the production build. Section 7 says what keeps them to their simulated world.
 - Media links for Threads are signed and expire.
 - Signing out wipes the local IndexedDB copy.
 - A content security policy, and an audit trail of publishes per workspace.
@@ -337,6 +410,8 @@ Each phase ends with something that works and is covered by tests. Sizes are rel
 | 11 | Hardening and launch | M | Deployment from CI, security review, reconnect flows, logging and alerts, backups checked, setup guide, friends invited |
 
 Phase 2 is built in two steps. 2a is the server side: workspaces, the `WorkspaceDO`, the mutators, and the sync protocol with its tests. 2b is the client: the browser store, IndexedDB, the offline outbox, the drafts screen and the PWA shell.
+
+Phase 3 is built in steps too. 3a is in the packages only: the provider interface, what the simulators share, and Mastodon as the first network, with its adapter, its simulator and the conformance suite. The steps after it put that to use in the Worker: the channels with their encrypted credentials, the routes that connect an account, the publishing workflow, the simulated world of each sandbox user, the Live/Sandbox switch, the simulated feeds and the failure panel. Then Bluesky, LinkedIn and Threads follow, each the way Mastodon was built.
 
 Until deployment is set up in phase 11, every phase is built and verified locally against the simulated networks. Connecting real networks and installing on a phone need the deployed address.
 
@@ -384,6 +459,17 @@ To confirm when the relevant phase starts:
 - Current media size and duration limits per network.
 - Workflows support in the Workers Vitest pool, which has had isolation caveats. WebSockets to Durable Objects were confirmed in phase 2a: they work, hibernation included.
 - Whether usage fits the Cloudflare free plan.
+
+Open since phase 3a, all of it about Mastodon and none of it confirmed against a real server, because the live conformance run has not been made yet. The first run settles most of it. The places are marked GUESS in `packages/simulators/src/mastodon`:
+
+- That the live run works at all: it is written and has never been started.
+- That a status with the visibility `direct` and no mention is accepted and seen by its author alone, which the live run relies on.
+- What counts as a link. pigy and the simulator take any top-level domain of two or more ASCII letters, Mastodon only the ones that exist. Mastodon's development branch has also replaced the pattern that 4.5 uses. A text that pigy counts as shorter than Mastodon does is refused by Mastodon, with a message that says so.
+- That grapheme clusters are counted alike by the browser, the Workers runtime and Mastodon's Ruby. They follow the same standard in versions that differ, which matters for the newest emoji only.
+- How Mastodon answers a token request of a client without a scope when the client has not registered `read`, and whether servers that speak Mastodon's API without being Mastodon (GoToSocial, Pleroma, Akkoma) answer the check of a registration in a way the adapter understands. The adapter asks for a scope by name and takes any refusal other than `invalid_client` to mean that the registration is still known.
+- That a wrong authorization request ends on a page of the instance and not in a redirect, that a revocation without a token is refused, and that a repeated idempotency key for a status that was deleted since is answered with 404.
+- Mastodon gives out the same token again for the same client, account and scopes. If one Mastodon account is connected to two workspaces, disconnecting one revokes the token of the other, which then has to be connected again. To decide in phase 3b: accept it, or revoke only when no other channel uses the token.
+- The limits that Mastodon keeps per IP address are not simulated. Registrations are limited to 5 in 10 minutes per address, and Cloudflare Workers share theirs with others. The adapter reports it as a failure to try again later.
 
 ## 20. Moving to a custom domain later
 

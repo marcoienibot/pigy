@@ -28,6 +28,8 @@ Run from the repository root.
 
 One package: `pnpm --filter @pigy/worker test`. One file: `pnpm --filter @pigy/worker test test/health.test.ts`. Watch mode: `pnpm --filter @pigy/core exec vitest`.
 
+`pnpm --filter @pigy/providers conformance:live <network>` is not part of any of these. It posts to a real account, see "Run the conformance suite against a real network" below.
+
 ## Signing in locally
 
 Sign-in is with Google. Without Google credentials, a simulated Google stands in for it: "Sign in with Google" leads to a page of the app itself, labelled as a simulation, where you say who you are. Any email address works, no password.
@@ -51,17 +53,23 @@ The simulated sign-in signs anybody in as anybody, so it must never be deployed:
 | --- | --- |
 | `apps/web` | React 19, TanStack Router, Tailwind CSS v4, shadcn/ui. Its `vite.config.ts` builds and serves both the web app and the Worker |
 | `apps/worker` | Hono app, `wrangler.jsonc`, the D1 schema and its migrations, the Durable Object of a workspace with its own schema and migrations, tests that run in the Workers runtime |
-| `packages/core` | Zod schemas and domain code shared by web and Worker. Consumed as TypeScript source, no build step. `src/sync` holds what client and server of the sync protocol share: the synced tables, the mutators and the messages |
-| `packages/simulators` | Stand-ins for external services, written from their documentation. So far Google sign-in. Consumed as TypeScript source, one entry point per service: `@pigy/simulators/google` |
+| `packages/core` | Zod schemas and domain code shared by web and Worker. Consumed as TypeScript source, no build step. `src/sync` holds what client and server of the sync protocol share: the synced tables, the mutators and the messages. `src/network` holds what an account may post on a network and how its text is counted |
+| `packages/providers` | The contract between pigy and a network, and the adapters that implement it. So far Mastodon. Consumed as TypeScript source: `@pigy/providers` is the contract, `@pigy/providers/mastodon` an adapter |
+| `packages/simulators` | Stand-ins for external services, written from their documentation. So far Google sign-in and Mastodon. Consumed as TypeScript source, one entry point per service: `@pigy/simulators/google`, `@pigy/simulators/mastodon`, and `@pigy/simulators/world` for what the simulated networks share |
 | `e2e` | Playwright tests |
 
 Imports:
 
 - `apps/web` imports `@pigy/core`. `apps/worker` imports `@pigy/core` and `@pigy/simulators`. The apps never import each other.
 - `packages/core` imports nothing from the apps or the other packages. It runs in the browser and in the Worker, so it uses only the web-standard APIs that both have, such as `URL`, `crypto` and `TextEncoder`, and no browser-only, Node or Workers APIs.
-- `packages/simulators` imports `@pigy/core` and nothing from the apps. It runs in the Worker, and in Node for its own tests, so the same limits apply.
-- For both packages Biome rejects `window`, `document`, `localStorage`, `process` and `Buffer`, and Node modules in the source. The source is type-checked without Node types (`tsconfig.src.json`), the tests with them (`tsconfig.test.json`).
+- `packages/providers` imports `@pigy/core` and nothing from the apps. It runs in the Worker, and in Node for its own tests, so the same limits apply. Its tests, and only its tests, import `@pigy/simulators`.
+- `packages/simulators` imports `@pigy/core` and nothing from the apps. It runs in the Worker, and in Node for its own tests, so the same limits apply. It never imports `@pigy/providers`, and the simulator of a network uses nothing of `packages/core/src/network`: it checks what the adapter and pigy's own validation do, so it shares no code with them.
+- For all three packages Biome rejects `window`, `document`, `localStorage`, `process` and `Buffer`, and Node modules in the source. The source is type-checked without Node types (`tsconfig.src.json`), the tests with them (`tsconfig.test.json`).
 - `e2e` imports no application code.
+
+In `packages/providers/src`: `provider.ts` is the contract, `errors.ts` the one error that every adapter fails with, `publish.ts` the loop that publishes a post step by step, `http.ts` how adapters send a request. Each network has a directory. `test/conformance` holds the specification that every adapter passes.
+
+In `packages/simulators/src`: `world/` is what the simulated networks share: the storage, the world with its accounts, tokens and posts, the clock, the faults and the consent page. Each service has a directory. `google/` is on its own: it is not part of a production build and keeps nothing in a world.
 
 In `apps/worker/src`: `index.ts` is the entry point and only chooses what the app and the Durable Object are built with. `app.ts` puts the routes together. `auth/` holds sign-in, sessions and the guards for routes, `admin/` the allowlist API, `db/schema.ts` the schema of D1.
 
@@ -79,6 +87,8 @@ In `apps/worker/src`: `index.ts` is the entry point and only chooses what the ap
 - Tests never reach a real network host. External services are simulated.
 - No tautological tests. When a test step or assertion is not obvious, add a comment saying why it is there.
 - Code that talks to external services takes `fetch` and the clock as parameters, typed `Fetch` and `Clock` from `@pigy/core`. It never uses the globals. In the Worker both come from `createApp` in `src/app.ts`.
+- A network is reached through its adapter in `packages/providers` and in no other way. What an adapter hands out to be stored, credentials above all, is opaque: store it, hand it back, never read it.
+- What a network or a person says is untrusted. A host that a person names is validated before a request goes to it. What a network puts into an error reaches a message only through `quotable` of `@pigy/providers`, which takes the secrets of the request out.
 - Validate data at boundaries with Zod schemas from `packages/core`. Share types, do not duplicate them.
 - The synced data of a workspace changes only through mutators from `packages/core`, run by the workspace's Durable Object. No other code writes to a synced table.
 - `SYNC.md` is the contract with the clients. Change it in the same change as the code. Raise `syncProtocolVersion` when the messages or their meaning change and `syncSchemaVersion` when the synced tables or the mutators do: a client that speaks another version is turned away until it has updated itself.
@@ -118,11 +128,48 @@ A call to `mutateWorkspace` cannot be repeated safely. If it fails on the way, a
 
 **Add a binding or variable.** Edit `apps/worker/wrangler.jsonc`, then run `pnpm typecheck`. It runs `wrangler types`, which regenerates the git-ignored `worker-configuration.d.ts` that declares `Env` and the runtime types. `pnpm install` generates it too. A secret is not in `wrangler.jsonc`: declare it in `Secrets` in `apps/worker/src/env.ts`, as optional, and add it to `.dev.vars.example`. Routes take their bindings from the `Bindings` type there, not from `Env`, which differs between machines with and without a `.dev.vars`.
 
-**Add a simulator.** Add a directory to `packages/simulators/src` and an entry to `exports` in its `package.json`. A simulator answers on the real addresses of the service, as a function with the signature of `fetch` that fails for every other host. It is written from the documentation of the service, rejects what the service rejects, takes its clock as a parameter, and has tests of its own. `src/google` is the example.
+**Add a simulator** of a service that is not a social network. Add a directory to `packages/simulators/src` and an entry to `exports` in its `package.json`. A simulator answers on the real addresses of the service, as a function with the signature of `fetch` that fails for every other host. It is written from the documentation of the service, rejects what the service rejects, takes its clock as a parameter, and has tests of its own. `src/google` is the example.
+
+**Add a network.** `PLAN.md` section 6 says how each network maps onto the contract. Check that against the network's documentation first, and change the contract, with the plan, if it does not hold. Then, in this order:
+
+1. The limits. In `packages/core/src/network/limits.ts`, add a schema for what an account of the network may post to `limitsSchema`, and the network's way of counting to `countCharacters`. `validateContent` is what the browser and the Worker check content with, so a rule of the network that it does not have yet goes there.
+2. The simulator, in `packages/simulators/src/<network>`, with an entry in `exports`. `src/mastodon` is the example:
+   - It is `create<Network>Simulator(world)` and returns a `fetch` that answers on the network's real hosts and throws a `TypeError` for every other host.
+   - It keeps everything in the world and nothing in itself: accounts, tokens and posts in the world's own tables, with more fields if it needs them, the rest in `world.table("<network>", ...)`. It makes its secrets with `simulatedSecret` or `world.issueToken`, and looks tokens up with `world.findToken`, which finds nothing that the world did not issue.
+   - It is written from the network's documentation and enforces the network's rules itself: authentication, scopes, validation of every parameter, the counting of characters, what makes a repeated request safe, the bodies and statuses of errors, the rate limits. It imports nothing from `@pigy/providers` or `packages/core/src/network`. Refuse what is not simulated, do not ignore it. Mark what you had to assume with `GUESS` in a comment.
+   - It takes its faults from `world.faults.take` with the kinds its network can suffer from, and declares them, with the kinds of request they can strike, as Mastodon's `mastodonFaultKinds` and `mastodonOperations`.
+   - Its consent page is `consentPage` of `world/pages.ts`, served for `GET` on the network's authorization address and answered with a `POST` to the same address, which carries `account` or `action=deny`. That is what lets `answerConsent` work for every network.
+   - It has tests of its own for the rules it enforces.
+3. The adapter, in `packages/providers/src/<network>`, with an entry in `exports`: a function that takes `fetch`, the clock and what is the network's own, and returns a `Provider`. It sends requests with `send` of `src/http.ts`, checks every answer and everything that comes back from storage with a Zod schema, and fails with `ProviderError` only. `publishStep` makes at most one request that changes something, and running it again with the same request must not publish anything twice.
+4. The conformance suite. Add `packages/providers/test/conformance/<network>.test.ts`, which describes the network as a `Harness` and passes it to `describeProvider`, twice: with a simulation, and with the harness of a live run. Add `test/live/<network>.live.ts` and the names of its environment variables to `scripts/conformance-live.mjs`. What the suite does not cover because it is the network's own goes into tests next to the adapter.
+5. One live run, to confirm that the simulator and the network agree. Where they do not, fix the simulator.
+
+**Run the conformance suite against a real network.** This posts to a real account. Use an account that is there for the purpose.
+
+For Mastodon, sign in to the test account on its instance, open Preferences, Development, New application, and create one with the scopes `profile` (`read:accounts` before Mastodon 4.3), `read:statuses`, `write:statuses` and `write:media`. The page of the application shows a client key, a client secret and an access token.
+
+```sh
+PIGY_LIVE_MASTODON_INSTANCE=mastodon.example \
+PIGY_LIVE_MASTODON_ACCESS_TOKEN=... \
+PIGY_LIVE_MASTODON_CLIENT_ID=... \
+PIGY_LIVE_MASTODON_CLIENT_SECRET=... \
+pnpm --filter @pigy/providers conformance:live mastodon
+```
+
+- It runs `test/conformance/spec.ts` against the server, without the tests that take a simulation: consenting, arming a fault, moving the clock.
+- It posts with the visibility `direct`, which only the account itself sees, and deletes every post after the test that made it. If a run is cut short, delete what begins with "pigy conformance" by hand.
+- It registers one application named "pigy conformance run" with the instance, which Mastodon's API cannot remove.
+- A run deletes about a dozen statuses, and Mastodon allows 30 deletions in 30 minutes. A third run within half an hour hits that limit, and then leaves posts behind. Wait between runs.
+- The script is the only way in. It refuses when `CI` is set and when a variable is missing. `test/live/setup.ts` refuses a run that the script did not start, and `pnpm test` does not find the files of the live run. Keep it that way: nothing else may lift the guard on `fetch`.
+- Never put the credentials into a file of the repository.
+
+As of phase 3a nobody has made this run: there was no test account. Whoever makes the first one should expect to fix things, and to go through the list in `PLAN.md` section 19.
 
 **Add a test.**
 
-- `packages/core` and `packages/simulators`: `src/**/*.test.ts` next to the code. Runs in Node, so a test may import Node modules, which the code under test may not. `test/setup.ts` makes the global `fetch` throw.
+- `packages/core`, `packages/providers` and `packages/simulators`: `src/**/*.test.ts` next to the code. Runs in Node, so a test may import Node modules, which the code under test may not. `test/setup.ts` makes the global `fetch` throw.
+- A simulated network in a test: `createWorld({ now })` makes a world in memory, with a clock that `world.advance(milliseconds)` moves. `createMastodonSimulator(world)` gives the `fetch` to pass to the code under test, `addInstance` and `addAccount` to fill the world, and `arm({ kind, operation })` to make the next request fail. `answerConsent(simulator.fetch, url, { account: id })` from `@pigy/simulators/world` consents in place of a person and returns the callback address. `feed(world)` lists what is published. To test what an adapter does with an answer that the network would not give, wrap the simulator's `fetch` and answer in its place, as `setup` in `packages/providers/src/mastodon/mastodon.test.ts` does.
+- `packages/providers`: what every adapter must do goes into `test/conformance/spec.ts`, once, for all networks. What is one adapter's own goes next to it. The specification marks with `skip` what a live run cannot do.
 - `apps/worker`: `test/*.test.ts`. Runs inside the Workers runtime. `test/setup.ts` makes the global `fetch` throw and gives every test an empty database with the current schema. `vitest.config.ts` sends anything that gets past the guard on `fetch`, TCP connections included, to a Worker that refuses it. `test/helpers.ts` has what a test of a route needs: `setup()` builds the app with a clock the test can move, a simulated Google behind its `fetch` and bindings of its own, so that nothing from `.dev.vars` gets in. `signedIn()` returns a browser that is signed in, `Browser` keeps cookies and sends `Origin` the way browsers do. To test what the app does with an answer that Google would not give, pass `intercept` to `setup()` and change the answer on its way. `resignIdToken` from `@pigy/simulators/google` changes claims of an ID token and keeps its signature good. A route that needs none of this can be called with `exports.default.fetch()` from `cloudflare:workers`.
 - Workspaces in `apps/worker` tests. The tests run `test/main.ts` in place of `src/index.ts`: the same Worker, with workspace objects whose clock is the one that `setup()` returns, so `advance()` moves time for them too. `test/sync-client.ts` has a client of the sync protocol that keeps a local copy like a real one and fails on anything that `SYNC.md` does not allow: `new SyncClient()`, `connect(browser, workspaceId)`, `mutate(name, args)`, `patch()`. It also has `workspaceIds(browser)`, and `identityOf()` for calling `mutateWorkspace` directly. From `cloudflare:test`, `evictDurableObject(objectOf(id))` takes an object out of memory and leaves its sockets open, which is what hibernation does, and `runInDurableObject` reaches its database. To make an object fail at a point of the test's choosing, spy on a method of `WorkspaceStore.prototype` with `vi.spyOn`: the objects run in the isolate of the test and share its modules. Await a call on an object's stub before giving the result to `expect`: `expect` looks at properties of what it is given, and on the promise of a stub every property is another call. `test/setup.ts` deletes all objects before every test and closes their sockets first.
 - `e2e`: `tests/*.spec.ts`. Import `test` and `expect` from `e2e/fixtures.ts`, never from `@playwright/test`, which Biome rejects in a spec: that `test` fails a test whose page requests a host other than the app or opens a WebSocket to one, and blocks both. It cannot block a request that a redirect leads to, so `playwright.config.ts` also starts the browser with a rule that lets it resolve no host but `localhost`. The app must stay addressed as `localhost`, and the rule is a Chromium switch: a project on another browser would run without it. The same file has what tests need to be somebody: the `signedInPage` fixture is `page` signed in as the admin, `signIn(page, email)` goes through the simulated consent page, `newPerson()` opens a page for a second person, and `uniqueEmail()` makes an address for a test to invite. All tests share one database and run at the same time, so a test only changes entries it has made. For the same reason a test never has a sign-in refused as the admin, for example with an unverified address: that ends the admin's sessions in every other test. Every test runs twice, in the `desktop` and `phone` projects. Traces of failed tests are kept in `e2e/test-results`. The tests in `network-guard.spec.ts` are expected to fail, so the list reporter marks them with a cross in a run that passes.
