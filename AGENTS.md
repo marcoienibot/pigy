@@ -159,7 +159,7 @@ pnpm --filter @pigy/providers conformance:live mastodon
 - It runs `test/conformance/spec.ts` against the server, without the tests that take a simulation: consenting, arming a fault, moving the clock.
 - It posts with the visibility `direct`, which only the account itself sees, and deletes every post after the test that made it. If a run is cut short, delete what begins with "pigy conformance" by hand.
 - It registers one application named "pigy conformance run" with the instance, which Mastodon's API cannot remove.
-- A run deletes about a dozen statuses, and Mastodon allows 30 deletions in 30 minutes. A third run within half an hour hits that limit, and then leaves posts behind. Wait between runs.
+- A run deletes about a dozen statuses, and Mastodon allows 30 deletions in 30 minutes. A third run within half an hour hits that limit, and then leaves posts behind. The run tries to delete every one of them and fails with the list of those it could not. Wait between runs.
 - The script is the only way in. It refuses when `CI` is set and when a variable is missing. `test/live/setup.ts` refuses a run that the script did not start, and `pnpm test` does not find the files of the live run. Keep it that way: nothing else may lift the guard on `fetch`.
 - Never put the credentials into a file of the repository.
 

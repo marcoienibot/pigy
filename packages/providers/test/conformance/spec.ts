@@ -14,6 +14,7 @@ import {
   type PublishRunner,
   publish,
 } from "../../src/index.ts";
+import { type Leftover, removeAll } from "./cleanup.ts";
 
 /**
  * What every provider must do, whatever its network. It is written once
@@ -100,12 +101,10 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
   describe(name, () => {
     // What the tests published, to delete afterwards. A live run must not
     // leave anything behind, and here the deleting is tested in CI too.
-    const cleanup: (() => Promise<void>)[] = [];
+    const cleanup: Leftover[] = [];
     let keys = 0;
 
-    afterEach(async () => {
-      for (const remove of cleanup.splice(0)) await remove();
-    });
+    afterEach(() => removeAll(cleanup.splice(0)));
 
     /** The runner of a test: runs each step once and waits as told. */
     const runnerOf = (harness: Harness): PublishRunner => ({
@@ -135,10 +134,14 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
         run: (stepName, step) =>
           inner.run(stepName, async () => {
             const progress = await step();
-            for (const { id } of progress.parts) {
+            for (const { id, url } of progress.parts) {
               if (seen.has(id)) continue;
               seen.add(id);
-              cleanup.push(() => provider.deletePost(credentials, id));
+              cleanup.push({
+                id,
+                url,
+                remove: () => provider.deletePost(credentials, id),
+              });
             }
             return progress;
           }),
