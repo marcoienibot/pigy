@@ -17,7 +17,7 @@ pnpm dev
 
 `pnpm dev` serves the web app and the Worker together on http://localhost:5173. The Worker runs in the local Workers runtime, so no Cloudflare account is needed.
 
-Sign-in needs no setup either. Locally a simulated Google stands in for the real one: "Sign in with Google" opens a page, labelled as a simulation, where you choose who to be. Choose `admin@example.com`, the local admin, and invite other addresses under Settings → Access. To change the admins or to sign in with the real Google, see `apps/worker/.dev.vars.example`.
+Sign-in needs no setup either. Locally a simulated Google stands in for the real one: "Sign in with Google" opens a page, labelled as a simulation, where you choose who to be. Choose `admin@example.com`, the local admin, and invite other addresses under Settings → Access. You start in your sandbox, where the networks are simulated and nothing is posted for real: connect one of its made-up accounts from the Channels screen. The switch to live is at the top of the sidebar. To change the admins or to sign in with the real Google, see `apps/worker/.dev.vars.example`.
 
 ```sh
 pnpm lint          # Biome lint and format check
