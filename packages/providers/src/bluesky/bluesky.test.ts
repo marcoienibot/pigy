@@ -529,6 +529,40 @@ describe("connecting", () => {
     }
   });
 
+  it("asks nothing of an authorization server that does not say it does what atproto requires", async () => {
+    // The specification "OAuth" of atproto: a server says that it names
+    // itself in the callback, takes only pushed requests, and reads a
+    // client from the address of its metadata.
+    const required = [
+      "authorization_response_iss_parameter_supported",
+      "require_pushed_authorization_requests",
+      "client_id_metadata_document_supported",
+    ];
+    for (const name of required) {
+      for (const value of [undefined, false, "true"]) {
+        const test = await setup();
+        test.intercept(
+          rewriting("/oauth-authorization-server", (metadata) => ({
+            ...metadata,
+            [name]: value,
+          })),
+        );
+        const error = await failure(() =>
+          test.provider.beginConnect({
+            redirectUri,
+            identifier: "ada.bsky.test",
+          }),
+        );
+        expect(error.kind, `${name}: ${value}`).toBe("fail");
+        expect(error.message).toMatch(/not an authorization server/);
+        // Refused before the person is sent anywhere.
+        expect(
+          test.requests.filter((request) => request.startsWith("POST")),
+        ).toEqual([]);
+      }
+    }
+  });
+
   it("does not take the answer of another server for the one it asked", async () => {
     const test = await setup();
     const { start, params } = await consented(test);

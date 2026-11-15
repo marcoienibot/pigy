@@ -221,6 +221,12 @@ const serverSchema = z.object({
   dpop_signing_alg_values_supported: z.array(z.string()),
   token_endpoint_auth_methods_supported: z.array(z.string()),
   token_endpoint_auth_signing_alg_values_supported: z.array(z.string()),
+  // What atproto requires a server to say it does, each with `true`. They
+  // are checked, not parsed: a server that says anything else is not one
+  // that pigy can use.
+  authorization_response_iss_parameter_supported: z.unknown().optional(),
+  require_pushed_authorization_requests: z.unknown().optional(),
+  client_id_metadata_document_supported: z.unknown().optional(),
 });
 
 const pushedSchema = z.object({ request_uri: z.string().min(1) });
@@ -755,6 +761,13 @@ export function createBlueskyProvider({
       // The server has to be the one that the PDS names: the issuer is its
       // origin, RFC 8414 section 3.3.
       server.issuer !== issuer ||
+      // The specification "OAuth" of atproto: the server names itself in
+      // the callback, which `completeConnect` checks, takes requests only
+      // pushed, and reads a client from the address of its metadata, which
+      // is what pigy's client ID is.
+      server.authorization_response_iss_parameter_supported !== true ||
+      server.require_pushed_authorization_requests !== true ||
+      server.client_id_metadata_document_supported !== true ||
       !endpoints.authorization ||
       !endpoints.token ||
       !endpoints.pushed ||
