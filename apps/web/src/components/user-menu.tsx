@@ -21,7 +21,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { signOut } from "@/lib/api";
+import { forgetSession } from "@/lib/session";
 import { cn } from "@/lib/utils";
+import { countUnsynced } from "@/sync/indexed-db";
 
 /** Up to two letters to show in place of a picture. */
 function initials(name: string): string {
@@ -51,6 +53,9 @@ export function UserMenu({ placement }: { placement: "sidebar" | "header" }) {
   // answered that.
   const [signOutFailed, setSignOutFailed] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
+  // How many changes signing out would lose, while the person is asked
+  // whether to go ahead. Null when there is nothing to ask.
+  const [unsynced, setUnsynced] = useState<number | null>(null);
 
   const signOutAndLeave = async () => {
     setSigningOut(true);
@@ -65,8 +70,19 @@ export function UserMenu({ placement }: { placement: "sidebar" | "header" }) {
       setSigningOut(false);
       return;
     }
+    // Signing out leaves nothing of the person on the device. If deleting
+    // fails, the sign-in page finds what is left and deals with it.
+    await forgetSession().catch((error: unknown) => console.error(error));
     // A full page load, so that nothing of the session stays in memory.
     window.location.assign("/sign-in");
+  };
+
+  // Signing out deletes the local copy, and with it what the server has
+  // not got yet: only the person can say whether that may go.
+  const askOrSignOut = async () => {
+    const count = await countUnsynced(user.id).catch(() => 0);
+    if (count > 0) setUnsynced(count);
+    else await signOutAndLeave();
   };
 
   return (
@@ -106,12 +122,47 @@ export function UserMenu({ placement }: { placement: "sidebar" | "header" }) {
             </DropdownMenuLabel>
           </DropdownMenuGroup>
           <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={signOutAndLeave}>
+          <DropdownMenuItem onClick={askOrSignOut}>
             <LogOut aria-hidden="true" />
             Sign out
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+      <AlertDialog
+        open={unsynced !== null}
+        onOpenChange={(open) => {
+          if (!open) setUnsynced(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {unsynced === 1
+                ? "1 change has not been synced"
+                : `${unsynced} changes have not been synced`}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {unsynced === 1 ? "It exists" : "They exist"} only on this device.
+              Signing out deletes {unsynced === 1 ? "it" : "them"}. To keep{" "}
+              {unsynced === 1 ? "it" : "them"}, stay signed in until pigy is
+              back online.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Stay signed in</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              disabled={signingOut}
+              onClick={async () => {
+                setUnsynced(null);
+                await signOutAndLeave();
+              }}
+            >
+              Sign out and delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <AlertDialog open={signOutFailed} onOpenChange={setSignOutFailed}>
         <AlertDialogContent>
           <AlertDialogHeader>

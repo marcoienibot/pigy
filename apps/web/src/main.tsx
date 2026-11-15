@@ -2,6 +2,7 @@ import { createRouter, RouterProvider } from "@tanstack/react-router";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { ThemeProvider } from "@/components/theme-provider";
+import { onSessionChange } from "@/lib/session";
 import { routeTree } from "./routeTree.gen";
 import "./styles.css";
 
@@ -16,6 +17,10 @@ declare module "@tanstack/react-router" {
     router: typeof router;
   }
 }
+
+// The screens were given a name or a role that the server has since
+// changed: they are given the new one.
+onSessionChange(() => void router.invalidate());
 
 const root = document.getElementById("root");
 if (!root) throw new Error("Missing #root element");

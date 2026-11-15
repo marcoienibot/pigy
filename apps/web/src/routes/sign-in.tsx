@@ -1,8 +1,20 @@
 import { type SignInError, safeReturnTo, signInErrorSchema } from "@pigy/core";
-import { createFileRoute, redirect } from "@tanstack/react-router";
+import { createFileRoute, redirect, useRouter } from "@tanstack/react-router";
+import { useState } from "react";
 import { PublicPage } from "@/components/page";
-import { buttonVariants } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { fetchMe } from "@/lib/api";
+import { endSession, forgetSession, keptChanges } from "@/lib/session";
 
 type SignInSearch = {
   /** The path to open after signing in. */
@@ -22,11 +34,21 @@ export const Route = createFileRoute("/sign-in")({
   // Somebody who is signed in already has no use for this page. If that
   // cannot be found out, the page is shown: it works without the answer.
   beforeLoad: async ({ search, abortController }) => {
-    const me = await fetchMe(abortController.signal).catch(() => null);
+    let me: Awaited<ReturnType<typeof fetchMe>>;
+    try {
+      me = await fetchMe(abortController.signal);
+    } catch {
+      return;
+    }
     if (me) {
       throw redirect({ href: safeReturnTo(search.returnTo), replace: true });
     }
+    // Nobody is signed in, so what this device holds of a session goes
+    // before somebody else signs in here.
+    await endSession();
   },
+  // What did not go: changes that were never synced.
+  loader: () => keptChanges(),
   component: SignIn,
 });
 
@@ -40,6 +62,7 @@ const errorMessages: Record<SignInError, string> = {
 
 function SignIn() {
   const { returnTo, error } = Route.useSearch();
+  const kept = Route.useLoaderData();
   const start = `/api/auth/google/start${
     returnTo ? `?${new URLSearchParams({ returnTo })}` : ""
   }`;
@@ -57,6 +80,7 @@ function SignIn() {
           {errorMessages[error]}
         </p>
       )}
+      {kept && <KeptChanges {...kept} />}
       {/* A plain link: signing in leaves the app for Google and comes back
           with a page load. */}
       <a
@@ -67,6 +91,57 @@ function SignIn() {
         Sign in with Google
       </a>
     </PublicPage>
+  );
+}
+
+/**
+ * Says that this device holds changes of a session that ended before they
+ * were synced, what becomes of them, and lets the person discard them.
+ */
+function KeptChanges({ count, email }: { count: number; email: string }) {
+  const router = useRouter();
+  const [confirming, setConfirming] = useState(false);
+  const changes = count === 1 ? "1 change" : `${count} changes`;
+
+  return (
+    <div className="mt-4 rounded-lg border px-3 py-2 text-left">
+      <p>
+        You were signed out before {changes} made on this device as{" "}
+        <span className="font-medium">{email}</span> could be synced. Sign in
+        with that account to sync {count === 1 ? "it" : "them"}. If somebody
+        else signs in, {count === 1 ? "it is" : "they are"} deleted.
+      </p>
+      <Button
+        variant="link"
+        size="sm"
+        className="mt-1 h-auto px-0 text-destructive"
+        onClick={() => setConfirming(true)}
+      >
+        Delete {count === 1 ? "this change" : "these changes"}
+      </Button>
+      <AlertDialog open={confirming} onOpenChange={setConfirming}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete {changes}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              They exist only on this device and cannot be brought back.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={async () => {
+                await forgetSession();
+                await router.invalidate();
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
   );
 }
 

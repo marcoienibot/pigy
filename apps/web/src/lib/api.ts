@@ -8,6 +8,8 @@ import {
   type MeResponse,
   meResponseSchema,
   type Role,
+  type Workspace,
+  workspaceListResponseSchema,
 } from "@pigy/core";
 
 /** An answer of the API that is not a success. */
@@ -23,7 +25,11 @@ export class ApiError extends Error {
 /** Calls the API and throws an `ApiError` unless it answers with success. */
 async function request(
   path: string,
-  init: { method?: string; json?: unknown; signal?: AbortSignal } = {},
+  init: {
+    method?: string;
+    json?: unknown;
+    signal?: AbortSignal | undefined;
+  } = {},
 ): Promise<Response> {
   const method = init.method ?? "GET";
   const response = await fetch(path, {
@@ -54,7 +60,9 @@ export async function fetchHealth(
 }
 
 /** Who is signed in, or null if nobody is. */
-export async function fetchMe(signal: AbortSignal): Promise<MeResponse | null> {
+export async function fetchMe(
+  signal?: AbortSignal,
+): Promise<MeResponse | null> {
   try {
     const response = await request("/api/me", { signal });
     return meResponseSchema.parse(await response.json());
@@ -62,6 +70,14 @@ export async function fetchMe(signal: AbortSignal): Promise<MeResponse | null> {
     if (error instanceof ApiError && error.status === 401) return null;
     throw error;
   }
+}
+
+/** The workspaces of whoever is signed in. */
+export async function fetchWorkspaces(
+  signal?: AbortSignal,
+): Promise<Workspace[]> {
+  const response = await request("/api/workspaces", { signal });
+  return workspaceListResponseSchema.parse(await response.json()).workspaces;
 }
 
 export async function signOut(): Promise<void> {
