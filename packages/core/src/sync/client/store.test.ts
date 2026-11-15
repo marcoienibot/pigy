@@ -31,6 +31,7 @@ it("shows a mutation before it is stored", async () => {
   expect(notified).toBe(1);
   // It is not in the outbox yet, which is what is stored.
   expect(store.head.outbox).toEqual([]);
+  const view = store.getView();
 
   await settle();
   expect(store.head.outbox.map(({ id, name }) => [id, name])).toEqual([
@@ -39,6 +40,9 @@ it("shows a mutation before it is stored", async () => {
   // Moving it to the outbox did not show it twice or count it twice.
   expect(texts(store)).toEqual(["Hello"]);
   expect(store.getState().pending).toBe(1);
+  // Nor did it change anything on screen, so the screens are not handed
+  // new rows to render: that would be once more for every keystroke.
+  expect(store.getView()).toBe(view);
 });
 
 it("has the unconfirmed mutations again after a restart, and goes on counting", async () => {
@@ -72,6 +76,7 @@ it("stores what was typed into a part as one mutation", async () => {
   // Until they are stored they are three, and the view runs all of them.
   expect(store.getState().pending).toBe(4);
   expect(texts(store)).toEqual(["Hey"]);
+  const view = store.getView();
 
   await settle();
   // The draft, and one mutation for all that was typed into it.
@@ -82,6 +87,9 @@ it("stores what was typed into a part as one mutation", async () => {
   expect(store.head.outbox[1]?.args).toEqual({ id: partId, text: "Hey" });
   expect(store.getState().pending).toBe(2);
   expect(texts(store)).toEqual(["Hey"]);
+  // One mutation does what the three did, so the rows that are shown are
+  // the ones that were shown before.
+  expect(store.getView()).toBe(view);
 });
 
 it("shows a mutation in the other tabs, which can mutate too", async () => {

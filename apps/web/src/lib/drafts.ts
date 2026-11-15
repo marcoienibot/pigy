@@ -20,6 +20,39 @@ export type Draft = {
 
 const snippetLength = 160;
 
+/**
+ * The drafts that were made before, by the row of their post. A row is
+ * never changed, a change puts another object in its place. So a draft
+ * whose rows are the objects they were is the draft it was, and it is
+ * handed out as the same object: typing in one draft makes that draft new
+ * and leaves the others alone, for the list to see which rows to render
+ * again. It also saves going through the text of every draft with every
+ * keystroke.
+ */
+const made = new WeakMap<
+  Row<"post">,
+  { part: Row<"post_part">; draft: Draft }
+>();
+
+function draftOf(post: Row<"post">, part: Row<"post_part">): Draft {
+  const before = made.get(post);
+  if (before?.part === part) return before.draft;
+  const lines = part.text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+  const draft = {
+    id: post.id,
+    partId: part.id,
+    text: part.text,
+    title: lines[0] ?? "",
+    snippet: lines.slice(1).join(" ").slice(0, snippetLength),
+    updatedAt: post.updatedAt,
+  };
+  made.set(post, { part, draft });
+  return draft;
+}
+
 /** The drafts of a workspace, the one that was edited last first. */
 export function selectDrafts(tables: Tables): Draft[] {
   // A draft has one part until threads arrive in phase 4. Its text is that
@@ -40,18 +73,7 @@ export function selectDrafts(tables: Tables): Draft[] {
   for (const post of tables.post.values()) {
     const part = firstParts.get(post.id);
     if (post.status !== "draft" || !part) continue;
-    const lines = part.text
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line !== "");
-    drafts.push({
-      id: post.id,
-      partId: part.id,
-      text: part.text,
-      title: lines[0] ?? "",
-      snippet: lines.slice(1).join(" ").slice(0, snippetLength),
-      updatedAt: post.updatedAt,
-    });
+    drafts.push(draftOf(post, part));
   }
   // By ID among drafts of the same moment, so that the order is the same
   // every time.

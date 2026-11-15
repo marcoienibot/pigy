@@ -365,6 +365,12 @@ export class SyncStore {
     if (write) {
       if (write.meta.version === this.copy.head.meta.version + 1) {
         this.copy = applyWrite(this.copy, write);
+        // The mutations have moved from `unsaved` to the end of the outbox,
+        // and those that were merged do what the ones they replace did. The
+        // view runs the same mutations as before, so it stays as it is:
+        // computing it again would render every screen again, with every
+        // keystroke.
+        if (saved) rows = false;
       } else {
         // Another tab wrote in between and its message is still on its way.
         await this.read();

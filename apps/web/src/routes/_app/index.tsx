@@ -2,6 +2,7 @@ import { maxPartTextLength, uuidv7 } from "@pigy/core";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { ArrowLeft, Plus, Trash2 } from "lucide-react";
 import {
+  memo,
   type ReactNode,
   type RefObject,
   useEffect,
@@ -296,45 +297,67 @@ function DraftList({ drafts }: { drafts: Draft[] }) {
   return (
     <ul aria-label="Drafts">
       {drafts.map((draft) => (
-        <li key={draft.id}>
-          <Link
-            to="/"
-            search={{ draft: draft.id }}
-            data-draft={draft.id}
-            // The router marks the link of the open draft as the current
-            // page: its address is the one in the address bar. That row is
-            // filled. The focus of the keyboard is a ring, which Tab moves
-            // to other rows: Enter and Backspace go by the ring, so the two
-            // must not look the same.
-            className={cn(
-              "block border-b px-4 py-2 outline-none",
-              "hover:bg-accent/60",
-              "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
-              "aria-[current=page]:bg-accent",
-            )}
-          >
-            <span className="flex items-baseline gap-2">
-              <span
-                className={cn(
-                  "truncate font-medium",
-                  !draft.title && "text-muted-foreground",
-                )}
-              >
-                {draft.title || "Empty draft"}
-              </span>
-              <span className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums">
-                {timeAgo(draft.updatedAt, now)}
-              </span>
-            </span>
-            <span className="block h-5 truncate text-muted-foreground">
-              {draft.snippet}
-            </span>
-          </Link>
-        </li>
+        <DraftRow
+          key={draft.id}
+          draft={draft}
+          ago={timeAgo(draft.updatedAt, now)}
+        />
       ))}
     </ul>
   );
 }
+
+/**
+ * A row of the list. It renders again when its draft has changed, which
+ * `selectDrafts` says with another object, or when the time that it shows
+ * has: typing in one draft renders one row, however long the list is.
+ */
+const DraftRow = memo(function DraftRow({
+  draft,
+  ago,
+}: {
+  draft: Draft;
+  /** How long ago the draft was edited, as the row words it. */
+  ago: string;
+}) {
+  return (
+    <li>
+      <Link
+        to="/"
+        search={{ draft: draft.id }}
+        data-draft={draft.id}
+        // The router marks the link of the open draft as the current
+        // page: its address is the one in the address bar. That row is
+        // filled. The focus of the keyboard is a ring, which Tab moves to
+        // other rows: Enter and Backspace go by the ring, so the two must
+        // not look the same.
+        className={cn(
+          "block border-b px-4 py-2 outline-none",
+          "hover:bg-accent/60",
+          "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+          "aria-[current=page]:bg-accent",
+        )}
+      >
+        <span className="flex items-baseline gap-2">
+          <span
+            className={cn(
+              "truncate font-medium",
+              !draft.title && "text-muted-foreground",
+            )}
+          >
+            {draft.title || "Empty draft"}
+          </span>
+          <span className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums">
+            {ago}
+          </span>
+        </span>
+        <span className="block h-5 truncate text-muted-foreground">
+          {draft.snippet}
+        </span>
+      </Link>
+    </li>
+  );
+});
 
 const segmenter = new Intl.Segmenter();
 
