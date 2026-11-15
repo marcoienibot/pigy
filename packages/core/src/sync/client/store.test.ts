@@ -215,3 +215,48 @@ it("keeps showing a mutation that could not be stored, and stores it with the ne
   expect(texts(store)).toEqual(["Kept", "Next"]);
   expect(store.head.outbox.map(({ id }) => id)).toEqual([1, 2]);
 });
+
+it("stores a mutation that a person makes in a tab that is too old for the copy", async () => {
+  const device = browser();
+  const { store } = await device.tab();
+  // A tab with the next version of the app has taken the copy to its
+  // schema.
+  await device.storage.update((head) => {
+    if (!head) throw new Error("The copy exists");
+    return {
+      write: {
+        meta: {
+          ...head.meta,
+          cursor: null,
+          schemaVersion: head.meta.schemaVersion + 1,
+          version: head.meta.version + 1,
+        },
+        rows: { clear: true, changes: [] },
+      },
+      result: undefined,
+    };
+  });
+
+  const id = newId();
+  store.mutate("post.delete", { id });
+  await settle();
+
+  // The tab has found out, and tells the person to load it again. What
+  // they did in it meanwhile must still be there after that. It is a
+  // mutation of the old schema among those that the copy held before the
+  // update, which SYNC.md section 6 has the new version send as they are.
+  expect(store.getState().outdated).toBe(true);
+  expect((await device.storage.read())?.head.outbox).toMatchObject([
+    { id: 1, name: "post.delete", args: { id } },
+  ]);
+  // What the socket brings is another matter: that is not written.
+  const outcome = await store.transact((head) =>
+    applyPatch(
+      head,
+      { from: null, to: 3, changes: [], lastMutationId: 0, rejected: [] },
+      newId(),
+    ),
+  );
+  expect(outcome).toBeUndefined();
+  expect((await device.storage.read())?.head.meta.cursor).toBeNull();
+});

@@ -136,6 +136,8 @@ export function browser() {
 
   return {
     storage,
+    /** The channel between the tabs: `join()` is one more of them. */
+    tabs,
     /** Every socket that a connection has opened, oldest first. */
     sockets,
     /** What the stores and connections reported as having gone wrong. */

@@ -1,6 +1,7 @@
 import type { Clock } from "../../dependencies.ts";
 import { uuidv7 } from "../../id.ts";
 import type { MutatorArgs, MutatorName } from "../mutators.ts";
+import { syncSchemaVersion } from "../protocol.ts";
 import {
   appendMutations,
   applyChanges,
@@ -9,6 +10,7 @@ import {
   dismissRejection,
   emptyTables,
   type Head,
+  type Meta,
   type MutationCall,
   openCopy,
   type Step,
@@ -114,12 +116,12 @@ export class SyncStore {
     const { storage, channel } = this.options;
     this.stopListening = channel.listen((message) => this.receive(message));
     await this.enqueue(async () => {
-      const { write, result } = await storage.update((head) =>
+      const { write } = await storage.update((head) =>
         openCopy(head, this.newClientId()),
       );
       if (write) channel.post({ type: "write", write });
+      // Which also finds a copy that this tab is too old for.
       await this.read();
-      this.state = { ...this.state, outdated: result === "outdated" };
       this.refresh(true);
     });
     if (!this.closed) channel.post({ type: "connection?" });
@@ -179,7 +181,7 @@ export class SyncStore {
       // in memory, so the view never has them twice or not at all.
       await this.run(
         (head) => appendMutations(head, calls),
-        {},
+        { own: true },
         () => this.unsaved.splice(0, calls.length),
       );
     }).catch(this.options.onError);
@@ -187,19 +189,23 @@ export class SyncStore {
 
   /** Forgets a rejection, in every tab: the person has seen it. */
   dismiss(key: string): void {
-    this.transact((head) => dismissRejection(head, key)).catch(
-      this.options.onError,
-    );
+    this.enqueue(() =>
+      this.run((head) => dismissRejection(head, key), { own: true }),
+    ).catch(this.options.onError);
   }
 
   /**
    * Changes the stored copy in one step and returns the outcome of `step`.
    * By then this tab has applied the write and told the other tabs.
+   *
+   * This is for what the socket brings. A tab that is too old for the copy
+   * must not write that: `step` is not run then, nothing is stored and the
+   * outcome is `undefined`.
    */
   transact<Result>(
     step: (head: Head) => Step<Result>,
     options: { durable?: boolean } = {},
-  ): Promise<Result> {
+  ): Promise<Result | undefined> {
     return this.enqueue(() => this.run(step, options));
   }
 
@@ -228,33 +234,61 @@ export class SyncStore {
     this.setState({ outdated: true });
   }
 
+  /**
+   * Runs `step` in a transaction of the storage and brings the memory of
+   * this tab up to what was written.
+   *
+   * `own` is for what the person did in this tab: a mutation, a rejection
+   * that they dismissed. That is stored whatever the schema of the copy.
+   * Mutations of an older schema are in the outbox anyway after an update,
+   * and SYNC.md section 6 says what becomes of them. Everything else is
+   * what this tab knows of the server, and a tab that is too old for the
+   * copy must not write it over the rows of a newer schema.
+   *
+   * `saved` is called when mutations of `unsaved` are in the outbox.
+   */
   private async run<Result>(
     step: (head: Head) => Step<Result>,
-    options: { durable?: boolean },
-    stored?: () => void,
-  ): Promise<Result> {
-    const { write, result } = await this.options.storage.update((head) => {
-      if (!head) throw new Error("The local copy is gone");
-      return step(head);
-    }, options);
+    options: { durable?: boolean; own?: boolean },
+    saved?: () => void,
+  ): Promise<Result | undefined> {
+    const { write, result: outcome } = await this.options.storage.update(
+      (head) => {
+        if (!head) throw new Error("The local copy is gone");
+        const { meta } = head;
+        const { write, result } =
+          options.own || meta.schemaVersion <= syncSchemaVersion
+            ? step(head)
+            : { write: null, result: undefined };
+        // With the meta that the step saw: nothing here has an effect
+        // outside the transaction, which can fail.
+        return { write, result: { meta, result } };
+      },
+      options.durable ? { durable: true } : {},
+    );
+    const { meta, result } = outcome;
+    this.checkSchema(meta);
     if (this.closed || !this.copy) return result;
+    let rows = Boolean(write?.rows || write?.outbox);
     if (write) {
       if (write.meta.version === this.copy.head.meta.version + 1) {
         this.copy = applyWrite(this.copy, write);
       } else {
         // Another tab wrote in between and its message is still on its way.
         await this.read();
+        rows = true;
       }
       this.options.channel.post({ type: "write", write });
     }
-    stored?.();
-    this.refresh(Boolean(stored || write?.rows || write?.outbox));
+    saved?.();
+    this.refresh(rows);
     return result;
   }
 
   private async read(): Promise<void> {
     const stored = await this.options.storage.read();
     if (!stored) throw new Error("The local copy is gone");
+    this.checkSchema(stored.head.meta);
     // Writes that arrived from other tabs while this was reading can have
     // taken the memory further than what was read.
     if (this.copy && this.copy.head.meta.version > stored.head.meta.version) {
@@ -266,11 +300,24 @@ export class SyncStore {
     };
   }
 
+  /**
+   * Finds out that this tab is too old for the copy: a tab that runs a
+   * newer version of the app has brought the copy to a schema that this
+   * one does not know. That can happen at any time while this tab is open,
+   * so it is looked for wherever the tab sees the copy: when it reads it,
+   * in every transaction and in every write that another tab tells it of.
+   * Whoever holds the socket follows `outdated` and gives it up.
+   */
+  private checkSchema(meta: Meta): void {
+    if (meta.schemaVersion > syncSchemaVersion) this.markOutdated();
+  }
+
   private receive(message: TabMessage): void {
     if (this.closed) return;
     switch (message.type) {
       case "write": {
         const { write } = message;
+        this.checkSchema(write.meta);
         // While the copy is being read for the first time, it may be read
         // as it was before this write.
         const version = this.copy?.head.meta.version ?? -1;

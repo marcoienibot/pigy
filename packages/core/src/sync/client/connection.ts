@@ -173,10 +173,15 @@ export class SyncConnection {
    */
   run(): Promise<void> {
     if (this.state !== "new") throw new Error("A connection runs once");
-    this.state = "running";
     const { store, onError } = this.options;
+    if (store.getState().outdated) {
+      // This tab could not use the socket. Another one may.
+      this.state = "ended";
+      return Promise.resolve();
+    }
+    this.state = "running";
     store.setConnection("connecting");
-    this.unsubscribe = store.subscribe(() => this.send());
+    this.unsubscribe = store.subscribe(() => this.follow());
     const ended = new Promise<void>((resolve) => {
       this.finish = resolve;
     });
@@ -207,6 +212,17 @@ export class SyncConnection {
     // handshake failed: the next handshake is a better question.
     if (this.cancelRetry || this.cancelAccess) this.connect();
     else if (this.ready) this.ping();
+  }
+
+  /** The store has changed. */
+  private follow(): void {
+    if (this.options.store.getState().outdated) {
+      // Only a newer version of the app can go on, with this server or with
+      // this copy. Other tabs may run one, so this one makes way.
+      this.end("offline");
+    } else {
+      this.send();
+    }
   }
 
   private end(connection?: ConnectionState): void {
@@ -406,7 +422,10 @@ export class SyncConnection {
         ),
       ),
     );
+    // Also when the store has found that this tab is too old for the copy:
+    // it has said so, and the connection has ended.
     if (this.state !== "running" || generation !== this.generation) return;
+    if (outcome === undefined) return;
     if (outcome === "gap" || outcome === "stale") {
       // A patch was missed, or another tab has moved the stored cursor or
       // started the copy over.

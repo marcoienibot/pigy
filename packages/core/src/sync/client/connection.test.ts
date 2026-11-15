@@ -15,6 +15,7 @@ import {
   syncSchemaVersion,
 } from "../protocol.ts";
 import { syncTimings } from "./connection.ts";
+import type { Head, Step } from "./copy.ts";
 import type { SyncStore } from "./store.ts";
 
 /** The texts of the parts that `store` shows, in no particular order. */
@@ -60,6 +61,27 @@ function holdNextWrite(device: ReturnType<typeof browser>): () => void {
     return held.then(() => update(step, options));
   };
   return release;
+}
+
+/**
+ * What a tab with the next version of the app does to the copy when it
+ * opens it, as SYNC.md section 6 says: the rows go, and the copy is of the
+ * new schema.
+ */
+function migrate(head: Head | undefined): Step<void> {
+  if (!head) throw new Error("The copy exists");
+  return {
+    write: {
+      meta: {
+        ...head.meta,
+        cursor: null,
+        schemaVersion: syncSchemaVersion + 1,
+        version: head.meta.version + 1,
+      },
+      rows: { clear: true, changes: [] },
+    },
+    result: undefined,
+  };
 }
 
 it("says hello as a client that has nothing, then as one that knows where it is", async () => {
@@ -838,6 +860,78 @@ it("writes nothing for a socket that it has given up, however late the storage g
     [{ id: 1, name: "post.create", args: { id, partId, text: "Kept" } }],
   ]);
   expect(device.errors).toEqual([]);
+});
+
+it("stops, and writes nothing, when a newer version of the app has taken the copy to its schema", async () => {
+  const { device, store, socket, running } = await online();
+  await socket.send(patch({ from: 0, to: 1, changes: draft("Old").puts() }));
+  let ended = false;
+  void running.then(() => {
+    ended = true;
+  });
+
+  // A tab with the next version of the app opens the copy. This tab has
+  // not heard of it: the message is on its way, or was never sent.
+  await device.storage.update(migrate);
+  // A snapshot of the old schema arrives on the socket that this tab
+  // still holds.
+  await socket.send(
+    patch({ from: null, to: 7, changes: draft("Late").puts() }),
+  );
+
+  // Stored, it would leave rows of the old schema in a copy of the new
+  // one, and a cursor that keeps the new version from asking for all rows.
+  const stored = await device.storage.read();
+  expect(stored?.rows).toEqual([]);
+  expect(stored?.head.meta).toMatchObject({
+    cursor: null,
+    schemaVersion: syncSchemaVersion + 1,
+  });
+  // The tab says that it has to be loaded again, and gives the socket up
+  // for a tab that can use it.
+  expect(store.getState().outdated).toBe(true);
+  expect(socket.closed).toBe(true);
+  expect(ended).toBe(true);
+  await device.advance(10 * 60_000);
+  expect(device.sockets).toHaveLength(1);
+  expect(device.errors).toEqual([]);
+});
+
+it("stops when another tab tells it of a write of a newer schema", async () => {
+  const { device, store, socket, running } = await online();
+  let ended = false;
+  void running.then(() => {
+    ended = true;
+  });
+
+  // The tab with the next version of the app says what it did to the copy.
+  const { write } = await device.storage.update(migrate);
+  if (!write) throw new Error("Migrating is a write");
+  device.tabs.join().post({ type: "write", write });
+  await settle();
+
+  // That is enough: this tab does not have to touch the copy to find out.
+  expect(store.getState().outdated).toBe(true);
+  expect(socket.closed).toBe(true);
+  expect(ended).toBe(true);
+  await device.advance(10 * 60_000);
+  expect(device.sockets).toHaveLength(1);
+});
+
+it("does not take the socket in a tab that is too old for the copy", async () => {
+  const device = browser();
+  const first = await device.tab();
+  await device.storage.update(migrate);
+  // It finds out between opening the copy and getting the socket, for
+  // which it may have waited in line behind other tabs.
+  await first.store.reload();
+  expect(first.store.getState().outdated).toBe(true);
+
+  await first.connection.run();
+
+  // The promise has resolved: the tab is out of the line again.
+  expect(device.sockets).toEqual([]);
+  expect(first.store.getState().connection).toBe("connecting");
 });
 
 it("closes the socket and stays away when it is stopped", async () => {

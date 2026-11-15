@@ -78,7 +78,8 @@ async function open(
   // connection runs. The others wait in line: when the tab is closed, or
   // its connection gives up, the next one gets the lock and connects. A
   // tab that is too old for the copy does not line up: it could not use
-  // the socket.
+  // the socket. One that finds out later that it is too old gives the
+  // lock back, or lets it pass when its turn comes.
   const waiting = new AbortController();
   if (!store.getState().outdated) {
     navigator.locks
