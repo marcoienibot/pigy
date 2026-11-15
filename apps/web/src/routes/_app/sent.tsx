@@ -70,6 +70,8 @@ function Sent() {
     setDeleting(post);
   };
   const list = useRef<HTMLOListElement>(null);
+  // One clock for every time that the list shows.
+  const now = useNow();
 
   const itemOf = (id: string) =>
     list.current?.querySelector<HTMLElement>(`[data-post="${id}"]`);
@@ -163,6 +165,7 @@ function Sent() {
                   key={post.id}
                   post={post}
                   sandbox={sandbox}
+                  now={now}
                   wanted={post.id === wanted}
                   onDelete={() => askToDelete(post)}
                 />
@@ -212,16 +215,17 @@ function Status({ words }: { words: StatusWords }) {
 function SentItem({
   post,
   sandbox,
+  now,
   wanted,
   onDelete,
 }: {
   post: SentPost;
   sandbox: boolean;
+  now: number;
   /** The address names this post. */
   wanted: boolean;
   onDelete: () => void;
 }) {
-  const now = useNow();
   const textId = `${post.id}-text`;
   const [first] = post.parts;
   const words = postStatusWords(post);
@@ -488,6 +492,8 @@ function PartLinks({
       );
     },
   );
+  // A network that gives no link, for a post of one part.
+  if (links.every((link) => link === null)) return null;
   return (
     <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
       {!one && (
