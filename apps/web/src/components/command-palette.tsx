@@ -19,7 +19,6 @@ import {
   UserPlus,
 } from "lucide-react";
 import { createContext, type ReactNode, use, useMemo, useState } from "react";
-import { useReloadToUpdate } from "@/components/reload-to-update";
 import { type Theme, useTheme } from "@/components/theme-provider";
 import {
   Command,
@@ -43,12 +42,8 @@ import {
   useShortcuts,
   withMod,
 } from "@/lib/keyboard";
-import { useUpdateReady } from "@/lib/service-worker";
-import {
-  environmentLabels,
-  useSwitchWorkspace,
-  useUnsavedInTab,
-} from "@/lib/workspace";
+import { useReloadToUpdate, useUpdateOffer } from "@/lib/reload-to-update";
+import { environmentLabels, useSwitchWorkspace } from "@/lib/workspace";
 
 const screens = [
   { to: "/", label: "Drafts", icon: PenLine },
@@ -97,9 +92,7 @@ export function CommandPalette({ children }: { children: ReactNode }) {
   // What is offered only when there is something to do: see the same two
   // in Settings.
   const install = useInstall();
-  const updateReady = useUpdateReady();
-  const unsaved = useUnsavedInTab();
-  const update = updateReady && unsaved === 0;
+  const update = useUpdateOffer();
   const { reload } = useReloadToUpdate();
 
   useKeyDown((event) => {

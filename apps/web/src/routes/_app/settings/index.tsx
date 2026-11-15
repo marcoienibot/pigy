@@ -1,11 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useReloadToUpdate } from "@/components/reload-to-update";
 import { type Theme, themes, useTheme } from "@/components/theme-provider";
 import { Button } from "@/components/ui/button";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { isInstalled, isIos, useInstall } from "@/lib/install";
-import { useUpdateReady } from "@/lib/service-worker";
-import { useUnsavedInTab } from "@/lib/workspace";
+import { useReloadToUpdate, useUpdateOffer } from "@/lib/reload-to-update";
 
 export const Route = createFileRoute("/_app/settings/")({
   component: General,
@@ -23,15 +21,11 @@ const themeLabels: Record<Theme, string> = {
  */
 function App() {
   const install = useInstall();
-  const updateReady = useUpdateReady();
-  // A window that holds changes which it could not store must stay open,
-  // as its sync indicator says, or the switch for the other workspace.
-  const unsaved = useUnsavedInTab();
+  const update = useUpdateOffer();
   const { reloading, reload } = useReloadToUpdate();
   // Safari offers nothing that a button could start, so on an iPhone or
   // iPad the person is told where the browser has it.
   const explain = isIos && !isInstalled();
-  const update = updateReady && unsaved === 0;
   if (!install && !explain && !update) return null;
 
   return (

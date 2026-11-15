@@ -385,12 +385,26 @@ test("a new version does not take over while a window holds changes that it coul
   await nav.getByRole("link", { name: "Settings" }).click();
   await expect(page.getByRole("heading", { name: "Appearance" })).toBeVisible();
   await expect(offer).toHaveCount(0);
+  // Nor does the command palette, which offers what Settings offer.
+  const palette = page.getByRole("dialog", { name: "Commands" });
+  const command = palette.getByRole("option", {
+    name: "Reload to update pigy",
+  });
+  await page.keyboard.press("ControlOrMeta+k");
+  await expect(palette.getByRole("option").first()).toBeVisible();
+  await expect(command).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(palette).toBeHidden();
 
   // There is room again, and the window stores the text the next time it
   // tries, which is within five seconds.
   await storage.repair();
   await expect(offer).toBeVisible({ timeout: 15_000 });
   await expectSync(page, "Synced");
+  await page.keyboard.press("ControlOrMeta+k");
+  await expect(command).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(palette).toBeHidden();
 
   // The second window is started again, and nothing keeps the newer
   // version from taking over now. The first window follows, and has the

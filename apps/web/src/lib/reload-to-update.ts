@@ -1,6 +1,20 @@
 import { useState } from "react";
 import { toast } from "sonner";
-import { reloadToUpdate } from "@/lib/service-worker";
+import { reloadToUpdate, useUpdateReady } from "@/lib/service-worker";
+import { useUnsavedInTab } from "@/lib/workspace";
+
+/**
+ * Whether to offer a newer version of the app, as Settings and the command
+ * palette do: one is installed and waits, and this tab holds no change that
+ * it could not store, in either workspace. The reload would wait for those,
+ * and the window must stay open until they are stored, as its sync
+ * indicator says, or the switch for the other workspace.
+ */
+export function useUpdateOffer(): boolean {
+  const ready = useUpdateReady();
+  const unsaved = useUnsavedInTab();
+  return ready && unsaved === 0;
+}
 
 /**
  * What a button that says "Reload to update" does, and whether it is at

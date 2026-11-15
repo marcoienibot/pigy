@@ -1,5 +1,4 @@
 import type { SyncState } from "@pigy/core";
-import { useReloadToUpdate } from "@/components/reload-to-update";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -9,6 +8,7 @@ import {
   PopoverTitle,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { useReloadToUpdate } from "@/lib/reload-to-update";
 import { cn } from "@/lib/utils";
 import {
   environmentLabels,
