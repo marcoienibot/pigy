@@ -1,4 +1,11 @@
-import { gatewayError, json, jsonBody, xrpcError } from "./http.ts";
+import {
+  gatewayError,
+  json,
+  jsonBody,
+  lose,
+  withFaults,
+  xrpcError,
+} from "./http.ts";
 import { allowsRepo, authenticate, type Caller } from "./oauth.ts";
 import { currentNonce } from "./proofs.ts";
 import {
@@ -113,38 +120,8 @@ function tooManyRequests(state: State, limited: Limited): Response {
   });
 }
 
-/** What `fetch` does when the connection breaks after the work is done. */
-function lose(): never {
-  throw new TypeError("The simulated Bluesky lost its answer on the way back");
-}
-
 const invalid = (message: string, error = "InvalidRequest") =>
   xrpcError(400, error, message);
-
-/**
- * Answers a request that needs no account, with what such a request can
- * suffer from.
- */
-async function open(
-  state: State,
-  operation: Operation,
-  respond: () => Response | Promise<Response>,
-): Promise<Response> {
-  const fault = state.takeFault(
-    operation,
-    ["rate-limit", "server-error", "lost-response"],
-    false,
-  );
-  if (fault === "server-error") return gatewayError();
-  if (fault === "rate-limit") {
-    return xrpcError(429, "RateLimitExceeded", "Rate Limit Exceeded", {
-      "Retry-After": "60",
-    });
-  }
-  const response = await respond();
-  if (fault === "lost-response") lose();
-  return response;
-}
 
 /**
  * Answers a request that an account makes, which costs `points` of what
@@ -349,40 +326,49 @@ function getRecord(state: State, pds: Pds, url: URL) {
   const rkey = query.get("rkey");
   const operation: Operation =
     collection === profileCollection ? "profile" : "read";
-  return open(state, operation, async () => {
-    if (!repo || !isNsid(collection) || !isRecordKey(rkey)) {
-      return invalid(
-        "Params must have the properties repo, collection and rkey",
-      );
-    }
-    if (query.has("cid")) {
-      return invalid("The simulated PDS keeps one version of a record");
-    }
-    const account = accountOf(state, repo);
-    const uri = account && recordUri(account.id, collection, rkey);
-    const notFound = () =>
-      invalid(
-        `Could not locate record: ${uri ?? `at://${repo}/${collection}/${rkey}`}`,
-        "RecordNotFound",
-      );
-    // A real PDS asks elsewhere for a repository that it does not keep.
-    // Here there is nowhere to ask.
-    if (!account || !uri || account.pds !== pds.host) return notFound();
-    if (collection === profileCollection) {
-      if (rkey !== "self" || !account.profile) return notFound();
-      const value = {
-        $type: profileCollection,
-        displayName: account.name,
-        description: "A simulated account.",
-      };
-      return json(200, { uri, cid: await cidOf(value), value });
-    }
-    const post =
-      collection === postCollection ? state.posts.get(uri) : undefined;
-    return post
-      ? json(200, { uri, cid: post.cid, value: post.record })
-      : notFound();
-  });
+  return withFaults(
+    state,
+    operation,
+    async () => {
+      if (!repo || !isNsid(collection) || !isRecordKey(rkey)) {
+        return invalid(
+          "Params must have the properties repo, collection and rkey",
+        );
+      }
+      if (query.has("cid")) {
+        return invalid("The simulated PDS keeps one version of a record");
+      }
+      const account = accountOf(state, repo);
+      const uri = account && recordUri(account.id, collection, rkey);
+      const notFound = () =>
+        invalid(
+          `Could not locate record: ${uri ?? `at://${repo}/${collection}/${rkey}`}`,
+          "RecordNotFound",
+        );
+      // A real PDS asks elsewhere for a repository that it does not keep.
+      // Here there is nowhere to ask.
+      if (!account || !uri || account.pds !== pds.host) return notFound();
+      if (collection === profileCollection) {
+        if (rkey !== "self" || !account.profile) return notFound();
+        const value = {
+          $type: profileCollection,
+          displayName: account.name,
+          description: "A simulated account.",
+        };
+        return json(200, { uri, cid: await cidOf(value), value });
+      }
+      const post =
+        collection === postCollection ? state.posts.get(uri) : undefined;
+      return post
+        ? json(200, { uri, cid: post.cid, value: post.record })
+        : notFound();
+    },
+    // The HTTP API says so in its own words.
+    () =>
+      xrpcError(429, "RateLimitExceeded", "Rate Limit Exceeded", {
+        "Retry-After": "60",
+      }),
+  );
 }
 
 /** Answers a request to the HTTP API of the PDS at `pds`. */

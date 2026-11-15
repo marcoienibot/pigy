@@ -5,7 +5,15 @@ import {
   isSimulatedSecret,
   simulatedSecret,
 } from "../world/index.ts";
-import { bodyParams, gatewayError, html, json, oauthError } from "./http.ts";
+import {
+  bodyParams,
+  dpopChallenge,
+  gatewayError,
+  html,
+  json,
+  lose,
+  oauthError,
+} from "./http.ts";
 import {
   type ClientAuth,
   checkAssertion,
@@ -438,7 +446,7 @@ async function authenticated(
       ? oauthError(400, proof.error, proof.description, headers)
       : oauthError(401, proof.error, proof.description, {
           ...headers,
-          "WWW-Authenticate": `DPoP error="${proof.error}", error_description="${proof.description.replaceAll('"', "'")}"`,
+          "WWW-Authenticate": dpopChallenge(proof.error, proof.description),
         });
   }
 
@@ -486,11 +494,6 @@ async function authenticated(
     headers,
     lost: fault === "lost-response",
   };
-}
-
-/** What `fetch` does when the connection breaks after the work is done. */
-function lose(): never {
-  throw new TypeError("The simulated Bluesky lost its answer on the way back");
 }
 
 /** `POST /oauth/par`: takes an authorization request, RFC 9126. */
@@ -997,7 +1000,7 @@ export async function authenticate(
       { error, message: description },
       {
         ...headers,
-        "WWW-Authenticate": `DPoP error="${error}", error_description="${description.replaceAll('"', "'")}"`,
+        "WWW-Authenticate": dpopChallenge(error, description),
       },
     );
   const [scheme, value, ...rest] = (

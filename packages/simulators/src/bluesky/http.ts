@@ -1,3 +1,5 @@
+import type { Operation, State } from "./state.ts";
+
 /** What the handlers of the simulated Bluesky answer with. */
 
 export function json(
@@ -63,6 +65,47 @@ export function gatewayError(): Response {
     502,
     "<html><head><title>502 Bad Gateway</title></head><body><center><h1>502 Bad Gateway</h1></center></body></html>",
   );
+}
+
+/** What `fetch` does when the connection breaks after the work is done. */
+export function lose(): never {
+  throw new TypeError("The simulated Bluesky lost its answer on the way back");
+}
+
+/**
+ * The header with which a server refuses a request for its proof of DPoP
+ * or its token, RFC 9449 section 7.1.
+ */
+export function dpopChallenge(error: string, description: string): string {
+  return `DPoP error="${error}", error_description="${description.replaceAll('"', "'")}"`;
+}
+
+/** What a server that is not one of the HTTP API says to a client that asks too often. */
+const tooManyRequests = () =>
+  json(429, { message: "Too Many Requests" }, { "Retry-After": "60" });
+
+/**
+ * Answers a request that carries no token, with what such a request can
+ * suffer from: the page of the proxy of a server that is down, `limited`
+ * for a client that asks too often, and an answer that is lost on its way
+ * back after the work is done.
+ */
+export async function withFaults(
+  state: State,
+  operation: Operation,
+  respond: () => Response | Promise<Response>,
+  limited: () => Response = tooManyRequests,
+): Promise<Response> {
+  const fault = state.takeFault(
+    operation,
+    ["rate-limit", "server-error", "lost-response"],
+    false,
+  );
+  if (fault === "server-error") return gatewayError();
+  if (fault === "rate-limit") return limited();
+  const response = await respond();
+  if (fault === "lost-response") lose();
+  return response;
 }
 
 /**

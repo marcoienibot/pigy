@@ -1,4 +1,4 @@
-import { gatewayError, json, text } from "./http.ts";
+import { json, text, withFaults } from "./http.ts";
 import { accountByHandle, type BlueskyAccount, type State } from "./state.ts";
 
 /**
@@ -51,30 +51,10 @@ function didDocument(account: BlueskyAccount) {
   };
 }
 
-/** Answers a request with what an identity lookup can suffer from. */
-function faulted(state: State, respond: () => Response): Response {
-  const fault = state.takeFault(
-    "identity",
-    ["rate-limit", "server-error", "lost-response"],
-    false,
-  );
-  if (fault === "server-error") return gatewayError();
-  if (fault === "rate-limit") {
-    return json(429, { message: "Too Many Requests" }, { "Retry-After": "60" });
-  }
-  const response = respond();
-  if (fault === "lost-response") {
-    throw new TypeError(
-      "The simulated Bluesky lost its answer on the way back",
-    );
-  }
-  return response;
-}
-
 /** `GET https://plc.directory/<did>`: the document of a `did:plc`. */
 export function plcDirectory(state: State, request: Request, url: URL) {
   if (request.method !== "GET") return json(404, { message: "Not Found" });
-  return faulted(state, () => {
+  return withFaults(state, "identity", () => {
     const did = decodeURIComponent(url.pathname.slice(1));
     const account = did.startsWith("did:plc:")
       ? state.accounts.get(did)
@@ -93,7 +73,11 @@ export function plcDirectory(state: State, request: Request, url: URL) {
  * others: `_atproto.<handle>` with the DID, for the accounts whose handle
  * leads to them that way.
  */
-export function dnsQuery(state: State, request: Request, url: URL): Response {
+export function dnsQuery(
+  state: State,
+  request: Request,
+  url: URL,
+): Response | Promise<Response> {
   if (request.method !== "GET" || url.pathname !== "/dns-query") {
     return text(404, "Not Found");
   }
@@ -112,7 +96,7 @@ export function dnsQuery(state: State, request: Request, url: URL): Response {
       error: `The simulated resolver answers TXT queries only, not ${type}.`,
     });
   }
-  return faulted(state, () => {
+  return withFaults(state, "identity", () => {
     const queried = name.toLowerCase().replace(/\.$/, "");
     const question = [{ name: queried, type: txtType }];
     const flags = { TC: false, RD: true, RA: true, AD: false, CD: false };
@@ -152,11 +136,14 @@ export function dnsQuery(state: State, request: Request, url: URL): Response {
  * `GET https://<handle>/.well-known/atproto-did`: the DID of a handle, as
  * the host of the handle says it.
  */
-export function handleFile(state: State, account: BlueskyAccount): Response {
-  return faulted(state, () => text(200, account.id));
+export function handleFile(
+  state: State,
+  account: BlueskyAccount,
+): Promise<Response> {
+  return withFaults(state, "identity", () => text(200, account.id));
 }
 
 /** `GET https://<host>/.well-known/did.json`: the document of a `did:web`. */
 export function webDidDocument(state: State, account: BlueskyAccount) {
-  return faulted(state, () => json(200, didDocument(account)));
+  return withFaults(state, "identity", () => json(200, didDocument(account)));
 }

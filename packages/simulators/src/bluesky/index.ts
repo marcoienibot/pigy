@@ -1,6 +1,6 @@
 import type { Fetch } from "@pigy/core";
 import type { SimWorld } from "../world/index.ts";
-import { gatewayError, html, json, text } from "./http.ts";
+import { html, json, text, withFaults } from "./http.ts";
 import {
   dnsQuery,
   dnsResolverHost,
@@ -207,14 +207,18 @@ export function createBlueskySimulator(
         path === "/.well-known/oauth-protected-resource"
       ) {
         if (!pds) return notFound();
-        return described(state, () => json(200, resourceMetadata(pds)));
+        return withFaults(state, "server", () =>
+          json(200, resourceMetadata(pds)),
+        );
       }
       if (
         method === "GET" &&
         path === "/.well-known/oauth-authorization-server"
       ) {
         if (!issuer) return notFound();
-        return described(state, () => json(200, serverMetadata(issuer)));
+        return withFaults(state, "server", () =>
+          json(200, serverMetadata(issuer)),
+        );
       }
       if (issuer && path === "/oauth/par" && method === "POST") {
         return pushRequest(state, options, issuer, request);
@@ -299,27 +303,4 @@ export function createBlueskySimulator(
       world.faults.arm("bluesky", { kind, operation });
     },
   };
-}
-
-/**
- * Answers a request for what a server says about its OAuth, with what such
- * a request can suffer from.
- */
-function described(state: State, respond: () => Response): Response {
-  const fault = state.takeFault(
-    "server",
-    ["rate-limit", "server-error", "lost-response"],
-    false,
-  );
-  if (fault === "server-error") return gatewayError();
-  if (fault === "rate-limit") {
-    return json(429, { message: "Too Many Requests" }, { "Retry-After": "60" });
-  }
-  const response = respond();
-  if (fault === "lost-response") {
-    throw new TypeError(
-      "The simulated Bluesky lost its answer on the way back",
-    );
-  }
-  return response;
 }
