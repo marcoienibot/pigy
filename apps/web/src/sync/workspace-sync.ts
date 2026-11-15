@@ -65,8 +65,8 @@ async function open(
   const connection = new SyncConnection({
     store,
     open: webSocketTo(`/sync/${workspaceId}`),
-    checkAccess: () =>
-      checkAccess((input, init) => fetch(input, init), workspaceId),
+    checkAccess: (signal) =>
+      checkAccess((input, init) => fetch(input, init), workspaceId, signal),
     schedule: (callback, delayMs) => {
       const timer = setTimeout(callback, delayMs);
       return () => clearTimeout(timer);

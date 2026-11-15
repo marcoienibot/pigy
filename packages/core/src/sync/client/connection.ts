@@ -51,15 +51,17 @@ export type Access =
 
 /**
  * Asks the server why a handshake may have failed, as SYNC.md section 2
- * says: a browser does not tell a script.
+ * says: a browser does not tell a script. `signal` ends the wait for the
+ * answer, which then counts as none.
  */
 export async function checkAccess(
   fetch: Fetch,
   workspaceId: string,
+  signal?: AbortSignal,
 ): Promise<Access> {
   let response: Response;
   try {
-    response = await fetch("/api/workspaces");
+    response = await fetch("/api/workspaces", signal ? { signal } : {});
   } catch {
     return "unknown";
   }
@@ -85,6 +87,8 @@ export const syncTimings = {
   pingEvery: 30_000,
   /** How long the answer to a ping may take. */
   pong: 10_000,
+  /** How long the server may take to say why a handshake failed. */
+  access: 10_000,
   /**
    * The pause before connecting again: after the first failure, after the
    * second and so on. The last one is for every failure after that.
@@ -141,13 +145,18 @@ export class SyncConnection {
   private cancelAnswer: (() => void) | undefined;
   private cancelPing: (() => void) | undefined;
   private cancelPong: (() => void) | undefined;
+  /** Ends the wait for the answer to why a handshake failed. */
+  private cancelAccess: (() => void) | undefined;
 
   constructor(
     private readonly options: {
       store: SyncStore;
       open: OpenSocket;
-      /** Asks the server why a handshake may have failed. */
-      checkAccess: () => Promise<Access>;
+      /**
+       * Asks the server why a handshake may have failed. `signal` says
+       * when the connection has stopped waiting for the answer.
+       */
+      checkAccess: (signal: AbortSignal) => Promise<Access>;
       schedule: Schedule;
       /** Told of what went wrong, for the log. */
       onError: (error: unknown) => void;
@@ -186,12 +195,14 @@ export class SyncConnection {
 
   /**
    * For when there is reason to think that the network has changed, such
-   * as the browser saying so: connects now if a pause was on, and makes
+   * as the browser saying so: connects now if it was waiting to, and makes
    * sure that a socket which seems open still is.
    */
   wake(): void {
     if (this.state !== "running") return;
-    if (this.cancelRetry) this.connect();
+    // Waiting for a pause to end, or for the server to say why the last
+    // handshake failed: the next handshake is a better question.
+    if (this.cancelRetry || this.cancelAccess) this.connect();
     else if (this.ready) this.ping();
   }
 
@@ -239,6 +250,7 @@ export class SyncConnection {
       this.cancelAnswer,
       this.cancelPing,
       this.cancelPong,
+      this.cancelAccess,
     ]) {
       cancel?.();
     }
@@ -512,10 +524,36 @@ export class SyncConnection {
     this.drop();
     this.options.store.setConnection("offline");
     const generation = this.generation;
-    const access = await this.options.checkAccess();
+    const access = await this.askAccess();
+    // Not if the connection has moved on in the meantime: the answer is
+    // about a handshake that it has given up on.
     if (this.state !== "running" || generation !== this.generation) return;
     if (access === "unknown") this.retry();
     else this.end(access);
+  }
+
+  /**
+   * Asks the server why a handshake failed, and takes it for no answer if
+   * none comes in time. A network that is up and leads nowhere, such as
+   * one that wants a sign-in of its own first, can leave a request open
+   * for minutes, and nothing else would connect again in that time: what
+   * the sockets say waits behind this question.
+   */
+  private askAccess(): Promise<Access> {
+    const asking = new AbortController();
+    return new Promise<Access>((resolve, reject) => {
+      const cancelTimer = this.options.schedule(
+        () => this.cancelAccess?.(),
+        syncTimings.access,
+      );
+      this.cancelAccess = () => {
+        this.cancelAccess = undefined;
+        cancelTimer();
+        asking.abort();
+        resolve("unknown");
+      };
+      this.options.checkAccess(asking.signal).then(resolve, reject);
+    }).finally(() => this.cancelAccess?.());
   }
 
   /** Gives the socket up if it stays silent for too long from now. */

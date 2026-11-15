@@ -520,6 +520,66 @@ it("asks why a handshake failed, and tells signed out from offline", async () =>
   expect(device.sockets).toHaveLength(2);
 });
 
+it("goes on trying when nobody says why a handshake failed", async () => {
+  const device = browser();
+  const { store, connection } = await device.tab();
+  let ended = false;
+  void connection.run().then(() => {
+    ended = true;
+  });
+  await settle();
+
+  // A network that is up and leads nowhere: it takes the question and
+  // never answers it.
+  device.network.access = "silent";
+  await device.socket.close(1006);
+  const [question] = device.network.unanswered;
+  expect(question?.signal.aborted).toBe(false);
+  expect(store.getState().connection).toBe("offline");
+
+  // The client waits for so long and no longer. Then it is as if the
+  // answer had been that nobody knows, and the pause begins.
+  await device.advance(syncTimings.access - 1);
+  expect(question?.signal.aborted).toBe(false);
+  await device.advance(1);
+  expect(question?.signal.aborted).toBe(true);
+  expect(device.sockets).toHaveLength(1);
+  await device.advance(syncTimings.retry[0]);
+  expect(device.sockets).toHaveLength(2);
+
+  // The answer comes after all. It is about a handshake that the client
+  // has given up on: the socket that it has now may be a good one.
+  question?.answer("signed-out");
+  await settle();
+  expect(ended).toBe(false);
+  await device.socket.open();
+  await device.socket.send(patch({ from: null, to: 0 }));
+  expect(store.getState().connection).toBe("online");
+});
+
+it("connects at once when the network is back while it waits to hear why a handshake failed", async () => {
+  const device = browser();
+  const { store, connection } = await device.tab();
+  void connection.run();
+  await settle();
+  device.network.access = "silent";
+  await device.socket.close(1006);
+  expect(device.sockets).toHaveLength(1);
+
+  connection.wake();
+  await settle();
+
+  // The next handshake is a better question than the one that is open,
+  // which the client stops waiting for.
+  expect(device.sockets).toHaveLength(2);
+  expect(device.network.unanswered[0]?.signal.aborted).toBe(true);
+  // What the new socket says is heard: the question that was open does not
+  // hold it up.
+  await device.socket.open();
+  await device.socket.send(patch({ from: null, to: 0 }));
+  expect(store.getState().connection).toBe("online");
+});
+
 it("gives up on a workspace that is not the user's", async () => {
   const device = browser();
   const { store, connection } = await device.tab();

@@ -120,7 +120,19 @@ export function browser() {
   const timers: { at: number; callback: () => void }[] = [];
   const sockets: ServerSocket[] = [];
   const errors: unknown[] = [];
-  const network = { access: "unknown" as Access, accessChecks: 0 };
+  const network = {
+    /**
+     * What `GET /api/workspaces` says. `silent`: nothing, as on a network
+     * that takes a request and never answers it.
+     */
+    access: "unknown" as Access | "silent",
+    accessChecks: 0,
+    /**
+     * The questions that got no answer, oldest first: a function to answer
+     * one after all, and whether the client has stopped waiting for it.
+     */
+    unanswered: [] as { answer(access: Access): void; signal: AbortSignal }[],
+  };
 
   return {
     storage,
@@ -162,9 +174,14 @@ export function browser() {
             },
           };
         },
-        checkAccess: async () => {
+        checkAccess: (signal) => {
           network.accessChecks += 1;
-          return network.access;
+          const { access } = network;
+          return access === "silent"
+            ? new Promise((answer) => {
+                network.unanswered.push({ answer, signal });
+              })
+            : Promise.resolve(access);
         },
         schedule: (callback, delayMs) => {
           const timer = { at: time + delayMs, callback };
