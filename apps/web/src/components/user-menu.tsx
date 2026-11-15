@@ -80,10 +80,12 @@ export function UserMenu({ placement }: { placement: "sidebar" | "header" }) {
   // a count of the copies does not have: this window, or another one,
   // which starts again when this one has signed out.
   const askOrSignOut = async () => {
-    const [stored, unsaved] = await Promise.all([
-      countUnsynced(user.id).catch(() => 0),
-      store.unsavedInAllTabs(),
-    ]);
+    // In this order. A change that a window stores in between is counted
+    // twice, which only makes the question more likely. Counted the other
+    // way round it could be in neither number: not yet stored when the
+    // copies are counted, and no longer unsaved when the windows answer.
+    const unsaved = await store.unsavedInAllTabs();
+    const stored = await countUnsynced(user.id).catch(() => 0);
     if (stored + unsaved > 0) setUnsynced(stored + unsaved);
     else await signOutAndLeave();
   };

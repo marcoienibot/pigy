@@ -106,13 +106,21 @@ async function open(
   const visible = () => {
     if (document.visibilityState === "visible") store.wakeHolder();
   };
+  // A tab that is closed, or leaves the app, takes with it what it could
+  // not store. It says so, or the other tabs would go on counting it. Not
+  // when the page is only put aside to come back: it holds it all then.
+  const leaving = (event: PageTransitionEvent) => {
+    if (!event.persisted) store.leaving();
+  };
   window.addEventListener("online", online);
+  window.addEventListener("pagehide", leaving);
   document.addEventListener("visibilitychange", visible);
 
   return {
     store,
     close() {
       window.removeEventListener("online", online);
+      window.removeEventListener("pagehide", leaving);
       document.removeEventListener("visibilitychange", visible);
       waiting.abort();
       connection.stop();

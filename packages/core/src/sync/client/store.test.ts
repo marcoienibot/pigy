@@ -400,9 +400,18 @@ it("stores a mutation once when the copy cannot be read right after", async () =
   const stored = async () =>
     (await read())?.head.outbox.map(({ id, name }) => [id, name]);
 
+  // What the other tabs hear from this one.
+  const heard: string[] = [];
+  device.tabs.join().listen(({ type }) => heard.push(type));
+
   const { partId } = createDraft(store, "");
   await settle();
   expect(device.errors).toHaveLength(1);
+  // The other tabs are told of the write although the read failed. It is
+  // stored and will not be written again, so this is the one time they
+  // hear of it: without it, the tab with the socket would not send the
+  // draft before it next looks at the stored copy by itself.
+  expect(heard).toContain("write");
   // The draft is stored, and that is the end of storing it: it is not
   // counted as a change that could not be stored, which would be tried
   // again. And it stays on screen, where the person goes on typing into it.
@@ -534,20 +543,21 @@ it("does not count a tab that has closed its store", async () => {
   expect(await unsavedInAllTabs(one.store)).toBe(0);
 });
 
-it("gives up on a tab that has gone without a word, and counts the others", async () => {
+it("goes on counting a tab that does not answer, until it says that it is going", async () => {
   const device = browser();
   const one = await device.tab();
   const two = await device.tab();
   fill(device);
   createDraft(two.store, "Only in the second tab");
-  // A third tab could not store two mutations and was then closed, as a
-  // browser closes a tab: nothing ran in it that could have said so. The
-  // test has spoken in its place while it was there.
-  device.tabs.join().post({ type: "unsaved", tab: "closed", count: 2 });
+  // A third tab could not store two mutations and is frozen now, as a
+  // browser freezes a tab in the background: nothing runs in it, and it
+  // holds what it held. The test has spoken in its place before.
+  const frozen = device.tabs.join();
+  frozen.post({ type: "unsaved", tab: "frozen", count: 2 });
   await settle();
 
   // The second tab says again at once what it holds. The third is given
-  // time to: it may only be slow, and what it holds would be lost.
+  // time to answer, and no more: the person is waiting.
   let count: number | undefined;
   void one.store.unsavedInAllTabs().then((unsaved) => {
     count = unsaved;
@@ -555,10 +565,13 @@ it("gives up on a tab that has gone without a word, and counts the others", asyn
   await settle();
   await device.advance(tabAnswerMs - 1);
   expect(count).toBeUndefined();
-  // Then it counts as gone, and what it held with it: the first tab does
-  // not warn of mutations for ever that nobody can save any more.
+  // Its silence does not mean that its mutations are gone. Left out, they
+  // would be lost without a question when the person signs out here.
   await device.advance(1);
-  expect(count).toBe(1);
-  // Nor is it waited for a second time.
+  expect(count).toBe(3);
+
+  // A tab that is closed says that it is going, and is no longer counted.
+  frozen.post({ type: "unsaved", tab: "frozen", count: 0 });
+  await settle();
   expect(await unsavedInAllTabs(one.store)).toBe(1);
 });

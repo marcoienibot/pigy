@@ -195,11 +195,19 @@ export class SyncStore {
   }
 
   /**
+   * For a tab that is about to go: what it could not store goes with it,
+   * which the other tabs are told, so that they stop counting it.
+   */
+  leaving(): void {
+    if (this.state.unsaved > 0) this.announce(0);
+  }
+
+  /**
    * Stops following the other tabs. What is stored stays, and what could
    * not be stored is gone, which the other tabs are told.
    */
   close(): void {
-    if (this.state.unsaved > 0) this.announce(0);
+    this.leaving();
     this.closed = true;
     this.cancelSaveRetry?.();
     this.cancelCatchUp?.();
@@ -315,11 +323,15 @@ export class SyncStore {
    * learn of them for whoever is about to do what loses them: signing out
    * makes every tab start again.
    *
-   * A tab says so when it cannot store a mutation. One that was closed
-   * since, or has died, has taken its mutations with it and cannot say
-   * that. So the tabs that are known to hold some are asked again first,
-   * and one that has not answered in `tabAnswerMs` is not counted, now or
-   * the next time.
+   * A tab says so when it cannot store a mutation, and says that it holds
+   * none when it has stored them or is about to go, `leaving`. The tabs
+   * that are known to hold some are asked again first, for at most
+   * `tabAnswerMs`. One that does not answer keeps the count it gave last:
+   * a browser freezes a tab in the background, on a phone above all, and
+   * such a tab holds its mutations and cannot say so. A tab that died
+   * without a word is then counted for as long as this one lives, which
+   * costs a question that the person can answer, where the other way round
+   * would cost what they wrote.
    */
   async unsavedInAllTabs(): Promise<number> {
     const { channel, schedule } = this.options;
@@ -339,7 +351,6 @@ export class SyncStore {
         this.answered.add(answered);
         channel.post({ type: "unsaved?" });
       });
-      for (const tab of silent) this.elsewhere.delete(tab);
     }
     let count = this.state.unsaved;
     for (const held of this.elsewhere.values()) count += held;
@@ -533,8 +544,14 @@ export class SyncStore {
             this.ahead.set(mutation.id, mutation);
           }
         }
+        // The others are told first. The write is stored whatever becomes
+        // of the read, and it is not written again: told only after a read
+        // that fails, the tab with the socket would not send it before it
+        // next looks at the stored copy by itself.
+        this.options.channel.post({ type: "write", write });
         await this.read();
-        rows = true;
+        this.refresh(true);
+        return;
       }
       this.options.channel.post({ type: "write", write });
     }
