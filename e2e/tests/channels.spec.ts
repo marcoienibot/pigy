@@ -16,7 +16,7 @@ import {
   switchTo,
   writeDraft,
 } from "../app.ts";
-import { expect, type Page, signIn, test } from "../fixtures.ts";
+import { expect, type Page, type Route, signIn, test } from "../fixtures.ts";
 
 // The Channels screen: the accounts of a workspace, connecting one through
 // the consent page of its network and disconnecting it. Every sandbox has
@@ -244,6 +244,55 @@ test("a server in trouble and a pigy without keys are said at the form, not at t
     "This pigy is not set up to connect accounts. Whoever runs it has to give it the key",
   );
   await expect(server).not.toHaveAttribute("aria-invalid");
+});
+
+test("a connection that is called off while it is being begun does not take the browser to the network", async ({
+  ownPage: page,
+}) => {
+  await openScreen(page, "Channels");
+  // In live, where the consent page is that of a real network.
+  await switchTo(page, "Live");
+  // The answer to the first request that begins a connection is held back
+  // until the test gives it. The later ones pass.
+  const held: Route[] = [];
+  await page.route("**/api/workspaces/*/connect", (route) => {
+    if (held.length === 0) held.push(route);
+    else void route.fallback();
+  });
+  // Where the page goes for the consent of a network. The fixture stops a
+  // request to another host and fails the test for it: this list is the
+  // same check, where it can be read.
+  const consentPage = "https://mastodon.example.invalid/oauth/authorize";
+  const left: string[] = [];
+  page.on("request", (request) => {
+    if (request.url() === consentPage) left.push(request.url());
+  });
+  await page.getByRole("button", { name: "Connect account" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: "Mastodon" }).click();
+  await dialog.getByLabel("Server").fill("mastodon.example.invalid");
+  await dialog.getByRole("button", { name: "Continue to Mastodon" }).click();
+  // The request is on its way, and the form says so.
+  await expect(
+    dialog.getByRole("button", { name: "Connecting…" }),
+  ).toBeDisabled();
+  await expect.poll(() => held).toHaveLength(1);
+
+  // The person thinks better of it, and goes on to the sandbox.
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toBeHidden();
+  await switchTo(page, "Sandbox");
+
+  // Only now does the answer come, as a real network would have it: this
+  // build reaches none, so the test gives it. The page has given the
+  // request up, which is not for the test to rely on: an answer that it
+  // still took must not lead anywhere either.
+  await held[0]?.fulfill({ json: { url: consentPage } });
+  // The page does not leave for the network. It would have by now if it
+  // were going to: it has since begun another connection, in the sandbox,
+  // and followed that answer, which came after the one it was given first.
+  await connectSimulated(page, grace);
+  expect(left).toEqual([]);
 });
 
 test("leaving for a network asks first while the window holds a change that it could not save", async ({

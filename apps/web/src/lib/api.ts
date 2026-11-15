@@ -131,15 +131,17 @@ export async function removeAllowedEmail(email: string): Promise<void> {
  * send the browser to: the consent page of the network, or of a simulated
  * one. A refusal is an `ApiError` with a message for the person, and with
  * the `field` that it is about: `ConnectError` in `@pigy/core` has what
- * each status means.
+ * each status means. `signal` gives the request up.
  */
 export async function beginConnect(
   workspaceId: string,
   connect: ConnectRequest,
+  signal: AbortSignal,
 ): Promise<string> {
   const response = await request(`/api/workspaces/${workspaceId}/connect`, {
     method: "POST",
     json: connect,
+    signal,
   });
   // An address that this page may navigate to, and nothing else.
   return connectResponseSchemaFor(location.origin).parse(await response.json())

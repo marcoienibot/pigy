@@ -9,7 +9,14 @@ import {
 } from "@pigy/core";
 import { createFileRoute, redirect } from "@tanstack/react-router";
 import { ArrowLeft, ChevronRight, Plus, Unplug, X } from "lucide-react";
-import { type FormEvent, useEffect, useId, useRef, useState } from "react";
+import {
+  type FormEvent,
+  type RefObject,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from "react";
 import { Avatar } from "@/components/avatar";
 import { EmptyState, Page } from "@/components/page";
 import {
@@ -406,12 +413,29 @@ function ConnectDialog({
     view.network && networkInfo[view.network].connect
       ? view.network
       : undefined;
+  // The request of the form that begins a connection, while it is on its
+  // way. Whatever takes the form away calls the connection off, at once:
+  // the request is given up, and the form does not follow an answer that
+  // comes all the same. Otherwise the answer would take the browser to the
+  // network after the person has turned to something else, which can be
+  // the other workspace.
+  const attempt = useRef<AbortController>(null);
+  const callOff = () => attempt.current?.abort();
+  // The dialog also closes without being told to, when the address
+  // changes under it.
+  useEffect(() => {
+    if (!open) attempt.current?.abort();
+  }, [open]);
+  const close = () => {
+    callOff();
+    onClose();
+  };
 
   return (
     <Dialog
       open={open}
       onOpenChange={(isOpen) => {
-        if (!isOpen) onClose();
+        if (!isOpen) close();
       }}
     >
       <DialogContent>
@@ -423,8 +447,16 @@ function ConnectDialog({
             again={view.again}
             workspace={workspace}
             offline={offline}
-            onBack={view.again ? undefined : () => onChoose(true)}
-            onCancel={onClose}
+            attempt={attempt}
+            onBack={
+              view.again
+                ? undefined
+                : () => {
+                    callOff();
+                    onChoose(true);
+                  }
+            }
+            onCancel={close}
           />
         ) : (
           <NetworkChoice onChoose={onChoose} />
@@ -522,6 +554,7 @@ function ConnectForm({
   again,
   workspace,
   offline,
+  attempt,
   onBack,
   onCancel,
 }: {
@@ -529,6 +562,11 @@ function ConnectForm({
   again: Channel | undefined;
   workspace: Workspace;
   offline: boolean;
+  /**
+   * Where the form puts its request to begin a connection while it is on
+   * its way, for the dialog to call it off.
+   */
+  attempt: RefObject<AbortController | null>;
   /** Back to the choice of a network. Left out where there is none. */
   onBack: (() => void) | undefined;
   onCancel: () => void;
@@ -550,6 +588,9 @@ function ConnectForm({
   // Enter goes on: also when the form takes the place of the choice of a
   // network, whose button had the focus.
   useEffect(() => field.current?.focus(), []);
+  // A form that goes takes its request with it: another form has taken
+  // its place, the dialog is done closing, or the screen is gone.
+  useEffect(() => () => attempt.current?.abort(), [attempt]);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -564,11 +605,17 @@ function ConnectForm({
     }
     setBusy(true);
     setRefusal(null);
+    const controller = new AbortController();
+    attempt.current = controller;
+    const { signal } = controller;
     try {
-      const url = await beginConnect(workspace.id, {
-        network,
-        ...(asked && { identifier: typed }),
-      });
+      const url = await beginConnect(
+        workspace.id,
+        { network, ...(asked && { identifier: typed }) },
+        signal,
+      );
+      // Called off while the answer was on its way, which came anyway.
+      if (signal.aborted) return;
       // In place of this page, so that the way back from the network does
       // not lead into a form that has been sent.
       location.replace(url);
@@ -577,10 +624,16 @@ function ConnectForm({
       // again then.
       if (unsavedInTab() > 0) setBusy(false);
     } catch (failure) {
+      // Called off: there is nobody to tell that the request has ended.
+      if (signal.aborted) return;
       setBusy(false);
       const next = refusalOf(failure, asked !== undefined);
       setRefusal(next);
       if (next.atField) field.current?.focus();
+    } finally {
+      // A form that was called off waits for nothing, should the dialog
+      // show it again before it has gone.
+      if (signal.aborted) setBusy(false);
     }
   };
 

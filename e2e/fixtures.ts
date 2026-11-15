@@ -5,6 +5,7 @@ import {
   test as base,
   expect,
   type Page,
+  type Route,
   type TestInfo,
 } from "@playwright/test";
 
@@ -237,4 +238,4 @@ export const test = base.extend<{
   },
 });
 
-export { expect, type Page };
+export { expect, type Page, type Route };
