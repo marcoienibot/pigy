@@ -445,6 +445,18 @@ export function createBlueskyProvider({
         { status, retryAt: retryAfter(headers, now()) },
       );
     }
+    if (errorOf(answer) === "use_dpop_nonce") {
+      // The server wants another nonce after the one try with the nonce
+      // that it handed out: it has turned to a new one in between. Nothing
+      // is wrong with the request, and nothing with the access, which a
+      // refresh would renew for nothing. The next call learns the nonce
+      // anew.
+      return new ProviderError(
+        "retry",
+        `${host} asked pigy for a new proof once more.`,
+        { status },
+      );
+    }
     if (token && status === 401 && errorOf(answer) !== "invalid_dpop_proof") {
       // An access token that has ended, which is every few minutes, or
       // one that was revoked: the server does not tell the two apart in a
@@ -1045,19 +1057,31 @@ export function createBlueskyProvider({
         { grant_type: "refresh_token", refresh_token: session.refreshToken },
         secrets,
       );
-      // The server will not renew: the session was revoked, it has ended,
-      // the refresh token was used before, or the key of the client that
-      // it is bound to is gone. Only a new connection helps.
-      if (
-        answer.status === 400 ||
-        answer.status === 401 ||
-        answer.status === 403
-      ) {
-        throw new ProviderError(
-          "reconnect",
-          "Bluesky no longer renews pigy's access to this account. Connect it again.",
-          { status: answer.status },
-        );
+      if (answer.status !== 200) {
+        const error = errorOf(answer);
+        // RFC 6749 section 5.2: the refresh token is invalid, has expired,
+        // was revoked or was issued to another client. The server will not
+        // renew: the session was revoked, it has ended, the refresh token
+        // was used before, or the key of the client that it is bound to is
+        // gone. Only a new connection helps. Every other refusal leaves the
+        // refresh token as it was.
+        if (error === "invalid_grant") {
+          throw new ProviderError(
+            "reconnect",
+            "Bluesky no longer renews pigy's access to this account. Connect it again.",
+            { status: answer.status },
+          );
+        }
+        // The session was begun with pigy's client metadata, so the server
+        // could read it then. That it cannot now is most likely a reading
+        // that failed, which can be over a moment later.
+        if (error === "invalid_client_metadata") {
+          throw new ProviderError(
+            "retry",
+            "Bluesky could not read pigy's client metadata.",
+            { status: answer.status },
+          );
+        }
       }
       const tokens = tokensOf(answer, session.did, secrets);
       const { accessToken: _, refreshToken: __, ...rest } = session;

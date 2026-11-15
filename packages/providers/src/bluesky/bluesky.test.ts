@@ -530,6 +530,51 @@ describe("the access over time", () => {
     expect(error.kind).toBe("retry");
   });
 
+  it("asks for a new connection only when the server refuses the refresh token itself", async () => {
+    const test = await setup();
+    const { access } = await connected(test);
+    const refusing = (
+      status: number,
+      error: string,
+      headers: Record<string, string> = {},
+    ) =>
+      test.intercept(async (request, simulator) =>
+        request.url.endsWith("/oauth/token")
+          ? Response.json(
+              { error, error_description: "Refused" },
+              { status, headers },
+            )
+          : simulator(request),
+      );
+    const refreshed = async () =>
+      (await failure(async () => test.provider.refresh?.(access.credentials)))
+        .kind;
+    // None of these spends the refresh token, and none says that it is
+    // no good. The server could not read pigy's client metadata, which can
+    // be over a moment later.
+    refusing(400, "invalid_client_metadata");
+    expect(await refreshed()).toBe("retry");
+    // The server wants a new nonce again, after the one try with the one
+    // that it handed out.
+    refusing(400, "use_dpop_nonce", { "DPoP-Nonce": "another" });
+    expect(await refreshed()).toBe("retry");
+    // Mistakes of pigy's, which a new connection would not cure.
+    refusing(400, "invalid_dpop_proof");
+    expect(await refreshed()).toBe("fail");
+    refusing(401, "invalid_client");
+    expect(await refreshed()).toBe("fail");
+    // RFC 6749 section 5.2: the refresh token is invalid, has expired, was
+    // revoked or was issued to another client.
+    refusing(400, "invalid_grant");
+    expect(await refreshed()).toBe("reconnect");
+    // The refresh token is good all the same: nothing above reached the
+    // server.
+    test.intercept(undefined);
+    expect(
+      (await test.provider.refresh?.(access.credentials))?.credentials,
+    ).toBeDefined();
+  });
+
   it("gives the access back, or says that the server has no way", async () => {
     const test = await setup();
     const { access } = await connected(test);
@@ -669,6 +714,38 @@ describe("publishing", () => {
     expect(
       (await failure(() => publishAll(test, access.credentials, ["Hi"]))).kind,
     ).toBe("fail");
+  });
+
+  it("asks to try again, and for no refresh, when the PDS wants another nonce after the one try", async () => {
+    const test = await setup();
+    const { access } = await connected(test);
+    let nonces = 0;
+    // A PDS that hands out a new nonce with every answer, and wants it in
+    // the next proof: the adapter tries once with the one it got.
+    test.intercept(async (request, simulator) =>
+      request.url.endsWith("createRecord")
+        ? Response.json(
+            {
+              error: "use_dpop_nonce",
+              message: "Resource server requires nonce in DPoP proof",
+            },
+            {
+              status: 401,
+              headers: {
+                "WWW-Authenticate": 'DPoP error="use_dpop_nonce"',
+                "DPoP-Nonce": `nonce-${++nonces}`,
+              },
+            },
+          )
+        : simulator(request),
+    );
+    // A refresh would spend a refresh token for an access token that is
+    // good, and the next refusal would be taken for one of the session.
+    const error = await failure(() =>
+      publishAll(test, access.credentials, ["Hi"]),
+    );
+    expect(error.kind).toBe("retry");
+    expect(nonces).toBe(2);
   });
 });
 
