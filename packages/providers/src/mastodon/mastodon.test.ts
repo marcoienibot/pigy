@@ -1476,16 +1476,16 @@ describe("what an answer means", () => {
           state: start.state,
           code,
           error: "server_error",
-          error_description: `Failed for ${clientSecret} with ${code} and ${codeVerifier}`,
+          error_description: `Failed for ${clientSecret} with ${code} and ${codeVerifier} in ${start.state}`,
         }),
       }),
     );
     // The test would prove nothing with a secret that is empty.
-    for (const secret of [clientSecret, code, codeVerifier]) {
+    for (const secret of [clientSecret, code, codeVerifier, start.state]) {
       expect(secret).not.toBe("");
     }
     expect(error.message).toBe(
-      "mastodon.example did not connect the account: Failed for [removed] with [removed] and [removed]",
+      "mastodon.example did not connect the account: Failed for [removed] with [removed] and [removed] in [removed]",
     );
   });
 });

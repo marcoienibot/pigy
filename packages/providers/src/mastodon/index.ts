@@ -760,9 +760,11 @@ export function createMastodonProvider({
       const code = params.get("code");
       if (error || !code) {
         // The callback is the word of whoever sent the browser back, and
-        // may repeat what the connection is made with.
+        // may repeat what the connection is made with. Its state is part
+        // of that: it is what the callback was believed for.
         const said = quotable(params.get("error_description") ?? error ?? "", [
           clientSecret,
+          flow.state,
           ...(codeVerifier ? [codeVerifier] : []),
           ...(code ? [code] : []),
         ]);

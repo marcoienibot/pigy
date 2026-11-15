@@ -299,16 +299,18 @@ describe("what leaves the app", () => {
 
   it("holds no secret that a network repeats when it sends the browser back", async () => {
     const test = setup();
-    const { browser, text } = recording(test);
+    const { browser, log, text } = recording(test);
     await signIn(test, browser, { email: adminEmail });
     const workspaces = await workspaceIds(browser);
     const url = await consentUrl(browser, workspaces.live, realMastodonDomain);
     const callback = new URL(await consentAtNetwork(test, url));
     // What the server could repeat: the secret that pigy registered with,
-    // and the code that it has just given out, which is still good.
+    // the code that it has just given out, which is still good, and the
+    // state that the callback is believed for.
     const [app] = test.network.world
       .table<{ clientSecret: string }>("mastodon", "app")
       .all();
+    const state = callback.searchParams.get("state") ?? "";
     const secrets = [
       app?.clientSecret ?? "",
       callback.searchParams.get("code") ?? "",
@@ -318,7 +320,7 @@ describe("what leaves the app", () => {
     callback.searchParams.set("error", "server_error");
     callback.searchParams.set(
       "error_description",
-      `Could not authorize ${secrets.join(" with ")}`,
+      `Could not authorize ${[...secrets, state].join(" with ")}`,
     );
 
     const outcome = outcomeOf(await browser.fetch(pathOf(callback)));
@@ -331,13 +333,17 @@ describe("what leaves the app", () => {
     const left = text();
     // The log has what the server said, so that is where a secret would be.
     expect(left).toContain(
-      "mastodon.test did not connect the account: Could not authorize [removed] with [removed]",
+      "mastodon.test did not connect the account: Could not authorize [removed] with [removed] with [removed]",
     );
     for (const secret of secrets) {
       // The test would prove nothing with a secret that is empty.
       expect(secret).not.toBe("");
       expect(left).not.toContain(secret);
     }
+    // The state is in an answer by right: the address that the app sent
+    // the browser to has it. A log is where it has no place.
+    expect(state).not.toBe("");
+    expect(log()).not.toContain(state);
   });
 
   it("holds nothing of a registration that the database fails to store", async () => {
