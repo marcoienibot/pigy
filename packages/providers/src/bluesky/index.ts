@@ -864,9 +864,23 @@ export function createBlueskyProvider({
     return understood(recordSchema, answer.json, new URL(pds).host);
   }
 
-  /** The name and the picture of an account, from its profile. */
+  /**
+   * The name and the picture of an account, from its profile. The handle
+   * and no picture if it has none, or if it cannot be read: a connection
+   * that fails for its profile, once it has its tokens, would leave a
+   * session at the server that pigy has no tokens of and cannot end.
+   */
   async function profileOf(did: string, pds: string, handle: string) {
-    const record = await getRecord(pds, did, "app.bsky.actor.profile", "self");
+    const record = await getRecord(
+      pds,
+      did,
+      "app.bsky.actor.profile",
+      "self",
+    ).catch((error: unknown) => {
+      // What is no failure of a network comes out as it is.
+      if (error instanceof ProviderError) return null;
+      throw error;
+    });
     // A new account has no profile yet.
     const profile = profileSchema.safeParse(record?.value).data;
     const avatar = profile?.avatar?.ref.$link;
@@ -1038,21 +1052,19 @@ export function createBlueskyProvider({
         // keep what it resolved for an authorization for less than ten
         // minutes, and a connection that has begun is kept for ten.
         const profile = await profileOf(flow.did, flow.pds, flow.handle);
-        const { access } = {
-          access: accessOf(
-            {
-              did: flow.did,
-              pds: flow.pds,
-              issuer: flow.issuer,
-              tokenEndpoint: flow.tokenEndpoint,
-              revocationEndpoint: flow.revocationEndpoint,
-              clientId: flow.clientId,
-              keyId: flow.keyId,
-              dpopKey: flow.dpopKey,
-            },
-            tokens,
-          ),
-        };
+        const access = accessOf(
+          {
+            did: flow.did,
+            pds: flow.pds,
+            issuer: flow.issuer,
+            tokenEndpoint: flow.tokenEndpoint,
+            revocationEndpoint: flow.revocationEndpoint,
+            clientId: flow.clientId,
+            keyId: flow.keyId,
+            dpopKey: flow.dpopKey,
+          },
+          tokens,
+        );
         return {
           account: {
             // The DID is the account. The handle can change.

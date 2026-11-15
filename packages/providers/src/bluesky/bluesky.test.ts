@@ -284,6 +284,34 @@ describe("connecting", () => {
     expect((await connected(newcomer)).account.name).toBe("ada.bsky.test");
   });
 
+  it("connects the account with its handle for a name when its profile cannot be read", async () => {
+    for (const kind of [
+      "server-error",
+      "rate-limit",
+      "lost-response",
+    ] as const) {
+      const test = await setup();
+      const { start, params } = await consented(test);
+      // After the code was exchanged: failing then would leave a session
+      // at Bluesky that pigy holds no tokens of, and cannot end.
+      test.simulator.arm({ kind, operation: "profile" });
+      const { account, access } = await test.provider.completeConnect({
+        pending: start.pending,
+        params,
+      });
+      expect(account, kind).toMatchObject({
+        id: test.ada.id,
+        name: "ada.bsky.test",
+        avatarUrl: null,
+      });
+      expect(test.world.faults.armed("bluesky"), kind).toEqual([]);
+      await publishAll(test, access.credentials, ["Connected"]);
+      expect(feed(test.world).map(({ post }) => post.text)).toEqual([
+        "Connected",
+      ]);
+    }
+  });
+
   it("refuses a handle that leads to no account, and keeps why for the caller", async () => {
     const test = await setup();
     const error = await failure(() =>

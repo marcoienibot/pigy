@@ -9,7 +9,7 @@ import {
 } from "../../src/bluesky/index.ts";
 import { newClientKey } from "../bluesky-keys.ts";
 import { blueskyLiveHarness } from "./bluesky-live.ts";
-import { describeProvider } from "./spec.ts";
+import { describeProvider, type Simulation } from "./spec.ts";
 
 const origin = "https://pigy.example";
 const redirectUri = `${origin}/connect/bluesky/callback`;
@@ -42,9 +42,36 @@ async function simulated() {
   // nonce of the PDS from, or for its token, has written nothing and
   // asked nothing of the repository.
   let publishRequests = 0;
+  // The fault that strikes the next exchange of a code for tokens once the
+  // server has taken the code. Nothing that a connection asks for after
+  // the exchange can fail it, so this is where a network fails "once it
+  // has taken the code of the callback", as `Simulation.arm` has it: the
+  // server has issued the tokens, and pigy gets the fault in their place.
+  let duringConnect: Parameters<Simulation["arm"]>[0] | undefined;
   const fetch: Fetch = async (input, init) => {
     const request = new Request(input, init);
+    const exchange =
+      duringConnect !== undefined &&
+      request.url.endsWith("/oauth/token") &&
+      new URLSearchParams(await request.clone().text()).get("grant_type") ===
+        "authorization_code";
     const response = await simulator.fetch(request);
+    if (exchange && response.status === 200) {
+      const kind = duringConnect;
+      duringConnect = undefined;
+      switch (kind) {
+        case "server-error":
+          // What the proxy in front of the server answers.
+          return new Response("<html><title>502 Bad Gateway</title></html>", {
+            status: 502,
+            headers: { "Content-Type": "text/html" },
+          });
+        case "lost-response":
+          throw new TypeError("The answer was lost on the way back");
+        default:
+          throw new Error(`No fault "${kind}" while connecting to Bluesky`);
+      }
+    }
     if (
       request.method === "POST" &&
       request.url.endsWith("/xrpc/com.atproto.repo.createRecord") &&
@@ -88,14 +115,25 @@ async function simulated() {
     consent,
     connect,
     publishRequests: () => publishRequests,
+    armDuringConnect: (kind: Parameters<Simulation["arm"]>[0]) => {
+      duringConnect = kind;
+    },
   };
 }
 
 // The Bluesky adapter against the simulated Bluesky, in a new world for
 // every test.
 describeProvider("Bluesky, simulated", async () => {
-  const { world, simulator, provider, key, consent, connect, publishRequests } =
-    await simulated();
+  const {
+    world,
+    simulator,
+    provider,
+    key,
+    consent,
+    connect,
+    publishRequests,
+    armDuringConnect,
+  } = await simulated();
   const credentials = await connect();
   // Tokens as Bluesky makes them, which the simulation must refuse: the
   // access token is a JWT, the refresh token a random string.
@@ -128,12 +166,9 @@ describeProvider("Bluesky, simulated", async () => {
     simulation: {
       consent,
       arm: (kind, during = "publish") =>
-        simulator.arm({
-          kind,
-          // With the code exchanged for tokens, the adapter reads the
-          // profile of the account.
-          operation: during === "connect" ? "profile" : "publish",
-        }),
+        during === "connect"
+          ? armDuringConnect(kind)
+          : simulator.arm({ kind, operation: "publish" }),
       published: () => feed(world, ["bluesky"]).map(({ post }) => post.text),
       publishRequests,
       now: world.now,
