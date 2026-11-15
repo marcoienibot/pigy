@@ -9,7 +9,10 @@ import {
   syncProtocolVersion,
   syncSchemaVersion,
 } from "@pigy/core";
+import { drizzle } from "drizzle-orm/durable-sqlite";
+import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import { expect, it, onTestFinished, vi } from "vitest";
+import migrations from "../src/workspace/migrations/migrations.js";
 import {
   maxRejectionsKept,
   socketLifetimeMs,
@@ -184,6 +187,64 @@ it("runs every mutation at a later time than the one before it", async () => {
   const [fifth = ""] = create(1);
   await client.patch();
   expect(createdAt(fifth)).toBe(start + 60_000);
+});
+
+it("runs the first mutation after an upgrade later than the ones before it, on a clock that is behind them", async () => {
+  const { test, browser, workspace } = await start();
+  const identity = await identityOf(test, workspace);
+  const postId = newId();
+  const partId = newId();
+  // The machine that ran the workspace before had a clock that was an
+  // hour ahead of the one that runs it now.
+  const edited = test.clock.time.getTime() + 60 * 60 * 1000;
+  await runInDurableObject(objectOf(workspace), async (_, state) => {
+    // The database as a Worker left it that did not store the time of the
+    // last mutation: with the migrations that there were then, up to the
+    // one for the channels, and a draft that somebody edited.
+    await state.storage.deleteAll();
+    await migrate(drizzle(state.storage), {
+      ...migrations,
+      journal: {
+        ...migrations.journal,
+        entries: migrations.journal.entries.filter(({ idx }) => idx <= 2),
+      },
+    });
+    const { sql } = state.storage;
+    sql.exec(
+      "insert into workspace (id, owner_id, environment, seq, log_floor) values (?, ?, ?, 0, 0)",
+      identity.id,
+      identity.ownerId,
+      identity.environment,
+    );
+    sql.exec(
+      "insert into post (id, status, created_at, updated_at) values (?, 'draft', ?, ?)",
+      postId,
+      edited - 1000,
+      edited,
+    );
+    sql.exec(
+      "insert into post_part (id, post_id, position, text) values (?, ?, 0, 'Before')",
+      partId,
+      postId,
+    );
+  });
+  // The Worker of today starts the object, which brings its database up
+  // to date.
+  await evictDurableObject(objectOf(workspace));
+  const client = new SyncClient();
+  await client.connect(browser, workspace);
+  expect(client.table("post")).toMatchObject([
+    { id: postId, updatedAt: edited },
+  ]);
+
+  client.mutate("part.setText", { id: partId, text: "After" });
+  await client.patch();
+
+  // The edit of today is later than the one before it, although the
+  // clock says otherwise: a list that is sorted by `updatedAt` does not
+  // put the draft back behind what was edited before it.
+  expect(client.table("post_part")[0]?.text).toBe("After");
+  expect(client.table("post")[0]?.updatedAt).toBe(edited + 1);
 });
 
 it("brings two clients to the same state after they changed the same row at once", async () => {

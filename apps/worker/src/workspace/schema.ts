@@ -184,6 +184,8 @@ export const workspaceRecord = sqliteTable("workspace", {
   /**
    * The time that the last mutation was run at, in milliseconds since the
    * epoch. The next one is run later than that, whatever the clock says.
+   * A workspace that is older than this column begins at the latest time
+   * that its rows hold: the migration that adds the column sets it.
    */
   time: integer("time").notNull().default(0),
 });
