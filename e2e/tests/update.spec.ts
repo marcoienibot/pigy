@@ -3,10 +3,12 @@ import {
   breakStorage,
   draftRow,
   editor,
+  expectElsewhere,
   expectSync,
   newerVersion,
   olderVersionFirst,
   serviceWorkerAnswersFor,
+  switchTo,
   writeDraft,
 } from "../app.ts";
 import { expect, type Page, test } from "../fixtures.ts";
@@ -330,6 +332,75 @@ test("a new version does not take over while a window holds changes that it coul
     .getByRole("navigation", { name: "Main" })
     .getByRole("link", { name: "Drafts" })
     .click();
+  await expect(draftRow(page, "Written with no room left")).toBeVisible();
+});
+
+test("a change that could not be stored in the workspace that is not on screen keeps a new version from taking over", async ({
+  page,
+  context,
+  ownEmail,
+  signInBeforeFirstLoad,
+  isMobile,
+}) => {
+  await signInBeforeFirstLoad(ownEmail);
+  await openOlderVersion(page);
+  // Somebody new starts in the sandbox. Live is looked at once while the
+  // device can still write: that is when its copy is made.
+  await writeDraft(page, isMobile, "Written while there was room");
+  await expectSync(page, "Synced");
+  await switchTo(page, "Live");
+  await expectSync(page, "Synced");
+  await switchTo(page, "Sandbox");
+  // The device has no room left, and the next change of the sandbox is in
+  // this window and nowhere else.
+  const storage = await breakStorage(page);
+  await draftRow(page, "Written while there was room").click();
+  await editor(page).fill("Written with no room left");
+  await expectSync(page, "Not saved · 1 change");
+  await backToList(page, isMobile);
+  // The window goes on to live, where nothing is unsaved. It still syncs
+  // the sandbox, and still holds the change.
+  await switchTo(page, "Live");
+  await expectSync(page, "Synced");
+  await expectElsewhere(page, "Sandbox: Not saved · 1 change");
+  await mark(page);
+
+  // A newer version is found, and is installed behind the window.
+  await comeBackTo(page);
+  await expect.poll(() => newerWaits(page)).toBe(true);
+
+  // A second window starts as the older version, and the newer one waits
+  // on: the first window holds the lock for the change of the workspace
+  // that it does not show, as for one of the workspace on screen.
+  const second = await context.newPage();
+  await second.goto("/");
+  await expect(second.getByRole("heading", { level: 1 })).toHaveText("Drafts");
+  await expect(newerVersion(second)).toHaveCount(0);
+  expect(await newerWaits(second)).toBe(true);
+  expect(await markOf(page)).toEqual({ sameLoad: true, leaving: false });
+
+  // The first window does not offer to load the newer version, although
+  // live, which it shows, has nothing unsaved: the reload would wait for
+  // the change of the sandbox. The offer is there once that is stored, so
+  // it is that change that keeps it away.
+  const nav = page.getByRole("navigation", { name: "Main" });
+  const offer = page.getByText("A new version of pigy is ready");
+  await nav.getByRole("link", { name: "Settings" }).click();
+  await expect(page.getByRole("heading", { name: "Appearance" })).toBeVisible();
+  await expect(offer).toHaveCount(0);
+  // There is room again, and the sandbox stores the change the next time
+  // it tries, which is within five seconds.
+  await storage.repair();
+  await expect(offer).toBeVisible({ timeout: 15_000 });
+  await expectElsewhere(page, "");
+
+  // Nothing keeps the newer version from taking over now. The first window
+  // follows, and the change of the sandbox is there.
+  await second.reload();
+  await expect(newerVersion(second)).toHaveCount(1);
+  await expect(newerVersion(page)).toHaveCount(1);
+  await switchTo(page, "Sandbox");
+  await nav.getByRole("link", { name: "Drafts" }).click();
   await expect(draftRow(page, "Written with no room left")).toBeVisible();
 });
 
