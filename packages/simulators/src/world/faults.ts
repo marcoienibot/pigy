@@ -7,8 +7,9 @@ import type { SimStorage } from "./storage.ts";
  * ahead of time and strikes the next request that it applies to, once.
  *
  * These are the kinds that a network simulated so far can suffer from. A
- * kind that only another network has, such as a token that expires, is
- * added here together with the simulator that applies it, and its tests.
+ * kind that only another network has, such as media that takes long to
+ * process, is added here together with the simulator that applies it, and
+ * its tests. A network's simulator declares which of them it has.
  */
 export const faultKinds = [
   /** The network answers that it has been asked too often. */
@@ -23,6 +24,12 @@ export const faultKinds = [
   "lost-response",
   /** The token of the request was taken back. It stays that way. */
   "token-revoked",
+  /**
+   * The token of the request has run out before the time that was named
+   * for it. The network refuses it from now on, and renewing the access
+   * cures that: only a network whose access can be renewed has this.
+   */
+  "token-expired",
 ] as const;
 
 export type FaultKind = (typeof faultKinds)[number];

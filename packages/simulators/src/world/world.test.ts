@@ -138,6 +138,41 @@ describe("the tokens of a world", () => {
     expect(found?.revoked).toBe(true);
     expect(found && world.tokenStatus(found)).toBe("revoked");
   });
+
+  it("ends a token when the clock of the world reaches its end", () => {
+    const { world } = setup();
+    const hour = 60 * 60 * 1000;
+    const token = world.issueToken({
+      ...fields,
+      expiresAt: start.getTime() + hour,
+    });
+    world.advance(hour - 1);
+    expect(world.tokenStatus(token)).toBe("valid");
+    // The end is the first moment at which the token is no longer good.
+    world.advance(1);
+    expect(world.tokenStatus(token)).toBe("expired");
+  });
+
+  it("ends a token before its time when told to, and keeps it on record", () => {
+    const { world } = setup();
+    const token = world.issueToken({
+      ...fields,
+      expiresAt: start.getTime() + 60 * 60 * 1000,
+    });
+    world.expireToken("mastodon", token.token);
+    const found = world.findToken("mastodon", token.token);
+    expect(found && world.tokenStatus(found)).toBe("expired");
+    // Expired is not revoked: a network tells the two apart.
+    expect(found?.revoked).toBe(false);
+  });
+
+  it("calls a token that is both revoked and past its end revoked", () => {
+    const { world } = setup();
+    const token = world.issueToken({ ...fields, expiresAt: start.getTime() });
+    world.revokeToken("mastodon", token.token);
+    const found = world.findToken("mastodon", token.token);
+    expect(found && world.tokenStatus(found)).toBe("revoked");
+  });
 });
 
 describe("simulatedSecret", () => {

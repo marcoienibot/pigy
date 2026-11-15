@@ -40,6 +40,11 @@ export type SimToken = {
   clientId: string;
   scopes: string[];
   revoked: boolean;
+  /**
+   * When the token ends by itself, in milliseconds since the epoch. Left
+   * out or null for a token that lasts until it is taken back.
+   */
+  expiresAt?: number | null;
 };
 
 /** A post on a simulated network. */
@@ -94,8 +99,13 @@ export type SimWorld = {
   tokens<Token extends SimToken = SimToken>(network: Network): Token[];
   /** Takes a token back. It stays on record, as revoked. */
   revokeToken(network: Network, value: string): void;
-  /** Whether a token is still good. */
-  tokenStatus(token: SimToken): "valid" | "revoked";
+  /** Ends a token now, as if its time were up. It stays on record. */
+  expireToken(network: Network, value: string): void;
+  /**
+   * Whether a token is still good: not taken back, and not past its end by
+   * the clock of the world. One that is both says `revoked`.
+   */
+  tokenStatus(token: SimToken): "valid" | "revoked" | "expired";
 
   /** A table of the simulator of `network`, for what is the network's own. */
   table<Row>(network: Network, name: string): Table<Row>;
@@ -154,7 +164,20 @@ export function createWorld({
       const token = world.findToken(network, value);
       if (token) tokenTable(network).put(value, { ...token, revoked: true });
     },
-    tokenStatus: (token) => (token.revoked ? "revoked" : "valid"),
+    expireToken(network, value) {
+      const token = world.findToken(network, value);
+      if (token) {
+        tokenTable(network).put(value, {
+          ...token,
+          expiresAt: world.now().getTime(),
+        });
+      }
+    },
+    tokenStatus(token) {
+      if (token.revoked) return "revoked";
+      const end = token.expiresAt ?? null;
+      return end !== null && world.now().getTime() >= end ? "expired" : "valid";
+    },
 
     table: (network, name) => table(storage, `${network}/${name}`),
   };
