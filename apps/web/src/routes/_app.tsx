@@ -9,7 +9,8 @@ import { useEffect } from "react";
 import { AppShell } from "@/components/app-shell";
 import { PublicPage } from "@/components/page";
 import { Button } from "@/components/ui/button";
-import { checkSession, loadSession } from "@/lib/session";
+import { useOnline } from "@/lib/online";
+import { checkSession, loadSession, SessionUnknown } from "@/lib/session";
 import { chosenWorkspace } from "@/lib/workspace";
 import { SyncProvider } from "@/sync/react";
 import { syncUnsent, workspaceSync } from "@/sync/workspace-sync";
@@ -91,17 +92,30 @@ function App() {
 }
 
 /**
- * Shown when the session could not be checked, for example without a
- * connection on a device that has not been signed in before, or when a
- * screen failed and has no error screen of its own.
+ * Shown when the app cannot start: nobody is signed in on this device and
+ * the server cannot be asked, as without a connection, or a screen failed
+ * and has no error screen of its own.
  */
 function Failed({ error }: ErrorComponentProps) {
   const router = useRouter();
+  const unreachable = error instanceof SessionUnknown;
+  // When the connection is back, there is no need to press the button.
+  useOnline(() => {
+    if (unreachable) void router.invalidate();
+  });
 
   return (
-    <PublicPage title="Something went wrong">
+    <PublicPage
+      title={
+        unreachable ? "pigy cannot reach its server" : "Something went wrong"
+      }
+    >
       <p className="mt-1 text-muted-foreground">
-        {error instanceof Error ? error.message : String(error)}
+        {unreachable
+          ? "Nobody is signed in on this device, and signing in takes a connection. Once you have signed in, pigy also starts without one."
+          : error instanceof Error
+            ? error.message
+            : String(error)}
       </p>
       <Button
         variant="outline"

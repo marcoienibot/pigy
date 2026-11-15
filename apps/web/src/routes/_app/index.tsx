@@ -36,7 +36,7 @@ import {
 import { connectableNetworks } from "@/lib/networks";
 import { timeAgo, useNow } from "@/lib/time";
 import { cn } from "@/lib/utils";
-import { useMutate, useSynced } from "@/sync/react";
+import { useHasSynced, useMutate, useSynced, useSyncState } from "@/sync/react";
 
 type DraftsSearch = {
   /** The ID of the draft that is open. */
@@ -315,6 +315,26 @@ function FirstSteps({ onWrite }: { onWrite: () => void }) {
   const sandbox = workspace.environment === "sandbox";
   // The first network that can be connected: its form opens at once.
   const [network] = connectableNetworks;
+  // An empty copy does not say that there are no drafts, or no channels,
+  // on a device that has yet to hear from the server, and cannot reach
+  // it. While it is connecting, the answer is a moment away.
+  const hasSynced = useHasSynced();
+  const { connection } = useSyncState();
+  const waitingForServer =
+    !hasSynced && connection !== "online" && connection !== "connecting";
+
+  if (waitingForServer) {
+    return (
+      <EmptyState
+        title="Not synced to this device yet"
+        description="Your drafts will appear when pigy is back online. What you write until then is kept on this device."
+      >
+        <Button variant="outline" onClick={onWrite}>
+          Write a draft
+        </Button>
+      </EmptyState>
+    );
+  }
 
   return (
     <EmptyState

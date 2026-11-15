@@ -66,6 +66,18 @@ async function fetchSession(signal?: AbortSignal): Promise<Session | null> {
   }
 }
 
+/**
+ * Why `loadSession` has no answer: this device does not know who is
+ * signed in, and the server did not say. That is the start without a
+ * connection of somebody who has signed out, or who has never signed in on
+ * this device.
+ */
+export class SessionUnknown extends Error {
+  constructor(cause: unknown) {
+    super("The server cannot be reached", { cause });
+  }
+}
+
 const listeners = new Set<() => void>();
 
 /**
@@ -83,7 +95,8 @@ export function onSessionChange(listener: () => void): void {
  * waiting for the network, and without a network at all. With `check`, the
  * server is asked in the background whether the device is still right: see
  * `checkSessionSoon`. If this device does not know, the server is asked
- * whatever `check` says, and nothing is shown before it has answered.
+ * whatever `check` says, and nothing is shown before it has answered. If
+ * it does not answer, this throws `SessionUnknown`.
  */
 export async function loadSession(
   signal: AbortSignal,
@@ -101,7 +114,9 @@ export async function loadSession(
     // The session that this device knows of is over, and whether there is
     // a new one cannot be found out: the sign-in page says what is left.
     if (stored) return null;
-    throw error;
+    // The router has given this navigation up, and wants no answer.
+    if (signal.aborted) throw error;
+    throw new SessionUnknown(error);
   }
   if (!fresh) return null;
   await adopt(fresh);

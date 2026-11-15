@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { fetchMe } from "@/lib/api";
+import { useOnline } from "@/lib/online";
 import { endSession, forgetSession, keptChanges } from "@/lib/session";
 
 type SignInSearch = {
@@ -32,13 +33,15 @@ export const Route = createFileRoute("/sign-in")({
     };
   },
   // Somebody who is signed in already has no use for this page. If that
-  // cannot be found out, the page is shown: it works without the answer.
+  // cannot be found out, as without a connection, the page is shown and
+  // says so: signing in leaves the app for the server, and would end on
+  // an error page of the browser.
   beforeLoad: async ({ search, abortController }) => {
     let me: Awaited<ReturnType<typeof fetchMe>>;
     try {
       me = await fetchMe(abortController.signal);
     } catch {
-      return;
+      return { reachable: false };
     }
     if (me) {
       throw redirect({ href: safeReturnTo(search.returnTo), replace: true });
@@ -46,6 +49,7 @@ export const Route = createFileRoute("/sign-in")({
     // Nobody is signed in, so what this device holds of a session goes
     // before somebody else signs in here.
     await endSession();
+    return { reachable: true };
   },
   // What did not go: changes that were never synced.
   loader: () => keptChanges(),
@@ -62,7 +66,13 @@ const errorMessages: Record<SignInError, string> = {
 
 function SignIn() {
   const { returnTo, error } = Route.useSearch();
+  const { reachable } = Route.useRouteContext();
   const kept = Route.useLoaderData();
+  const router = useRouter();
+  // When the connection is back, there is no need to press the button.
+  useOnline(() => {
+    if (!reachable) void router.invalidate();
+  });
   const start = `/api/auth/google/start${
     returnTo ? `?${new URLSearchParams({ returnTo })}` : ""
   }`;
@@ -81,15 +91,34 @@ function SignIn() {
         </p>
       )}
       {kept && <KeptChanges {...kept} />}
-      {/* A plain link: signing in leaves the app for Google and comes back
-          with a page load. */}
-      <a
-        href={start}
-        className={buttonVariants({ size: "lg", className: "mt-6 w-full" })}
-      >
-        <GoogleLogo />
-        Sign in with Google
-      </a>
+      {reachable ? (
+        // A plain link: signing in leaves the app for Google and comes
+        // back with a page load.
+        <a
+          href={start}
+          className={buttonVariants({ size: "lg", className: "mt-6 w-full" })}
+        >
+          <GoogleLogo />
+          Sign in with Google
+        </a>
+      ) : (
+        <>
+          <p
+            role="status"
+            className="mt-4 rounded-lg border px-3 py-2 text-left"
+          >
+            pigy cannot reach its server. Signing in takes a connection.
+          </p>
+          <Button
+            variant="outline"
+            size="lg"
+            className="mt-6 w-full"
+            onClick={() => router.invalidate()}
+          >
+            Try again
+          </Button>
+        </>
+      )}
     </PublicPage>
   );
 }

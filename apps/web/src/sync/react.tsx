@@ -77,6 +77,21 @@ export function useSyncState(): SyncState {
   return useSyncExternalStore(store.subscribe, store.getState);
 }
 
+/**
+ * Whether the copy has ever been given what the server has. It has not on
+ * a device that has not reached the server since the person signed in on
+ * it, or since a new version of the app emptied the copy to fill it again
+ * (SYNC.md section 6). Such a copy holds what was made on this device and
+ * nothing else, which does not mean that the workspace is empty.
+ */
+export function useHasSynced(): boolean {
+  const store = useStore();
+  return useSyncExternalStore(
+    store.subscribe,
+    () => store.head.meta.cursor !== null,
+  );
+}
+
 /** The rejected changes that the person has not dismissed, and how to. */
 export function useRejections(): {
   rejections: readonly StoredRejection[];
