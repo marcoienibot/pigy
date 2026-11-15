@@ -189,14 +189,13 @@ test("the new version is loaded at once for somebody who asks in Settings", asyn
   await expect(reload).toHaveCount(0);
 });
 
-test("a window that is too old for the server loads the new version when it is reloaded", async ({
-  page,
-  ownEmail,
-  signInBeforeFirstLoad,
-}) => {
-  // The server speaks a later version of the protocol than this app, old
-  // or new: the test answers the hello in its place, as in
-  // sync-drafts.spec.ts.
+/**
+ * Has the sync server of `page` speak a later version of the protocol than
+ * this app, old or new: the test answers the hello in its place, as in
+ * sync-drafts.spec.ts. Every window of the app that `page` opens from now
+ * on is too old for the server.
+ */
+async function serverTooNewFor(page: Page): Promise<void> {
   await page.routeWebSocket(/\/sync\//, (socket) => {
     socket.onMessage(() => {
       socket.send(
@@ -211,6 +210,14 @@ test("a window that is too old for the server loads the new version when it is r
       void socket.close({ code: 4400, reason: "version_mismatch" });
     });
   });
+}
+
+test("a window that is too old for the server loads the new version when it is reloaded", async ({
+  page,
+  ownEmail,
+  signInBeforeFirstLoad,
+}) => {
+  await serverTooNewFor(page);
   await signInBeforeFirstLoad(ownEmail);
   // The window asks for the newer version as soon as it knows that it is
   // too old, before anybody can press a button. Left alone, the newer
@@ -257,6 +264,43 @@ test("a window that is too old for the server loads the new version when it is r
   // for it does.
   await expect(newerVersion(page)).toHaveCount(1);
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Drafts");
+});
+
+test("a window that is too old for the server says why it offers no reload while the other workspace holds changes that it could not store", async ({
+  page,
+  ownEmail,
+  signInBeforeFirstLoad,
+  isMobile,
+}) => {
+  await serverTooNewFor(page);
+  await signInBeforeFirstLoad(ownEmail);
+  await page.goto("/");
+  await expectSync(page, "Reload to update");
+  // Live is looked at once while the device can still write: that is when
+  // its copy is made.
+  await switchTo(page, "Live");
+  await expectSync(page, "Reload to update");
+  await switchTo(page, "Sandbox");
+  // The device has no room left, and a draft that is written in the
+  // sandbox now is in this window and nowhere else.
+  await breakStorage(page);
+  await writeDraft(page, isMobile, "Written with no room left");
+  await expectSync(page, "Not saved · 2 changes");
+  await switchTo(page, "Live");
+  await expectElsewhere(page, "Sandbox: Not saved · 2 changes");
+
+  // Live tells the person to reload, and has no button for it: a reload
+  // would lose the draft. So it says why, and where to look.
+  await page
+    .getByRole("button", { name: "Sync: Reload to update" })
+    .filter({ visible: true })
+    .first()
+    .click();
+  const popover = page.getByRole("dialog");
+  await expect(popover).toContainText(
+    "Not yet: pigy could not save 2 changes in Sandbox on this device, and reloading would lose them. The workspace switch shows them until they are saved.",
+  );
+  await expect(popover.getByRole("button", { name: "Reload" })).toHaveCount(0);
 });
 
 /** Whether a newer version is installed and waits in the browser of `page`. */

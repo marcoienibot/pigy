@@ -10,7 +10,11 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
-import { useUnsavedInTab } from "@/lib/workspace";
+import {
+  environmentLabels,
+  useOtherWorkspaceSync,
+  useUnsavedInTab,
+} from "@/lib/workspace";
 import { useSyncState } from "@/sync/react";
 
 function changes(count: number): string {
@@ -125,9 +129,14 @@ export function SyncIndicator({
   const inSidebar = placement === "sidebar";
   const { reloading, reload: reloadNow } = useReloadToUpdate();
   // Not while the tab holds changes that it could not store, which the
-  // reload would wait for: the label says so for those of this workspace,
-  // and the switch for those of the other.
+  // reload would wait for. The label says so for those of this workspace,
+  // and then it does not advise a reload. So where it does, they are those
+  // of the other workspace, and the popover says why there is no button.
   const unsaved = useUnsavedInTab();
+  const other = useOtherWorkspaceSync();
+  const where = other
+    ? environmentLabels[other.workspace.environment]
+    : "the other workspace";
 
   return (
     <Popover>
@@ -156,11 +165,20 @@ export function SyncIndicator({
           <PopoverTitle>{label}</PopoverTitle>
           <PopoverDescription>{detail}</PopoverDescription>
         </PopoverHeader>
-        {reload && unsaved === 0 && (
-          <Button size="sm" disabled={reloading} onClick={reloadNow}>
-            Reload
-          </Button>
-        )}
+        {reload &&
+          (unsaved === 0 ? (
+            <Button size="sm" disabled={reloading} onClick={reloadNow}>
+              Reload
+            </Button>
+          ) : (
+            <p className="text-muted-foreground">
+              {`Not yet: pigy could not save ${changes(unsaved)} in ${where} on this device, and reloading would lose ${
+                unsaved === 1 ? "it" : "them"
+              }. The workspace switch shows ${
+                unsaved === 1 ? "it until it is" : "them until they are"
+              } saved.`}
+            </p>
+          ))}
       </PopoverContent>
     </Popover>
   );
