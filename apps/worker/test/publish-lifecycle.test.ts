@@ -437,7 +437,7 @@ it("publishes each part once when the workflow is stopped and taken up again", a
   held.close();
   const [targetId = ""] = await publishTo(client, thread.postId, channel);
   await held.reached();
-  using run = await runOf(targetId);
+  using run = await runOf(workspace, targetId);
 
   // The platform stops the run after the step that it is in, as it does
   // when the Worker is deployed anew or moves, and starts it again later:
@@ -480,13 +480,15 @@ it("publishes each part once, and records each, when a run is restarted from its
   test.network.mastodon.arm({ kind: "rate-limit", operation: "publish" });
   held.open();
   await vi.waitFor(async () =>
-    expect(await waitsOf(targetId)).toEqual({ "publish-3-wait-1": 300 }),
+    expect(await waitsOf(workspace, targetId)).toEqual({
+      "publish-3-wait-1": 300,
+    }),
   );
 
   // Somebody restarts the run, from the dashboard of the platform. It
   // forgets what its steps returned and takes them again from the first,
   // which asks the workspace how far the delivery has come.
-  using run = await runOf(targetId);
+  using run = await runOf(workspace, targetId);
   await run.restart();
 
   expect(await ended(client, thread.postId)).toMatchObject({ status: "sent" });
@@ -635,7 +637,7 @@ it("keeps the secrets of a channel out of the workflow, the log and the sync mes
   // Everything that the platform keeps of the run: what it was started
   // with and what each step returned. Locally the status of a run lists
   // the results of its steps, and its events have both.
-  using run = await runOf(targetId);
+  using run = await runOf(workspace, targetId);
   const events: unknown[] = [];
   using subscription = await run.subscribe();
   for (;;) {

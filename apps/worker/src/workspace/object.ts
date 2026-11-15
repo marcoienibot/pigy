@@ -35,6 +35,7 @@ import {
   type MutationOutcome,
   type Patch,
   type RenewedChannelAccess,
+  type StartedDelivery,
   type StoredChannelAccess,
   type WorkspaceIdentity,
   WorkspaceStore,
@@ -391,8 +392,9 @@ export function workspaceObject({ now }: { now: Clock }) {
      *
      * The target is `sending` before its workflow exists, so that the
      * workflow finds it so. If the object stops in between, the alarm runs
-     * again and creates the workflow then: its ID is made of the target
-     * and the attempt, so it is created once however often this is tried.
+     * again and creates the workflow then: its ID is this delivery's and
+     * no other's, see `deliveryInstanceId`, so it is created once however
+     * often this is tried.
      */
     async #startDeliveries(): Promise<void> {
       for (;;) {
@@ -403,17 +405,19 @@ export function workspaceObject({ now }: { now: Clock }) {
         if (runs.length === 0) return;
         const workspace = this.#store.identity;
         for (const run of runs) {
-          const id = deliveryInstanceId(run);
+          const { targetId, attempt } = run;
+          const id = this.#runId(run);
           try {
             release(
               await this.env.PUBLISH.create({
                 id,
-                params: { workspace, ...run },
+                params: { workspace, targetId, attempt },
               }),
             );
           } catch (error) {
             // Created by an earlier try that did not get to say so, if it
-            // is there. `get` fails for an instance that does not exist.
+            // is there: a run under this ID is this delivery's own. `get`
+            // fails for an instance that does not exist.
             release(
               await this.env.PUBLISH.get(id).catch(() => {
                 throw error;
@@ -453,18 +457,27 @@ export function workspaceObject({ now }: { now: Clock }) {
         // moment that it took to ask: then nothing was wrong.
         if (ended.ok) {
           console.error(
-            `The workflow of the delivery ${deliveryInstanceId(run)} ended without a word`,
+            `The workflow of the delivery ${this.#runId(run)} ended without a word`,
           );
         }
         this.#publish(from);
       }
     }
 
+    /** The ID of the run of the workflow that carries a delivery. */
+    #runId({ targetId, startedAt }: StartedDelivery): string {
+      return deliveryInstanceId({
+        workspaceId: this.#store.identity.id,
+        targetId,
+        startedAt,
+      });
+    }
+
     /** Whether the workflow of a delivery has stopped for good. */
-    async #isOver(run: DeliveryRun): Promise<boolean> {
+    async #isOver(run: StartedDelivery): Promise<boolean> {
       let status: InstanceStatus["status"];
       try {
-        const instance = await this.env.PUBLISH.get(deliveryInstanceId(run));
+        const instance = await this.env.PUBLISH.get(this.#runId(run));
         try {
           ({ status } = await instance.status());
         } finally {

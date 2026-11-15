@@ -28,6 +28,7 @@ import {
   publishedOf,
   publishTo,
   retry,
+  runIdOf,
   started,
   targetOf,
   waitsOf,
@@ -93,7 +94,9 @@ it("waits out a rate limit for as long as the network says, and then publishes",
     },
   });
   // It waited that long, and then ran the step again as a step of its own.
-  expect(await waitsOf(target.id)).toEqual({ "publish-2-wait-1": 300 });
+  expect(await waitsOf(context.workspace, target.id)).toEqual({
+    "publish-2-wait-1": 300,
+  });
   expect(
     await run?.waitForStepResult({ name: "publish-2-try-2" }),
   ).toMatchObject({ value: { done: true } });
@@ -111,7 +114,9 @@ it("publishes a part once when its answer is lost and the step is run again", as
   // The step waited, a minute, which is longer than a request can take,
   // and was run again. It looked before it posted, and found its part.
   expect(target).toMatchObject({ status: "sent", attempt: 1 });
-  expect(await waitsOf(target.id)).toEqual({ "publish-2-wait-1": 60 });
+  expect(await waitsOf(context.workspace, target.id)).toEqual({
+    "publish-2-wait-1": 60,
+  });
   expect(texted()).toEqual(["Once", "And its reply"]);
   // The reply went under the part that the first run had posted.
   const posts = feed(test.network.world).map(({ post }) => post);
@@ -145,7 +150,7 @@ it("gives up on a network that stays out of reach, after waiting longer every ti
   });
   // The first step of the delivery never got through. Its waits double
   // from a minute, and there is an end to them: half an hour in all.
-  expect(await waitsOf(target.id)).toEqual({
+  expect(await waitsOf(context.workspace, target.id)).toEqual({
     "publish-1-wait-1": 60,
     "publish-1-wait-2": 120,
     "publish-1-wait-3": 240,
@@ -188,7 +193,7 @@ it("does not wait for a network that names a time far away", async () => {
     status: "error",
     error: `${realMastodonDomain} is limiting how often pigy may ask.`,
   });
-  expect(await waitsOf(target.id)).toEqual({});
+  expect(await waitsOf(context.workspace, target.id)).toEqual({});
 });
 
 it("fails a target with what the network says when it refuses a post", async () => {
@@ -223,7 +228,7 @@ it("fails a target with what the network says when it refuses a post", async () 
     status: "error",
     error: `${realMastodonDomain} refused the request: Validation failed: Text is not welcome here (Bearer [removed])`,
   });
-  expect(await waitsOf(target.id)).toEqual({});
+  expect(await waitsOf(context.workspace, target.id)).toEqual({});
   // The token that the server repeated got nowhere: not into the row, not
   // into any message to the client, and not into a log.
   expect(token).not.toBe("");
@@ -243,7 +248,7 @@ it("marks the channel when the network no longer takes its access, and sends not
 
   const reconnect = `${realMastodonDomain} no longer accepts the access that pigy was given to this account.`;
   expect(target).toMatchObject({ status: "error", error: reconnect });
-  expect(await waitsOf(target.id)).toEqual({});
+  expect(await waitsOf(context.workspace, target.id)).toEqual({});
   // The client learns of both in one change: the target that failed, and
   // the channel that has to be connected again.
   expect(client.table("channel")).toMatchObject([
@@ -314,7 +319,7 @@ it("asks a person to look when a network leaves open whether it has published", 
     attempt: 1,
     error: look,
   });
-  expect(await waitsOf(target.id)).toEqual({});
+  expect(await waitsOf(context.workspace, target.id)).toEqual({});
   expect(context.client.table("post")[0]?.status).toBe("error");
   // The account is fine.
   expect(context.client.table("channel")[0]?.status).toBe("connected");
@@ -358,7 +363,7 @@ it("takes a step that fails in a way of pigy's own for one whose outcome nobody 
     attempt: 1,
     error: lostTrackMessage,
   });
-  expect(await waitsOf(target.id)).toEqual({});
+  expect(await waitsOf(context.workspace, target.id)).toEqual({});
   expect(context.texted()).toEqual(["Half done"]);
   expect(publishedOf(context.client, target.id, context.draft)).toEqual([]);
   // It is in the log, as the error that it was.
@@ -448,7 +453,7 @@ it("renews credentials that the network refuses before their time, and runs the 
   // had not taken the request.
   expect(target).toMatchObject({ status: "sent", attempt: 1 });
   expect(network.refreshes).toBe(1);
-  expect(await waitsOf(target.id)).toEqual({});
+  expect(await waitsOf(context.workspace, target.id)).toEqual({});
   expect(context.texted()).toEqual(["Refreshed"]);
   // The channel holds the new credentials, sealed, and says when the
   // access ends now.
@@ -719,7 +724,7 @@ it("ends a delivery whose workflow stopped without a word, so that the next one 
   });
   expect(publishedOf(client, targetId, context.draft)).toHaveLength(1);
   expect(errors).toHaveBeenCalledWith(
-    `The workflow of the delivery ${targetId}-1 ended without a word`,
+    `The workflow of the delivery ${await runIdOf(workspace, targetId)} ended without a word`,
   );
   // The account is free again: the second post is on its way.
   await follow(client, () => targetOf(client, nextTarget).status === "sending");

@@ -1,0 +1,1 @@
+ALTER TABLE `post_target` ADD `started_at` integer DEFAULT 0 NOT NULL;

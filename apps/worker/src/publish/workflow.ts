@@ -38,7 +38,6 @@ import {
 } from "../workspace/workspaces.ts";
 import {
   type DeliveryParams,
-  deliveryInstanceId,
   deliveryParamsSchema,
   lostTrackMessage,
 } from "./delivery.ts";
@@ -291,6 +290,8 @@ export async function deliver(
   { fetch, now, developmentCredentialKeys, providerOf }: PublishDependencies,
   env: Bindings,
   { workspace, targetId, attempt }: DeliveryParams,
+  /** The ID of the run, which the workspace gave it: its own alone. */
+  runId: string,
   step: WorkflowStep,
 ): Promise<void> {
   const run = { targetId, attempt };
@@ -307,7 +308,7 @@ export async function deliver(
    * for a repeat.
    */
   const key = async (call: string, says: unknown) =>
-    `${deliveryInstanceId(run)}/${call}/${await digest(says)}`;
+    `${runId}/${call}/${await digest(says)}`;
   const vault = vaultWithoutRequest(env, developmentCredentialKeys);
 
   /** Asks the workspace for what a step needs before it does anything. */
@@ -624,6 +625,7 @@ export function publishWorkflow(dependencies: PublishDependencies) {
         dependencies,
         this.env,
         deliveryParamsSchema.parse(event.payload),
+        event.instanceId,
         step,
       );
     }

@@ -261,7 +261,9 @@ it("makes the next request of a kind fail in the sandbox, once", async () => {
   // The simulated server refused the request to post, as the real one
   // does, and the workflow waited for as long as it said: the same
   // pipeline as for a real network, on the world of the sandbox.
-  expect(await waitsOf(targetId)).toEqual({ "publish-2-wait-1": 300 });
+  expect(await waitsOf(workspace, targetId)).toEqual({
+    "publish-2-wait-1": 300,
+  });
   expect(targetOf(client, targetId)).toMatchObject({
     status: "sent",
     attempt: 1,

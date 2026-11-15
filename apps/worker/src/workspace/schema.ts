@@ -125,6 +125,13 @@ export const postTargets = sqliteTable(
      * `sending` in a later attempt than this has yet to get its workflow.
      */
     dispatched: integer("dispatched").notNull().default(0),
+    /**
+     * The time at which the workspace began the delivery that the target
+     * is on, or was on last: that of the mutation which made it `sending`,
+     * which no other mutation of the workspace shares. It is part of the
+     * ID of the run that carries the delivery.
+     */
+    startedAt: integer("started_at").notNull().default(0),
   },
   (table) => [
     // A post goes to a channel once.

@@ -16,7 +16,7 @@ import {
   targetOf,
   writeDraft,
 } from "./publishing.ts";
-import { SyncClient } from "./sync-client.ts";
+import { newId, SyncClient } from "./sync-client.ts";
 
 /** A status in the simulated world of a sandbox. */
 type SandboxStatus = {
@@ -177,6 +177,99 @@ it("publishes a thread to several accounts, each on its own", async () => {
     expect(new Set(own.map(({ accountId }) => accountId)).size).toBe(1);
   }
   expect(statuses).toHaveLength(4);
+});
+
+/**
+ * Chooses a channel for a draft under an ID of the test's choosing, where
+ * `publishTo` makes one up, and asks for the post to be published. Returns
+ * the target once the post has left `sending`.
+ */
+async function publishedAs(
+  client: SyncClient,
+  postId: string,
+  targetId: string,
+  channelId: string,
+) {
+  client.send({
+    type: "mutate",
+    mutations: [
+      client.mutation("target.add", { id: targetId, postId, channelId }),
+      client.mutation("post.publish", { id: postId }),
+    ],
+  });
+  expect((await client.patch()).rejected).toEqual([]);
+  await ended(client, postId);
+  return targetOf(client, targetId);
+}
+
+it("publishes for each of two workspaces that have a target under the same ID", async () => {
+  const { test, browser, workspaces } = await started();
+  const simulated = await connectInSandbox(browser, workspaces.sandbox);
+  const real = await connectAccount(test, browser, workspaces.live);
+  // A client makes up the ID of a target, and nothing keeps it from using
+  // one in two workspaces: an ID is unique within its workspace only. The
+  // runs of the workflow are not kept per workspace.
+  const targetId = newId();
+  const publish = async (workspace: string, channel: string, text: string) => {
+    const client = new SyncClient();
+    await client.connect(browser, workspace);
+    const draft = await writeDraft(client, workspace, text);
+    return publishedAs(client, draft.postId, targetId, channel);
+  };
+
+  const first = await publish(
+    workspaces.sandbox,
+    simulated.channel ?? "",
+    "In the sandbox",
+  );
+  const second = await publish(workspaces.live, real, "For real");
+
+  // Each delivery had a run of its own. The second did not take the run
+  // of the first for its own, which had ended and would have left it
+  // waiting for a word that never comes.
+  expect(first).toMatchObject({ status: "sent", attempt: 1 });
+  expect(second).toMatchObject({ status: "sent", attempt: 1 });
+  expect(
+    (await statusesOf(workspaces.sandbox)).map(({ text }) => text),
+  ).toEqual(["In the sandbox"]);
+  expect(feed(test.network.world).map(({ post }) => post.text)).toEqual([
+    "For real",
+  ]);
+});
+
+it("publishes to a target that has the ID of one that was deleted with its post", async () => {
+  const { test, browser, workspaces } = await started();
+  const channel = await connectAccount(test, browser, workspaces.live);
+  const client = new SyncClient();
+  await client.connect(browser, workspaces.live);
+  const targetId = newId();
+  const first = await writeDraft(client, workspaces.live, "First");
+  expect(
+    await publishedAs(client, first.postId, targetId, channel),
+  ).toMatchObject({ status: "sent", attempt: 1 });
+  client.mutate("post.delete", { id: first.postId });
+  expect((await client.patch()).rejected).toEqual([]);
+  expect(client.table("post_target")).toEqual([]);
+
+  // More than an hour passes, because of something that is not the
+  // matter here. Mastodon remembers the key of a request to post for an
+  // hour, and the adapter makes that key from the ID of the target: within
+  // the hour the server would answer the request below with the status of
+  // the first post.
+  test.advance(61 * 60 * 1000);
+  await client.connect(browser, workspaces.live);
+  // The ID is free again, and a client uses it for a target of another
+  // post. Its attempts are counted from the first again.
+  const second = await writeDraft(client, workspaces.live, "Second");
+  const again = await publishedAs(client, second.postId, targetId, channel);
+
+  // It was delivered by a run of its own: the run of the target that had
+  // the ID before is not this one's, although target and attempt read
+  // the same.
+  expect(again).toMatchObject({ status: "sent", attempt: 1 });
+  const posts = feed(test.network.world).map(({ post }) => post);
+  expect(posts.map(({ text }) => text)).toEqual(["First", "Second"]);
+  expect(publishedOf(client, targetId, second)).toEqual([posts[1]?.id]);
 });
 
 it("does not send what an account may not post, and sends it to the others", async () => {

@@ -313,12 +313,33 @@ export function storedProgress(
 }
 
 /**
- * The run of the publishing workflow that carries an attempt at a target.
- * Declare it with `using`: the runtime warns about a handle that is left
- * for it to collect.
+ * The ID of the run of the publishing workflow that carries the delivery
+ * which a target is on, or was on last.
  */
-export async function runOf(targetId: string, attempt = 1) {
-  const run = await env.PUBLISH.get(deliveryInstanceId({ targetId, attempt }));
+export async function runIdOf(
+  workspaceId: string,
+  targetId: string,
+): Promise<string> {
+  const startedAt = await runInDurableObject(
+    objectOf(workspaceId),
+    (_, state) =>
+      state.storage.sql
+        .exec<{ started_at: number }>(
+          "select started_at from post_target where id = ?",
+          targetId,
+        )
+        .one().started_at,
+  );
+  return deliveryInstanceId({ workspaceId, targetId, startedAt });
+}
+
+/**
+ * The run of the publishing workflow that carries the delivery which a
+ * target is on, or was on last. Declare it with `using`: the runtime warns
+ * about a handle that is left for it to collect.
+ */
+export async function runOf(workspaceId: string, targetId: string) {
+  const run = await env.PUBLISH.get(await runIdOf(workspaceId, targetId));
   // What the handle has for letting go of it, if anything: the types of
   // the platform do not say.
   const dispose = (run as Partial<Disposable>)[Symbol.dispose]?.bind(run);
@@ -326,15 +347,15 @@ export async function runOf(targetId: string, attempt = 1) {
 }
 
 /**
- * How long a run of the workflow has waited, by the name of each wait, in
+ * How long the run of a target has waited, by the name of each wait, in
  * seconds: what it asked the platform for. The waits themselves are over
  * at once in a test, see `pipeline`.
  */
 export async function waitsOf(
+  workspaceId: string,
   targetId: string,
-  attempt = 1,
 ): Promise<Record<string, number>> {
-  using run = await runOf(targetId, attempt);
+  using run = await runOf(workspaceId, targetId);
   using events = await run.subscribe();
   const waits: Record<string, number> = {};
   for (;;) {

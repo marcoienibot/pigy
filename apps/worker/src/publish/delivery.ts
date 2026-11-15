@@ -26,16 +26,34 @@ export const deliveryParamsSchema = z.strictObject({
 export type DeliveryParams = z.infer<typeof deliveryParamsSchema>;
 
 /**
- * The ID of the run of the workflow that carries a delivery. It is made of
- * the target and the attempt, so that a delivery has one run however often
- * its start is tried, and a new attempt gets a run of its own: the platform
- * takes an ID once.
+ * The ID of the run of the workflow that carries a delivery: the ID of the
+ * workspace, the ID of the target, and the time at which the workspace
+ * began the delivery, in milliseconds since the epoch.
+ *
+ * The runs of all workspaces share their IDs, and the platform takes an ID
+ * once: a second run under an ID that is taken is not created. So the ID
+ * has to be this delivery's and nobody else's. The target alone does not
+ * do that, and neither does its attempt: a client makes up the ID of a
+ * target, which is unique within its workspace only, and a target that is
+ * deleted and added again under the same ID begins at its first attempt
+ * again. The workspace tells its own runs from those of every other
+ * workspace, and the time one delivery of the workspace from every other:
+ * a workspace runs each mutation at a later time than the one before, and
+ * the time of the mutation that begins a delivery is the one meant here.
+ *
+ * So a delivery has one run however often its start is tried, and a run
+ * that is found under this ID is the delivery's own.
+ *
+ * Workflows takes an ID of at most 100 characters, of letters, digits, `-`
+ * and `_`. This one has 87: two UUIDs of 36 characters, 13 digits and two
+ * hyphens.
  */
 export function deliveryInstanceId(run: {
+  workspaceId: string;
   targetId: string;
-  attempt: number;
+  startedAt: number;
 }): string {
-  return `${run.targetId}-${run.attempt}`;
+  return `${run.workspaceId}-${run.targetId}-${run.startedAt}`;
 }
 
 /**

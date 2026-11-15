@@ -123,6 +123,12 @@ export type DisconnectChannelOutcome =
  */
 export type DeliveryRun = { targetId: string; attempt: number };
 
+/**
+ * A delivery that is under way, with the time at which the workspace
+ * began it: what the ID of its run is made of.
+ */
+export type StartedDelivery = DeliveryRun & { startedAt: number };
+
 /** What a delivery publishes, where to, and from where it goes on. */
 export type Delivery = {
   channel: {
@@ -517,6 +523,13 @@ export class WorkspaceStore {
         if (refusal) {
           throw new Error(`A delivery did not begin: ${refusal.message}`);
         }
+        // The time that the mutation was run at, which is this delivery's
+        // alone: it names the run that carries the delivery.
+        this.db
+          .update(postTargets)
+          .set({ startedAt: this.record().time })
+          .where(eq(postTargets.id, id))
+          .run();
       }
     });
   }
@@ -585,18 +598,23 @@ export class WorkspaceStore {
    * The deliveries that are under way: with a workflow if `dispatched`,
    * and those that have yet to get theirs if not.
    */
-  deliveries(dispatched: boolean): DeliveryRun[] {
+  deliveries(dispatched: boolean): StartedDelivery[] {
     return this.db
       .select({
         targetId: postTargets.id,
         attempt: postTargets.attempt,
+        startedAt: postTargets.startedAt,
         dispatched: postTargets.dispatched,
       })
       .from(postTargets)
       .where(eq(postTargets.status, "sending"))
       .all()
       .filter((run) => (run.dispatched === run.attempt) === dispatched)
-      .map(({ targetId, attempt }) => ({ targetId, attempt }));
+      .map(({ targetId, attempt, startedAt }) => ({
+        targetId,
+        attempt,
+        startedAt,
+      }));
   }
 
   /** Takes note that the workflow of a delivery was created. */
