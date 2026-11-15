@@ -92,27 +92,49 @@ test("the notice of a deleted draft brings back that draft, also after another w
 }) => {
   await writeDraft(page, isMobile, "Deleted first");
   await writeDraft(page, isMobile, "Deleted second");
-  for (const text of ["Deleted first", "Deleted second"]) {
-    await draftRow(page, text).click();
-    await page.getByRole("button", { name: "Delete draft" }).click();
-    await expect(draftRow(page, text)).toHaveCount(0);
-  }
 
-  // Two notices that say the same, stacked, with the newer one in front
-  // and first in the list. Pointing at the stack spreads it out.
+  // A notice leaves by itself, ten seconds after it has come. The clock of
+  // the page stands still from here on and moves when the test says, so the
+  // first notice is still there when the second has come and the test gets
+  // to it, however long the machine takes over the steps in between.
+  const now = Date.now();
+  await page.clock.install({ time: now });
+  await page.clock.pauseAt(now + 1_000);
+  // The notices are put on screen and taken off it a moment after the app
+  // has said so, which the clock has to be moved for as well.
+  const moment = () => page.clock.runFor(1_000);
   const notices = page
     .getByRole("listitem")
     .filter({ hasText: "Draft deleted" });
+
+  for (const [index, text] of ["Deleted first", "Deleted second"].entries()) {
+    await draftRow(page, text).click();
+    await page.getByRole("button", { name: "Delete draft" }).click();
+    await expect(draftRow(page, text)).toHaveCount(0);
+    await moment();
+    await expect(notices).toHaveCount(index + 1);
+  }
+
+  // An Undo has to be found before it can be used. Six seconds after the
+  // first notice came, both are there.
+  await page.clock.runFor(4_000);
   await expect(notices).toHaveCount(2);
+
+  // Two notices that say the same, stacked, with the newer one in front
+  // and first in the list. Pointing at the stack spreads it out, and stops
+  // the time of the notices.
   await notices.first().hover();
   await notices.last().getByRole("button", { name: "Undo" }).click();
+  await moment();
 
   // The older notice is about the draft that was deleted first.
   await expect(editor(page)).toHaveValue("Deleted first");
   await expect(notices).toHaveCount(1);
   // And the one that is left is still about its own.
   await notices.getByRole("button", { name: "Undo" }).click();
+  await moment();
   await expect(editor(page)).toHaveValue("Deleted second");
+  await expect(notices).toHaveCount(0);
   await backToList(page, isMobile);
   await expect(draftRows(page)).toHaveCount(2);
 });

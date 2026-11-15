@@ -47,6 +47,14 @@ export const Route = createFileRoute("/_app/")({
   component: Drafts,
 });
 
+/**
+ * How long the notice of a deleted draft offers to bring it back, in
+ * milliseconds. Longer than a notice that only says something: this one has
+ * to be noticed, read and reached. Its time is its own, too: a notice that
+ * comes later does not give an earlier one more.
+ */
+const undoMs = 10_000;
+
 /** Whether the list and the editor are side by side: `md` in Tailwind. */
 function isWide(): boolean {
   return window.matchMedia("(min-width: 48rem)").matches;
@@ -131,6 +139,7 @@ function Drafts() {
     // Nothing to bring back of a draft without text.
     if (draft.text === "") return;
     const notice: string | number = toast("Draft deleted", {
+      duration: undoMs,
       // Its own draft, also when others were deleted after it and their
       // notices are on screen next to this one.
       action: { label: "Undo", onClick: () => restore(draft, notice) },
