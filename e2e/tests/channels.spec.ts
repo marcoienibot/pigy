@@ -585,11 +585,11 @@ test("the command palette connects an account", async ({ ownPage: page }) => {
 
   // The choice of a network, on the screen of the channels: the screen is
   // looked at when the dialog is closed, which hides what is behind it.
+  // The dialog is named: the palette can still be on its way out when
+  // this one closes, and then there are two.
   await expect(palette).toBeHidden();
-  const dialog = page.getByRole("dialog");
-  await expect(
-    dialog.getByRole("heading", { name: "Connect an account" }),
-  ).toBeVisible();
+  const dialog = page.getByRole("dialog", { name: "Connect an account" });
+  await expect(dialog).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Channels");
