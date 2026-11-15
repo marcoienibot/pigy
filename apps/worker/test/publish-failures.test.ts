@@ -26,6 +26,7 @@ import {
   follow,
   gate,
   inPlaceOfPosting,
+  patience,
   postStatus,
   publishedOf,
   publishTo,
@@ -308,8 +309,9 @@ it("leaves a channel alone that was connected again before its delivery said tha
   using run = await runOf(workspace, targetId);
   await run.pause();
   held.open();
-  await vi.waitFor(async () =>
-    expect((await run.status()).status).toBe("paused"),
+  await vi.waitFor(
+    async () => expect((await run.status()).status).toBe("paused"),
+    patience,
   );
 
   // Meanwhile the person connects the account again: the channel keeps

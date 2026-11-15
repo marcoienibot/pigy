@@ -29,5 +29,9 @@ export default defineConfig(async () => ({
   ],
   test: {
     setupFiles: ["./test/setup.ts"],
+    // Longer than a test waits for a workflow to get somewhere, `patience`
+    // in test/publishing.ts, so that such a wait fails with what it waited
+    // for and not with the test running out of time.
+    testTimeout: 30_000,
   },
 }));

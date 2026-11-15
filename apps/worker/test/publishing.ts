@@ -28,6 +28,15 @@ import {
  */
 
 /**
+ * How long a test waits for a workflow to get somewhere, for `vi.waitFor`:
+ * far longer than it takes. A workflow runs apart from the test, on a
+ * machine that other test runs share, and a wait that is only just long
+ * enough fails a test now and then for no fault of the code. The tests of
+ * this package have a time limit to match: see vitest.config.ts.
+ */
+export const patience = { timeout: 15_000, interval: 20 };
+
+/**
  * Has the publishing workflows of the test run without waiting: a wait
  * that a workflow asks for is over at once. Returns the introspector of
  * `cloudflare:test`, which lists the runs that the test has started.
@@ -129,7 +138,10 @@ export function gate(holds: (request: string) => boolean) {
     },
     /** Waits until a request waits at the gate. */
     async reached(): Promise<void> {
-      await vi.waitFor(() => expect(state.waiting).toBeGreaterThan(0));
+      await vi.waitFor(
+        () => expect(state.waiting).toBeGreaterThan(0),
+        patience,
+      );
     },
     /** Lets through what waits, and everything after it. */
     open,
@@ -346,30 +358,71 @@ export async function runOf(workspaceId: string, targetId: string) {
   return Object.assign(run, { [Symbol.dispose]: () => dispose?.() });
 }
 
+/** Says of an event that its run is over with it. */
+export const over = ({ type }: WorkflowInstanceEvent) =>
+  type === "workflow_completed" ||
+  type === "workflow_errored" ||
+  type === "workflow_terminated";
+
+/** Says of an event that its run has begun the wait `name` with it. */
+export const waiting = (name: string) => (event: WorkflowInstanceEvent) =>
+  event.type === "sleep_started" && waitName(event.stepName) === name;
+
+// The platform numbers the steps of one name: "wait-1" is "wait-1-1".
+const waitName = (stepName: string) => stepName.replace(/-\d+$/, "");
+
+/**
+ * The events of the run of a target, from the first to the one that
+ * `last` picks out: by default the one with which the run is over.
+ *
+ * The platform does not say when it has no more events, so a test names
+ * the event that it reads up to, and this fails if that one does not come.
+ * What tells a run that has nothing more to say from one that has not got
+ * there yet is not a pause between two events.
+ */
+export async function eventsOf(
+  workspaceId: string,
+  targetId: string,
+  last: (event: WorkflowInstanceEvent) => boolean = over,
+): Promise<WorkflowInstanceEvent[]> {
+  using run = await runOf(workspaceId, targetId);
+  using events = await run.subscribe();
+  const seen: WorkflowInstanceEvent[] = [];
+  let giveUp: ReturnType<typeof setTimeout> | null = null;
+  const late = new Promise<undefined>((resolve) => {
+    giveUp = setTimeout(resolve, patience.timeout);
+  });
+  try {
+    for (;;) {
+      const next = await Promise.race([events.next(), late]);
+      if (!next || next.done) {
+        throw new Error(
+          `A run did not get to the event that the test waits for. It got to: ${seen.map(({ type }) => type).join(", ")}`,
+        );
+      }
+      seen.push(next.value);
+      if (last(next.value)) return seen;
+    }
+  } finally {
+    clearTimeout(giveUp);
+  }
+}
+
 /**
  * How long the run of a target has waited, by the name of each wait, in
- * seconds: what it asked the platform for. The waits themselves are over
- * at once in a test, see `pipeline`.
+ * seconds: what it asked the platform for, up to the event that `last`
+ * picks out, which by default is the end of the run. The waits themselves
+ * are over at once in a test, see `pipeline`.
  */
 export async function waitsOf(
   workspaceId: string,
   targetId: string,
+  last: (event: WorkflowInstanceEvent) => boolean = over,
 ): Promise<Record<string, number>> {
-  using run = await runOf(workspaceId, targetId);
-  using events = await run.subscribe();
   const waits: Record<string, number> = {};
-  for (;;) {
-    // The events of a run that is over are all there. The pause is for a
-    // platform that does not say that they have ended.
-    const next = await Promise.race([
-      events.next(),
-      new Promise<undefined>((resolve) => setTimeout(resolve, 250)),
-    ]);
-    if (!next || next.done) break;
-    if (next.value.type === "sleep_started") {
-      // The platform numbers the steps of one name: "wait-1" is "wait-1-1".
-      const name = next.value.stepName.replace(/-\d+$/, "");
-      waits[name] = next.value.durationMs / 1000;
+  for (const event of await eventsOf(workspaceId, targetId, last)) {
+    if (event.type === "sleep_started") {
+      waits[waitName(event.stepName)] = event.durationMs / 1000;
     }
   }
   return waits;

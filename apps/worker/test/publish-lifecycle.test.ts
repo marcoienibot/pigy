@@ -8,6 +8,8 @@ import { env } from "cloudflare:workers";
 import type { Fetch } from "@pigy/core";
 import { feed } from "@pigy/simulators/world";
 import { expect, it, onTestFinished, vi } from "vitest";
+import { lostTrackMessage } from "../src/publish/delivery.ts";
+import { WorkspaceStore } from "../src/workspace/store.ts";
 import {
   mutateWorkspace,
   recordProgress,
@@ -25,9 +27,11 @@ import {
 import {
   connectAccount,
   ended,
+  eventsOf,
   follow,
   gate,
   inPlaceOfPosting,
+  patience,
   postOf,
   postStatus,
   publishedOf,
@@ -39,6 +43,7 @@ import {
   stopWatching,
   storedProgress,
   targetOf,
+  waiting,
   waitsOf,
   writeDraft,
 } from "./publishing.ts";
@@ -451,8 +456,9 @@ it("publishes each part once when the workflow is stopped and taken up again", a
   // were recorded.
   await run.pause();
   held.open();
-  await vi.waitFor(async () =>
-    expect((await run.status()).status).toBe("paused"),
+  await vi.waitFor(
+    async () => expect((await run.status()).status).toBe("paused"),
+    patience,
   );
   await run.resume();
 
@@ -485,11 +491,9 @@ it("publishes each part once, and records each, when a run is restarted from its
   // for five minutes, with one part published and recorded.
   test.network.mastodon.arm({ kind: "rate-limit", operation: "publish" });
   held.open();
-  await vi.waitFor(async () =>
-    expect(await waitsOf(workspace, targetId)).toEqual({
-      "publish-3-wait-1": 300,
-    }),
-  );
+  expect(
+    await waitsOf(workspace, targetId, waiting("publish-3-wait-1")),
+  ).toEqual({ "publish-3-wait-1": 300 });
 
   // Somebody restarts the run, from the dashboard of the platform. It
   // forgets what its steps returned and takes them again from the first,
@@ -632,8 +636,9 @@ it("leaves its alarm alone at a message of a client while a workflow cannot be c
   // The object has begun the delivery and could not create its run. It
   // has set its alarm to try again: a minute from then, which is later
   // than now. Until it has, the alarm is the one that is running, or none.
-  await vi.waitFor(async () =>
-    expect(await alarm()).toBeGreaterThan(Date.now()),
+  await vi.waitFor(
+    async () => expect(await alarm()).toBeGreaterThan(Date.now()),
+    patience,
   );
   const next = await alarm();
 
@@ -656,6 +661,108 @@ it("leaves its alarm alone at a message of a client while a workflow cannot be c
   expect(await runDurableObjectAlarm(objectOf(workspace))).toBe(true);
   expect(await ended(client, draft.postId)).toMatchObject({ status: "sent" });
   expect(posts().map(({ text }) => text)).toEqual(["Waiting for a run"]);
+});
+
+it("finds the workflow of a delivery that it had created before it could take note of it", async () => {
+  const held = beforePost(1);
+  const context = await ready({ interceptNetwork: held.intercept });
+  const { workflows, workspace, channel, client, posts, posted } = context;
+  const errors = expectErrors();
+  // The object goes away between the two things that it does for a
+  // delivery that begins: it has created the workflow, and has not taken
+  // note that it has.
+  const noting = vi
+    .spyOn(WorkspaceStore.prototype, "dispatched")
+    .mockImplementationOnce(() => {
+      throw new Error("The object was reset");
+    });
+  const creating = vi.spyOn(env.PUBLISH, "create");
+  onTestFinished(() => {
+    noting.mockRestore();
+    creating.mockRestore();
+  });
+  /** The attempt of the target, and the one that it has a workflow for. */
+  const noted = () =>
+    runInDurableObject(objectOf(workspace), (_, state) =>
+      state.storage.sql
+        .exec("select attempt, dispatched from post_target")
+        .toArray(),
+    );
+  const draft = await writeDraft(client, workspace, "Created once");
+  held.close();
+  const [targetId = ""] = await publishTo(client, draft.postId, channel);
+  // The workflow is there and has got as far as the network, where the
+  // test holds it: the delivery is still under way when the object looks
+  // again.
+  await held.reached();
+  expect(await noted()).toEqual([{ attempt: 1, dispatched: 0 }]);
+
+  // The alarm comes again, which a test does not wait a minute for.
+  expect(await runDurableObjectAlarm(objectOf(workspace))).toBe(true);
+
+  // The object asked for the workflow a second time, which the platform
+  // refused: the ID is taken. It then found the one that is there, which
+  // can only be its own, and took note of it.
+  expect(creating).toHaveBeenCalledTimes(2);
+  await expect(creating.mock.results[1]?.value).rejects.toThrow(
+    "already_exists",
+  );
+  expect(await noted()).toEqual([{ attempt: 1, dispatched: 1 }]);
+  // Nothing was logged but the failure that the test made: the second
+  // look did not fail.
+  expect(errors.mock.calls.map(([message]) => message)).toEqual([
+    "The deliveries of a workspace were not looked after",
+  ]);
+
+  // One workflow carried the delivery, and posted once.
+  held.open();
+  expect(await ended(client, draft.postId)).toMatchObject({ status: "sent" });
+  expect(await workflows.get()).toHaveLength(1);
+  expect(posted()).toBe(1);
+  expect(posts().map(({ text }) => text)).toEqual(["Created once"]);
+  expect(targetOf(client, targetId)).toMatchObject({
+    status: "sent",
+    attempt: 1,
+  });
+});
+
+it("ends a delivery whose workflow the platform no longer knows", async () => {
+  const context = await ready();
+  const { workflows, workspace, channel, client } = context;
+  const errors = expectErrors();
+  // The workflow publishes, and then fails for good where it tells the
+  // workspace how it ended.
+  await workflows.modifyAll(async (modifier) => {
+    await modifier.mockStepError({ name: "end" }, new Error("Stopped"));
+    await modifier.disableRetryDelays();
+  });
+  const draft = await writeDraft(client, workspace, "Forgotten");
+  const [targetId = ""] = await publishTo(client, draft.postId, channel);
+  await follow(client, () => publishedOf(client, targetId, draft).length === 1);
+  const runId = await runIdOf(workspace, targetId);
+  await eventsOf(workspace, targetId);
+  // The platform keeps a run that is over for some days and deletes it
+  // then. Nobody has looked at this delivery in all that time: the object
+  // was not there to.
+  expect(await env.PUBLISH.deleteBatch([runId])).toEqual({
+    deleted: [{ id: runId }],
+    errors: [],
+  });
+  expect(targetOf(client, targetId).status).toBe("sending");
+
+  expect(await runDurableObjectAlarm(objectOf(workspace))).toBe(true);
+
+  // A run that is gone is one that is over, and it has not ended its
+  // delivery. Left `sending`, the target would hold up its channel for
+  // good.
+  await ended(client, draft.postId);
+  expect(targetOf(client, targetId)).toMatchObject({
+    status: "uncertain",
+    error: lostTrackMessage,
+  });
+  expect(errors).toHaveBeenCalledWith(
+    `The workflow of the delivery ${runId} ended without a word`,
+  );
 });
 
 it("changes nothing when what a delivery did is recorded a second time", async () => {
@@ -764,16 +871,7 @@ it("keeps the secrets of a channel out of the workflow, the log and the sync mes
   // with and what each step returned. Locally the status of a run lists
   // the results of its steps, and its events have both.
   using run = await runOf(workspace, targetId);
-  const events: unknown[] = [];
-  using subscription = await run.subscribe();
-  for (;;) {
-    const next = await Promise.race([
-      subscription.next(),
-      new Promise<undefined>((resolve) => setTimeout(resolve, 250)),
-    ]);
-    if (!next || next.done) break;
-    events.push(next.value);
-  }
+  const events = await eventsOf(workspace, targetId);
   const [instance] = await workflows.get();
   const kept = JSON.stringify([
     await run.status(),
