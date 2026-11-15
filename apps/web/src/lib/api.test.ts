@@ -56,3 +56,13 @@ it.each([
     expect(unanswered(failure)).toBe(false);
   },
 );
+
+it("does not take a mistake in the code of the app for a server that cannot be reached", async () => {
+  // An answer that the code reads wrongly, as a bug would: a `TypeError`
+  // that is the app's own and not what `fetch` fails with. Taken for a
+  // missing connection, it would have the app wait for one for ever.
+  const failure = await failureOf(async () => ({ ok: true }) as Response);
+
+  expect(failure).toBeInstanceOf(TypeError);
+  expect(unanswered(failure)).toBe(false);
+});

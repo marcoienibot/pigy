@@ -32,20 +32,29 @@ export class ApiError extends Error {
 }
 
 /**
+ * A call to the API that got no answer, which `request` throws: see
+ * `unanswered`. The message is the browser's.
+ */
+class Unanswered extends Error {
+  constructor(cause: TypeError) {
+    super(cause.message, { cause });
+  }
+}
+
+/**
  * Whether a call to the API failed because no answer came: the device has
- * no connection, or the server cannot be reached from it. `fetch` fails
- * with a `TypeError` then, as the Fetch standard has it, and with nothing
- * else. Every other failure is an answer: a status that says that
- * something went wrong at the server, or a body that is not what the API
- * sends. A connection that comes back does not cure those.
+ * no connection, or the server cannot be reached from it. Every other
+ * failure is an answer, a status that says that something went wrong at
+ * the server or a body that is not what the API sends, or a mistake of the
+ * app. A connection that comes back cures none of those.
  */
 export function unanswered(error: unknown): boolean {
-  return error instanceof TypeError;
+  return error instanceof Unanswered;
 }
 
 /**
  * Calls the API and throws an `ApiError` unless it answers with success.
- * What `fetch` throws is passed on as it is: `unanswered` goes by it.
+ * When no answer comes, it throws what `unanswered` goes by.
  */
 async function request(
   path: string,
@@ -56,14 +65,24 @@ async function request(
   } = {},
 ): Promise<Response> {
   const method = init.method ?? "GET";
-  const response = await fetch(path, {
-    method,
-    ...(init.json !== undefined && {
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(init.json),
-    }),
-    ...(init.signal && { signal: init.signal }),
-  });
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      method,
+      ...(init.json !== undefined && {
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(init.json),
+      }),
+      ...(init.signal && { signal: init.signal }),
+    });
+  } catch (error) {
+    // `fetch` fails with a `TypeError` when no answer comes, as the Fetch
+    // standard has it, and with nothing else then. The app throws one too,
+    // for a mistake in its code, which is why it is told apart here, where
+    // it can only be the first. What else `fetch` throws, such as the
+    // `AbortError` of a request that was given up, is passed on as it is.
+    throw error instanceof TypeError ? new Unanswered(error) : error;
+  }
   if (response.ok) return response;
 
   const body = errorResponseSchema.safeParse(
