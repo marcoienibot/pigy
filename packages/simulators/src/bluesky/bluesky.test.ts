@@ -1082,6 +1082,22 @@ describe("faults", () => {
     expect(feed(sim.world)).toEqual([]);
   });
 
+  it("keeps a fault for a request that it takes up, not one that it refuses for its token", async () => {
+    const sim = await setup();
+    const tokens = await connected(sim);
+    sim.world.advance(accessTokenLifetimeMs);
+    sim.simulator.arm({ kind: "lost-response", operation: "publish" });
+    // The token has ended: nothing is written, so there is nothing to lose
+    // the answer to.
+    expect(
+      (await createRecord(sim, tokens.access_token, post("Hi"))).status,
+    ).toBe(401);
+    const renewed = await sim.pigy.refresh(issuer, tokens.refresh_token);
+    await expect(
+      createRecord(sim, renewed.tokens.access_token, post("Hi")),
+    ).rejects.toBeInstanceOf(TypeError);
+  });
+
   it("strikes the requests it is armed for, and no other", async () => {
     const sim = await setup();
     const tokens = await connected(sim);

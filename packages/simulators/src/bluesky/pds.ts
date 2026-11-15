@@ -14,7 +14,6 @@ import {
   recordUri,
 } from "./record.ts";
 import {
-  type BlueskyFaultKind,
   type BlueskyToken,
   type Counter,
   type Operation,
@@ -160,29 +159,30 @@ async function forAccount(
   points: number,
   respond: (caller: Caller) => Response | Promise<Response>,
 ): Promise<Response> {
-  let fault: BlueskyFaultKind | undefined;
   const caller = await authenticate(state, pds.host, request, (token) => {
     // Only now: a request that is refused for the nonce of its proof is
-    // sent again, and the fault is for the request that counts.
-    fault = state.takeFault(
+    // sent again, and the fault is for the request that counts. What
+    // happens to a token comes before the token is looked at.
+    const struck = state.takeFault(
       operation,
-      [
-        "rate-limit",
-        "server-error",
-        "lost-response",
-        "token-revoked",
-        "token-expired",
-      ],
+      ["token-revoked", "token-expired"],
       true,
     );
-    if (fault === "server-error") return gatewayError();
     const found = state.world.findToken<BlueskyToken>("bluesky", token);
     const session = found && state.sessions.get(found.sessionId);
-    if (fault === "token-revoked" && session) revokeSession(state, session);
-    if (fault === "token-expired") state.world.expireToken("bluesky", token);
+    if (struck === "token-revoked" && session) revokeSession(state, session);
+    if (struck === "token-expired") state.world.expireToken("bluesky", token);
     return undefined;
   });
   if (caller instanceof Response) return caller;
+  // The rest strike a request that the server takes up: one that it has
+  // refused for its token leaves them armed for the next.
+  const fault = state.takeFault(
+    operation,
+    ["rate-limit", "server-error", "lost-response"],
+    true,
+  );
+  if (fault === "server-error") return gatewayError();
   const headers: Record<string, string> = {
     "DPoP-Nonce": currentNonce(state, pds.host),
   };
