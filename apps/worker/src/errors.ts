@@ -1,4 +1,5 @@
 import type { ErrorName, ErrorResponse } from "@pigy/core";
+import { DrizzleQueryError } from "drizzle-orm";
 import type { Context, ErrorHandler, NotFoundHandler } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { z } from "zod";
@@ -39,13 +40,45 @@ export const handleNotFound: NotFoundHandler = (c) =>
   );
 
 /**
+ * `error` as it may be logged. A query that failed says so with the values
+ * it was run with, as Drizzle reports it: in its message, in its stack and
+ * as a property. Those are not for a log. Some are secrets, sealed or
+ * hashed: a registration that was to be stored, the session that was looked
+ * up, the `state` of a callback. What is logged in place of such an error
+ * has the statement and the reason, without the values.
+ *
+ * The same goes for an error that has such a one beneath it, as its cause
+ * or further down: a log prints the causes too. It is logged as a copy
+ * that has the cleaned one in that place.
+ *
+ * Every error that a route lets through is logged this way, below. Code
+ * that catches an error which the database may have thrown, and logs it
+ * itself, calls this.
+ */
+export function loggable(error: unknown): unknown {
+  if (!(error instanceof Error)) return error;
+  const cause = loggable(error.cause);
+  if (error instanceof DrizzleQueryError) {
+    return new Error(`Failed query: ${error.query}`, { cause });
+  }
+  if (cause === error.cause) return error;
+  const copy = new Error(error.message, { cause });
+  copy.name = error.name;
+  // The stack of the copy says where the copy was made. What a log needs
+  // is where the error was thrown.
+  if (error.stack) copy.stack = error.stack;
+  return copy;
+}
+
+/**
  * Turns what a route throws into an error response. An `HTTPException` is a
  * route saying what went wrong, so its status and message go to the client.
- * Anything else is a bug: it goes to the logs, never to the client.
+ * Anything else is a bug: it goes to the logs, never to the client. What
+ * goes to the logs goes through `loggable`.
  */
 export const handleError: ErrorHandler = (error, c) => {
   if (error instanceof HTTPException) {
-    if (error.status >= 500) console.error(error);
+    if (error.status >= 500) console.error(loggable(error));
     const name = errorName(error.status);
     return c.json<ErrorResponse>(
       {
@@ -56,7 +89,7 @@ export const handleError: ErrorHandler = (error, c) => {
       error.status,
     );
   }
-  console.error(error);
+  console.error(loggable(error));
   return c.json<ErrorResponse>(
     { error: "UnexpectedError", message: defaultMessages.UnexpectedError },
     500,

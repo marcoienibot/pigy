@@ -26,6 +26,7 @@ import {
   expectErrors,
   expectWarnings,
   invite,
+  logged,
   realMastodonDomain,
   setup,
   signedIn,
@@ -603,17 +604,10 @@ describe("the answer of a network", () => {
       expect(response.headers.get("Cache-Control")).toBe("no-store");
       // Why, the operator reads in the log: the statement and the reason.
       expect(errors).toHaveBeenCalledOnce();
-      const logged = errors.mock.calls
-        .flat()
-        .map((entry) =>
-          entry instanceof Error
-            ? `${entry.stack} ${String(entry.cause)}`
-            : String(entry),
-        )
-        .join("\n");
-      expect(logged).toContain("A connection could not be finished");
-      expect(logged).toContain(statement);
-      expect(logged).toContain("The database is in trouble");
+      const log = errors.mock.calls.flat().map(logged).join("\n");
+      expect(log).toContain("A connection could not be finished");
+      expect(log).toContain(statement);
+      expect(log).toContain("The database is in trouble");
       // Not the values that the statement was run with, which Drizzle puts
       // into its error. The state of this callback is one of them, and it
       // was not used up: the statement that takes it out is the one that
@@ -622,7 +616,7 @@ describe("the answer of a network", () => {
         "state",
       );
       expect(state).toBeTruthy();
-      expect(logged).not.toContain(state);
+      expect(log).not.toContain(state);
       expect(await channelsOf(browser, workspaces.sandbox)).toEqual([]);
     },
   );

@@ -19,11 +19,13 @@ import {
 import {
   adminEmail,
   Browser,
+  breakDatabase,
   credentialKey,
   credentialKeys,
   expectErrors,
   expectWarnings,
   invite,
+  logged,
   realMastodonDomain,
   setup,
   signedIn,
@@ -234,31 +236,22 @@ describe("what leaves the app", () => {
       return response;
     }, "https://pigy.test");
     const client = new SyncClient();
-    const logged = (["debug", "log", "info", "warn", "error"] as const).map(
+    const levels = (["debug", "log", "info", "warn", "error"] as const).map(
       (level) => {
         const spy = vi.spyOn(console, level).mockImplementation(() => {});
         onTestFinished(() => spy.mockRestore());
         return spy;
       },
     );
+    /** Everything that was logged, as one text. */
+    const log = () =>
+      levels.flatMap((spy) => spy.mock.calls.flat().map(logged)).join("\\n");
     return {
       browser,
       client,
+      log,
       /** Everything that was answered, synced and logged, as one text. */
-      text: () =>
-        [
-          ...answers,
-          ...client.received,
-          ...logged.flatMap((spy) =>
-            spy.mock.calls
-              .flat()
-              .map((entry) =>
-                entry instanceof Error
-                  ? `${entry.stack} ${String(entry.cause)}`
-                  : String(entry),
-              ),
-          ),
-        ].join("\\n"),
+      text: () => [...answers, ...client.received, log()].join("\\n"),
     };
   }
 
@@ -343,6 +336,40 @@ describe("what leaves the app", () => {
     for (const secret of secrets) {
       // The test would prove nothing with a secret that is empty.
       expect(secret).not.toBe("");
+      expect(left).not.toContain(secret);
+    }
+  });
+
+  it("holds nothing of a registration that the database fails to store", async () => {
+    const test = setup();
+    const { browser, text } = recording(test);
+    await signIn(test, browser, { email: adminEmail });
+    const workspaces = await workspaceIds(browser);
+    // The statement that keeps what a server has just registered pigy
+    // with, and the values that it is run with.
+    const values: unknown[] = [];
+    breakDatabase((sql) => sql.includes('insert into "mastodon_app"'), values);
+
+    const response = await startConnect(browser, workspaces.live, {
+      network: "mastodon",
+      identifier: realMastodonDomain,
+    });
+
+    expect(response.status).toBe(500);
+    // The registration is among the values, sealed, once to insert it and
+    // once to replace the one that is there. It holds the secret of the
+    // client, and Drizzle puts the values of a statement into its error.
+    const sealed = values.filter(
+      (value) => typeof value === "string" && /^1\.[^.]+\.[^.]+$/.test(value),
+    );
+    expect(sealed).toHaveLength(2);
+    const left = text();
+    // The log says what failed, and why.
+    expect(left).toContain('insert into "mastodon_app"');
+    expect(left).toContain("The database is in trouble");
+    for (const value of sealed) expect(left).not.toContain(value);
+    // The secret itself was in no statement to begin with.
+    for (const secret of networkSecrets(test)) {
       expect(left).not.toContain(secret);
     }
   });

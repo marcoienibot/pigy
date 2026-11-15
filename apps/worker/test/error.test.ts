@@ -1,10 +1,12 @@
 import { errorResponseSchema } from "@pigy/core";
+import { DrizzleQueryError } from "drizzle-orm";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { expect, it, onTestFinished, vi } from "vitest";
 import { handleError } from "../src/errors.ts";
 import app from "../src/index.ts";
+import { logged } from "./helpers.ts";
 
 /** Keeps an expected exception out of the test output. */
 function silenceErrors() {
@@ -40,6 +42,49 @@ it("answers an exception with a JSON 500 that does not leak it", async () => {
   // The exception must still reach the logs, or nobody could debug a 500.
   expect(log).toHaveBeenCalledWith(exception);
 });
+
+// A query that failed, as Drizzle reports it: with the values that it was
+// run with.
+const failedQuery = () =>
+  new DrizzleQueryError(
+    'select "id" from "session" where "session"."id" = ?',
+    ["the-hash-of-a-session"],
+    new Error("D1_ERROR: The database is in trouble"),
+  );
+
+it.each([
+  ["is what a route fails with", failedQuery],
+  [
+    "is the cause of what a route fails with",
+    () => new Error("The session was not found", { cause: failedQuery() }),
+  ],
+  [
+    "is beneath the cause of what a route answers with",
+    () =>
+      new HTTPException(503, {
+        cause: new Error("Not now", { cause: failedQuery() }),
+      }),
+  ],
+])(
+  "logs a query that failed without its values when it %s",
+  async (_name, failure) => {
+    const log = silenceErrors();
+    const routes = new Hono().onError(handleError);
+    routes.get("/", () => {
+      throw failure();
+    });
+
+    await routes.request("/");
+
+    expect(log).toHaveBeenCalledOnce();
+    const text = log.mock.calls.flat().map(logged).join("\n");
+    // What failed and why, for whoever reads the log. A log prints the
+    // causes of an error too, so the values must be in none of them.
+    expect(text).toContain('from "session"');
+    expect(text).toContain("The database is in trouble");
+    expect(text).not.toContain("the-hash-of-a-session");
+  },
+);
 
 // The statuses that routes do not use yet are covered here, with routes
 // that exist only in this test.

@@ -381,19 +381,39 @@ export function expectErrors() {
 }
 
 /**
+ * What a log holds of `entry`, as text. Of an error that is what a console
+ * prints: its stack, which begins with its message, whatever else it
+ * carries, and the same of the errors beneath it.
+ */
+export function logged(entry: unknown): string {
+  if (!(entry instanceof Error)) return String(entry);
+  return [
+    entry.stack,
+    JSON.stringify({ ...entry }),
+    ...(entry.cause === undefined ? [] : [logged(entry.cause)]),
+  ].join("\n");
+}
+
+/**
  * Makes the database fail every statement whose SQL `fails` picks out, as
  * a D1 in trouble does, until the function that is returned is called or
  * the test ends. The statements are as Drizzle writes them: `from
- * "session"`, `delete from "oauth_state"`.
+ * "session"`, `delete from "oauth_state"`. The values that a statement was
+ * run with when it failed are added to `values`, for a test that claims
+ * that they went nowhere.
  */
-export function breakDatabase(fails: (sql: string) => boolean): () => void {
+export function breakDatabase(
+  fails: (sql: string) => boolean,
+  values: unknown[] = [],
+): () => void {
   const prepare = env.DB.prepare.bind(env.DB);
   const broken = vi.spyOn(env.DB, "prepare").mockImplementation((sql) => {
     const statement = prepare(sql);
     if (fails(sql)) {
       // It fails when it is run, like a statement of D1, and not before:
       // the error that the app gets is then what Drizzle makes of it.
-      statement.bind = () => {
+      statement.bind = (...bound) => {
+        values.push(...bound);
         throw new Error("D1_ERROR: The database is in trouble");
       };
     }

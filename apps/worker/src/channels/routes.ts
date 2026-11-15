@@ -14,13 +14,12 @@ import {
   uuidv7,
 } from "@pigy/core";
 import { type Account, type Json, ProviderError } from "@pigy/providers";
-import { DrizzleQueryError } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { type Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { authenticateWithCookie, requireUser } from "../auth/guards.ts";
 import type { AppDependencies, AppEnv } from "../env.ts";
-import { InvalidField, parseJsonBody } from "../errors.ts";
+import { InvalidField, loggable, parseJsonBody } from "../errors.ts";
 import { type ProviderContext, providerOf } from "../network/providers.ts";
 import type { Reach } from "../network/reach.ts";
 import { WorldHostMissing } from "../sim/world.ts";
@@ -284,21 +283,13 @@ async function giveBack(
         `The access of a channel was not given back: ${error.message}`,
       );
     } else {
-      console.error("The access of a channel was not given back", error);
+      console.error(
+        "The access of a channel was not given back",
+        loggable(error),
+      );
     }
     return false;
   }
-}
-
-/**
- * `error` as it may be logged. A query that failed says so with the values
- * it was run with, as Drizzle reports it, and those of a callback are not
- * for a log: its `state` is one of them. What is logged in its place has
- * the statement and the reason, without the values.
- */
-function loggable(error: unknown): unknown {
-  if (!(error instanceof DrizzleQueryError)) return error;
-  return new Error(`Failed query: ${error.query}`, { cause: error.cause });
 }
 
 /**
@@ -412,6 +403,8 @@ export function connectCallbackRoutes(
         // Their messages hold no secret.
         console.warn(`A connection could not be finished: ${error.message}`);
       } else {
+        // Without the values of a query that failed: the `state` of this
+        // callback is one of them.
         console.error("A connection could not be finished", loggable(error));
       }
       return back("failed");
