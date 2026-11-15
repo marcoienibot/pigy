@@ -5,6 +5,7 @@ import {
   editor,
   expectElsewhere,
   expectSync,
+  holdStorage,
   newerVersion,
   olderVersionFirst,
   serviceWorkerAnswersFor,
@@ -12,6 +13,7 @@ import {
   writeDraft,
 } from "../app.ts";
 import { expect, type Page, test } from "../fixtures.ts";
+import { workspacesOf } from "../sandbox.ts";
 
 // How a new version of the app takes the place of the one before it:
 // apps/web/src/lib/service-worker.ts has the rules. `olderVersionFirst`
@@ -40,15 +42,39 @@ async function openOlderVersion(
  * Marks the window of `page`. The mark is gone when the page is loaded
  * again, and says before that whether the page has begun to leave: the
  * browser tells a page so in the moment in which a script asks for a
- * reload, which is earlier than the test would see the new page.
+ * reload, which is earlier than the test would see the new page. It also
+ * notes when another service worker takes the window over: see
+ * `takenOver`.
  */
 async function mark(page: Page): Promise<void> {
   await page.evaluate(() => {
-    const state = window as { sameLoad?: boolean; leaving?: boolean };
+    const state = window as {
+      sameLoad?: boolean;
+      leaving?: boolean;
+      takenOver?: boolean;
+    };
     state.sameLoad = true;
     window.addEventListener("beforeunload", () => {
       state.leaving = true;
     });
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      state.takenOver = true;
+    });
+  });
+}
+
+/**
+ * Whether another service worker has taken over the window of `page`
+ * since `mark`, and undefined if the window has been loaded again since.
+ * The app heard of the take-over first: it began to listen when the page
+ * started. So a window that loads itself again for the new version
+ * without waiting for anything has begun to leave by the time this says
+ * so, and `markOf` says `leaving`, or there is no mark left to read.
+ */
+function takenOver(page: Page): Promise<boolean | undefined> {
+  return page.evaluate(() => {
+    const state = window as { sameLoad?: boolean; takenOver?: boolean };
+    return state.sameLoad ? state.takenOver === true : undefined;
   });
 }
 
@@ -402,6 +428,116 @@ test("a change that could not be stored in the workspace that is not on screen k
   await switchTo(page, "Sandbox");
   await nav.getByRole("link", { name: "Drafts" }).click();
   await expect(draftRow(page, "Written with no room left")).toBeVisible();
+});
+
+test("a window that is still storing a change waits for it before it loads the new version", async ({
+  page,
+  context,
+  ownEmail,
+  signInBeforeFirstLoad,
+  isMobile,
+}) => {
+  await signInBeforeFirstLoad(ownEmail);
+  await openOlderVersion(page);
+  await writeDraft(page, isMobile, "Written in a moment");
+  await expectSync(page, "Synced");
+  // A newer version is found, and is installed behind the window.
+  await comeBackTo(page);
+  await expect.poll(() => newerWaits(page)).toBe(true);
+  // The device is slow to write: the next change is in this window and
+  // nowhere else until the test lets it be stored. Nothing has failed, so
+  // the window holds no lock and has nothing to say but that it syncs.
+  const storage = await holdStorage(page);
+  await draftRow(page, "Written in a moment").click();
+  await editor(page).fill("Written while the device was slow");
+  await expectSync(page, "Syncing 1 change");
+  await backToList(page, isMobile);
+  await mark(page);
+
+  // The person asks for the newer version, and the window waits for the
+  // change before it loads itself again.
+  await page
+    .getByRole("navigation", { name: "Main" })
+    .getByRole("link", { name: "Settings" })
+    .click();
+  const reload = page.getByRole("button", { name: "Reload to update" });
+  await reload.click();
+  await expect(reload).toBeDisabled();
+
+  // A second window starts, and lets the newer version take over: nothing
+  // holds the lock, because nothing has failed. That takes about a second,
+  // in which a window whose reload did not wait would have reloaded long
+  // since.
+  const second = await context.newPage();
+  await second.goto("/");
+  await expect(newerVersion(second)).toHaveCount(1);
+  // The first window is under the newer version now, and would load
+  // itself again for it. It is still the page that the change was made
+  // in, and has not begun to leave: that would lose the change, which is
+  // in this page and in a write that has not ended.
+  await expect.poll(() => takenOver(page)).toBe(true);
+  expect(await markOf(page)).toEqual({ sameLoad: true, leaving: false });
+
+  // The change is stored, and the window loads itself again as the newer
+  // version, with the change.
+  await storage.release();
+  await expect(newerVersion(page)).toHaveCount(1);
+  await page
+    .getByRole("navigation", { name: "Main" })
+    .getByRole("link", { name: "Drafts" })
+    .click();
+  await expect(
+    draftRow(page, "Written while the device was slow"),
+  ).toBeVisible();
+});
+
+test("a window that is still storing a change of the workspace that is not on screen waits for it before it loads the new version", async ({
+  page,
+  context,
+  ownEmail,
+  signInBeforeFirstLoad,
+  isMobile,
+}) => {
+  await signInBeforeFirstLoad(ownEmail);
+  await openOlderVersion(page);
+  // Somebody new starts in the sandbox. Live is looked at once, so that
+  // the window syncs both.
+  await writeDraft(page, isMobile, "Written in a moment");
+  await expectSync(page, "Synced");
+  await switchTo(page, "Live");
+  await expectSync(page, "Synced");
+  await switchTo(page, "Sandbox");
+  // The device is slow to write to the copy of the sandbox, and the next
+  // change of the sandbox is in this window and nowhere else until the
+  // test lets it be stored.
+  const { sandbox } = await workspacesOf(page);
+  const storage = await holdStorage(page, { copyOf: sandbox });
+  await draftRow(page, "Written in a moment").click();
+  await editor(page).fill("Written while the device was slow");
+  await expectSync(page, "Syncing 1 change");
+  await backToList(page, isMobile);
+  // The window goes on to live, which has nothing that is not stored.
+  await switchTo(page, "Live");
+  await expectSync(page, "Synced");
+  await mark(page);
+
+  // A newer version is found, and a second window lets it take over.
+  await comeBackTo(page);
+  await expect.poll(() => newerWaits(page)).toBe(true);
+  const second = await context.newPage();
+  await second.goto("/");
+  await expect(newerVersion(second)).toHaveCount(1);
+  // The first window waits for the change of the sandbox, although the
+  // workspace on screen has none.
+  await expect.poll(() => takenOver(page)).toBe(true);
+  expect(await markOf(page)).toEqual({ sameLoad: true, leaving: false });
+
+  await storage.release();
+  await expect(newerVersion(page)).toHaveCount(1);
+  await switchTo(page, "Sandbox");
+  await expect(
+    draftRow(page, "Written while the device was slow"),
+  ).toBeVisible();
 });
 
 /**

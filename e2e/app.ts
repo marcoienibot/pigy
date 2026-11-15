@@ -428,6 +428,56 @@ export async function breakStorage(page: Page) {
   };
 }
 
+/**
+ * Makes every write to IndexedDB in `page` hang, as on a device that is
+ * slow to write, until `release()` is called: a write that begins
+ * meanwhile is neither stored nor refused before then. With `copyOf`,
+ * only the writes to the local copy of that workspace.
+ *
+ * IndexedDB commits a transaction once it has no request left, so a write
+ * that hangs is one that gets another request whenever the last one is
+ * answered. It keeps its place in the order of IndexedDB, also for the
+ * other windows of the browser: until it is released, they wait for the
+ * copy that it writes to.
+ */
+export async function holdStorage(
+  page: Page,
+  { copyOf }: { copyOf?: string } = {},
+) {
+  await page.evaluate((copyOf) => {
+    const { transaction } = IDBDatabase.prototype;
+    let held = true;
+    IDBDatabase.prototype.transaction = function (names, mode, options) {
+      const opened = transaction.call(this, names, mode, options);
+      if (
+        held &&
+        mode === "readwrite" &&
+        (!copyOf || this.name.endsWith(`/${copyOf}`))
+      ) {
+        const name = opened.objectStoreNames.item(0);
+        if (!name) throw new Error("A write to no object store");
+        const busy = () => {
+          if (held) opened.objectStore(name).count().onsuccess = busy;
+        };
+        busy();
+      }
+      return opened;
+    };
+    Object.assign(window, {
+      releaseStorage() {
+        held = false;
+        IDBDatabase.prototype.transaction = transaction;
+      },
+    });
+  }, copyOf);
+  return {
+    release: () =>
+      page.evaluate(() =>
+        (window as unknown as { releaseStorage(): void }).releaseStorage(),
+      ),
+  };
+}
+
 /** The names of the databases with local copies, and the stored session. */
 export function localData(page: Page) {
   return page.evaluate(async () => ({
