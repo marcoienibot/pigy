@@ -149,9 +149,11 @@ export type BlueskyProviderOptions = {
    * The keys of the client, the one that signs new sessions first. A
    * session is bound to the key that it began with, so a key stays here
    * for as long as a session that began with it is to last, and the
-   * client metadata has the same keys.
+   * client metadata has the same keys. Asked for when a key is needed,
+   * which is not to post: what this throws comes out of the adapter as it
+   * is.
    */
-  keys: readonly BlueskyClientKey[];
+  keys: () => Promise<readonly BlueskyClientKey[]>;
   /** The resolver that DNS queries go to. Cloudflare's, by default. */
   dnsResolver?: string;
   /** The directory of `did:plc`. */
@@ -542,7 +544,8 @@ export function createBlueskyProvider({
   }
 
   /** The key of the client named `id`, or undefined if it has none. */
-  const keyById = (id: string) => keys.find((key) => key.id === id);
+  const keyById = async (id: string) =>
+    (await keys()).find((key) => key.id === id);
 
   /**
    * Posts a form to an endpoint of the authorization server, as the
@@ -559,7 +562,7 @@ export function createBlueskyProvider({
     params: Record<string, string>,
     secrets: readonly string[],
   ): Promise<Answer> {
-    const key = keyById(session.keyId);
+    const key = await keyById(session.keyId);
     if (!key) {
       throw new ProviderError(
         "reconnect",
@@ -844,7 +847,7 @@ export function createBlueskyProvider({
           "Enter the handle of your Bluesky account, such as alice.bsky.social.",
         );
       }
-      const [key] = keys;
+      const [key] = await keys();
       if (!key) {
         throw new ProviderError(
           "fail",

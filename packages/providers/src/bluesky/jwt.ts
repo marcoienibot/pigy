@@ -43,6 +43,8 @@ export async function newKey(): Promise<PrivateJwk> {
     "sign",
     "verify",
   ]);
+  // A pair, for ECDSA: the Workers runtime types it as either.
+  if (!("privateKey" in pair)) throw new Error("ECDSA made no key pair");
   return privateJwkSchema.parse(
     await crypto.subtle.exportKey("jwk", pair.privateKey),
   );

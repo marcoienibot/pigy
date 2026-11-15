@@ -59,7 +59,7 @@ const provider = createBlueskyProvider({
   fetch,
   now,
   clientIdFor: () => clientId,
-  keys,
+  keys: async () => keys,
 });
 
 // The posts of this run are unlike those of any other run.

@@ -71,7 +71,7 @@ async function setup(
       fetch,
       now: world.now,
       clientIdFor: () => clientId,
-      keys: with_,
+      keys: async () => with_,
     });
   return {
     world,

@@ -58,7 +58,7 @@ async function simulated() {
     fetch,
     now: world.now,
     clientIdFor: () => clientId,
-    keys,
+    keys: async () => keys,
   });
   const consent = async (url: string, answer: "allow" | "deny") =>
     (

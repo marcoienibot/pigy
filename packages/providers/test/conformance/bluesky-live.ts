@@ -40,7 +40,7 @@ export function blueskyLiveHarness(options: {
       fetch,
       now,
       clientIdFor: () => clientId,
-      keys,
+      keys: async () => keys,
     }),
     // The address that the client lists. Nothing is ever sent there: the
     // run cannot consent.
