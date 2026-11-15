@@ -7,6 +7,7 @@ import {
   type Page,
   type Route,
   type TestInfo,
+  type WebSocketRoute,
 } from "@playwright/test";
 
 /**
@@ -286,4 +287,4 @@ export const test = base.extend<{
   },
 });
 
-export { expect, type Page, type Route };
+export { expect, type Page, type Route, type WebSocketRoute };

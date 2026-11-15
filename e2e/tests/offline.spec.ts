@@ -7,16 +7,21 @@ import {
   serviceWorkerAnswersFor,
   writeDraft,
 } from "../app.ts";
-import { expect, type Page, signIn, test } from "../fixtures.ts";
+import {
+  expect,
+  type Page,
+  signIn,
+  test,
+  type WebSocketRoute,
+} from "../fixtures.ts";
 
 // The app on a device without a connection: what the service worker has to
 // do for it to start, and what the app says where it cannot. Where a test
 // has no connection, the whole browser is offline, with
 // `context.setOffline()`, and not only the app's own connection as in
 // sync-drafts.spec.ts: the page, its scripts and its styles have to come
-// from the device. Three tests are about what is not a missing connection:
-// two about a server that answers with an error, and one about a copy that
-// was never filled.
+// from the device. Some tests are about what is not a missing connection:
+// a server that answers with an error, and a copy that was never filled.
 
 test("the service worker answers for the app once it is installed", async ({
   signedInPage: page,
@@ -321,3 +326,55 @@ test("a device that has not synced yet does not say that there are no drafts", a
   await connection.restore();
   await expect(draftRow(page, "Written on another device")).toBeVisible();
 });
+
+for (const [why, stop] of [
+  [
+    // The server closes a socket with 4409 when another one has said hello
+    // as the same copy. Nothing connects again after that by itself.
+    "another socket has taken its place",
+    (socket: WebSocketRoute) =>
+      socket.close({ code: 4409, reason: "replaced" }),
+  ],
+  [
+    // As in update.spec.ts.
+    "it is too old for the server",
+    (socket: WebSocketRoute) => {
+      socket.send(
+        JSON.stringify({
+          type: "error",
+          code: "version_mismatch",
+          message: "The client and the server speak different versions",
+          protocolVersion: 1000,
+          schemaVersion: 1,
+        }),
+      );
+      return socket.close({ code: 4400, reason: "version_mismatch" });
+    },
+  ],
+] as const) {
+  test(`a device that has not synced yet does not promise the drafts for when it is back online if its window has stopped syncing because ${why}`, async ({
+    page,
+    ownEmail,
+  }) => {
+    // The server answers the hello of every sync socket of the page in
+    // that way, so the copy of the workspace is never filled.
+    await page.routeWebSocket(/\/sync\//, (socket) => {
+      socket.onMessage(() => void stop(socket));
+    });
+    await signIn(page, ownEmail);
+
+    // The copy does not say that there are no drafts, and the drafts will
+    // not appear by themselves: what the window needs is a reload, which
+    // the sync indicator offers.
+    await expect(
+      page.getByRole("heading", { name: "Not synced to this device yet" }),
+    ).toBeVisible();
+    await expect(
+      page.getByText(
+        "This window has stopped syncing, so your drafts are not on this device yet. The sync indicator says how to go on.",
+      ),
+    ).toBeVisible();
+    await expect(page.getByText(/back online/)).toHaveCount(0);
+    await expectSync(page, /Sync paused|Reload to update/);
+  });
+}

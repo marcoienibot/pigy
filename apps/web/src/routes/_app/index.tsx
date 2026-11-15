@@ -316,18 +316,26 @@ function FirstSteps({ onWrite }: { onWrite: () => void }) {
   // The first network that can be connected: its form opens at once.
   const [network] = connectableNetworks;
   // An empty copy does not say that there are no drafts, or no channels,
-  // on a device that has yet to hear from the server, and cannot reach
-  // it. While it is connecting, the answer is a moment away.
+  // on a device that has yet to hear from the server. While it is
+  // connecting, the answer is a moment away. While it cannot reach the
+  // server, it keeps trying, and the drafts come when it gets through. A
+  // window that another one has taken the socket from, or that is too old
+  // for the server, does not try again: it has to be loaded again, as its
+  // sync indicator says.
   const hasSynced = useHasSynced();
-  const { connection } = useSyncState();
-  const waitingForServer =
-    !hasSynced && connection !== "online" && connection !== "connecting";
+  const { connection, outdated } = useSyncState();
+  const stopped = outdated || connection === "replaced";
+  const unreached = connection !== "online" && connection !== "connecting";
 
-  if (waitingForServer) {
+  if (!hasSynced && (stopped || unreached)) {
     return (
       <EmptyState
         title="Not synced to this device yet"
-        description="Your drafts will appear when pigy is back online. What you write until then is kept on this device."
+        description={
+          stopped
+            ? "This window has stopped syncing, so your drafts are not on this device yet. The sync indicator says how to go on. What you write meanwhile is kept on this device."
+            : "Your drafts will appear when pigy is back online. What you write until then is kept on this device."
+        }
       >
         <Button variant="outline" onClick={onWrite}>
           Write a draft
