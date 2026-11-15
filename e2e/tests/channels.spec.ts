@@ -147,6 +147,38 @@ test("the empty Channels screen says what a channel is, and the choice of a netw
   await expect(page).toHaveURL("/channels");
 });
 
+test("the dialog that connects an account is one step back in the browser, whatever it has shown", async ({
+  ownPage: page,
+}) => {
+  await openScreen(page, "Channels");
+  const dialog = page.getByRole("dialog");
+  const connect = page.getByRole("button", { name: "Connect account" });
+
+  // Two steps into the dialog, and one step back is out of it: not at
+  // the choice of a network that the form came from.
+  await connect.click();
+  await dialog.getByRole("button", { name: "Mastodon" }).click();
+  await expect(dialog.getByLabel("Server")).toBeVisible();
+  await page.goBack();
+  await expect(dialog).toBeHidden();
+  await expect(page).toHaveURL("/channels");
+
+  // Through the steps again, and out with "Cancel". Back does not lead
+  // into the dialog again, at any of its steps: the first Back changes
+  // nothing on the screen, and the next one leaves it.
+  await connect.click();
+  await dialog.getByRole("button", { name: "Mastodon" }).click();
+  await dialog.getByRole("button", { name: "Networks" }).click();
+  await dialog.getByRole("button", { name: "Mastodon" }).click();
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toBeHidden();
+  await page.goBack();
+  await expect(page).toHaveURL("/channels");
+  await expect(dialog).toBeHidden();
+  await page.goBack();
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Drafts");
+});
+
 test("cancelling at the consent page is put in words, and connects nothing", async ({
   ownPage: page,
 }) => {

@@ -158,8 +158,15 @@ function Channels() {
       ? connectNotice(said.outcome, connected)
       : disconnectNotice(said.disconnected, said.revoked));
 
+  // The dialog that connects an account is one step in the history of
+  // the browser, whatever it shows. Opening it adds an entry, so that
+  // Back closes it. Its steps take the place of that entry, and so does
+  // closing it: Back then leads out of the dialog, and not through what
+  // it has shown.
   const open = (search: ChannelsSearch) => void navigate({ search });
-  const close = () => void navigate({ search: {}, replace: true });
+  const step = (search: ChannelsSearch) =>
+    void navigate({ search, replace: true });
+  const close = () => step({});
   const again = channels.find(({ id }) => id === reconnect);
 
   return (
@@ -237,7 +244,7 @@ function Channels() {
         again={again}
         workspace={workspace}
         offline={offline}
-        onChoose={(network) => open({ add: network })}
+        onChoose={(network) => step({ add: network })}
         onClose={close}
       />
       <DisconnectDialog
