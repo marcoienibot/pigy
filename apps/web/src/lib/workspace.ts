@@ -66,9 +66,18 @@ export function showWorkspace(workspace: Workspace): void {
   sessionStorage.setItem(storageKey, workspace.id);
 }
 
+/**
+ * Forgets the choice of this tab. Every tab keeps its own where no other
+ * tab reaches it, so every tab has to forget it for itself: the one in
+ * which somebody signs out, and the others when they hear of it.
+ */
+export function forgetTabChoice(): void {
+  sessionStorage.removeItem(storageKey);
+}
+
 /** Forgets the choice, in this tab and on the device: after a sign-out. */
 export function forgetWorkspaceChoice(): void {
-  sessionStorage.removeItem(storageKey);
+  forgetTabChoice();
   localStorage.removeItem(storageKey);
 }
 

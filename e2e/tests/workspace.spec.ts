@@ -17,7 +17,7 @@ import {
   workspaceSwitch,
   writeDraft,
 } from "../app.ts";
-import { expect, type Page, test } from "../fixtures.ts";
+import { expect, type Page, signIn, test } from "../fixtures.ts";
 
 // The two workspaces of a person, live and sandbox, and the switch between
 // them. A tab shows one of them, which is its own choice, and the device
@@ -554,8 +554,10 @@ test("a tab goes on sending what was written in the workspace that it has left",
   ).toBeVisible();
 });
 
-test("signing out deletes the copies of both workspaces and the choice between them", async ({
+test("signing out deletes the copies of both workspaces and the choice between them, in every tab", async ({
   ownPage: page,
+  ownEmail,
+  context,
   isMobile,
 }) => {
   await writeDraft(page, isMobile, "In the sandbox");
@@ -563,6 +565,20 @@ test("signing out deletes the copies of both workspaces and the choice between t
   await switchTo(page, "Live");
   await writeDraft(page, isMobile, "In live");
   await expectSync(page, "Synced");
+  // A second tab, which starts with live and keeps that as its own choice.
+  // It is slow from here on, like a tab that sleeps in the background:
+  // whatever it loads waits until the test lets it.
+  const other = await context.newPage();
+  await other.goto("/");
+  await expectWorkspace(other, "Live");
+  let wake = () => {};
+  const asleep = new Promise<void>((resolve) => {
+    wake = resolve;
+  });
+  await other.route("**/*", async (route) => {
+    await asleep;
+    await route.fallback();
+  });
   // What the device remembers of the choice: for the tab, and for the
   // next one.
   const choice = () =>
@@ -581,4 +597,13 @@ test("signing out deletes the copies of both workspaces and the choice between t
   // So whoever signs in next starts where somebody new does, also if it is
   // the same person in the same tab.
   expect(await choice()).toEqual([null, null]);
+  await signIn(page, ownEmail);
+  await expectWorkspace(page, "Sandbox");
+  // The other tab kept a choice of its own, which the first could not
+  // reach. It starts again only now, when the same person is signed in
+  // again, so it never comes by the sign-in page, which forgets what it
+  // finds. It has forgotten its choice by itself: it shows the sandbox,
+  // not the live that it showed before.
+  wake();
+  await expectWorkspace(other, "Sandbox");
 });

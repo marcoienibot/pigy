@@ -5,7 +5,7 @@ import {
   workspaceListResponseSchema,
 } from "@pigy/core";
 import { ApiError, fetchMe, fetchWorkspaces, signOut } from "@/lib/api";
-import { forgetWorkspaceChoice } from "@/lib/workspace";
+import { forgetTabChoice, forgetWorkspaceChoice } from "@/lib/workspace";
 import { countUnsynced, deleteCopies } from "@/sync/indexed-db";
 import { closeWorkspaceSync } from "@/sync/workspace-sync";
 
@@ -248,20 +248,27 @@ export async function keptChanges(): Promise<{
 // start again, and find out who is signed in the way a new tab does.
 window.addEventListener("storage", (event) => {
   if (event.key !== storageKey || event.oldValue === event.newValue) return;
-  const whose = (value: string | null): unknown => {
+  const whose = (value: string | null): [unknown, unknown] | null => {
     try {
       const stored = JSON.parse(value ?? "null");
-      return stored && [stored.me?.user?.id, stored.ended];
+      return stored ? [stored.me?.user?.id, stored.ended] : null;
     } catch {
       return null;
     }
   };
+  const before = whose(event.oldValue);
+  const after = whose(event.newValue);
   // Not for a name or a role that changed: `checkSession` handles those
   // in every tab.
-  if (
-    JSON.stringify(whose(event.oldValue)) !==
-    JSON.stringify(whose(event.newValue))
-  ) {
+  if (JSON.stringify(before) !== JSON.stringify(after)) {
+    // The choice between live and sandbox that this tab keeps was that of
+    // whoever was signed in. They are gone, or somebody else is here: the
+    // tab that saw to that has forgotten its own choice and the device's,
+    // and cannot reach this one. Whoever signs in here next then starts
+    // where somebody new does, also if it is the same person. Not when
+    // the session of the same person has only ended by itself, or begun
+    // again: they come back to what they left.
+    if (before?.[0] !== after?.[0]) forgetTabChoice();
     closeWorkspaceSync();
     location.reload();
   }
