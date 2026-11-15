@@ -5,6 +5,7 @@ import { accessConfig } from "./auth/config.ts";
 import { authRoutes } from "./auth/routes.ts";
 import type { AppDependencies, AppEnv } from "./env.ts";
 import { handleError, handleNotFound } from "./errors.ts";
+import { workspaceRoutes } from "./workspace/routes.ts";
 
 /**
  * The Worker's routes. A new path prefix also has to go into
@@ -27,6 +28,7 @@ export function createApp(dependencies: AppDependencies): Hono<AppEnv> {
   );
   app.route("/api", authRoutes(dependencies));
   app.route("/api/admin", adminRoutes(dependencies));
+  app.route("/api", workspaceRoutes(dependencies));
 
   // The pages of the simulated Google. The path exists only while sign-in is
   // simulated.

@@ -1,4 +1,11 @@
-import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { environments } from "@pigy/core";
+import {
+  index,
+  integer,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from "drizzle-orm/sqlite-core";
 
 /**
  * The D1 schema. After changing it, run `pnpm --filter @pigy/worker
@@ -57,3 +64,30 @@ export const allowedEmails = sqliteTable("allowed_email", {
   }),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 });
+
+/**
+ * One user's data in one environment. The row only says that the workspace
+ * exists and whose it is.
+ */
+export const workspaces = sqliteTable(
+  "workspace",
+  {
+    /** Random, so that it cannot be guessed from a user ID. */
+    id: text("id").primaryKey(),
+    // Not "on delete cascade": deleting this row would leave the data of
+    // the workspace behind, with nothing pointing to it.
+    ownerId: text("owner_id")
+      .notNull()
+      .references(() => users.id),
+    environment: text("environment", { enum: environments }).notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [
+    // One workspace per user and environment. This is also what makes
+    // creating them idempotent.
+    uniqueIndex("workspace_owner_environment_idx").on(
+      table.ownerId,
+      table.environment,
+    ),
+  ],
+);
