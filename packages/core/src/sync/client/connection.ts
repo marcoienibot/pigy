@@ -181,7 +181,12 @@ export class SyncConnection {
     }
     this.state = "running";
     store.setConnection("connecting");
-    this.unsubscribe = store.subscribe(() => this.follow());
+    const unsubscribe = store.subscribe(() => this.follow());
+    const unlisten = store.onWake(() => this.wake());
+    this.unsubscribe = () => {
+      unsubscribe();
+      unlisten();
+    };
     const ended = new Promise<void>((resolve) => {
       this.finish = resolve;
     });

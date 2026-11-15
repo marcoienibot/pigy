@@ -93,18 +93,23 @@ async function open(
   }
 
   // The browser knows before a socket does that the network has changed,
-  // and timers do not run in a tab that sleeps.
-  const wake = () => {
-    if (document.visibilityState === "visible") connection.wake();
+  // and it says so in every tab, also in one in the background, which is
+  // where the socket may be. The timers of such a tab hardly run: left to
+  // them, it would connect again a minute later.
+  const online = () => connection.wake();
+  // A tab that comes to the front has slept, and the tab with the socket
+  // may be asleep still: whichever one that is, it is asked to look.
+  const visible = () => {
+    if (document.visibilityState === "visible") store.wakeHolder();
   };
-  window.addEventListener("online", wake);
-  document.addEventListener("visibilitychange", wake);
+  window.addEventListener("online", online);
+  document.addEventListener("visibilitychange", visible);
 
   return {
     store,
     close() {
-      window.removeEventListener("online", wake);
-      document.removeEventListener("visibilitychange", wake);
+      window.removeEventListener("online", online);
+      document.removeEventListener("visibilitychange", visible);
       waiting.abort();
       connection.stop();
       store.close();

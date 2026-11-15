@@ -799,6 +799,21 @@ it("checks a socket that seems open when it is told that the network has changed
   expect(socket.closed).toBe(true);
 });
 
+it("connects at once when a tab without the socket says that the network has changed", async () => {
+  const { device, socket } = await online();
+  const other = await device.tab();
+  await socket.close(1006);
+  expect(device.sockets).toHaveLength(1);
+
+  // The tab in front is the one that a person looks at, and that a
+  // browser lets run. It has no socket to connect, so it asks the tab that
+  // has, which may be in the background.
+  other.store.wakeHolder();
+  await settle();
+
+  expect(device.sockets).toHaveLength(2);
+});
+
 it("finds a mutation that a tab has stored without telling anybody, and sends it", async () => {
   const { device, store, socket } = await online();
   const id = newId();

@@ -58,7 +58,12 @@ export type TabMessage =
   /** From the tab that holds the socket. */
   | { type: "connection"; connection: ConnectionState }
   /** From a tab that has just opened and wants to know. */
-  | { type: "connection?" };
+  | { type: "connection?" }
+  /**
+   * From a tab that has reason to think that the network has changed, to
+   * the tab that holds the socket.
+   */
+  | { type: "wake" };
 
 /** A `BroadcastChannel`: what a tab posts reaches the other tabs. */
 export interface TabChannel {
@@ -98,6 +103,7 @@ export class SyncStore {
   private reloadQueued = false;
   /** Whether this tab holds the socket. */
   private holding = false;
+  private wakeListener: (() => void) | undefined;
   private closed = false;
   private stopListening = () => {};
 
@@ -257,6 +263,27 @@ export class SyncStore {
   }
 
   /**
+   * For when there is reason to think that the network has changed, in a
+   * tab that may not hold the socket: the tab that does is told, here or
+   * through the channel, and makes sure of its connection.
+   */
+  wakeHolder(): void {
+    if (this.holding) this.wakeListener?.();
+    else this.options.channel.post({ type: "wake" });
+  }
+
+  /**
+   * For the tab that holds the socket: `listener` is called when a tab
+   * asks for `wakeHolder()`. Returns how to stop.
+   */
+  onWake(listener: () => void): () => void {
+    this.wakeListener = listener;
+    return () => {
+      if (this.wakeListener === listener) this.wakeListener = undefined;
+    };
+  }
+
+  /**
    * Runs `step` in a transaction of the storage and brings the memory of
    * this tab up to what was written.
    *
@@ -364,6 +391,9 @@ export class SyncStore {
             connection: this.state.connection,
           });
         }
+        break;
+      case "wake":
+        if (this.holding) this.wakeListener?.();
         break;
     }
   }
