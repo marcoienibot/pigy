@@ -1,8 +1,15 @@
-import { runInDurableObject } from "cloudflare:test";
-import { connectErrorSchema, sandboxBlueskyHandles } from "@pigy/core";
-import { accessTokenLifetimeMs } from "@pigy/simulators/bluesky";
+import {
+  connectErrorSchema,
+  type Fetch,
+  sandboxBlueskyHandles,
+} from "@pigy/core";
+import {
+  accessTokenLifetimeMs,
+  type PostRecord,
+} from "@pigy/simulators/bluesky";
 import { feed } from "@pigy/simulators/world";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { developmentBlueskyClientKeys } from "../src/development-keys.ts";
 import {
   channelsOf,
   connectBlueskyInSandbox,
@@ -23,14 +30,16 @@ import {
 } from "./helpers.ts";
 import {
   ended,
+  patience,
   postOf,
   publishedOf,
   publishTo,
   started,
+  storedProgress,
   targetOf,
   writeDraft,
 } from "./publishing.ts";
-import { objectOf, SyncClient, workspaceIds } from "./sync-client.ts";
+import { SyncClient, workspaceIds } from "./sync-client.ts";
 
 /**
  * Bluesky in the Worker: pigy's client metadata, connecting an account in
@@ -39,6 +48,12 @@ import { objectOf, SyncClient, workspaceIds } from "./sync-client.ts";
  */
 
 const metadataPath = "/connect/bluesky/client-metadata.json";
+
+/**
+ * A key of pigy's client other than the one of the tests: the one of the
+ * repository, which is as good as any other here.
+ */
+const otherClientKey = developmentBlueskyClientKeys.replace(/^\d+:/, "");
 
 /** A signed-in admin and their workspaces. */
 async function start(options: Parameters<typeof setup>[0] = {}) {
@@ -115,10 +130,8 @@ describe("pigy as a client of Bluesky", () => {
   });
 
   it("names the key that it signs new connections with, and keeps the others", async () => {
-    const newer =
-      "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgCj+9E/o0LdQG8E+Rihsa7GEbjQ7zSIaFoQ51knoAAgGhRANCAATKD3QJ85MhWIEglaVAztVqWPYx+He7d07jTs5peuVOm1SxxgUDDtXC/jWxSy3EJQe+8xdLna01e6MHdXCridoY";
     const { test } = await start({
-      env: { BLUESKY_CLIENT_KEYS: `1:${blueskyClientKey},2:${newer}` },
+      env: { BLUESKY_CLIENT_KEYS: `1:${blueskyClientKey},2:${otherClientKey}` },
     });
     const metadata = await (await test.browser().fetch(metadataPath)).json();
     // The highest version first: it signs the connections that begin.
@@ -329,12 +342,15 @@ describe("publishing to Bluesky", () => {
   it("asks for the account to be connected again when the key that it was connected with is gone", async () => {
     const { test, browser, workspace, channel, client } =
       await withChannel("live");
+    // The access token has ended by the time of the post, so that its
+    // first step is refused and renews the access: a refresh is what
+    // needs the key of the client. A post needs none, so with an access
+    // token that is still good it would go out. The socket of the client
+    // has ended too, and is connected anew.
     test.advance(accessTokenLifetimeMs + 1000);
     await client.connect(browser, workspace);
     // The operator replaced the key without keeping the old one.
-    const other =
-      "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgCj+9E/o0LdQG8E+Rihsa7GEbjQ7zSIaFoQ51knoAAgGhRANCAATKD3QJ85MhWIEglaVAztVqWPYx+He7d07jTs5peuVOm1SxxgUDDtXC/jWxSy3EJQe+8xdLna01e6MHdXCridoY";
-    test.redeploy({ BLUESKY_CLIENT_KEYS: `2:${other}` });
+    test.redeploy({ BLUESKY_CLIENT_KEYS: `2:${otherClientKey}` });
 
     const draft = await writeDraft(client, workspace, "Without the key");
     const [targetId = ""] = await publishTo(client, draft.postId, channel);
@@ -350,22 +366,95 @@ describe("publishing to Bluesky", () => {
     expect(postOf(client, draft.postId).status).toBe("error");
   });
 
-  it("records the key of each part before it writes the part", async () => {
-    const { workspace, channel, client } = await withChannel("sandbox");
-    const draft = await writeDraft(client, workspace, "Keyed");
-    await publishTo(client, draft.postId, channel);
-    await ended(client, draft.postId);
-    // What the workspace keeps of the delivery is public: record keys and
-    // hashes, and no secret.
-    const [row] = await runInDurableObject(objectOf(workspace), (_, state) =>
-      state.storage.sql
-        .exec<{ progress: string }>("select progress from post_target")
-        .toArray(),
-    );
-    const progress = JSON.parse(row?.progress ?? "null");
-    expect(progress).toMatchObject({
-      done: true,
-      state: { did: expect.any(String), rkey: null, refs: [{}] },
+  it("records the key of each part before it writes the part, and nothing secret", async () => {
+    // The PDS holds a request that writes a part under a key until the test
+    // lets the key through. The test and the request each look at the
+    // value on a timer of their own: the request is made by a step of a
+    // workflow, which a promise of the test must not wake.
+    const writes = {
+      holding: true,
+      waiting: null as string | null,
+      passed: new Set<string>(),
+    };
+    const createRecord = `https://${realBlueskyPds}/xrpc/com.atproto.repo.createRecord`;
+    const context = await started({
+      interceptNetwork:
+        (network: Fetch): Fetch =>
+        async (input, init) => {
+          const request = new Request(input, init);
+          if (request.method === "POST" && request.url === createRecord) {
+            const { rkey } = (await request.clone().json()) as {
+              rkey: string;
+            };
+            while (writes.holding && !writes.passed.has(rkey)) {
+              writes.waiting = rkey;
+              await new Promise((resolve) => setTimeout(resolve, 5));
+            }
+          }
+          return network(request);
+        },
     });
+    const { test, browser, workspaces } = context;
+    const workspace = workspaces.live;
+    const { channel = "" } = await connectBlueskyLive(test, browser, workspace);
+    const client = new SyncClient();
+    await client.connect(browser, workspace);
+    const did = test.network.blueskyAccount.id;
+    const progress = async () => {
+      const [row] = await storedProgress(workspace);
+      return row?.progress ?? "";
+    };
+    /** A part as the network has it, and as the progress names it. */
+    const part = (text: string) => {
+      const post = feed(test.network.world, ["bluesky"]).find(
+        (entry) => entry.post.text === text,
+      )?.post as PostRecord | undefined;
+      if (!post) throw new Error(`Bluesky has no post "${text}"`);
+      return {
+        published: { id: post.id, url: post.url },
+        ref: { uri: post.id, cid: post.cid },
+        rkey: post.rkey,
+      };
+    };
+
+    try {
+      const draft = await writeDraft(client, workspace, "One", "Two");
+      await publishTo(client, draft.postId, channel);
+      const written: ReturnType<typeof part>[] = [];
+      for (const text of ["One", "Two"]) {
+        await vi.waitFor(() => expect(writes.waiting).not.toBeNull(), patience);
+        const key = writes.waiting ?? "";
+        // The write of the part is on its way, and the workspace has the
+        // key that it is written under already, with the parts before it.
+        expect(JSON.parse(await progress())).toEqual({
+          parts: written.map(({ published }) => published),
+          done: false,
+          waitSeconds: 0,
+          state: { did, rkey: key, refs: written.map(({ ref }) => ref) },
+        });
+        writes.waiting = null;
+        writes.passed.add(key);
+        // Written under that key.
+        await vi.waitFor(() => expect(part(text).rkey).toBe(key), patience);
+        written.push(part(text));
+      }
+      expect(await ended(client, draft.postId)).toMatchObject({
+        status: "sent",
+      });
+      // What the workspace keeps of the delivery: record keys and hashes,
+      // and nothing besides.
+      const kept = await progress();
+      expect(JSON.parse(kept)).toEqual({
+        parts: written.map(({ published }) => published),
+        done: true,
+        waitSeconds: 0,
+        state: { did, rkey: null, refs: written.map(({ ref }) => ref) },
+      });
+      for (const { token } of test.network.world.tokens("bluesky")) {
+        expect(kept).not.toContain(token);
+      }
+    } finally {
+      writes.holding = false;
+    }
   });
 });

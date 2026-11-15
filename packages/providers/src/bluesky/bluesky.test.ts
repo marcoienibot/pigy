@@ -767,6 +767,12 @@ describe("publishing", () => {
     const keys = (steps.at(-1)?.parts ?? []).map(({ id }) =>
       id.split("/").at(-1),
     );
+    // What the first step of a part recorded is the key that the second
+    // wrote it under, and the second leaves no key for the next part.
+    const recorded = steps.map(
+      ({ state }) => (state as { rkey: string | null }).rkey,
+    );
+    expect(recorded).toEqual([keys[0], null, keys[1], null]);
     // The keys grow with the thread, also on a clock that stands still: a
     // repository lists its records by their keys.
     expect(keys).toHaveLength(2);
