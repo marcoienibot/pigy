@@ -1,3 +1,4 @@
+import { serviceWorkerAnswersFor } from "../app.ts";
 import { expect, test } from "../fixtures.ts";
 
 // These tests prove the guard, which is the fixture in fixtures.ts and the
@@ -26,6 +27,61 @@ test("a request to another host is aborted and fails the test", async ({
   // this test, when it checks for requests to other hosts after the body.
   // Expecting the failure makes Playwright report this test as passed only
   // if the guard does fail it.
+  test.fail();
+});
+
+test("a request to another host is aborted when the service worker answers for the page", async ({
+  page,
+}) => {
+  await page.goto("/");
+  // From here on the requests of the page go to the service worker of the
+  // app first. It leaves this one to the browser, where the guard is: a
+  // worker that fetched it by itself would be the next test's business.
+  await serviceWorkerAnswersFor(page);
+
+  const failed = page.waitForEvent(
+    "requestfailed",
+    (request) => request.url() === otherHost,
+  );
+  await page.evaluate((url) => fetch(url).catch(() => {}), otherHost);
+  expect((await failed).failure()?.errorText).toContain(
+    "ERR_BLOCKED_BY_CLIENT",
+  );
+
+  // As above: only the guard can fail this test from here on.
+  test.fail();
+});
+
+test("a request of the service worker to another host is aborted and fails the test", async ({
+  page,
+  context,
+}) => {
+  await page.goto("/");
+  await serviceWorkerAnswersFor(page);
+  const [worker] = context.serviceWorkers();
+  if (!worker) throw new Error("The app has no service worker");
+
+  // The service worker of the app asks nothing of other hosts, so the test
+  // makes it. The request is not a page's: the guard has to see it all the
+  // same, and stop it.
+  const failed = context.waitForEvent(
+    "requestfailed",
+    (request) => request.url() === otherHost,
+  );
+  const outcome = await worker.evaluate(
+    (url) =>
+      fetch(url).then(
+        () => "answered",
+        () => "failed",
+      ),
+    otherHost,
+  );
+  expect(outcome).toBe("failed");
+  const request = await failed;
+  expect(request.serviceWorker()).toBe(worker);
+  expect(request.failure()?.errorText).toContain("ERR_BLOCKED_BY_CLIENT");
+
+  // As above: only the guard can fail this test from here on.
   test.fail();
 });
 

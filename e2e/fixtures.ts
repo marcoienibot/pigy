@@ -61,7 +61,12 @@ async function invite(
   baseURL: string,
   email: string,
 ): Promise<void> {
-  const context = await browser.newContext({ baseURL });
+  // Without a service worker, which this browser would install only to be
+  // closed: it signs in and makes one request.
+  const context = await browser.newContext({
+    baseURL,
+    serviceWorkers: "block",
+  });
   try {
     const strayRequests = await guardNetwork(context, new URL(baseURL).origin);
     const page = await context.newPage();
@@ -75,6 +80,36 @@ async function invite(
     expect(strayRequests).toEqual([]);
   } finally {
     await context.close();
+  }
+}
+
+/**
+ * Signs `context` in as `email` without loading a page in it: the sign-in
+ * happens in a browser of its own, and `context` is handed the session.
+ */
+async function signInElsewhere(
+  browser: Browser,
+  baseURL: string,
+  context: BrowserContext,
+  email: string,
+): Promise<void> {
+  // Without a service worker, as in `invite`.
+  const elsewhere = await browser.newContext({
+    baseURL,
+    serviceWorkers: "block",
+  });
+  try {
+    const strayRequests = await guardNetwork(
+      elsewhere,
+      new URL(baseURL).origin,
+    );
+    const page = await elsewhere.newPage();
+    await signIn(page, email);
+    await expect(page.getByRole("navigation", { name: "Main" })).toBeVisible();
+    await context.addCookies(await elsewhere.cookies());
+    expect(strayRequests).toEqual([]);
+  } finally {
+    await elsewhere.close();
   }
 }
 
@@ -124,7 +159,9 @@ async function guardNetwork(
  *
  * Tests must never reach a real network host, so the browser may only talk
  * to the app itself. A request or a WebSocket to any other origin is blocked,
- * and the test that made it fails once its body has run.
+ * and the test that made it fails once its body has run. That goes for the
+ * service worker of the app as for its pages: the requests of both are
+ * requests of the browser context, which is what is guarded.
  */
 export const test = base.extend<{
   networkGuard: undefined;
@@ -148,6 +185,12 @@ export const test = base.extend<{
    * own, signed in as `ownEmail`.
    */
   otherDevice: () => Promise<Page>;
+  /**
+   * Signs the browser of `page` in as `email` before it has loaded a page
+   * of the app. For a test that decides what the first page load of its
+   * browser gets, such as its first service worker.
+   */
+  signInBeforeFirstLoad: (email: string) => Promise<void>;
 }>({
   networkGuard: [
     async ({ context, baseURL }, use) => {
@@ -196,6 +239,11 @@ export const test = base.extend<{
       );
       return page;
     });
+  },
+
+  signInBeforeFirstLoad: async ({ browser, baseURL, context }, use) => {
+    if (!baseURL) throw new Error("baseURL is not set");
+    await use((email) => signInElsewhere(browser, baseURL, context, email));
   },
 
   newPerson: async (

@@ -1,4 +1,10 @@
-import type { Locator, Page, WebSocketRoute } from "@playwright/test";
+import type {
+  BrowserContext,
+  Locator,
+  Page,
+  WebSocketRoute,
+  Worker,
+} from "@playwright/test";
 import { expect } from "./fixtures.ts";
 
 /**
@@ -175,10 +181,118 @@ export async function expectSync(
 }
 
 /**
+ * Waits until the service worker of the app answers for `page`. It does
+ * from the moment it is installed, which is when it has every file of the
+ * app: a page that it answers for can be loaded without a connection.
+ */
+export async function serviceWorkerAnswersFor(page: Page): Promise<void> {
+  await page.waitForFunction(() => navigator.serviceWorker.controller !== null);
+}
+
+/**
+ * Makes the first version of the app that `context` gets an older one than
+ * the server has. Call it before a page of the context has opened the app.
+ *
+ * The server of the tests has one build, so the older version is made up
+ * here: the service worker of the build under another name for its caches,
+ * which is all that tells two versions apart. Playwright can hand a
+ * browser its first service worker. It cannot answer when the browser
+ * looks for a newer one: that question goes to the server, which has the
+ * build. So the newer version is on the server from the start, and the
+ * browser finds it the next time it looks. It looks after every page load
+ * that a service worker answers for, and when the app asks it to: until a
+ * test wants the newer version found, it moves about in the app and loads
+ * no page.
+ *
+ * For the same reason the page load that installs the older version has
+ * to be the first of the browser, which is therefore signed in with
+ * `signInBeforeFirstLoad` and not through the sign-in page. Holding the
+ * service worker back for the length of a sign-in does not work: that
+ * takes a route which fails its registration, and after one of those the
+ * Chromium of the tests installs a new service worker with every page
+ * load. It does not without a route, when it is a server that fails the
+ * registration.
+ *
+ * What the newer version keeps as its app shell says that it is the newer
+ * one, in `newerVersion`.
+ */
+export async function olderVersionFirst(
+  context: BrowserContext,
+): Promise<void> {
+  const current = await (await context.request.get("/sw.js")).text();
+  // What every cache of the app is named with: `prefix` in
+  // apps/web/src/sw/precache.ts.
+  const older = current.replaceAll("pigy-app-", "pigy-older-");
+  expect(
+    older,
+    "The service worker no longer names its caches with pigy-app-",
+  ).not.toBe(current);
+  await context.route("**/sw.js", (route) =>
+    route.fulfill({ contentType: "text/javascript", body: older }),
+  );
+
+  // The first service worker of the browser is the older version. Every
+  // one after it is the build.
+  let first: Worker | undefined;
+  context.on("serviceworker", (worker) => {
+    first ??= worker;
+  });
+  await context.route(
+    (url) => url.pathname === "/",
+    async (route) => {
+      // What a service worker keeps as its app shell. A page that asks
+      // the server itself gets the build's own, and so does the older
+      // version.
+      const worker = route.request().serviceWorker();
+      if (!worker || worker === first) return route.fallback();
+      const response = await route.fetch();
+      await route.fulfill({
+        // Without the headers of the server: the browser would keep this
+        // answer, and take it for what the server has later.
+        contentType: "text/html; charset=utf-8",
+        body: (await response.text()).replace("<html", "<html data-newer"),
+      });
+    },
+  );
+}
+
+/**
+ * The app shell of the newer version, if `page` was loaded from it: see
+ * `olderVersionFirst`.
+ */
+export function newerVersion(page: Page): Locator {
+  return page.locator("html[data-newer]");
+}
+
+/**
+ * Has the browser of `page` offer to install the app, as Chrome does when
+ * it has decided that the app can be installed. The browser of the tests
+ * never does: it installs nothing. Returns whether the app has kept the
+ * browser from showing a banner of its own.
+ */
+export function offerToInstall(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const offer = Object.assign(
+      new Event("beforeinstallprompt", { cancelable: true }),
+      {
+        prompt: async () => {
+          const counter = window as { askedToInstall?: number };
+          counter.askedToInstall = (counter.askedToInstall ?? 0) + 1;
+        },
+      },
+    );
+    window.dispatchEvent(offer);
+    return offer.defaultPrevented;
+  });
+}
+
+/**
  * Takes control of the connection of `page` to the server, which stays as
- * it is until `cut()`. The page itself and its scripts always load: the
- * app does not start without a network before phase 2c. Call this before
- * the page opens the app.
+ * it is until `cut()`. The page itself and its scripts always load, as
+ * they do without a connection: the service worker has them. This is for
+ * what `context.setOffline()` cannot do: lose the socket and keep the API,
+ * hold changes back, and count the sockets that the page tries to open.
+ * Call it before the page opens the app.
  */
 export async function connectionOf(page: Page) {
   let online = true;
