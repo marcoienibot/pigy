@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import { browser, draft, newId, settle } from "../../../test/sync-browser.ts";
 import { appendMutations, applyPatch } from "./copy.ts";
-import { type SyncStore, saveRetryMs } from "./store.ts";
+import { type SyncStore, saveRetryMs, tabAnswerMs } from "./store.ts";
 
 /** Creates a draft in `store` and returns the IDs of it and its part. */
 function createDraft(store: SyncStore, text: string) {
@@ -17,6 +17,36 @@ function gate() {
     open = resolve;
   });
   return { passed, open };
+}
+
+/**
+ * Makes every write to the stored copy fail, as on a device that has no
+ * room left. Reading still works. Returns how to make room again.
+ */
+function fill(device: ReturnType<typeof browser>): () => void {
+  const { update } = device.storage;
+  device.storage.update = (step, options) =>
+    update((head) => {
+      const outcome = step(head);
+      if (outcome.write) throw new Error("The disk is full");
+      return outcome;
+    }, options);
+  return () => {
+    device.storage.update = update;
+  };
+}
+
+/**
+ * How many mutations `store` says the tabs could not store, if it can say
+ * so without the clock being moved. Undefined if it waits for a tab.
+ */
+async function unsavedInAllTabs(store: SyncStore): Promise<number | undefined> {
+  let count: number | undefined;
+  void store.unsavedInAllTabs().then((unsaved) => {
+    count = unsaved;
+  });
+  await settle();
+  return count;
 }
 
 /** The texts of the parts that `store` shows, in no particular order. */
@@ -451,4 +481,84 @@ it("stores a mutation that a person makes in a tab that is too old for the copy"
   );
   expect(outcome).toBeUndefined();
   expect((await device.storage.read())?.head.meta.cursor).toBeNull();
+});
+
+it("counts the mutations that other tabs could not store", async () => {
+  const device = browser();
+  const one = await device.tab();
+  const two = await device.tab();
+  const makeRoom = fill(device);
+
+  createDraft(two.store, "Only in the second tab");
+  await settle();
+
+  // The draft is in no storage, and the first tab holds nothing of its own
+  // that is not: it knows of the draft from the second tab alone.
+  expect((await device.storage.read())?.head.outbox).toEqual([]);
+  expect(one.store.getState().unsaved).toBe(0);
+  expect(await unsavedInAllTabs(one.store)).toBe(1);
+  // A tab that opens later was not there to be told. It asks.
+  const three = await device.tab();
+  await settle();
+  expect(await unsavedInAllTabs(three.store)).toBe(1);
+  // What a tab holds itself is counted with the rest, in every tab.
+  createDraft(one.store, "Only in the first tab");
+  await settle();
+  for (const { store } of [one, two, three]) {
+    expect(await unsavedInAllTabs(store)).toBe(2);
+  }
+
+  // Stored, they are for whoever counts what the copy holds.
+  makeRoom();
+  await device.advance(saveRetryMs);
+  for (const { store } of [one, two, three]) {
+    expect(await unsavedInAllTabs(store)).toBe(0);
+  }
+  expect((await device.storage.read())?.head.outbox).toHaveLength(2);
+});
+
+it("does not count a tab that has closed its store", async () => {
+  const device = browser();
+  const one = await device.tab();
+  const two = await device.tab();
+  fill(device);
+  createDraft(two.store, "Only in the second tab");
+  await settle();
+  expect(await unsavedInAllTabs(one.store)).toBe(1);
+
+  // As when the app stops the sync of a tab. What the tab could not store
+  // is gone with that, and it says so as it goes: the first tab has
+  // nothing to wait for.
+  two.store.close();
+
+  expect(await unsavedInAllTabs(one.store)).toBe(0);
+});
+
+it("gives up on a tab that has gone without a word, and counts the others", async () => {
+  const device = browser();
+  const one = await device.tab();
+  const two = await device.tab();
+  fill(device);
+  createDraft(two.store, "Only in the second tab");
+  // A third tab could not store two mutations and was then closed, as a
+  // browser closes a tab: nothing ran in it that could have said so. The
+  // test has spoken in its place while it was there.
+  device.tabs.join().post({ type: "unsaved", tab: "closed", count: 2 });
+  await settle();
+
+  // The second tab says again at once what it holds. The third is given
+  // time to: it may only be slow, and what it holds would be lost.
+  let count: number | undefined;
+  void one.store.unsavedInAllTabs().then((unsaved) => {
+    count = unsaved;
+  });
+  await settle();
+  await device.advance(tabAnswerMs - 1);
+  expect(count).toBeUndefined();
+  // Then it counts as gone, and what it held with it: the first tab does
+  // not warn of mutations for ever that nobody can save any more.
+  await device.advance(1);
+  expect(count).toBe(1);
+  // Nor is it waited for a second time.
+  expect(await unsavedInAllTabs(one.store)).toBe(1);
 });

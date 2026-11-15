@@ -327,6 +327,48 @@ test("a change that the device cannot save is not called saved", async ({
   );
 });
 
+test("signing out asks first when another tab holds a change that it could not save", async ({
+  ownPage: first,
+  context,
+  isMobile,
+}) => {
+  await writeDraft(first, isMobile, "Written while there was room");
+  await expectSync(first, "Synced");
+  const second = await context.newPage();
+  await second.goto("/");
+
+  // The second tab cannot write the local copy, and says so.
+  await breakStorage(second);
+  await draftRow(second, "Written while there was room").click();
+  await editor(second).fill("Written in the second tab");
+  await expectSync(second, "Not saved · 1 change");
+
+  // Nothing in the first tab is unsaved, and the copy on the device holds
+  // nothing that the server has not got. Signing out here still makes the
+  // second tab start again, without its change, so the app asks first. The
+  // second tab told the first of the change before it said so on screen.
+  await expectSync(first, "Synced");
+  const account = first
+    .getByRole("button", { name: "Account" })
+    .filter({ visible: true });
+  await account.click();
+  await first.getByRole("menuitem", { name: "Sign out" }).click();
+  const dialog = first.getByRole("alertdialog");
+  await expect(dialog).toContainText("1 change has not been synced");
+  await dialog.getByRole("button", { name: "Stay signed in" }).click();
+  await expect(editor(second)).toHaveValue("Written in the second tab");
+
+  // The second tab is closed, and its change is gone with it: there is
+  // nothing left to ask about. The first tab does not go on asking because
+  // of a tab that can no longer tell it otherwise. It gives that tab two
+  // seconds to answer before it signs out, hence the longer wait.
+  await second.close();
+  await account.click();
+  await first.getByRole("menuitem", { name: "Sign out" }).click();
+  await expect(first).toHaveURL("/sign-in", { timeout: 15_000 });
+  expect(await localData(first)).toEqual({ copies: [], session: null });
+});
+
 test("signing out deletes the local copy, and signs the other tabs out", async ({
   ownPage: page,
   context,

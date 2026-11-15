@@ -76,12 +76,15 @@ export function UserMenu({ placement }: { placement: "sidebar" | "header" }) {
 
   // Signing out deletes the local copy, and with it what the server has
   // not got yet: only the person can say whether that may go. That is what
-  // the copies hold, and what this window could not store in its copy,
-  // which a count of the copies does not have.
+  // the copies hold, and what a window could not store in its copy, which
+  // a count of the copies does not have: this window, or another one,
+  // which starts again when this one has signed out.
   const askOrSignOut = async () => {
-    const stored = await countUnsynced(user.id).catch(() => 0);
-    const count = stored + store.getState().unsaved;
-    if (count > 0) setUnsynced(count);
+    const [stored, unsaved] = await Promise.all([
+      countUnsynced(user.id).catch(() => 0),
+      store.unsavedInAllTabs(),
+    ]);
+    if (stored + unsaved > 0) setUnsynced(stored + unsaved);
     else await signOutAndLeave();
   };
 

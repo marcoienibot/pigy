@@ -72,7 +72,14 @@ export type TabMessage =
    * From a tab that has reason to think that the network has changed, to
    * the tab that holds the socket.
    */
-  | { type: "wake" };
+  | { type: "wake" }
+  /**
+   * How many mutations the tab `tab` holds that it could not store: from a
+   * tab whose count has changed, or that holds some and was asked.
+   */
+  | { type: "unsaved"; tab: string; count: number }
+  /** From a tab that wants to know which tabs hold such mutations now. */
+  | { type: "unsaved?" };
 
 /** A `BroadcastChannel`: what a tab posts reaches the other tabs. */
 export interface TabChannel {
@@ -87,6 +94,13 @@ export interface TabChannel {
  * milliseconds.
  */
 export const saveRetryMs = 5_000;
+
+/**
+ * How long a tab that has said that it holds mutations which it could not
+ * store has to say so again when it is asked, in milliseconds. After that
+ * it counts as gone, and its mutations with it.
+ */
+export const tabAnswerMs = 2_000;
 
 const noRejections: readonly StoredRejection[] = [];
 
@@ -129,6 +143,15 @@ export class SyncStore {
    */
   private readonly ahead = new Map<number, PendingMutation>();
   private cancelCatchUp: (() => void) | undefined;
+  /** Names this tab among those that share the copy. */
+  private readonly tab: string;
+  /**
+   * How many mutations the other tabs have last said they could not store,
+   * by tab. A tab that holds none is not in it.
+   */
+  private readonly elsewhere = new Map<string, number>();
+  /** Called with the name of every tab that says how many it holds. */
+  private readonly answered = new Set<(tab: string) => void>();
   private readonly listeners = new Set<() => void>();
   /** The work on the storage, which is done one piece at a time. */
   private queue: Promise<unknown> = Promise.resolve();
@@ -149,7 +172,9 @@ export class SyncStore {
       /** Told of failures of the storage that nobody waits for. */
       onError: (error: unknown) => void;
     },
-  ) {}
+  ) {
+    this.tab = uuidv7(options.now());
+  }
 
   /** Loads the copy, which is made first if there is none. */
   async open(): Promise<void> {
@@ -164,11 +189,17 @@ export class SyncStore {
       await this.read();
       this.refresh(true);
     });
-    if (!this.closed) channel.post({ type: "connection?" });
+    if (this.closed) return;
+    channel.post({ type: "connection?" });
+    channel.post({ type: "unsaved?" });
   }
 
-  /** Stops following the other tabs. What is stored stays. */
+  /**
+   * Stops following the other tabs. What is stored stays, and what could
+   * not be stored is gone, which the other tabs are told.
+   */
   close(): void {
+    if (this.state.unsaved > 0) this.announce(0);
     this.closed = true;
     this.cancelSaveRetry?.();
     this.cancelCatchUp?.();
@@ -276,6 +307,43 @@ export class SyncStore {
       await this.read();
       this.refresh(true);
     });
+  }
+
+  /**
+   * How many mutations the tabs that share the copy could not store, this
+   * one and the others. They are in no storage, so this is the only way to
+   * learn of them for whoever is about to do what loses them: signing out
+   * makes every tab start again.
+   *
+   * A tab says so when it cannot store a mutation. One that was closed
+   * since, or has died, has taken its mutations with it and cannot say
+   * that. So the tabs that are known to hold some are asked again first,
+   * and one that has not answered in `tabAnswerMs` is not counted, now or
+   * the next time.
+   */
+  async unsavedInAllTabs(): Promise<number> {
+    const { channel, schedule } = this.options;
+    if (this.elsewhere.size > 0) {
+      const silent = new Set(this.elsewhere.keys());
+      await new Promise<void>((resolve) => {
+        const answered = (tab: string) => {
+          silent.delete(tab);
+          if (silent.size === 0) done();
+        };
+        const done = () => {
+          cancel();
+          this.answered.delete(answered);
+          resolve();
+        };
+        const cancel = schedule(done, tabAnswerMs);
+        this.answered.add(answered);
+        channel.post({ type: "unsaved?" });
+      });
+      for (const tab of silent) this.elsewhere.delete(tab);
+    }
+    let count = this.state.unsaved;
+    for (const held of this.elsewhere.values()) count += held;
+    return count;
   }
 
   /** For the tab that holds the socket: says how it is getting on. */
@@ -533,7 +601,22 @@ export class SyncStore {
       case "wake":
         if (this.holding) this.wakeListener?.();
         break;
+      case "unsaved":
+        if (message.count > 0) this.elsewhere.set(message.tab, message.count);
+        else this.elsewhere.delete(message.tab);
+        for (const answered of [...this.answered]) answered(message.tab);
+        break;
+      case "unsaved?":
+        // A tab that holds none says nothing, which is what the others
+        // take a tab for that they have not heard from.
+        if (this.state.unsaved > 0) this.announce(this.state.unsaved);
+        break;
     }
+  }
+
+  /** Tells the other tabs how many mutations this one could not store. */
+  private announce(count: number): void {
+    this.options.channel.post({ type: "unsaved", tab: this.tab, count });
   }
 
   private reloadLater(): void {
@@ -564,6 +647,7 @@ export class SyncStore {
     if (rows) this.view = viewOf(this.copy.tables, mutations);
     const pending = mutations.length;
     const unsaved = this.saveFailed ? this.unsaved.length : 0;
+    if (unsaved !== this.state.unsaved) this.announce(unsaved);
     if (pending !== this.state.pending || unsaved !== this.state.unsaved) {
       this.state = { ...this.state, pending, unsaved };
     }
