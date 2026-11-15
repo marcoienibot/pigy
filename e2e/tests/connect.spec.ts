@@ -1,43 +1,13 @@
 import { expect, type Page, signIn, test, uniqueEmail } from "../fixtures.ts";
+import {
+  api,
+  openConsentPage,
+  sandboxServer,
+  workspacesOf,
+} from "../sandbox.ts";
 
-// The simulated Mastodon server that every sandbox starts with, and the
-// account of it that these tests connect: `sandboxMastodonDomain` in
-// packages/core/src/sandbox.ts and the accounts in
-// apps/worker/src/sim/object.ts.
-const server = "mastodon.example";
+const server = sandboxServer;
 const handle = `@grace@${server}`;
-
-/** Calls the API from `page`, as the app does, and returns the answer. */
-function api(page: Page, method: string, path: string, json?: unknown) {
-  return page.evaluate(
-    async ({ method, path, json }) => {
-      const response = await fetch(path, {
-        method,
-        ...(json !== undefined && {
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(json),
-        }),
-      });
-      // An answer without content has no JSON to read.
-      const body = response.status === 204 ? null : await response.json();
-      return { status: response.status, body };
-    },
-    { method, path, json },
-  );
-}
-
-/** The IDs of the workspaces of whoever is signed in on `page`. */
-async function workspacesOf(
-  page: Page,
-): Promise<{ live: string; sandbox: string }> {
-  const { body } = await api(page, "GET", "/api/workspaces");
-  const id = (environment: string): string =>
-    body.workspaces.find(
-      (workspace: { environment: string }) =>
-        workspace.environment === environment,
-    ).id;
-  return { live: id("live"), sandbox: id("sandbox") };
-}
 
 /** The channels of a workspace, as its sync socket sends them to a new client. */
 function channelsOf(page: Page, workspaceId: string) {
@@ -54,7 +24,7 @@ function channelsOf(page: Page, workspaceId: string) {
                 type: "hello",
                 // The versions in packages/core/src/sync/protocol.ts.
                 protocolVersion: 2,
-                schemaVersion: 2,
+                schemaVersion: 3,
                 clientId: `01932c07-0000-7000-8000-${crypto.randomUUID().slice(-12)}`,
                 cursor: null,
                 lastMutationId: 0,
@@ -97,21 +67,6 @@ const personTest = test.extend<{ person: Page }>({
     await use(page);
   },
 });
-
-/** Begins to connect a Mastodon account, and goes where the app says. */
-async function openConsentPage(page: Page, workspaceId: string) {
-  const start = await api(
-    page,
-    "POST",
-    `/api/workspaces/${workspaceId}/connect`,
-    {
-      network: "mastodon",
-      identifier: server,
-    },
-  );
-  expect(start.status).toBe(200);
-  await page.goto(start.body.url);
-}
 
 // The Worker tests cover what the routes do. This is about what only a
 // browser shows: that the consent page is one a person can use, that the
