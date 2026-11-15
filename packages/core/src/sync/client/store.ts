@@ -143,6 +143,8 @@ export class SyncStore {
   /** Whether the last attempt to store `unsaved` failed. */
   private saveFailed = false;
   private cancelSaveRetry: (() => void) | undefined;
+  /** Called when `unsaved` is empty, each once: see `whenStored`. */
+  private readonly awaitingStored = new Set<() => void>();
   /**
    * Mutations of this tab that are in the stored outbox and not in the one
    * in memory, by ID and in the order of their IDs. Another tab had written
@@ -217,6 +219,8 @@ export class SyncStore {
   close(): void {
     this.leaving();
     this.closed = true;
+    // Nothing stores them any more, so nobody has to wait for it.
+    this.allStored();
     this.cancelSaveRetry?.();
     this.cancelCatchUp?.();
     this.stopListening();
@@ -271,6 +275,35 @@ export class SyncStore {
     }
     this.refresh(true);
     this.save();
+  }
+
+  /**
+   * Whether this tab holds a mutation that is not stored, which is what
+   * `whenStored` waits for. For whoever waits for several stores: one of
+   * them can take another mutation while the others are waited for, and
+   * this says so in the moment in which it is asked. False once the store
+   * is closed.
+   */
+  holdsUnstored(): boolean {
+    return !this.closed && this.unsaved.length > 0;
+  }
+
+  /**
+   * Resolves when this tab holds no mutation that is not stored: none that
+   * waits to be written, none that is being written, and none whose write
+   * has failed, which the store tries again. Such a mutation is in the
+   * memory of this tab and nowhere else, so this is what to wait for
+   * before the page is loaded again. `unsaved` of the state does not say
+   * as much: it counts the last kind only.
+   *
+   * At once if there is none, and when the store is closed: what it has
+   * not stored by then is gone.
+   */
+  whenStored(): Promise<void> {
+    if (!this.holdsUnstored()) return Promise.resolve();
+    return new Promise((resolve) => {
+      this.awaitingStored.add(resolve);
+    });
   }
 
   /** Forgets a rejection, in every tab: the person has seen it. */
@@ -429,6 +462,8 @@ export class SyncStore {
       this.unsaved.splice(0, calls.length);
       this.saving = 0;
       this.saveFailed = false;
+      // Unless more were made while these were written: they are next.
+      if (this.unsaved.length === 0) this.allStored();
       await this.follow(write, true).catch((error: unknown) => {
         // The storage has the mutations and the memory of this tab is
         // behind, which reading the copy again makes up for.
@@ -461,6 +496,12 @@ export class SyncStore {
         this.save();
       }, saveRetryMs);
     });
+  }
+
+  /** Tells whoever waits in `whenStored` that there is nothing left. */
+  private allStored(): void {
+    for (const resolve of this.awaitingStored) resolve();
+    this.awaitingStored.clear();
   }
 
   /**

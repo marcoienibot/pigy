@@ -148,12 +148,19 @@ export async function checkForUpdate(): Promise<void> {
  * Loads the app again, as its newest version if the server can be asked
  * for it: the page that starts lets a version that waits take over, see
  * `startServiceWorker`. For a button that says "Reload".
+ *
+ * Not before what was typed a moment ago is stored. That is over at once,
+ * unless the device fails to store it: a window that holds such changes
+ * does not offer the button, and one that comes to hold them after the
+ * button was pressed stays, and says "Not saved", until it has stored
+ * them.
  */
 export async function reloadToUpdate(): Promise<void> {
   await Promise.race([
     checkForUpdate(),
     new Promise((resolve) => setTimeout(resolve, updateCheckMs)),
   ]);
+  await whenSaved();
   location.reload();
 }
 

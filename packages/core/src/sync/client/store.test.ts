@@ -381,6 +381,97 @@ it("leaves a mutation as it is while it is being stored", async () => {
   expect(store.getState()).toMatchObject({ pending: 3, unsaved: 1 });
 });
 
+/** The names of the mutations in the stored outbox of `device`. */
+async function storedOutbox(device: ReturnType<typeof browser>) {
+  return (await device.storage.read())?.head.outbox.map(({ name }) => name);
+}
+
+it("says that everything is stored only when the write that is under way has committed", async () => {
+  const device = browser();
+  const { store } = await device.tab();
+  // A storage that takes its time: it stores nothing before the test says.
+  const { update } = device.storage;
+  const slow = gate();
+  device.storage.update = async (step, options) => {
+    await slow.passed;
+    return update(step, options);
+  };
+
+  const { partId } = createDraft(store, "Typed a moment ago");
+  // What the stored copy holds in the moment in which the store says that
+  // there is nothing left to store: what a page that is loaded again in
+  // that moment comes back with.
+  const kept = store.whenStored().then(() => storedOutbox(device));
+  let resolved = false;
+  void kept.then(() => {
+    resolved = true;
+  });
+  // The store has begun to write the draft, and more is made meanwhile,
+  // which waits for a write of its own.
+  await settle();
+  store.mutate("part.setText", { id: partId, text: "Typed just now" });
+  await settle();
+
+  // Nothing has failed, so there is nothing to say on screen. The draft is
+  // still only in the memory of this tab.
+  expect(store.getState()).toMatchObject({ pending: 2, unsaved: 0 });
+  expect(await storedOutbox(device)).toEqual([]);
+  expect(resolved).toBe(false);
+  expect(store.holdsUnstored()).toBe(true);
+
+  slow.open();
+  // The draft that was being written, and what waited behind it.
+  expect(await kept).toEqual(["post.create", "part.setText"]);
+  // From here on there is nothing to wait for.
+  expect(store.holdsUnstored()).toBe(false);
+  await expect(store.whenStored()).resolves.toBe(undefined);
+});
+
+it("says that everything is stored only when a later attempt has stored what a write failed for", async () => {
+  const device = browser();
+  const { store } = await device.tab();
+  const makeRoom = fill(device);
+
+  createDraft(store, "Kept");
+  // Asked while the write is under way, before anybody knows that it will
+  // fail: `unsaved` of the state is still 0 here.
+  const kept = store.whenStored().then(() => storedOutbox(device));
+  let resolved = false;
+  void kept.then(() => {
+    resolved = true;
+  });
+  await settle();
+  expect(store.getState()).toMatchObject({ pending: 1, unsaved: 1 });
+  expect(resolved).toBe(false);
+
+  // The next attempt fails as well.
+  await device.advance(saveRetryMs);
+  expect(device.errors).toHaveLength(2);
+  expect(resolved).toBe(false);
+
+  makeRoom();
+  await device.advance(saveRetryMs);
+  expect(await kept).toEqual(["post.create"]);
+});
+
+it("has nothing to wait for once the store is closed", async () => {
+  const device = browser();
+  const { store } = await device.tab();
+  fill(device);
+  createDraft(store, "Lost");
+  await settle();
+  const waiting = store.whenStored();
+
+  // The store gives up what it could not store, so no later attempt will
+  // come. Whoever waits to load the page again must not wait for ever.
+  store.close();
+
+  await expect(waiting).resolves.toBe(undefined);
+  expect(store.holdsUnstored()).toBe(false);
+  await expect(store.whenStored()).resolves.toBe(undefined);
+  expect(await storedOutbox(device)).toEqual([]);
+});
+
 it("stores a mutation once when the copy cannot be read right after", async () => {
   const device = browser();
   const { store } = await device.tab();

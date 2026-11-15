@@ -279,19 +279,24 @@ export function syncUnsent(userId: string, workspaces: Workspace[]): void {
 }
 
 /**
- * Resolves when this tab holds no change that it could not store, in any
- * workspace that it syncs: at once, unless the device has failed one. For
- * whoever is about to load the page again, which would lose such a change.
+ * Resolves when this tab holds no change that is not stored, in any
+ * workspace that it syncs: at once, unless a change is waiting to be
+ * written, is being written, or could not be written, which the store
+ * tries again. For whoever is about to load the page again, which would
+ * lose such a change: it is in the memory of this tab and nowhere else.
+ *
+ * It resolves in a moment in which no store holds such a change. One store
+ * can take a change while another one is waited for, so all of them are
+ * asked again after every wait.
  */
 export async function whenSaved(): Promise<void> {
-  if (unsavedInTab() === 0) return;
-  await new Promise<void>((resolve) => {
-    const stop = onSyncChange(() => {
-      if (unsavedInTab() > 0) return;
-      stop();
-      resolve();
-    });
-  });
+  for (;;) {
+    const waiting = [...stores.values()].filter((store) =>
+      store.holdsUnstored(),
+    );
+    if (waiting.length === 0) return;
+    await Promise.all(waiting.map((store) => store.whenStored()));
+  }
 }
 
 /**
