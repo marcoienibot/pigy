@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  type Browser,
   type BrowserContext,
   test as base,
   expect,
@@ -47,6 +48,33 @@ export async function signIn(
     ({ pathname }) =>
       !pathname.startsWith("/sim/") && !pathname.startsWith("/api/"),
   );
+}
+
+/**
+ * Puts `email` on the allowlist, as the admin, in a browser of its own.
+ * The invitation goes straight to the API: the screen for it has its own
+ * tests.
+ */
+async function invite(
+  browser: Browser,
+  baseURL: string,
+  email: string,
+): Promise<void> {
+  const context = await browser.newContext({ baseURL });
+  try {
+    const strayRequests = await guardNetwork(context, new URL(baseURL).origin);
+    const page = await context.newPage();
+    await signIn(page, adminEmail);
+    const response = await page.request.post("/api/admin/allowed-emails", {
+      data: { email, role: "member" },
+      // What a page of the app sends with a request that changes something.
+      headers: { Origin: new URL(baseURL).origin },
+    });
+    expect(response.status()).toBe(204);
+    expect(strayRequests).toEqual([]);
+  } finally {
+    await context.close();
+  }
 }
 
 /**
@@ -106,6 +134,19 @@ export const test = base.extend<{
    * cookies with `page`. Guarded like `page`, and closed after the test.
    */
   newPerson: () => Promise<Page>;
+  /**
+   * The address of somebody who is invited for this test alone. Their
+   * workspace is empty and no other test touches it, which the workspace of
+   * the admin is not: all tests share that one.
+   */
+  ownEmail: string;
+  /** `page`, signed in as `ownEmail`, on the drafts screen. */
+  ownPage: Page;
+  /**
+   * Opens the app on another device of the same person: a browser of its
+   * own, signed in as `ownEmail`.
+   */
+  otherDevice: () => Promise<Page>;
 }>({
   networkGuard: [
     async ({ context, baseURL }, use) => {
@@ -130,6 +171,30 @@ export const test = base.extend<{
     // The app shell is only there for somebody who is signed in.
     await expect(page.getByRole("navigation", { name: "Main" })).toBeVisible();
     await use(page);
+  },
+
+  ownEmail: async ({ browser, baseURL }, use, testInfo) => {
+    if (!baseURL) throw new Error("baseURL is not set");
+    const email = uniqueEmail(testInfo, "writer");
+    await invite(browser, baseURL, email);
+    await use(email);
+  },
+
+  ownPage: async ({ page, ownEmail }, use) => {
+    await signIn(page, ownEmail);
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("Drafts");
+    await use(page);
+  },
+
+  otherDevice: async ({ newPerson, ownEmail }, use) => {
+    await use(async () => {
+      const page = await newPerson();
+      await signIn(page, ownEmail);
+      await expect(page.getByRole("heading", { level: 1 })).toHaveText(
+        "Drafts",
+      );
+      return page;
+    });
   },
 
   newPerson: async (
