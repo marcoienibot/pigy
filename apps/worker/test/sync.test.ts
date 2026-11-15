@@ -2,6 +2,7 @@ import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import {
   maxPartTextLength,
+  mutators,
   pingMessageText,
   syncCloseCodes,
   syncLimits,
@@ -15,6 +16,7 @@ import {
 } from "../src/workspace/object.ts";
 import {
   changeLogWindow,
+  isDatabaseFailure,
   maxRefusalMessageLength,
   WorkspaceStore,
 } from "../src/workspace/store.ts";
@@ -606,6 +608,30 @@ it("closes the older socket of a client that opens another", async () => {
   expect(await other.patch()).toMatchObject({ from: 0, to: 1 });
 });
 
+it("keeps the socket that a client opened last when the hello of an older one arrives late", async () => {
+  const { browser, workspace } = await start();
+  // A client on a bad connection: the hello on its first socket is held up
+  // on the way, so it gives the socket up and opens another, on which the
+  // hello gets through.
+  const older = new SyncClient();
+  await older.open(browser, workspace);
+  const newer = new SyncClient();
+  await newer.connect(browser, workspace);
+
+  // Only now the first hello arrives, with the same client ID, on a socket
+  // that is still open as far as the server can tell.
+  older.hello({ clientId: newer.clientId });
+
+  // The socket that was opened first is the one that goes, although its
+  // hello came last. It gets no answer: the client is not listening there.
+  expect(await older.closed).toMatchObject({ code: syncCloseCodes.replaced });
+  expect(older.received).toEqual([]);
+  // Had the server gone by the order of the hellos, it would have closed
+  // the newer socket, and the client would be left without any.
+  await createPost(newer, "Hello");
+  expect(newer.table("post")).toHaveLength(1);
+});
+
 it("sends a change that the Worker makes to the clients that are connected", async () => {
   const { test, workspace, client } = await connected();
   const identity = await identityOf(test, workspace);
@@ -998,20 +1024,103 @@ it("counts a mutation that fails on the server as processed, and keeps the reaso
   expect(String(logged.mock.calls[0]?.[1])).toContain("secret detail");
 });
 
+it.each([
+  [
+    "it hands the database something that is not a row",
+    async () => {
+      // Fails in the code that stores rows, before the database is asked.
+      const bug = vi
+        .spyOn(mutators["post.create"], "apply")
+        .mockImplementationOnce((tx) => tx.put("post", undefined as never));
+      onTestFinished(() => bug.mockRestore());
+    },
+  ],
+  [
+    "it writes a value that the database cannot hold",
+    async (workspace: string) => {
+      // No mutator writes one today, so a trigger makes the value: a blob
+      // larger than SQLite takes. SQLite reports it with a result code of
+      // its own, which is not a violated constraint.
+      await runInDurableObject(objectOf(workspace), (_, state) => {
+        state.storage.sql.exec(
+          `create trigger too_big before insert on post_part
+           when new.text = 'Bug'
+           begin select zeroblob(3000000000); end`,
+        );
+      });
+    },
+  ],
+])(
+  "rejects for good the mutation of a mutator with a bug: %s",
+  async (_name, plant) => {
+    const { workspace, client } = await connected();
+    const logged = expectErrors();
+    await plant(workspace);
+    const fine = { id: newId(), partId: newId(), text: "Fine" };
+
+    client.send({
+      type: "mutate",
+      mutations: [
+        client.mutation("post.create", {
+          id: newId(),
+          partId: newId(),
+          text: "Bug",
+        }),
+        client.mutation("post.create", fine),
+      ],
+    });
+    const patch = await client.patch();
+
+    // Not a failure of the database, which would close the socket and have
+    // the client send both again, with the same end, for ever. The first
+    // is done with, and the one after it gets through.
+    expect(patch.lastMutationId).toBe(2);
+    expect(patch.rejected).toEqual([
+      { id: 1, code: "internal_error", message: "Something went wrong" },
+    ]);
+    expect(client.table("post").map(({ id }) => id)).toEqual([fine.id]);
+    expect(logged).toHaveBeenCalled();
+  },
+);
+
+it.each([
+  ["database or disk is full: SQLITE_FULL", true],
+  ["disk I/O error: SQLITE_IOERR (extended: SQLITE_IOERR_WRITE)", true],
+  // About what was written, so the same again next time.
+  ["string or blob too big: SQLITE_TOOBIG", false],
+  [
+    "NOT NULL constraint failed: post_part.text: SQLITE_CONSTRAINT (extended: SQLITE_CONSTRAINT_NOTNULL)",
+    false,
+  ],
+  // What a trigger raises ends with the code of a constraint, whatever its
+  // message says: text that a row carries cannot pass for a failure.
+  [
+    "database or disk is full: SQLITE_FULL: SQLITE_CONSTRAINT (extended: SQLITE_CONSTRAINT_TRIGGER)",
+    false,
+  ],
+  // Thrown before the database was asked: no result code at all.
+  ["Cannot read properties of undefined (reading 'id')", false],
+])("tells whether the database failed by itself: %s", (message, failed) => {
+  expect(isDatabaseFailure(new Error(message))).toBe(failed);
+});
+
 it("processes nothing of a message when the database fails under a mutator", async () => {
   const { browser, workspace, client } = await connected();
   const logged = expectErrors();
-  // A database that fails for a reason of its own, as one that is full
-  // does: nothing is wrong with the mutation, and later it would work. A
-  // test cannot fill the database, so a trigger fails the write with
-  // another error that is not about the row: a value too large for SQLite.
-  await runInDurableObject(objectOf(workspace), (_, state) => {
-    state.storage.sql.exec(
-      `create trigger out_of_space before insert on post_part
-       when new.text = 'Second'
-       begin select zeroblob(3000000000); end`,
-    );
+  // A database that fails for a reason of its own: it is full. Nothing is
+  // wrong with the mutation, and later it would work. A test cannot fill
+  // the database, so the write of one row fails the way SQLite reports it.
+  const full = await runInDurableObject(objectOf(workspace), (_, state) => {
+    const { sql } = state.storage;
+    const exec = sql.exec.bind(sql);
+    return vi.spyOn(sql, "exec").mockImplementation((query, ...bindings) => {
+      if (query.includes('"post_part"') && bindings.includes("Second")) {
+        throw new Error("database or disk is full: SQLITE_FULL");
+      }
+      return exec(query, ...bindings);
+    });
   });
+  onTestFinished(() => full.mockRestore());
   const mutations = [
     // Rejected, for good reason: there is no such part.
     client.mutation("part.setText", { id: newId(), text: "Nowhere" }),
@@ -1044,9 +1153,7 @@ it("processes nothing of a message when the database fails under a mutator", asy
   expect(stored).toEqual({ posts: [], clients: [], rejections: [] });
 
   // The failure passes, and the client sends the same mutations again.
-  await runInDurableObject(objectOf(workspace), (_, state) => {
-    state.storage.sql.exec("drop trigger out_of_space");
-  });
+  full.mockRestore();
   expect(await client.connect(browser, workspace)).toMatchObject({
     to: 0,
     lastMutationId: 0,

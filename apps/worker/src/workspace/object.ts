@@ -56,6 +56,12 @@ type SocketState = {
   /** When the socket stops being good, in milliseconds since the epoch. */
   expiresAt: number;
   /**
+   * Higher for a socket that was opened later, among the sockets that the
+   * object holds. Their hellos can arrive in another order than they were
+   * opened in.
+   */
+  order: number;
+  /**
    * What the server spoke when the socket was opened. A socket can stay open
    * while a deploy replaces the code of the object, and with it the
    * versions that its client agreed to in its hello.
@@ -127,11 +133,21 @@ export function workspaceObject({ now }: { now: Clock }) {
         return new Response(null, { status: 429 });
       }
 
+      // One more than the highest of the sockets that the object holds, in
+      // whatever state. The number is not stored anywhere else: it only has
+      // to tell apart sockets that are open at the same time.
+      const order =
+        1 +
+        Math.max(
+          0,
+          ...this.ctx.getWebSockets().map((socket) => stateOf(socket).order),
+        );
       const { 0: client, 1: server } = new WebSocketPair();
       this.ctx.acceptWebSocket(server);
       server.serializeAttachment({
         clientId: null,
         expiresAt: time + socketLifetimeMs,
+        order,
         protocolVersion: syncProtocolVersion,
         schemaVersion: syncSchemaVersion,
       } satisfies SocketState);
@@ -244,19 +260,30 @@ export function workspaceObject({ now }: { now: Clock }) {
         fail(socket, "invalid_message", "This socket has said hello already");
         return;
       }
-      // A client has one socket. An older one with the same client ID is
-      // one that the client has given up, or that of another tab over the
-      // same copy. Left open, it would get the answers to mutations that
-      // were sent on this one, and each of the two would see the other move
-      // the cursor they share. This socket is not among them: it has no
-      // client ID yet.
-      for (const other of this.ctx.getWebSockets()) {
-        if (
-          other.readyState === WebSocket.OPEN &&
-          stateOf(other).clientId === hello.clientId
-        ) {
-          other.close(syncCloseCodes.replaced, "Replaced by a newer socket");
-        }
+      // A client has one socket: the one it opened last. Another with the
+      // same client ID is one that the client has given up, or that of
+      // another tab over the same copy. Left open, it would get the answers
+      // to mutations that were sent on this one, and each of the two would
+      // see the other move the cursor they share. This socket is not among
+      // the others: it has no client ID yet.
+      const others = this.ctx
+        .getWebSockets()
+        .filter(
+          (other) =>
+            other.readyState === WebSocket.OPEN &&
+            stateOf(other).clientId === hello.clientId,
+        );
+      // Which of them is the newer one goes by when they were opened, not
+      // by when their hellos arrive. On a bad connection a client gives up
+      // a socket whose hello is still on its way, and that hello can get
+      // here after the one of the socket that the client opened next. If
+      // it closed that socket, the client would be left with none.
+      if (others.some((other) => stateOf(other).order > state.order)) {
+        socket.close(syncCloseCodes.replaced, "Replaced by a newer socket");
+        return;
+      }
+      for (const other of others) {
+        other.close(syncCloseCodes.replaced, "Replaced by a newer socket");
       }
       socket.serializeAttachment({
         ...state,

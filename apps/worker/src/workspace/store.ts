@@ -57,8 +57,8 @@ export const maxRefusalMessageLength = 200;
 
 /**
  * Thrown in place of what the database threw, when it failed for a reason
- * that is not the mutation's: it is full, say, or cannot be read. Running
- * the mutation again later can work.
+ * of its own: it is full, say, or cannot be read. Running the mutation
+ * again later can work.
  */
 class StorageFailure extends Error {
   constructor(cause: unknown) {
@@ -117,17 +117,16 @@ class RecordingTransaction implements Transaction {
   }
 
   /**
-   * Makes a call to the database. If the call fails because it violates a
-   * constraint, that is the doing of the mutator, which asked for something
-   * that cannot be stored: the error is thrown as it is, like anything else
-   * that goes wrong in a mutator. Any other failure is the database's own
-   * and is thrown as a `StorageFailure`.
+   * Makes a call to the database. If the database fails for a reason of
+   * its own, the error is thrown as a `StorageFailure`. Anything else is
+   * thrown as it is, like whatever else goes wrong in a mutator: it comes
+   * from what the mutator asked for, and would come again.
    */
   private stored<Result>(call: () => Result): Result {
     try {
       return call();
     } catch (error) {
-      throw isConstraintViolation(error) ? error : new StorageFailure(error);
+      throw isDatabaseFailure(error) ? new StorageFailure(error) : error;
     }
   }
 
@@ -403,17 +402,41 @@ function refusalOf(error: unknown): Refusal {
 }
 
 /**
- * Whether the database refused a statement for what it was asked to store:
- * a value that is missing, or a reference to a row that is not there. The
- * runtime throws a plain `Error` for everything that SQLite reports, and
- * says which kind it is only at the end of the message, where it puts the
- * result code: "…: SQLITE_CONSTRAINT (extended: SQLITE_CONSTRAINT_NOTNULL)".
- * An error that this does not recognise counts as a failure of the
- * database, which loses nothing: the client sends its mutations again.
+ * The result codes with which SQLite says that it could not do its work,
+ * whatever it was asked: no room, no access, no memory, a damaged file.
+ * Every other code is about the statement or its values, such as a
+ * constraint that a row violates or a value that is too large.
  */
-function isConstraintViolation(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    /: SQLITE_CONSTRAINT(?: \(extended: SQLITE_[A-Z_]+\))?$/.test(error.message)
-  );
+const databaseFailureCodes = new Set([
+  "SQLITE_BUSY",
+  "SQLITE_CANTOPEN",
+  "SQLITE_CORRUPT",
+  "SQLITE_FULL",
+  "SQLITE_INTERRUPT",
+  "SQLITE_IOERR",
+  "SQLITE_LOCKED",
+  "SQLITE_NOMEM",
+  "SQLITE_NOTADB",
+  "SQLITE_READONLY",
+]);
+
+/**
+ * Whether the database failed for a reason of its own, so that the same
+ * statement can work later. The runtime throws a plain `Error` for
+ * everything that SQLite reports, and says which kind it is only at the end
+ * of the message, where it puts the result code: "…: SQLITE_FULL", or
+ * "…: SQLITE_IOERR (extended: SQLITE_IOERR_WRITE)".
+ *
+ * Anything that this does not recognise counts as the mutator's doing: an
+ * error without a result code is thrown before the database is asked, and a
+ * code that is not listed is about what the mutator wrote. Taking it for a
+ * failure of the database would make the client send the mutation again
+ * for ever, with the same result, and nothing after it would get through.
+ */
+export function isDatabaseFailure(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const code = /: (SQLITE_[A-Z]+)(?: \(extended: SQLITE_[A-Z_]+\))?$/.exec(
+    error.message,
+  )?.[1];
+  return code !== undefined && databaseFailureCodes.has(code);
 }
