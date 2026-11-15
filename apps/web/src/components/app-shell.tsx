@@ -1,7 +1,16 @@
 import { Link, linkOptions } from "@tanstack/react-router";
 import { CalendarClock, PenLine, Send, Settings, Share2 } from "lucide-react";
 import type { ReactNode } from "react";
+import {
+  CommandPalette,
+  useOpenCommandPalette,
+} from "@/components/command-palette";
+import { Rejections } from "@/components/rejections";
+import { SyncIndicator } from "@/components/sync-indicator";
+import { Kbd } from "@/components/ui/kbd";
+import { Toaster } from "@/components/ui/sonner";
 import { UserMenu } from "@/components/user-menu";
+import { modKey } from "@/lib/keyboard";
 import { cn } from "@/lib/utils";
 
 const navItems = linkOptions([
@@ -12,14 +21,45 @@ const navItems = linkOptions([
   { to: "/settings", label: "Settings", icon: Settings },
 ]);
 
-/** Sidebar on desktop, bottom tab bar on phones. */
+/** Opens the command palette, and says which keys do the same. */
+function CommandsButton() {
+  const open = useOpenCommandPalette();
+  return (
+    <button
+      type="button"
+      onClick={open}
+      className="ml-auto flex h-6 items-center gap-1 rounded-md px-1 text-xs text-muted-foreground outline-none hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+    >
+      <span className="sr-only">Commands</span>
+      <Kbd>{modKey}</Kbd>
+      <Kbd>K</Kbd>
+    </button>
+  );
+}
+
+/**
+ * Sidebar on desktop, bottom tab bar on phones, and what every screen has
+ * around it: the command palette and the notices.
+ */
 export function AppShell({ children }: { children: ReactNode }) {
+  return (
+    <CommandPalette>
+      <Shell>{children}</Shell>
+      <Rejections />
+      {/* On a phone, above the bottom bar. */}
+      <Toaster position="bottom-right" mobileOffset={{ bottom: 72 }} />
+    </CommandPalette>
+  );
+}
+
+function Shell({ children }: { children: ReactNode }) {
   return (
     <div className="flex h-dvh flex-col md:flex-row">
       <aside className="hidden w-56 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground md:flex">
         <div className="flex h-11 shrink-0 items-center gap-2 px-4">
           <img src="/icon.svg" alt="" className="size-5 rounded-sm" />
           <span className="font-semibold tracking-tight">pigy</span>
+          <CommandsButton />
         </div>
         <nav aria-label="Main" className="flex flex-1 flex-col gap-0.5 px-2">
           {navItems.map(({ label, icon: Icon, ...link }) => (
@@ -38,7 +78,8 @@ export function AppShell({ children }: { children: ReactNode }) {
             </Link>
           ))}
         </nav>
-        <div className="p-2">
+        <div className="flex flex-col gap-0.5 p-2">
+          <SyncIndicator placement="sidebar" />
           <UserMenu placement="sidebar" />
         </div>
       </aside>
