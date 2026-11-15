@@ -83,8 +83,9 @@ export type Published = {
 
 /**
  * Writes a post with `text` and publishes it to a channel, as a client of
- * the sync protocol: there is no screen for it yet. It returns what the
- * client holds of the post once the post has left `sending`.
+ * the sync protocol and without the screens, which `publishDraft` of
+ * app.ts goes through. It returns what the client holds of the post once
+ * the post has left `sending`.
  *
  * The client is written from SYNC.md, in the page, where it has the
  * session of whoever is signed in. It is the one that AGENTS.md gives for

@@ -13,8 +13,9 @@ const handle = `@ada@${sandboxServer}`;
 // the engine of the tests. This is about what they cannot show: that the
 // Worker as it is built and served has the workflow, bound and exported,
 // and that the Durable Object of a workspace, its alarm, the workflow and
-// the simulated world of a sandbox work together there. There is no screen
-// for publishing yet, so the test speaks the sync protocol itself.
+// the simulated world of a sandbox work together there. The test speaks the
+// sync protocol itself, as the client for the console in AGENTS.md does:
+// publishing.spec.ts publishes through the screens.
 //
 // `ownPage` is somebody who is invited for this test alone: every sandbox
 // has the same simulated accounts, and the tests of both projects run at
