@@ -5,11 +5,14 @@ import { useNewDraft } from "@/lib/drafts";
 import { refusedChange } from "@/lib/mutations";
 import { useRejections } from "@/sync/react";
 
-/** The text that a refused edit would have set, if it was one with text. */
+/**
+ * The text that a refused edit would have set, if it was one with text
+ * that has more in it than space.
+ */
 function lostText({ name, args }: StoredRejection): string {
   if (name !== "part.setText") return "";
   const text = (args as { text?: unknown } | null)?.text;
-  return typeof text === "string" ? text.trim() : "";
+  return typeof text === "string" && text.trim() !== "" ? text : "";
 }
 
 /**
@@ -30,11 +33,14 @@ export function Rejections() {
   useEffect(() => {
     for (const rejection of rejections) {
       const text = lostText(rejection);
+      // Trimmed for the notice only: the draft gets the text as it was
+      // written, with its indentation and its last empty lines.
+      const quote = text.trim();
       // With an ID, a notice that is on screen already is left as it is.
       toast.error(refusedChange(rejection.name), {
         id: rejection.key,
         description: text
-          ? `${rejection.message}. You wrote: “${text.length > 80 ? `${text.slice(0, 80)}…` : text}”`
+          ? `${rejection.message}. You wrote: “${quote.length > 80 ? `${quote.slice(0, 80)}…` : quote}”`
           : `${rejection.message}.`,
         duration: Number.POSITIVE_INFINITY,
         closeButton: true,

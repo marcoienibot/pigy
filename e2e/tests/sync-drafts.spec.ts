@@ -184,10 +184,13 @@ test("an edit that the server refuses is taken back, and the person is told", as
   await expectSync(page, "Synced");
   const other = await otherDevice();
 
-  // Edited here, offline, and deleted there in the meantime.
+  // Edited here, offline, and deleted there in the meantime. The text
+  // begins with an indentation and ends with an empty line, which are part
+  // of what was written.
+  const written = "  Edited after it was deleted elsewhere\n";
   await connection.cut();
   await draftRow(page, "Doomed draft").click();
-  await editor(page).fill("Edited after it was deleted elsewhere");
+  await editor(page).fill(written);
   await draftRow(other, "Doomed draft").click();
   await other.getByRole("button", { name: "Delete draft" }).click();
   await expect(draftRows(other)).toHaveCount(0);
@@ -208,15 +211,13 @@ test("an edit that the server refuses is taken back, and the person is told", as
   await page.reload();
   await expect(notice).toBeVisible();
   await notice.getByRole("button", { name: "Keep as new draft" }).click();
-  await expect(editor(page)).toHaveValue(
-    "Edited after it was deleted elsewhere",
-  );
+  // All of it: the notice quotes the text without the space around it, and
+  // the draft is not made from the quote.
+  await expect(editor(page)).toHaveValue(written);
   await expect(notice).toHaveCount(0);
   await expect(draftRow(other, "Edited after it was deleted")).toBeVisible();
   await page.reload();
-  await expect(editor(page)).toHaveValue(
-    "Edited after it was deleted elsewhere",
-  );
+  await expect(editor(page)).toHaveValue(written);
   await expect(notice).toHaveCount(0);
 });
 
