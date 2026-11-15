@@ -109,9 +109,9 @@ Steps 1 to 4 belong in one transaction of the local store. The patch that confir
 | --- | --- | --- |
 | 4400 | An `error` message came before | See above |
 | 4401 | The socket has reached the end of its life | Connect again at once |
-| 1011 | The server failed while it handled a message, and did not process it | Connect again, after a pause |
+| 1011 | The server failed while it handled a message. It may have processed the message or not. The server also closes the sockets of other clients with this code, when it has made a change and cannot send it to them | Connect again, after a pause |
 
-After any close, and after a socket was lost, a client connects again, says hello with its cursor and sends its unconfirmed mutations again: all of them, or those after the `lastMutationId` of the answer to its hello. A socket can be lost without the client being told. A client that gets no `pong`, or no patch in answer to a `mutate`, within a time of its choosing closes the socket and connects again.
+After any close, and after a socket was lost, a client connects again, says hello with its cursor and sends its unconfirmed mutations again under the IDs they have: all of them, or those after the `lastMutationId` of the answer to its hello. The server skips the ones that it has processed, so a client never has to know whether a message got through, after a 1011 no more than after a lost socket. A socket can be lost without the client being told. A client that gets no `pong`, or no patch in answer to a `mutate`, within a time of its choosing closes the socket and connects again.
 
 ## 4. Mutations
 
@@ -125,7 +125,7 @@ The mutators, their arguments and what they refuse are in `packages/core/src/syn
 
 Whoever creates a row makes up its ID, so a client can create rows while it is offline. `uuidv7` in `packages/core` makes one.
 
-Every mutation that a client sends is processed exactly once, and one of three things happens: it changes rows, it changes nothing, or it is rejected. All three are final. A mutation is also rejected, not refused as a message, if its name is unknown (`unknown_mutation`), its arguments are not what the mutator takes (`invalid_arguments`), or the server fails while running it (`internal_error`). Otherwise a client would send it again for ever, and none of its later mutations would get through.
+Every mutation that a client sends is processed exactly once, and one of three things happens: it changes rows, it changes nothing, or it is rejected. All three are final. A mutation is also rejected, not refused as a message, if its name is unknown (`unknown_mutation`), its arguments are not what the mutator takes (`invalid_arguments`), or its mutator fails on it, which is a bug in the server (`internal_error`). Otherwise a client would send it again for ever, and none of its later mutations would get through. It is another matter when the database of the workspace fails under a mutator, because it is full, for example: sent again later, the mutation can go through. The server then processes nothing of the message and closes the socket with 1011.
 
 The server does not keep the reason of a rejection. If the socket is lost before the patch with `rejected` arrives, the client learns from the `lastMutationId` of its next hello that the mutation was processed, and from the rows that it had no effect, but not why.
 
@@ -137,10 +137,11 @@ Conflicts need no handling by a client. Mutations are applied in the order they 
 
 This is not part of the contract, but it explains its edges.
 
-- **One object per workspace.** A workspace is a Durable Object with a SQLite database, named after the ID of the workspace. It handles one message at a time and everything it does with one is synchronous, so mutations have a single order, and a patch is sent to every socket before the next message is looked at.
+- **One object per workspace.** A workspace is a Durable Object with a SQLite database, named after the ID of the workspace. It handles one message at a time and everything it does with one is synchronous, so mutations have a single order, and a patch is sent to every socket before the next message is looked at. A socket that a patch cannot be sent to is closed with 1011, so that no client stays connected without a change and waits for nothing.
 - **What a client is missing.** The server keeps a change log: for each change, the tables and IDs of the rows it wrote or deleted, not their contents. What a client at cursor N is missing is then the current state of every row that the log names after N: a `put` if the row exists, a `delete` if not. The patch that goes to the connected clients after a change is computed the same way, so there is one path from the database into a message. The alternative, a version number in every row plus tombstones for deleted rows, would need columns in every synced table and a rule for when a tombstone may go. With a log, a synced table needs nothing, and deletions are entries like any other.
 - **Keeping the log bounded.** The log covers the last 1,000 changes. A client whose cursor is older gets a snapshot, as does a client with no cursor, and one whose cursor is higher than the workspace's sequence number, which can only come from another workspace or from a workspace that was restored to an earlier state. A snapshot costs as much as the workspace is large, which for text is little.
 - **Exactly once.** For every client ID the server stores the ID of the last mutation it has processed, in the same transaction as the changes of that mutation. The rows of this table are never removed: one small row per local copy that has ever sent a mutation.
+- **Rejected or failed.** An error is the mutator's, and the mutation rejected for good, if the mutator throws it or if the database refuses what the mutator writes because it violates a constraint. Any other error from the database while a mutator reads or writes is the database's own, and aborts the message.
 - **What can be synced.** Each synced table has an explicit list of synced columns, in `apps/worker/src/workspace/synced.ts`, and every row in a patch is read through it. A column or a table that is not listed cannot get into a message.
 - **Hibernation.** The sockets stay open while the object is not in memory. What the object knows about a socket, its client ID and when it runs out, is stored with the socket, and everything else is in the database.
 - **Who is asking.** The object does not see the client's request. The Worker makes a new one that names the workspace, after it has checked the session and the owner. The object remembers which workspace it holds from the first time it is used, and refuses to serve another.

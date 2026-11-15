@@ -10,7 +10,7 @@ import {
 } from "@pigy/core";
 import { expect, it, onTestFinished, vi } from "vitest";
 import { socketLifetimeMs } from "../src/workspace/object.ts";
-import { changeLogWindow } from "../src/workspace/store.ts";
+import { changeLogWindow, WorkspaceStore } from "../src/workspace/store.ts";
 import { mutateWorkspace } from "../src/workspace/workspaces.ts";
 import { adminEmail, setup, signedIn } from "./helpers.ts";
 import {
@@ -781,8 +781,9 @@ it("ignores what arrives on a socket after it was closed for an error", async ()
 it("counts a mutation that fails on the server as processed, and keeps the reason to itself", async () => {
   const { workspace, client } = await connected();
   const logged = expectErrors();
-  // A mutator that fails for a reason of the server's own: the database
-  // refuses what it writes. No mutator does that today, so a trigger does.
+  // A mutator with a bug: it writes a row that breaks a rule of the
+  // database. No mutator does that today, so a trigger makes up a rule.
+  // SQLite reports what a trigger raises as the violation of a constraint.
   await runInDurableObject(objectOf(workspace), (_, state) => {
     state.storage.sql.exec(
       `create trigger refuse_long_text before insert on post_part
@@ -819,6 +820,71 @@ it("counts a mutation that fails on the server as processed, and keeps the reaso
   expect(String(logged.mock.calls[0]?.[1])).toContain("secret detail");
 });
 
+it("processes nothing of a message when the database fails under a mutator", async () => {
+  const { browser, workspace, client } = await connected();
+  const logged = expectErrors();
+  // A database that fails for a reason of its own, as one that is full
+  // does: nothing is wrong with the mutation, and later it would work. A
+  // test cannot fill the database, so a trigger fails the write with
+  // another error that is not about the row: a value too large for SQLite.
+  await runInDurableObject(objectOf(workspace), (_, state) => {
+    state.storage.sql.exec(
+      `create trigger out_of_space before insert on post_part
+       when new.text = 'Second'
+       begin select zeroblob(3000000000); end`,
+    );
+  });
+  const mutations = [
+    // Rejected, for good reason: there is no such part.
+    client.mutation("part.setText", { id: newId(), text: "Nowhere" }),
+    client.mutation("post.create", {
+      id: newId(),
+      partId: newId(),
+      text: "First",
+    }),
+    client.mutation("post.create", {
+      id: newId(),
+      partId: newId(),
+      text: "Second",
+    }),
+  ];
+
+  client.send({ type: "mutate", mutations });
+
+  // Not a rejection, which would be final and lose the third mutation for
+  // a reason that passes. The client is told to try again.
+  expect(await client.closed).toMatchObject({ code: syncCloseCodes.failure });
+  expect(logged).toHaveBeenCalled();
+  // Nothing of the message is processed, also not the mutations before the
+  // one that failed: what the second wrote is not there, and none of the
+  // three counts as processed.
+  const stored = await runInDurableObject(objectOf(workspace), (_, state) => ({
+    posts: state.storage.sql.exec("select id from post").toArray(),
+    clients: state.storage.sql.exec("select * from client_mutation").toArray(),
+  }));
+  expect(stored).toEqual({ posts: [], clients: [] });
+
+  // The failure passes, and the client sends the same mutations again.
+  await runInDurableObject(objectOf(workspace), (_, state) => {
+    state.storage.sql.exec("drop trigger out_of_space");
+  });
+  expect(await client.connect(browser, workspace)).toMatchObject({
+    to: 0,
+    lastMutationId: 0,
+  });
+  client.send({ type: "mutate", mutations });
+  const patch = await client.patch();
+
+  expect(patch).toMatchObject({ to: 2, lastMutationId: 3 });
+  expect(patch.rejected.map(({ id }) => id)).toEqual([1]);
+  expect(
+    client
+      .table("post_part")
+      .map(({ text }) => text)
+      .sort(),
+  ).toEqual(["First", "Second"]);
+});
+
 it("processes nothing of a message when it cannot keep its books", async () => {
   const { workspace, client } = await connected();
   const logged = expectErrors();
@@ -831,7 +897,7 @@ it("processes nothing of a message when it cannot keep its books", async () => {
   client.mutate("post.create", { id: newId(), partId: newId(), text: "Lost" });
 
   // The client gets no answer to wait for: it is told to start over.
-  expect(await client.closed).toMatchObject({ code: 1011 });
+  expect(await client.closed).toMatchObject({ code: syncCloseCodes.failure });
   expect(logged).toHaveBeenCalled();
   // What the mutator wrote is undone, and the mutation does not count as
   // processed, so a client that sends it again is not ignored.
@@ -840,4 +906,98 @@ it("processes nothing of a message when it cannot keep its books", async () => {
     clients: state.storage.sql.exec("select * from client_mutation").toArray(),
   }));
   expect(stored).toEqual({ posts: [], clients: [] });
+});
+
+it("closes every socket when it cannot work out what a mutation changed after it is committed", async () => {
+  const { browser, workspace, client } = await connected();
+  const other = new SyncClient();
+  await other.connect(browser, workspace);
+  const logged = expectErrors();
+  // The fault: for once, the object cannot read what has changed. The next
+  // time it asks is for the patch of the mutation below, which it does
+  // when the mutation is committed.
+  const fault = vi
+    .spyOn(WorkspaceStore.prototype, "changesSince")
+    .mockImplementationOnce(() => {
+      throw new Error("The database cannot be read");
+    });
+  onTestFinished(() => fault.mockRestore());
+  const create = client.mutation("post.create", {
+    id: newId(),
+    partId: newId(),
+    text: "Committed",
+  });
+
+  client.send({ type: "mutate", mutations: [create] });
+
+  // Also the client that sent nothing. Left open without the change, it
+  // would go on getting pongs and have no reason to ask for anything.
+  expect(await client.closed).toMatchObject({ code: syncCloseCodes.failure });
+  expect(await other.closed).toMatchObject({ code: syncCloseCodes.failure });
+  expect(logged).toHaveBeenCalled();
+  // Both get the change from their cursors when they connect again.
+  expect(await other.connect(browser, workspace)).toMatchObject({
+    from: 0,
+    to: 1,
+  });
+  expect(await client.connect(browser, workspace)).toMatchObject({
+    from: 0,
+    to: 1,
+    lastMutationId: create.id,
+  });
+  // A client that did not look at that answer sends the mutation again,
+  // because it cannot know that it was processed. It is skipped.
+  client.send({ type: "mutate", mutations: [create] });
+  expect(await client.patch()).toMatchObject({
+    from: 1,
+    to: 1,
+    changes: [],
+    rejected: [],
+  });
+  expect(other.copy).toEqual(client.copy);
+  expect(client.table("post")).toHaveLength(1);
+});
+
+it("sends a change to the other sockets when it cannot send it to one", async () => {
+  const { browser, workspace } = await start();
+  const clients = [new SyncClient(), new SyncClient(), new SyncClient()];
+  for (const client of clients) await client.connect(browser, workspace);
+  // The order in which the object goes through its sockets. The fault is
+  // with the first of them: if it stopped the object there, the two after
+  // it would get nothing.
+  const order = await runInDurableObject(objectOf(workspace), (_, state) =>
+    state
+      .getWebSockets()
+      .map((socket): string => socket.deserializeAttachment().clientId),
+  );
+  const [unlucky, author, reader] = order.map((id) =>
+    clients.find((client) => client.clientId === id),
+  );
+  if (!unlucky || !author || !reader) throw new Error("A socket is missing");
+  const logged = expectErrors();
+  // The fault: what the object reads to make the patch of one client fails.
+  const lastMutationId = WorkspaceStore.prototype.lastMutationId;
+  const fault = vi
+    .spyOn(WorkspaceStore.prototype, "lastMutationId")
+    .mockImplementation(function (this: WorkspaceStore, clientId) {
+      if (clientId === unlucky.clientId) {
+        throw new Error("The database cannot be read");
+      }
+      return lastMutationId.call(this, clientId);
+    });
+  onTestFinished(() => fault.mockRestore());
+
+  await createPost(author, "Hello");
+
+  expect(await reader.patch()).toMatchObject({ from: 0, to: 1 });
+  // The one that was left out is not left open: it connects again and gets
+  // the change from its cursor.
+  expect(await unlucky.closed).toMatchObject({ code: syncCloseCodes.failure });
+  expect(logged).toHaveBeenCalled();
+  fault.mockRestore();
+  expect(await unlucky.connect(browser, workspace)).toMatchObject({
+    from: 0,
+    to: 1,
+  });
+  expect(unlucky.copy).toEqual(author.copy);
 });

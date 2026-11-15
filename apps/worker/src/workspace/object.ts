@@ -160,7 +160,7 @@ export function workspaceObject({ now }: { now: Clock }) {
         // happen, so the client is told to start over rather than left to
         // wait for an answer.
         console.error("A sync message failed", error);
-        socket.close(1011, "Something went wrong");
+        abandon(socket);
       }
     }
 
@@ -290,28 +290,50 @@ export function workspaceObject({ now }: { now: Clock }) {
      * that asked for them gets an answer even if nothing changed: it tells
      * the client that its mutations were processed, in the same message as
      * what they changed.
+     *
+     * The changes are committed by now, so this does not throw. A socket
+     * that it cannot send them to is closed instead, for its client to
+     * connect again and get them from its cursor: none is left open without
+     * them, where it would wait for nothing.
      */
     #publish(
       from: number,
       origin?: { socket: WebSocket; rejected: Rejection[] },
     ): void {
-      const patch = this.#store.changesSince(from);
+      const sockets = this.ctx
+        .getWebSockets()
+        .filter((socket) => socket.readyState === WebSocket.OPEN);
+      let patch: Patch;
+      try {
+        patch = this.#store.changesSince(from);
+      } catch (error) {
+        // Nobody can be told what changed, so everybody may be behind.
+        console.error("The changes of a workspace were not sent", error);
+        for (const socket of sockets) abandon(socket);
+        return;
+      }
       const time = now().getTime();
-      for (const socket of this.ctx.getWebSockets()) {
-        if (socket.readyState !== WebSocket.OPEN) continue;
-        const state = stateOf(socket);
-        // A socket that has not said hello is not behind: its hello is
-        // answered with everything.
-        if (state.clientId === null) continue;
-        const isOrigin = socket === origin?.socket;
-        if (patch.changes.length === 0 && !isOrigin) continue;
-        if (!usable(socket, state, time)) continue;
-        send(
-          socket,
-          patch,
-          this.#store.lastMutationId(state.clientId),
-          isOrigin ? origin.rejected : [],
-        );
+      for (const socket of sockets) {
+        // Each socket by itself: what goes wrong for one must not keep the
+        // changes from the ones after it.
+        try {
+          const state = stateOf(socket);
+          // A socket that has not said hello is not behind: its hello is
+          // answered with everything.
+          if (state.clientId === null) continue;
+          const isOrigin = socket === origin?.socket;
+          if (patch.changes.length === 0 && !isOrigin) continue;
+          if (!usable(socket, state, time)) continue;
+          send(
+            socket,
+            patch,
+            this.#store.lastMutationId(state.clientId),
+            isOrigin ? origin.rejected : [],
+          );
+        } catch (error) {
+          console.error("The changes of a workspace were not sent", error);
+          abandon(socket);
+        }
       }
     }
   };
@@ -323,7 +345,8 @@ function stateOf(socket: WebSocket): SocketState {
 
 /**
  * Sends `patch`, in as many messages as it takes to keep each from growing
- * past `syncLimits.patchChangesLength`.
+ * past `syncLimits.patchChangesLength`. Throws if the socket does not take
+ * them: whoever calls this closes the socket then.
  */
 function send(
   socket: WebSocket,
@@ -360,11 +383,18 @@ function send(
       rejected,
     } satisfies PatchMessage),
   );
+  for (const frame of frames) socket.send(frame);
+}
+
+/**
+ * Closes a socket whose client may be behind, or waits for an answer that
+ * will not come. The client connects again and says where it is.
+ */
+function abandon(socket: WebSocket): void {
   try {
-    for (const frame of frames) socket.send(frame);
+    socket.close(syncCloseCodes.failure, "Something went wrong");
   } catch {
-    // The socket went away in the meantime. Its client connects again and
-    // says where it is.
+    // It went away in the meantime.
   }
 }
 

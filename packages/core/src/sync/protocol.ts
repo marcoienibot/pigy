@@ -37,6 +37,11 @@ export const syncCloseCodes = {
    * takes, unless the session has ended in the meantime.
    */
   reconnect: 4401,
+  /**
+   * The server failed while it handled a message, which it may or may not
+   * have processed. The code is the one that WebSocket has for this.
+   */
+  failure: 1011,
 } as const;
 
 /** A count of committed changes, or a mutation ID. */
