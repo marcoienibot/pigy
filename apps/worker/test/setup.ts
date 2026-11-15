@@ -1,4 +1,8 @@
-import { applyD1Migrations, reset } from "cloudflare:test";
+import {
+  applyD1Migrations,
+  evictAllDurableObjects,
+  reset,
+} from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { beforeEach } from "vitest";
 // Imported for its side effect: it keeps the runtime's own `fetch` for
@@ -15,10 +19,15 @@ globalThis.fetch = async (input) => {
   );
 };
 
-// Every test starts with an empty database that has the current schema.
-// Storage is only separate per test file, so without this a test would see
-// what the tests before it in the same file left behind.
+// Every test starts with an empty database that has the current schema, and
+// with no workspace objects. Storage is only separate per test file, so
+// without this a test would see what the tests before it in the same file
+// left behind.
 beforeEach(async () => {
+  // First the sockets that the test before left open, and those that a
+  // workspace was still closing when the test ended. Deleting an object
+  // from under them makes the runtime log an exception for each.
+  await evictAllDurableObjects({ webSockets: "close" });
   await reset();
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
 });

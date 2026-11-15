@@ -7,6 +7,7 @@ import { createApp } from "../src/app.ts";
 import { allowedEmails } from "../src/db/schema.ts";
 import type { Bindings } from "../src/env.ts";
 import { createSimulatedGoogle } from "../src/simulated-google.ts";
+import { clock } from "./clock.ts";
 
 const origin = "https://pigy.test";
 export const adminEmail = "admin@example.com";
@@ -22,8 +23,9 @@ type Secrets = "ADMIN_EMAILS" | "GOOGLE_CLIENT_ID" | "GOOGLE_CLIENT_SECRET";
 /**
  * The app as it runs in production, with Google credentials, except that
  * the `fetch` it is given leads to a simulated Google and its clock is
- * `clock`. The bindings are listed one by one, so that nothing from a
- * `.dev.vars` on this machine gets into the tests.
+ * `clock`, which is also the clock of the workspace objects. The bindings
+ * are listed one by one, so that nothing from a `.dev.vars` on this machine
+ * gets into the tests.
  */
 export function setup(
   options: {
@@ -35,11 +37,8 @@ export function setup(
     intercept?: (google: Fetch) => Fetch;
   } = {},
 ) {
-  const clock = {
-    time: new Date("2026-11-14T10:00:00Z"),
-    /** How far Google's clock is behind the app's. */
-    googleLagMs: 0,
-  };
+  clock.time = new Date("2026-11-14T10:00:00Z");
+  clock.googleLagMs = 0;
   const now = () => clock.time;
   const google = createGoogleSimulator({
     now: () => new Date(clock.time.getTime() - clock.googleLagMs),
@@ -58,7 +57,11 @@ export function setup(
     GOOGLE_CLIENT_SECRET: googleClient.clientSecret,
     ...options.env,
   };
-  const bindings: Bindings = { DB: env.DB, VERSION: env.VERSION };
+  const bindings: Bindings = {
+    DB: env.DB,
+    VERSION: env.VERSION,
+    WORKSPACE: env.WORKSPACE,
+  };
   for (const name of Object.keys(secrets) as Secrets[]) {
     const value = secrets[name];
     if (value !== undefined) bindings[name] = value;
@@ -73,7 +76,7 @@ export function setup(
         (request) => app.request(request, undefined, bindings),
         browserOrigin,
       ),
-    /** Moves the clock of the app and of Google forward. */
+    /** Moves the clock of the app, of the workspaces and of Google forward. */
     advance(milliseconds: number) {
       clock.time = new Date(clock.time.getTime() + milliseconds);
     },

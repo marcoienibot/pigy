@@ -10,6 +10,7 @@
       "**",
       "!**/routeTree.gen.ts",
       "!**/migrations/meta",
+      "!**/migrations/migrations.js",
       "!**/*.md",
       "!**/*.svg"
     ]

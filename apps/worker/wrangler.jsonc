@@ -16,6 +16,15 @@
       "migrations_dir": "migrations"
     }
   ],
+  "durable_objects": {
+    // One object per workspace, named after the ID of the workspace.
+    "bindings": [{ "name": "WORKSPACE", "class_name": "WorkspaceDO" }]
+  },
+  // The history of the Durable Object classes, not of their data: the first
+  // deploy creates WorkspaceDO with SQLite storage. An entry that has been
+  // deployed is never changed. Renaming or deleting a class takes a new
+  // entry with a new tag.
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WorkspaceDO"] }],
   "assets": {
     // No "directory": the Vite plugin in apps/web points it at the built
     // web app.

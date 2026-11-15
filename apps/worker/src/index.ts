@@ -1,5 +1,6 @@
 import { createApp } from "./app.ts";
 import { createSimulatedGoogle } from "./simulated-google.ts";
+import { workspaceObject } from "./workspace/object.ts";
 
 const now = () => new Date();
 
@@ -18,3 +19,10 @@ export default createApp({
   now,
   simulatedGoogle: simulated ? createSimulatedGoogle(now) : undefined,
 });
+
+/**
+ * The Durable Object of a workspace, under the name that wrangler.jsonc binds
+ * as `WORKSPACE`. The runtime constructs it, so it is built here with what
+ * it takes from outside, like the app above.
+ */
+export class WorkspaceDO extends workspaceObject({ now }) {}

@@ -8,8 +8,10 @@ import {
 } from "drizzle-orm/sqlite-core";
 
 /**
- * The D1 schema. After changing it, run `pnpm --filter @pigy/worker
- * db:generate` and commit the SQL file it adds to `migrations`.
+ * The D1 schema: sign-in and what is global. The data of a workspace is not
+ * here, it is in the workspace's Durable Object: src/workspace/schema.ts.
+ * After changing this file, run `pnpm --filter @pigy/worker db:generate` and
+ * commit the SQL file it adds to `migrations`.
  */
 
 /** A person who has signed in at least once. */
@@ -67,15 +69,16 @@ export const allowedEmails = sqliteTable("allowed_email", {
 
 /**
  * One user's data in one environment. The row only says that the workspace
- * exists and whose it is.
+ * exists and whose it is. The data is in the Durable Object that is named
+ * after the ID.
  */
 export const workspaces = sqliteTable(
   "workspace",
   {
     /** Random, so that it cannot be guessed from a user ID. */
     id: text("id").primaryKey(),
-    // Not "on delete cascade": deleting this row would leave the data of
-    // the workspace behind, with nothing pointing to it.
+    // Not "on delete cascade": deleting this row would leave the data in
+    // the Durable Object behind, with nothing pointing to it.
     ownerId: text("owner_id")
       .notNull()
       .references(() => users.id),

@@ -5,6 +5,9 @@ export default defineConfig(async () => ({
   plugins: [
     cloudflareTest({
       wrangler: { configPath: "./wrangler.jsonc" },
+      // In place of src/index.ts, to build the workspace objects with a
+      // clock that the tests can move.
+      main: "./test/main.ts",
       miniflare: {
         // Read here, in Node, because the Workers runtime has no file system.
         // test/setup.ts applies them.
