@@ -169,18 +169,18 @@ Notes that shape the design:
 - **Threads** publishes in two steps: create a container, wait for it to be ready, then publish it. Media must be reachable at a public URL, so `/m/*` serves R2 objects through signed, expiring links.
 - **Mastodon** limits vary per instance. pigy reads them from the instance and validates against the real values.
 - **Link previews**: a shared service fetches a URL's title, description and image once, caches it, and feeds LinkedIn and Bluesky.
-- **Token refresh** runs inside the WorkspaceDO, one refresh at a time per channel. Bluesky refresh tokens are single-use, so two parallel refreshes would lock the account out.
+- **Token refresh** runs inside the WorkspaceDO, one refresh at a time per channel. Bluesky refresh tokens are single-use, so two parallel refreshes would lock the account out. It runs when the alarm reaches the time the adapter named, whether or not the channel is in use: a Threads channel that nobody posts to for 60 days would otherwise lapse. It also runs at once when an adapter says that the network has refused a token before that time.
 
 ### The provider interface
 
 | Part | What it is |
 | --- | --- |
 | Connecting | `beginConnect` takes pigy's callback address and, on networks with no single place to sign in, what the person typed to say where their account lives. It returns the address to send the browser to, the `state` that the callback will carry, and `pending`: what to keep under that state until then. `completeConnect` takes `pending` and the parameters of the callback and returns the account for display (ID, handle, name, avatar, profile link) and the access |
-| Access | The credentials, opaque and stored encrypted, with two times: `refreshAt`, from when on to call `refresh` before using them, and `expiresAt`, when the access ends unless it is refreshed. Either is null where it does not apply. Only adapters of networks that can renew an access have `refresh`. `disconnect` gives the access back where the network has a way |
+| Access | The credentials, opaque and stored encrypted, with two times: `refreshAt`, when to call `refresh`, and `expiresAt`, when the access ends unless it is refreshed. Either is null where it does not apply. Only adapters of networks that can renew an access have `refresh`. It is called by a timer when `refreshAt` comes, and at once when a method fails with `refresh`, one refresh at a time per channel. `disconnect` gives the access back where the network has a way |
 | Limits | `limits` asks what the account may post. The answer is data that names its network, defined in `packages/core` with the counting that goes with it: `countCharacters` and `validateContent` are pure and run in the browser too. Adapters do not validate. They send what they are given, and the network is the judge |
 | Publishing | `publishStep` takes the content, a key that names the delivery, and the progress that the step before returned. It makes at most one request that changes something and returns the new progress: the parts that are published, each with its ID and link, whether the post is done, how long to wait before the next step, and the adapter's own notes. Section 8 has the rules |
 | Reading and deleting | `readPost` returns the text and what the post replies to, on networks that let pigy read. `deletePost` is fine with a post that is gone |
-| Errors | Every failure is a `ProviderError` with one of three kinds: `retry` (with the time the network named, if any), `fail` (with a message for the person) and `reconnect`. Messages may quote the network, without the secrets of the request |
+| Errors | Every failure is a `ProviderError` with one of four kinds: `retry` (with the time the network named, if any), `refresh` (renew the credentials now, then try again), `fail` (with a message for the person) and `reconnect`. Messages may quote the network, without the secrets of the request |
 
 How the four networks map onto it. Mastodon is built. The other three columns are the design that the interface was checked against, for whoever builds them to check in turn:
 
@@ -199,6 +199,7 @@ How the four networks map onto it. Mastodon is built. The other three columns ar
 | Steps of `publishStep` | One per part: post the status, as a reply to the part before | Two per part: choose the record key, then write the record with the references to the first and the previous part | One for the whole post: the parts joined | Per part: create a container, wait, publish it |
 | Adapter's notes between steps | None | The record key in use, and the reference of each part | None | The container in use |
 | `readPost` | Yes | Yes | No: reading takes a permission that LinkedIn restricts | Yes |
+| What asks for `refresh` | Nothing | An access token that the server refuses | Nothing | A token that Threads refuses as expired |
 | What asks for `reconnect` | 401, a missing scope | A refresh that is refused | 401 | An invalid token that cannot be refreshed |
 
 The handle of a LinkedIn account is its name: LinkedIn gives pigy no other. The time of a refresh for Threads, and how Bluesky tells a token that has expired from one that was revoked, are for those adapters to settle.
@@ -209,6 +210,7 @@ What was decided along the way, and why:
 - **Credentials carry what revoking them takes.** On Mastodon that is the registration the token was issued to. The stored registration of an instance can then change, or be lost, without breaking a channel.
 - **Optional methods for what a network cannot do.** `refresh` and `readPost` are missing from an adapter rather than present and failing, so the type says what a caller can count on.
 - **Scopes for media are asked for now.** A registration with a Mastodon instance cannot gain a scope later. Asking for `write:media` in phase 3 spares everybody a second connection in phase 7.
+- **`refresh` is a kind of its own.** A token can be refused before the time pigy has for it: the clocks differ, or a refresh for another post replaced it while this step ran. `reconnect` would mark a healthy channel as broken, and `retry` would hand the step the same token until the workflow gave up.
 
 ## 7. Sandbox and simulators
 
@@ -280,8 +282,12 @@ How the workflow and an adapter share the work:
 
 - The content is checked with `validateContent` before the first step. What fails is not sent.
 - A step of the workflow is one call of `publishStep`. It returns the progress as plain JSON, which is the recorded result of the step and the input of the next. `publish` in `packages/providers` is the loop: it takes the workflow's `step.do` and `step.sleep` and names the steps by their position, the same on a replay.
-- The credentials are asked of the WorkspaceDO inside every step, also when a step is run again. A post can take longer than credentials last, and the WorkspaceDO refreshes them when `refreshAt` has passed.
-- A `ProviderError` says what the workflow does: `retry` runs the step again with the same input, after the time the network named if it named one, `fail` ends the target with the message, `reconnect` ends it and marks the channel.
+- The credentials are asked of the WorkspaceDO inside every step, also when a step is run again. A post can take longer than credentials last, and the WorkspaceDO replaces them: by its alarm when `refreshAt` comes, and at once when a step fails with `refresh`.
+- A `ProviderError` says what the workflow does:
+  - `retry` runs the step again with the same input, after the time the network named if it named one.
+  - `refresh` has the WorkspaceDO renew the credentials at once, whatever `refreshAt` says, and runs the step again with the new ones. `publish` does this inside the same workflow step. If the stored credentials are no longer the ones that were refused, another refresh has replaced them, and they are used as they are. A refresh that the network refuses, or new credentials that are refused too, mean `reconnect`.
+  - `fail` ends the target with the message.
+  - `reconnect` ends it and marks the channel.
 - A step may ask for a wait before the next one, which is how Threads gets the time to prepare a post, and how media will get the time to be processed.
 - The progress lists the published parts one by one. "Retry" starts a new run from the progress that was recorded, with the same key.
 - The key names the delivery: the ID of the target. It is what Mastodon's idempotency keys are made from, so publishing a post a second time on purpose takes a new key.

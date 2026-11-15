@@ -3,11 +3,18 @@
  *
  * - `retry`: nothing is wrong with the request. The network was busy, down
  *   or out of reach. Try again later, with the same input.
+ * - `refresh`: the network refuses the credentials, and renewing them
+ *   cures that. Refresh them now, whatever their `refreshAt` says, and try
+ *   again with the new ones. `Provider.refresh` has the rules. Only a
+ *   provider that has `refresh` fails this way.
  * - `fail`: trying again would fail again. Give up and tell the person why.
- * - `reconnect`: the network no longer accepts the credentials. The person
- *   has to connect the account again.
+ * - `reconnect`: the network no longer accepts the credentials, and
+ *   nothing but the person can change that. They have to connect the
+ *   account again.
+ *
+ * A caller that switches over the kinds must name every one of them.
  */
-export type ProviderErrorKind = "retry" | "fail" | "reconnect";
+export type ProviderErrorKind = "retry" | "refresh" | "fail" | "reconnect";
 
 /**
  * Every failure of a provider. Anything else that a provider throws is a

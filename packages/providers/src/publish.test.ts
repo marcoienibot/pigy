@@ -6,6 +6,10 @@ import { type PublishRunner, publish } from "./publish.ts";
 const content = { parts: [{ text: "one" }, { text: "two" }] };
 const job = {
   credentials: async () => ({ token: "t" }),
+  // The providers of most tests here never ask for new credentials.
+  refresh: async (): Promise<never> => {
+    throw new Error("No step asked for a refresh");
+  },
   content,
   key: "target-1",
 };
@@ -212,5 +216,129 @@ describe("publish", () => {
     ).rejects.toBe(failure);
     // Two steps ran, and none after the one that failed.
     expect(requests).toHaveLength(2);
+  });
+});
+
+describe("publish, when the network refuses the credentials before their time", () => {
+  /**
+   * A provider that publishes one part per step, on a network that takes
+   * the tokens in `accepted` and wants every other one refreshed.
+   */
+  function refreshingProvider(accepted: string[]) {
+    const requests: PublishRequest[] = [];
+    const provider = {
+      async publishStep(request: PublishRequest): Promise<PublishProgress> {
+        requests.push(request);
+        const { token } = request.credentials as { token: string };
+        if (!accepted.includes(token)) {
+          throw new ProviderError("refresh", `Token ${token} has run out`, {
+            status: 401,
+          });
+        }
+        const parts = [
+          ...(request.progress?.parts ?? []),
+          { id: `post-${requests.length}`, url: null },
+        ];
+        return {
+          parts,
+          done: parts.length === request.content.parts.length,
+          waitSeconds: 0,
+          state: null,
+        };
+      },
+    } as Provider;
+    return { provider, requests };
+  }
+
+  /** Credentials as a caller stores them, and a refresh that replaces them. */
+  function stored() {
+    let token = "t1";
+    const refused: unknown[] = [];
+    return {
+      refused,
+      credentials: async () => ({ token }),
+      refresh: async (credentials: unknown) => {
+        refused.push(credentials);
+        token = "t2";
+        return { token };
+      },
+    };
+  }
+
+  it("refreshes at once and runs the step again with the new ones", async () => {
+    const { provider, requests } = refreshingProvider(["t2"]);
+    const { refused, credentials, refresh } = stored();
+    const { log, runner } = noting();
+    const progress = await publish(
+      provider,
+      { ...job, credentials, refresh },
+      runner,
+    );
+    expect(progress.done).toBe(true);
+    // Asked once, with the credentials that the network refused, so that
+    // the caller can tell whether they are still the ones it has stored.
+    expect(refused).toEqual([{ token: "t1" }]);
+    expect(requests.map((request) => request.credentials)).toEqual([
+      { token: "t1" },
+      { token: "t2" },
+      { token: "t2" },
+    ]);
+    // The second run of the first step is not a step of its own: a
+    // workflow that replays must find the same steps under the same names.
+    expect(log).toEqual(["publish-1", "publish-2"]);
+    // It ran with the same request as the first.
+    expect(requests[1]).toMatchObject({ progress: null, key: "target-1" });
+  });
+
+  it("asks for a new connection when the new credentials are refused too", async () => {
+    const { provider, requests } = refreshingProvider([]);
+    const { refused, credentials, refresh } = stored();
+    const error = await publish(
+      provider,
+      { ...job, credentials, refresh },
+      noting().runner,
+    ).catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(ProviderError);
+    expect(error).toMatchObject({
+      kind: "reconnect",
+      message: "Token t2 has run out",
+      status: 401,
+    });
+    // One refresh, and no third try: this must not go round in circles.
+    expect(refused).toHaveLength(1);
+    expect(requests).toHaveLength(2);
+  });
+
+  it("stops when the network will not renew the credentials", async () => {
+    const { provider, requests } = refreshingProvider(["t2"]);
+    const refusal = new ProviderError("reconnect", "No longer connected");
+    await expect(
+      publish(
+        provider,
+        {
+          ...job,
+          refresh: async () => {
+            throw refusal;
+          },
+        },
+        noting().runner,
+      ),
+    ).rejects.toBe(refusal);
+    expect(requests).toHaveLength(1);
+  });
+
+  it("refreshes for no other failure", async () => {
+    // `job` fails the test if it is asked to refresh.
+    for (const kind of ["retry", "fail", "reconnect"] as const) {
+      const failure = new ProviderError(kind, "No");
+      const provider = {
+        publishStep: async () => {
+          throw failure;
+        },
+      } as unknown as Provider;
+      await expect(publish(provider, job, noting().runner)).rejects.toBe(
+        failure,
+      );
+    }
   });
 });

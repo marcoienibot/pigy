@@ -1,4 +1,5 @@
 import type { PostContent } from "@pigy/core";
+import { ProviderError } from "./errors.ts";
 import type { Json, Provider, PublishProgress } from "./provider.ts";
 
 /** What a post is published with. */
@@ -9,6 +10,15 @@ export type PublishJob = {
    * longer than credentials last, and a refresh replaces them.
    */
   credentials: () => Promise<Json>;
+  /**
+   * Renews the credentials now, because a step failed with `refresh`: the
+   * network refused `refused`. Returns the credentials to run the step
+   * again with, which are stored by then. `Provider.refresh` has the
+   * rules: one refresh at a time per account, and none if `refused` are no
+   * longer the stored credentials. It fails as `Provider.refresh` does,
+   * with `reconnect` when the network will not renew.
+   */
+  refresh: (refused: Json) => Promise<Json>;
   content: PostContent;
   /** See `PublishRequest.key`. */
   key: string;
@@ -21,8 +31,10 @@ export type PublishJob = {
 export type PublishRunner = {
   /**
    * Runs `step` and returns its result, once it is recorded under `name`.
-   * It decides what happens when the step fails: whether it is run again,
-   * and after how long.
+   * It decides what happens when the step fails, by the kind of the
+   * `ProviderError`: whether the step is run again, and after how long.
+   * `Provider.publishStep` says what it has to keep to. A `refresh` never
+   * gets this far: `publish` sees to it.
    */
   run: (
     name: string,
@@ -41,6 +53,10 @@ export type PublishRunner = {
  *
  * The names passed to the runner are the same for the same position in the
  * sequence of steps, which is what a workflow goes by when it replays.
+ *
+ * A step that fails with `refresh` is run a second time within the same
+ * run of the runner, with the credentials that `job.refresh` returns. The
+ * network has refused the first request, so nothing was sent.
  */
 export async function publish(
   provider: Provider,
@@ -53,15 +69,30 @@ export async function publish(
     if (progress && progress.waitSeconds > 0) {
       await runner.sleep(`wait-${step}`, progress.waitSeconds);
     }
-    const before = progress;
-    progress = await runner.run(`publish-${step}`, async () =>
-      provider.publishStep({
-        credentials: await job.credentials(),
-        content: job.content,
-        key: job.key,
-        progress: before,
-      }),
-    );
+    const request = { content: job.content, key: job.key, progress };
+    progress = await runner.run(`publish-${step}`, async () => {
+      const credentials = await job.credentials();
+      try {
+        return await provider.publishStep({ ...request, credentials });
+      } catch (error) {
+        if (!(error instanceof ProviderError) || error.kind !== "refresh") {
+          throw error;
+        }
+      }
+      const renewed = await job.refresh(credentials);
+      try {
+        return await provider.publishStep({ ...request, credentials: renewed });
+      } catch (error) {
+        if (error instanceof ProviderError && error.kind === "refresh") {
+          // The network takes neither the old credentials nor the new.
+          throw new ProviderError("reconnect", error.message, {
+            status: error.status,
+            cause: error,
+          });
+        }
+        throw error;
+      }
+    });
   }
   return progress;
 }

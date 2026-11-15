@@ -165,7 +165,23 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
       const key = options.key ?? `${harness.tag}-${++keys}`;
       const progress = await publish(
         provider,
-        { credentials: async () => credentials, content, key },
+        {
+          credentials: async () => credentials,
+          // This has never run: Mastodon cannot refresh, and its adapter
+          // never asks to. The pull request for Bluesky is the first that
+          // gets here, and has to show that a test fails when its adapter
+          // does not ask for a refresh of a token that is refused early.
+          refresh: async (refused) => {
+            if (!provider.refresh) {
+              throw new Error(
+                "A provider that cannot refresh has asked for a refresh",
+              );
+            }
+            return (await provider.refresh(refused)).credentials;
+          },
+          content,
+          key,
+        },
         runner,
         options.from ?? null,
       );

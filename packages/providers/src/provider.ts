@@ -53,10 +53,14 @@ export type Account = {
 export type Access = {
   credentials: Json;
   /**
-   * From this time on, call `refresh` before using the credentials, and
-   * store what it returns. Null if there is nothing to refresh. One refresh
-   * at a time per account: on some networks a refresh ends the credentials
-   * it started from.
+   * When to call `refresh` and store what it returns. Null if there is
+   * nothing to refresh.
+   *
+   * The caller sets a timer for this time. Refreshing only before the
+   * credentials are next used is not enough: on some networks an access
+   * that is not renewed in time is lost, so the account of somebody who
+   * posts nothing for a while would have to be connected again.
+   * `Provider.refresh` has the rules.
    */
   refreshAt: Date | null;
   /**
@@ -201,7 +205,25 @@ export type Provider = {
   /**
    * Renews the access without the person. Only networks that can do this
    * have the method, and only their `Access` has a `refreshAt`. It fails
-   * with `reconnect` when the network will not renew.
+   * with `reconnect` when the network will not renew: the channel then
+   * needs connecting again.
+   *
+   * The caller calls it on two occasions, and stores what it returns:
+   *
+   * - When `refreshAt` has come, by a timer, whether or not the
+   *   credentials are in use.
+   * - At once, when a method failed with `refresh`, whatever `refreshAt`
+   *   says. A network can refuse credentials before their time: its clock
+   *   differs from pigy's, or they were replaced while the method ran. The
+   *   caller then runs the method again with the new credentials. If the
+   *   method fails with `refresh` once more, with credentials that a
+   *   refresh has just returned, that is a `reconnect`.
+   *
+   * One refresh at a time per account: on some networks a refresh ends
+   * the credentials it started from, and a second one that starts from the
+   * same would lock the account out. A caller that is asked to refresh
+   * credentials which are no longer the stored ones does not refresh. It
+   * goes on with the stored ones, which another refresh has put there.
    */
   refresh?(credentials: Json): Promise<Access>;
 
