@@ -18,9 +18,12 @@ import { Route as AppChannelsRouteImport } from './routes/_app/channels'
 import { Route as AppQueueRouteImport } from './routes/_app/queue'
 import { Route as AppSentRouteImport } from './routes/_app/sent'
 import { Route as AppSettingsRouteImport } from './routes/_app/settings'
+import { Route as AppSimulatorRouteImport } from './routes/_app/simulator'
 import { Route as AppSettingsIndexRouteImport } from './routes/_app/settings/index'
 import { Route as AppSettingsAboutRouteImport } from './routes/_app/settings/about'
 import { Route as AppSettingsAccessRouteImport } from './routes/_app/settings/access'
+import { Route as AppSimulatorIndexRouteImport } from './routes/_app/simulator/index'
+import { Route as AppSimulatorFailuresRouteImport } from './routes/_app/simulator/failures'
 
 const AppRoute = AppRouteImport.update({
   id: '/_app',
@@ -66,6 +69,11 @@ const AppSettingsRoute = AppSettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => AppRoute,
 } as any)
+const AppSimulatorRoute = AppSimulatorRouteImport.update({
+  id: '/simulator',
+  path: '/simulator',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppSettingsIndexRoute = AppSettingsIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -81,6 +89,16 @@ const AppSettingsAccessRoute = AppSettingsAccessRouteImport.update({
   path: '/access',
   getParentRoute: () => AppSettingsRoute,
 } as any)
+const AppSimulatorIndexRoute = AppSimulatorIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => AppSimulatorRoute,
+} as any)
+const AppSimulatorFailuresRoute = AppSimulatorFailuresRouteImport.update({
+  id: '/failures',
+  path: '/failures',
+  getParentRoute: () => AppSimulatorRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
@@ -91,9 +109,12 @@ export interface FileRoutesByFullPath {
   '/queue': typeof AppQueueRoute
   '/sent': typeof AppSentRoute
   '/settings': typeof AppSettingsRouteWithChildren
+  '/simulator': typeof AppSimulatorRouteWithChildren
   '/settings/about': typeof AppSettingsAboutRoute
   '/settings/access': typeof AppSettingsAccessRoute
+  '/simulator/failures': typeof AppSimulatorFailuresRoute
   '/settings/': typeof AppSettingsIndexRoute
+  '/simulator/': typeof AppSimulatorIndexRoute
 }
 export interface FileRoutesByTo {
   '/invite-only': typeof InviteOnlyRoute
@@ -105,7 +126,9 @@ export interface FileRoutesByTo {
   '/': typeof AppIndexRoute
   '/settings/about': typeof AppSettingsAboutRoute
   '/settings/access': typeof AppSettingsAccessRoute
+  '/simulator/failures': typeof AppSimulatorFailuresRoute
   '/settings': typeof AppSettingsIndexRoute
+  '/simulator': typeof AppSimulatorIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -117,10 +140,13 @@ export interface FileRoutesById {
   '/_app/queue': typeof AppQueueRoute
   '/_app/sent': typeof AppSentRoute
   '/_app/settings': typeof AppSettingsRouteWithChildren
+  '/_app/simulator': typeof AppSimulatorRouteWithChildren
   '/_app/': typeof AppIndexRoute
   '/_app/settings/about': typeof AppSettingsAboutRoute
   '/_app/settings/access': typeof AppSettingsAccessRoute
+  '/_app/simulator/failures': typeof AppSimulatorFailuresRoute
   '/_app/settings/': typeof AppSettingsIndexRoute
+  '/_app/simulator/': typeof AppSimulatorIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -133,9 +159,12 @@ export interface FileRouteTypes {
     | '/queue'
     | '/sent'
     | '/settings'
+    | '/simulator'
     | '/settings/about'
     | '/settings/access'
+    | '/simulator/failures'
     | '/settings/'
+    | '/simulator/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/invite-only'
@@ -147,7 +176,9 @@ export interface FileRouteTypes {
     | '/'
     | '/settings/about'
     | '/settings/access'
+    | '/simulator/failures'
     | '/settings'
+    | '/simulator'
   id:
     | '__root__'
     | '/_app'
@@ -158,10 +189,13 @@ export interface FileRouteTypes {
     | '/_app/queue'
     | '/_app/sent'
     | '/_app/settings'
+    | '/_app/simulator'
     | '/_app/'
     | '/_app/settings/about'
     | '/_app/settings/access'
+    | '/_app/simulator/failures'
     | '/_app/settings/'
+    | '/_app/simulator/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -235,6 +269,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSettingsRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/simulator': {
+      id: '/_app/simulator'
+      path: '/simulator'
+      fullPath: '/simulator'
+      preLoaderRoute: typeof AppSimulatorRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/settings/': {
       id: '/_app/settings/'
       path: '/'
@@ -256,6 +297,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSettingsAccessRouteImport
       parentRoute: typeof AppSettingsRoute
     }
+    '/_app/simulator/': {
+      id: '/_app/simulator/'
+      path: '/'
+      fullPath: '/simulator/'
+      preLoaderRoute: typeof AppSimulatorIndexRouteImport
+      parentRoute: typeof AppSimulatorRoute
+    }
+    '/_app/simulator/failures': {
+      id: '/_app/simulator/failures'
+      path: '/failures'
+      fullPath: '/simulator/failures'
+      preLoaderRoute: typeof AppSimulatorFailuresRouteImport
+      parentRoute: typeof AppSimulatorRoute
+    }
   }
 }
 
@@ -275,12 +330,27 @@ const AppSettingsRouteWithChildren = AppSettingsRoute._addFileChildren(
   AppSettingsRouteChildren,
 )
 
+interface AppSimulatorRouteChildren {
+  AppSimulatorFailuresRoute: typeof AppSimulatorFailuresRoute
+  AppSimulatorIndexRoute: typeof AppSimulatorIndexRoute
+}
+
+const AppSimulatorRouteChildren: AppSimulatorRouteChildren = {
+  AppSimulatorFailuresRoute: AppSimulatorFailuresRoute,
+  AppSimulatorIndexRoute: AppSimulatorIndexRoute,
+}
+
+const AppSimulatorRouteWithChildren = AppSimulatorRoute._addFileChildren(
+  AppSimulatorRouteChildren,
+)
+
 interface AppRouteChildren {
   AppSplatRoute: typeof AppSplatRoute
   AppChannelsRoute: typeof AppChannelsRoute
   AppQueueRoute: typeof AppQueueRoute
   AppSentRoute: typeof AppSentRoute
   AppSettingsRoute: typeof AppSettingsRouteWithChildren
+  AppSimulatorRoute: typeof AppSimulatorRouteWithChildren
   AppIndexRoute: typeof AppIndexRoute
 }
 
@@ -290,6 +360,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppQueueRoute: AppQueueRoute,
   AppSentRoute: AppSentRoute,
   AppSettingsRoute: AppSettingsRouteWithChildren,
+  AppSimulatorRoute: AppSimulatorRouteWithChildren,
   AppIndexRoute: AppIndexRoute,
 }
 
