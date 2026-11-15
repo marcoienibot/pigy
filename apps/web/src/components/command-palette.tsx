@@ -46,6 +46,21 @@ const themes: { theme: Theme; label: string; icon: typeof Sun }[] = [
 
 const PaletteContext = createContext<(() => void) | null>(null);
 
+/**
+ * Whether a dialog is open that the app waits behind: a question, a form.
+ * These are the dialogs of `components/ui`, which mark themselves so. A
+ * popover or a menu is not one, and the palette is. One that is on its way
+ * out is not open: it stays on the page while it fades, and the palette
+ * does so too after a command, when the keys may well come again.
+ */
+function dialogIsOpen(): boolean {
+  return (
+    document.querySelector(
+      "[data-slot='dialog-content'][data-open], [data-slot='alert-dialog-content'][data-open]",
+    ) !== null
+  );
+}
+
 /** Returns the function that opens the command palette. */
 export function useOpenCommandPalette(): () => void {
   const open = use(PaletteContext);
@@ -58,6 +73,11 @@ export function useOpenCommandPalette(): () => void {
  * name. It opens with ⌘K or Ctrl+K, also while typing, and from whatever
  * calls `useOpenCommandPalette()` below it. The shortcuts that work on
  * every screen are here too.
+ *
+ * It does not open over another dialog. What that dialog asks comes
+ * first, and a command would change the app behind it: going to another
+ * screen or to the other workspace takes away the screen that a request
+ * of the dialog is to answer on.
  */
 export function CommandPalette({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
@@ -70,7 +90,8 @@ export function CommandPalette({ children }: { children: ReactNode }) {
   useKeyDown((event) => {
     if (withMod(event) && event.key.toLowerCase() === "k") {
       event.preventDefault();
-      setOpen((isOpen) => !isOpen);
+      if (open) setOpen(false);
+      else if (!dialogIsOpen()) setOpen(true);
     }
   });
   // The one command with a key of its own on every screen.

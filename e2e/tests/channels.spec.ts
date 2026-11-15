@@ -395,6 +395,55 @@ test("disconnecting says what to do when the network did not take the access bac
   await expect(channelRows(page)).toHaveCount(0);
 });
 
+test("a disconnect that is on its way keeps the commands away, and says how it went to somebody who has left the screen", async ({
+  ownPage: page,
+}) => {
+  await openScreen(page, "Channels");
+  await connectSimulated(page, grace);
+  // Away and back, so that the Back of the browser leads to another
+  // screen of the app and not to the consent page.
+  await openScreen(page, "Drafts");
+  await openScreen(page, "Channels");
+  // The answer is held back until the test lets it go, and says then
+  // that the network did not take the access back: what the simulated
+  // server never says. The request itself goes through at once.
+  let release = () => {};
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/workspaces/*/channels/*", async (route) => {
+    const response = await route.fetch();
+    await released;
+    await route.fulfill({ response, json: { revoked: false } });
+  });
+  await page.getByRole("button", { name: `Disconnect ${grace}` }).click();
+  const dialog = page.getByRole("alertdialog");
+  await dialog.getByRole("button", { name: "Disconnect" }).click();
+  await expect(
+    dialog.getByRole("button", { name: "Disconnecting…" }),
+  ).toBeDisabled();
+
+  // The keys of the command palette do nothing over the question: its
+  // commands would take the screen away that the answer is waited for
+  // on. The page has dealt with the keys when the press returns, so this
+  // looks once.
+  await page.keyboard.press("ControlOrMeta+k");
+  expect(await page.getByRole("dialog", { name: "Commands" }).count()).toBe(0);
+  await expect(dialog).toBeVisible();
+
+  // The browser still goes back. The answer comes when the person is on
+  // another screen, and is said there: that pigy is still to be removed
+  // at the network is theirs to act on.
+  await page.goBack();
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Drafts");
+  release();
+  await expect(
+    page.getByRole("listitem").filter({
+      hasText: `${grace} is disconnected, but pigy could not give its access back to Mastodon`,
+    }),
+  ).toContainText("remove pigy in the settings of the account at Mastodon");
+});
+
 test("a connection that was begun for the sandbox ends on the sandbox, also in a tab that shows live", async ({
   ownPage: page,
   context,

@@ -17,6 +17,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { toast } from "sonner";
 import { Avatar } from "@/components/avatar";
 import { EmptyState, Page } from "@/components/page";
 import {
@@ -720,6 +721,39 @@ function ConnectForm({
 }
 
 /**
+ * How a disconnect went: whether the network took the access back, with
+ * `revoked` undefined for a channel that turned out to be gone, or what to
+ * say of a failure.
+ */
+type Disconnected = { revoked: boolean | undefined } | { failed: string };
+
+/**
+ * Says how the disconnect of `channel` went to somebody who has left the
+ * screen while it was on its way: in a notice, which every screen shows.
+ * Above all when the network did not take the access back: the person has
+ * to remove pigy there, and nothing else would tell them. The notice names
+ * the account, so it says what it is about wherever it appears.
+ */
+function tellElsewhere(channel: Channel, outcome: Disconnected): void {
+  if ("failed" in outcome) {
+    toast.error(`${channel.handle} was not disconnected`, {
+      description: outcome.failed,
+    });
+  } else if (outcome.revoked !== undefined) {
+    const { tone, text } = disconnectNotice(channel, outcome.revoked);
+    if (tone === "bad") {
+      // To be read and acted on: it stays until it is closed.
+      toast.error(text, {
+        duration: Number.POSITIVE_INFINITY,
+        closeButton: true,
+      });
+    } else {
+      toast.success(text);
+    }
+  }
+}
+
+/**
  * Asks before a channel is disconnected, says what that means, and does
  * it. `revoked` is undefined for a channel that turned out to be gone.
  */
@@ -741,27 +775,47 @@ function DisconnectDialog({
   if (channel && channel !== asked) setAsked(channel);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Whether the screen is still there when the server has answered. The
+  // request is not one to call off: the server goes through with it
+  // whatever becomes of the page. The dialog does not close while it
+  // waits, and the person can still leave the screen, with the Back of
+  // the browser.
+  const here = useRef(true);
+  useEffect(() => {
+    here.current = true;
+    return () => {
+      here.current = false;
+    };
+  }, []);
 
   const disconnect = async (target: Channel) => {
     setBusy(true);
     setError(null);
+    let outcome: Disconnected;
     try {
       const { revoked } = await disconnectChannel(workspace.id, target.id);
-      onDisconnected(target, revoked);
+      outcome = { revoked };
     } catch (failure) {
       if (failure instanceof ApiError && failure.status === 404) {
         // Disconnected already, in another tab or on another device,
         // which the copy has not heard of yet.
-        onDisconnected(target, undefined);
+        outcome = { revoked: undefined };
       } else if (failure instanceof ApiError) {
         if (failure.status === 401) void checkSession();
-        setError(failure.message);
+        outcome = { failed: failure.message };
       } else {
-        setError("pigy did not answer. Check your connection and try again.");
+        outcome = {
+          failed: "pigy did not answer. Check your connection and try again.",
+        };
       }
-    } finally {
-      setBusy(false);
     }
+    if (!here.current) {
+      tellElsewhere(target, outcome);
+      return;
+    }
+    setBusy(false);
+    if ("failed" in outcome) setError(outcome.failed);
+    else onDisconnected(target, outcome.revoked);
   };
 
   return (
