@@ -299,8 +299,6 @@ function tokenFor(
       accountId,
       clientId: app.clientId,
       scopes,
-      // Mastodon's tokens do not expire.
-      expiresAt: null,
       createdAt: state.world.now().getTime(),
     })
   );

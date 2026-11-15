@@ -51,7 +51,7 @@ export type { Instance, MastodonAccount } from "./state.ts";
  * Mastodon keeps per IP address.
  */
 
-/** The faults that Mastodon can suffer from. Its tokens do not expire. */
+/** The faults that Mastodon can suffer from. */
 export const mastodonFaultKinds = [
   "rate-limit",
   "server-error",

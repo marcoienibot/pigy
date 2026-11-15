@@ -1147,8 +1147,9 @@ describe("faults", () => {
 
   it("has only the faults that Mastodon can suffer from", () => {
     const { simulator } = setup();
-    // Mastodon's tokens do not expire. The types say so too: this is what
-    // the sandbox gets when it passes on what a person chose.
+    // Mastodon's tokens do not expire, so there is no such fault. The
+    // types say so too: this is what the sandbox gets when it passes on
+    // what a person chose.
     expect(() =>
       simulator.arm({ kind: "token-expired" as "token-revoked" }),
     ).toThrow('no fault "token-expired"');

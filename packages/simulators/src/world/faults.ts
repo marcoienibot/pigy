@@ -6,8 +6,9 @@ import type { SimStorage } from "./storage.ts";
  * person in the sandbox, can see what pigy does about it. A fault is armed
  * ahead of time and strikes the next request that it applies to, once.
  *
- * A simulator applies the kinds that its network can suffer from. Mastodon,
- * for one, has no tokens that expire.
+ * These are the kinds that a network simulated so far can suffer from. A
+ * kind that only another network has, such as a token that expires, is
+ * added here together with the simulator that applies it, and its tests.
  */
 export const faultKinds = [
   /** The network answers that it has been asked too often. */
@@ -20,15 +21,8 @@ export const faultKinds = [
    * whether it was carried out.
    */
   "lost-response",
-  /** The token of the request has run out. It stays that way. */
-  "token-expired",
   /** The token of the request was taken back. It stays that way. */
   "token-revoked",
-  /**
-   * What the request starts takes long to get ready, on networks that work
-   * on what they are given after they have accepted it.
-   */
-  "slow-processing",
 ] as const;
 
 export type FaultKind = (typeof faultKinds)[number];

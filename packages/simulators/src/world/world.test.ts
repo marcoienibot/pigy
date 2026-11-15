@@ -105,7 +105,6 @@ describe("the tokens of a world", () => {
     accountId: "1",
     clientId: "client",
     scopes: ["read"],
-    expiresAt: null,
   };
 
   it("issues tokens that say they are simulated", () => {
@@ -138,18 +137,6 @@ describe("the tokens of a world", () => {
     const found = world.findToken("mastodon", token.token);
     expect(found?.revoked).toBe(true);
     expect(found && world.tokenStatus(found)).toBe("revoked");
-  });
-
-  it("lets a token expire by the world's clock", () => {
-    const { world } = setup();
-    const token = world.issueToken({
-      ...fields,
-      expiresAt: start.getTime() + 60_000,
-    });
-    world.advance(59_999);
-    expect(world.tokenStatus(token)).toBe("valid");
-    world.advance(1);
-    expect(world.tokenStatus(token)).toBe("expired");
   });
 });
 
@@ -193,16 +180,14 @@ describe("faults", () => {
 
   it("stay armed while no request can suffer from them", () => {
     const { world } = setup();
-    world.faults.arm("threads", { kind: "slow-processing" });
-    world.faults.arm("threads", { kind: "token-expired" });
-    // A request that has nothing to process takes the fault it can suffer
-    // from and leaves the other for a request that has.
-    expect(world.faults.take("threads", "publish", ["token-expired"])).toBe(
-      "token-expired",
+    world.faults.arm("mastodon", { kind: "token-revoked" });
+    world.faults.arm("mastodon", { kind: "rate-limit" });
+    // A request without a token has none to lose. It takes the fault it
+    // can suffer from and leaves the other for a request that has one.
+    expect(world.faults.take("mastodon", "instance", ["rate-limit"])).toBe(
+      "rate-limit",
     );
-    expect(world.faults.armed("threads")).toEqual([
-      { kind: "slow-processing" },
-    ]);
+    expect(world.faults.armed("mastodon")).toEqual([{ kind: "token-revoked" }]);
   });
 
   it("belong to one network", () => {
