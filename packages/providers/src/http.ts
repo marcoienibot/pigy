@@ -97,7 +97,8 @@ export async function send(
  * redirect hops". It carries nothing secret, and nothing that a host
  * answers on the way is taken for anything but the way. Each address that
  * it is sent on to has to be one that pigy may ask, `publicUrl`, and there
- * are at most `hops` of them.
+ * are at most `hops` of them. The time of `limits` is for the whole way: a
+ * host that sends pigy on gets no more time for it.
  */
 export async function sendFollowing(
   fetch: Fetch,
@@ -106,10 +107,11 @@ export async function sendFollowing(
   limits: HttpLimits,
   hops: number,
 ): Promise<HttpAnswer> {
+  const deadline = AbortSignal.timeout(limits.timeoutMs);
   let at = url;
   for (let hop = 0; ; hop++) {
     const { host } = new URL(at);
-    const answer = await exchange(fetch, host, at, init, limits);
+    const answer = await exchange(fetch, host, at, init, limits, deadline);
     if (!redirects(answer.status)) return answer;
     const location = answer.headers.get("Location");
     let next: string | null = null;
@@ -129,17 +131,21 @@ export async function sendFollowing(
   }
 }
 
-/** `send`, with the answer of a redirect returned as it is. */
+/**
+ * `send`, with the answer of a redirect returned as it is. It gives up
+ * when `timeout` says so, which is when the time of `limits` is up unless
+ * the caller says otherwise.
+ */
 async function exchange(
   fetch: Fetch,
   host: string,
   url: string,
   init: RequestInit,
   { timeoutMs, maxBytes }: HttpLimits,
+  timeout: AbortSignal = AbortSignal.timeout(timeoutMs),
 ): Promise<HttpAnswer> {
   const unreachable = (cause: unknown) =>
     new ProviderError("retry", `${host} could not be reached.`, { cause });
-  const timeout = AbortSignal.timeout(timeoutMs);
   let response: Response;
   try {
     response = await fetch(url, {

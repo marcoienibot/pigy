@@ -319,6 +319,15 @@ describe("sendFollowing", () => {
     // asked.
     expect(refused.asked).toEqual([file, ...six.hops.slice(0, 5)]);
   });
+
+  it("gives the whole way the time that the limits name, and not each address on it", async () => {
+    // Every address answers in 20 milliseconds, well within the 50 that
+    // are allowed, and the six of them take 120.
+    const { fetch, asked } = server(way(5).answers, 20);
+    const error = await failure(() => follow(fetch, 5, 50));
+    expect(error.kind).toBe("retry");
+    expect(asked.length).toBeLessThan(6);
+  });
 });
 
 describe("retryAfter", () => {
