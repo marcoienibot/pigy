@@ -1,4 +1,3 @@
-import type { Environment } from "@pigy/core";
 import {
   createFileRoute,
   type ErrorComponentProps,
@@ -11,15 +10,9 @@ import { AppShell } from "@/components/app-shell";
 import { PublicPage } from "@/components/page";
 import { Button } from "@/components/ui/button";
 import { checkSession, loadSession } from "@/lib/session";
+import { chosenWorkspace } from "@/lib/workspace";
 import { SyncProvider } from "@/sync/react";
-import { workspaceSync } from "@/sync/workspace-sync";
-
-/**
- * Which of the person's workspaces the app shows. The switch between live
- * and sandbox comes in phase 3: everything below takes the workspace from
- * the context of this route.
- */
-const environment: Environment = "live";
+import { syncUnsent, workspaceSync } from "@/sync/workspace-sync";
 
 /**
  * Everything that needs a session. Nothing below this route renders before
@@ -49,20 +42,28 @@ export const Route = createFileRoute("/_app")({
         replace: true,
       });
     }
-    const workspace = session.workspaces.find(
-      (candidate) => candidate.environment === environment,
-    );
-    if (!workspace) throw new Error(`There is no ${environment} workspace`);
+    // Live or sandbox, as this tab has it: see `lib/workspace.ts`. Asked on
+    // every navigation, which is how the switch between the two takes
+    // effect.
+    const workspace = chosenWorkspace(session.workspaces);
     // The same one on every navigation: it is opened once.
     const { store } = await workspaceSync(session.me.user.id, workspace.id);
-    return { me: session.me, workspace, store };
+    syncUnsent(session.me.user.id, session.workspaces);
+    // The workspace and its data are handed to the screens together, so
+    // none of them can show one under the name of the other.
+    return {
+      me: session.me,
+      workspaces: session.workspaces,
+      workspace,
+      store,
+    };
   },
   component: App,
   errorComponent: Failed,
 });
 
 function App() {
-  const { store } = Route.useRouteContext();
+  const { store, workspace } = Route.useRouteContext();
 
   // A socket that is refused is how the app learns soonest that the
   // session has ended, or that somebody else has signed in.
@@ -80,7 +81,10 @@ function App() {
   return (
     <SyncProvider store={store}>
       <AppShell>
-        <Outlet />
+        {/* A screen starts anew when the workspace changes: what it holds
+            of the one that was shown, a dialog that is open or a draft
+            that can be brought back, is not carried into the other. */}
+        <Outlet key={workspace.id} />
       </AppShell>
     </SyncProvider>
   );

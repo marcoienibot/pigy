@@ -19,7 +19,9 @@ function lostText({ name, args }: StoredRejection): string {
  * Tells the person of every change that the server refused: what it was
  * and why. By then the screen shows the data without the change. A notice
  * stays until it is dismissed, here or in another tab, and comes back
- * after a reload if it was not.
+ * after a reload if it was not. The notices are those of the workspace on
+ * screen: when the tab goes on to the other one, they leave the screen
+ * with it and are there again when it comes back.
  *
  * An edit that was refused has text in it that exists nowhere else by now,
  * for example because the draft was deleted on another device while it was
@@ -29,6 +31,10 @@ export function Rejections() {
   const { rejections, dismiss } = useRejections();
   const newDraft = useNewDraft();
   const shown = useRef(new Set<string>());
+  // The notices that this takes off the screen itself, by key. The notice
+  // library says "dismissed" for those as it does for the ones that the
+  // person closes, and only the person's word may delete a rejection.
+  const taken = useRef(new Set<string>());
 
   useEffect(() => {
     for (const rejection of rejections) {
@@ -44,7 +50,9 @@ export function Rejections() {
           : `${rejection.message}.`,
         duration: Number.POSITIVE_INFINITY,
         closeButton: true,
-        onDismiss: () => dismiss(rejection.key),
+        onDismiss: () => {
+          if (!taken.current.delete(rejection.key)) dismiss(rejection.key);
+        },
         ...(text && {
           action: {
             label: "Keep as new draft",
@@ -56,10 +64,14 @@ export function Rejections() {
         }),
       });
     }
-    // Those that were dismissed in another tab.
+    // Those that were dismissed in another tab, and those of the workspace
+    // that was on screen before this one: its rejections are still to be
+    // seen.
     const keys = new Set(rejections.map(({ key }) => key));
     for (const key of shown.current) {
-      if (!keys.has(key)) toast.dismiss(key);
+      if (keys.has(key)) continue;
+      taken.current.add(key);
+      toast.dismiss(key);
     }
     shown.current = keys;
   }, [rejections, dismiss, newDraft]);

@@ -1,4 +1,5 @@
-import { useNavigate } from "@tanstack/react-router";
+import { environments } from "@pigy/core";
+import { useNavigate, useRouteContext } from "@tanstack/react-router";
 import {
   CalendarClock,
   Monitor,
@@ -23,8 +24,10 @@ import {
   CommandShortcut,
 } from "@/components/ui/command";
 import { Kbd } from "@/components/ui/kbd";
+import { environmentIcons } from "@/components/workspace-switch";
 import { useNewDraft } from "@/lib/drafts";
 import { modKey, useKeyDown, useShortcuts, withMod } from "@/lib/keyboard";
+import { environmentLabels, useSwitchWorkspace } from "@/lib/workspace";
 
 const screens = [
   { to: "/", label: "Drafts", icon: PenLine },
@@ -60,6 +63,8 @@ export function CommandPalette({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const newDraft = useNewDraft();
   const { theme: current, setTheme } = useTheme();
+  const { workspace } = useRouteContext({ from: "/_app" });
+  const switchWorkspace = useSwitchWorkspace();
 
   useKeyDown((event) => {
     if (withMod(event) && event.key.toLowerCase() === "k") {
@@ -103,6 +108,23 @@ export function CommandPalette({ children }: { children: ReactNode }) {
                   <Kbd>C</Kbd>
                 </CommandShortcut>
               </CommandItem>
+            </CommandGroup>
+            <CommandGroup heading="Workspace">
+              {environments
+                .filter((environment) => environment !== workspace.environment)
+                .map((environment) => {
+                  const Icon = environmentIcons[environment];
+                  return (
+                    <CommandItem
+                      key={environment}
+                      keywords={["workspace"]}
+                      onSelect={run(() => switchWorkspace(environment))}
+                    >
+                      <Icon aria-hidden="true" />
+                      Switch to {environmentLabels[environment].toLowerCase()}
+                    </CommandItem>
+                  );
+                })}
             </CommandGroup>
             <CommandGroup heading="Go to">
               {screens.map(({ to, label, icon: Icon }) => (

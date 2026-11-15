@@ -1,6 +1,8 @@
+import { useRouteContext } from "@tanstack/react-router";
 import { type ReactNode, useEffect } from "react";
 import { SyncIndicator } from "@/components/sync-indicator";
 import { UserMenu } from "@/components/user-menu";
+import { WorkspaceSwitch } from "@/components/workspace-switch";
 import { cn } from "@/lib/utils";
 
 function useTitle(title: string) {
@@ -25,7 +27,9 @@ export function Page({
   fill?: boolean;
   children: ReactNode;
 }) {
-  useTitle(title);
+  const { workspace } = useRouteContext({ from: "/_app" });
+  // The name of a tab says so too: two tabs can show the two workspaces.
+  useTitle(workspace.environment === "sandbox" ? `${title} · Sandbox` : title);
 
   return (
     <>
@@ -34,7 +38,8 @@ export function Page({
         <div className="ml-auto flex items-center gap-1">
           {actions}
           {/* On desktop these are in the sidebar. */}
-          <div className="flex items-center md:hidden">
+          <div className="flex items-center gap-1 pl-1 md:hidden">
+            <WorkspaceSwitch placement="header" />
             <SyncIndicator placement="header" />
             <UserMenu placement="header" />
           </div>

@@ -304,9 +304,19 @@ test("on a phone the editor takes the screen and leads back to the list", async 
   await editor(page).fill("Written on a phone");
 
   // The whole screen, navigation included: there is no room to spare
-  // next to a keyboard.
+  // next to a keyboard. Only the banner of the sandbox stays above it,
+  // which is where somebody new writes their first draft: they must not
+  // take it for the real thing while they write.
+  const banner = await page.getByRole("note").boundingBox();
   const box = await page.getByRole("region", { name: "Draft" }).boundingBox();
-  expect(box).toEqual({ x: 0, y: 0, ...viewport });
+  if (!banner) throw new Error("The banner of the sandbox is not rendered");
+  expect(banner).toMatchObject({ x: 0, y: 0, width: viewport.width });
+  expect(box).toEqual({
+    x: 0,
+    y: banner.height,
+    width: viewport.width,
+    height: viewport.height - banner.height,
+  });
   await expect(draftRows(page)).toHaveCount(0);
 
   await page.getByRole("button", { name: "Back to drafts" }).click();

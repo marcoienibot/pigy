@@ -2,10 +2,60 @@ import type { Locator, Page, WebSocketRoute } from "@playwright/test";
 import { expect } from "./fixtures.ts";
 
 /**
- * What the tests of the drafts screen and of sync do over and over. They
- * look at what a person sees, on a desktop and on a phone: where the two
- * differ, a helper takes `isMobile`.
+ * What the tests of the screens and of sync do over and over. They look at
+ * what a person sees, on a desktop and on a phone: where the two differ, a
+ * helper takes `isMobile`.
  */
+
+/** Goes to a screen through the navigation of the app. */
+export async function openScreen(page: Page, name: string): Promise<void> {
+  await page
+    .getByRole("navigation", { name: "Main" })
+    .getByRole("link", { name })
+    .click();
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(name);
+}
+
+/**
+ * The switch between live and sandbox, which names the workspace that the
+ * page shows. There is one in the sidebar and one in the header of a
+ * phone: only the one for this viewport shows.
+ */
+export function workspaceSwitch(page: Page): Locator {
+  return page
+    .getByRole("button", { name: /^Workspace: / })
+    .filter({ visible: true });
+}
+
+/**
+ * Waits until `page` shows the workspace `name` and says so: the sandbox
+ * with its banner, live without one.
+ */
+export async function expectWorkspace(
+  page: Page,
+  name: "Live" | "Sandbox",
+): Promise<void> {
+  await expect(workspaceSwitch(page)).toHaveAccessibleName(
+    `Workspace: ${name}`,
+  );
+  await expect(page.getByRole("note")).toHaveCount(name === "Sandbox" ? 1 : 0);
+}
+
+/**
+ * Chooses the workspace `name` with the switch. Not with a draft open on a
+ * phone: the editor is over the header then.
+ */
+export async function switchTo(
+  page: Page,
+  name: "Live" | "Sandbox",
+): Promise<void> {
+  await workspaceSwitch(page).click();
+  // The option is named by its label and what it says about itself.
+  await page
+    .getByRole("menuitemradio", { name: new RegExp(`^${name}`) })
+    .click();
+  await expectWorkspace(page, name);
+}
 
 /** The rows of the list of drafts. */
 export function draftRows(page: Page): Locator {

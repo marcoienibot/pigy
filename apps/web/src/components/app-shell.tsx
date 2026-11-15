@@ -10,6 +10,7 @@ import { SyncIndicator } from "@/components/sync-indicator";
 import { Kbd } from "@/components/ui/kbd";
 import { Toaster } from "@/components/ui/sonner";
 import { UserMenu } from "@/components/user-menu";
+import { SandboxBanner, WorkspaceSwitch } from "@/components/workspace-switch";
 import { modKey } from "@/lib/keyboard";
 import { cn } from "@/lib/utils";
 
@@ -39,7 +40,8 @@ function CommandsButton() {
 
 /**
  * Sidebar on desktop, bottom tab bar on phones, and what every screen has
- * around it: the command palette and the notices.
+ * around it: the banner of the sandbox, the command palette and the
+ * notices.
  */
 export function AppShell({ children }: { children: ReactNode }) {
   return (
@@ -54,57 +56,65 @@ export function AppShell({ children }: { children: ReactNode }) {
 
 function Shell({ children }: { children: ReactNode }) {
   return (
-    <div className="flex h-dvh flex-col md:flex-row">
-      <aside className="hidden w-56 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground md:flex">
-        <div className="flex h-11 shrink-0 items-center gap-2 px-4">
-          <img src="/icon.svg" alt="" className="size-5 rounded-sm" />
-          <span className="font-semibold tracking-tight">pigy</span>
-          <CommandsButton />
-        </div>
-        <nav aria-label="Main" className="flex flex-1 flex-col gap-0.5 px-2">
+    <div className="flex h-dvh flex-col">
+      <SandboxBanner />
+      {/* Positioned, for what covers the whole app on a phone, such as the
+          editor of a draft: it covers this and leaves the banner in sight. */}
+      <div className="relative flex min-h-0 flex-1 flex-col md:flex-row">
+        <aside className="hidden w-56 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground md:flex">
+          <div className="flex h-11 shrink-0 items-center gap-2 px-4">
+            <img src="/icon.svg" alt="" className="size-5 rounded-sm" />
+            <span className="font-semibold tracking-tight">pigy</span>
+            <CommandsButton />
+          </div>
+          <div className="px-2 pb-2">
+            <WorkspaceSwitch placement="sidebar" />
+          </div>
+          <nav aria-label="Main" className="flex flex-1 flex-col gap-0.5 px-2">
+            {navItems.map(({ label, icon: Icon, ...link }) => (
+              <Link
+                key={link.to}
+                {...link}
+                className={cn(
+                  "flex h-7 items-center gap-2 rounded-md px-2 text-sidebar-foreground/70 outline-none",
+                  "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+                  "focus-visible:ring-2 focus-visible:ring-sidebar-ring",
+                  "aria-[current=page]:bg-sidebar-accent aria-[current=page]:font-medium aria-[current=page]:text-sidebar-accent-foreground",
+                )}
+              >
+                <Icon className="size-4 shrink-0" aria-hidden="true" />
+                {label}
+              </Link>
+            ))}
+          </nav>
+          <div className="flex flex-col gap-0.5 p-2">
+            <SyncIndicator placement="sidebar" />
+            <UserMenu placement="sidebar" />
+          </div>
+        </aside>
+
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">{children}</div>
+
+        <nav
+          aria-label="Main"
+          className="flex shrink-0 border-t bg-background pb-[env(safe-area-inset-bottom)] md:hidden"
+        >
           {navItems.map(({ label, icon: Icon, ...link }) => (
             <Link
               key={link.to}
               {...link}
               className={cn(
-                "flex h-7 items-center gap-2 rounded-md px-2 text-sidebar-foreground/70 outline-none",
-                "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-                "focus-visible:ring-2 focus-visible:ring-sidebar-ring",
-                "aria-[current=page]:bg-sidebar-accent aria-[current=page]:font-medium aria-[current=page]:text-sidebar-accent-foreground",
+                "flex h-14 min-w-0 flex-1 flex-col items-center justify-center gap-1 text-xs text-muted-foreground outline-none",
+                "focus-visible:bg-accent",
+                "aria-[current=page]:font-medium aria-[current=page]:text-foreground",
               )}
             >
-              <Icon className="size-4 shrink-0" aria-hidden="true" />
-              {label}
+              <Icon className="size-5 shrink-0" aria-hidden="true" />
+              <span className="truncate">{label}</span>
             </Link>
           ))}
         </nav>
-        <div className="flex flex-col gap-0.5 p-2">
-          <SyncIndicator placement="sidebar" />
-          <UserMenu placement="sidebar" />
-        </div>
-      </aside>
-
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">{children}</div>
-
-      <nav
-        aria-label="Main"
-        className="flex shrink-0 border-t bg-background pb-[env(safe-area-inset-bottom)] md:hidden"
-      >
-        {navItems.map(({ label, icon: Icon, ...link }) => (
-          <Link
-            key={link.to}
-            {...link}
-            className={cn(
-              "flex h-14 min-w-0 flex-1 flex-col items-center justify-center gap-1 text-xs text-muted-foreground outline-none",
-              "focus-visible:bg-accent",
-              "aria-[current=page]:font-medium aria-[current=page]:text-foreground",
-            )}
-          >
-            <Icon className="size-5 shrink-0" aria-hidden="true" />
-            <span className="truncate">{label}</span>
-          </Link>
-        ))}
-      </nav>
+      </div>
     </div>
   );
 }

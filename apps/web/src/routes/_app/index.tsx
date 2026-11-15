@@ -34,6 +34,7 @@ import {
 } from "@/lib/keyboard";
 import { timeAgo, useNow } from "@/lib/time";
 import { cn } from "@/lib/utils";
+import { onLeaveWorkspace } from "@/lib/workspace";
 import { useMutate, useSynced } from "@/sync/react";
 
 type DraftsSearch = {
@@ -78,9 +79,12 @@ function Drafts() {
   const editor = useRef<HTMLTextAreaElement>(null);
   /**
    * The drafts that were deleted and can still be brought back, each with
-   * the notice that offers it. The one that was deleted last is at the end.
+   * the notice that offers it and with how to stop waiting for the tab to
+   * leave the workspace. The one that was deleted last is at the end.
    */
-  const deleted = useRef<{ draft: Draft; notice: string | number }[]>([]);
+  const deleted = useRef<
+    { draft: Draft; notice: string | number; stop: () => void }[]
+  >([]);
 
   const rowOf = (id: string) =>
     list.current?.querySelector<HTMLElement>(`[data-draft="${id}"]`);
@@ -104,9 +108,11 @@ function Drafts() {
 
   /** The draft of `notice` can no longer be brought back. */
   const forget = (notice: string | number) => {
-    deleted.current = deleted.current.filter(
-      (entry) => entry.notice !== notice,
-    );
+    deleted.current = deleted.current.filter((entry) => {
+      if (entry.notice !== notice) return true;
+      entry.stop();
+      return false;
+    });
   };
 
   const restore = (draft: Draft, notice: string | number) => {
@@ -146,7 +152,11 @@ function Drafts() {
       onDismiss: () => forget(notice),
       onAutoClose: () => forget(notice),
     });
-    deleted.current.push({ draft, notice });
+    // The notice outlives this screen, and it must not outlive the
+    // workspace: under the other one, there is nothing to bring the draft
+    // back into.
+    const stop = onLeaveWorkspace(() => toast.dismiss(notice));
+    deleted.current.push({ draft, notice, stop });
   };
 
   /** The draft whose row in the list has the focus, if one has. */
@@ -263,10 +273,11 @@ function Drafts() {
         aria-label="Draft"
         className={cn(
           "min-h-0 min-w-0 flex-1 flex-col bg-background",
-          // On a phone the editor takes the whole screen, navigation
-          // included, and the list is a step back.
+          // On a phone the editor takes the whole app, navigation
+          // included, and the list is a step back. Only the banner of the
+          // sandbox stays above it: the shell is what this is placed in.
           openId
-            ? "fixed inset-0 z-40 flex pb-[env(safe-area-inset-bottom)] md:static md:z-auto md:pb-0"
+            ? "absolute inset-0 z-40 flex pb-[env(safe-area-inset-bottom)] md:static md:z-auto md:pb-0"
             : "hidden md:flex",
         )}
       >

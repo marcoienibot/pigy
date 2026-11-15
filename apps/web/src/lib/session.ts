@@ -5,6 +5,7 @@ import {
   workspaceListResponseSchema,
 } from "@pigy/core";
 import { ApiError, fetchMe, fetchWorkspaces, signOut } from "@/lib/api";
+import { forgetWorkspaceChoice } from "@/lib/workspace";
 import { countUnsynced, deleteCopies } from "@/sync/indexed-db";
 import { closeWorkspaceSync } from "@/sync/workspace-sync";
 
@@ -223,6 +224,7 @@ export async function endSession(): Promise<void> {
     // a deletion that failed.
     await deleteCopies();
     localStorage.removeItem(storageKey);
+    forgetWorkspaceChoice();
   }
 }
 
@@ -294,13 +296,15 @@ export async function signOutAndForget(): Promise<void> {
 
 /**
  * Deletes everything that this device holds of the person who was signed
- * in: the local copies, with the changes in them that were not synced, and
- * who it was. For after the server has ended the session, or to discard
- * what was kept of a session that ended by itself.
+ * in: the local copies of both their workspaces, with the changes in them
+ * that were not synced, who it was, and which workspace they chose to see.
+ * For after the server has ended the session, or to discard what was kept
+ * of a session that ended by itself.
  */
 export async function forgetSession(): Promise<void> {
   closeWorkspaceSync();
   // Tabs that have a copy open let go of it when it is deleted.
   await deleteCopies();
   localStorage.removeItem(storageKey);
+  forgetWorkspaceChoice();
 }
