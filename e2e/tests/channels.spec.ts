@@ -85,7 +85,7 @@ test("somebody new is led from the empty drafts screen to a connected simulated 
   await expect(page.getByRole("main")).toContainText("This is your sandbox");
   await page.getByRole("link", { name: "Connect a simulated account" }).click();
 
-  // The form of the one network that can be connected, with nothing to
+  // The form of the first network that can be connected, with nothing to
   // guess: the sandbox has one server, which is filled in and named as
   // what it is.
   const dialog = page.getByRole("dialog");
@@ -151,7 +151,7 @@ test("the empty Channels screen says what a channel is, and the choice of a netw
   await expect(main).toContainText(
     "A channel is an account on a network that pigy posts to for you",
   );
-  await expect(main).toContainText("Bluesky, LinkedIn, and Threads are coming");
+  await expect(main).toContainText("LinkedIn and Threads are coming");
   // One click to the form from here.
   await main
     .getByRole("button", { name: "Connect a simulated Mastodon account" })
@@ -165,16 +165,69 @@ test("the empty Channels screen says what a channel is, and the choice of a netw
   const networks = dialog.getByRole("list", { name: "Networks" });
   await expect(networks.getByRole("listitem")).toHaveText([
     "Mastodon",
-    "BlueskyComing soon",
+    "Bluesky",
     "LinkedInComing soon",
     "ThreadsComing soon",
   ]);
-  await expect(networks.getByRole("button")).toHaveText(["Mastodon"]);
+  await expect(networks.getByRole("button")).toHaveText([
+    "Mastodon",
+    "Bluesky",
+  ]);
 
   // Closing leaves the screen as it was, with the address of the screen.
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
   await expect(page).toHaveURL("/channels");
+});
+
+test("connects a simulated Bluesky account through the consent page of its server", async ({
+  ownPage: page,
+}) => {
+  await openScreen(page, "Channels");
+  await page
+    .getByRole("main")
+    .getByRole("button", { name: "Connect a simulated Bluesky account" })
+    .click();
+
+  // What a person types for Bluesky is a handle. The sandbox has filled
+  // one of its simulated accounts in, and names them all.
+  const dialog = page.getByRole("dialog");
+  const handle = dialog.getByLabel("Handle");
+  await expect(handle).toHaveValue("ada.bsky.test");
+  await expect(handle).toHaveAccessibleDescription(
+    "The sandbox has three simulated accounts: ada.bsky.test, grace.bsky.test and alan.bsky.test.",
+  );
+
+  // A real handle, which the world of the sandbox does not have, is
+  // refused next to the field, with what to enter instead.
+  await handle.fill("grace.bsky.social");
+  await dialog.getByRole("button", { name: "Continue to Bluesky" }).click();
+  await expect(dialog.getByRole("alert")).toHaveText(
+    "The sandbox has no account grace.bsky.social. Enter the handle of one of its simulated accounts: ada.bsky.test, grace.bsky.test and alan.bsky.test.",
+  );
+  await expect(handle).toBeFocused();
+
+  await handle.fill("@grace.bsky.test");
+  await dialog.getByRole("button", { name: "Continue to Bluesky" }).click();
+
+  // The consent page of the simulated entryway of Bluesky, which the app
+  // serves. It offers the account whose handle was entered, and no other:
+  // pigy would not take another one.
+  await page.waitForURL(
+    ({ pathname }) => pathname === "/sim/network/bsky.social/oauth/authorize",
+  );
+  await expect(page.getByText("Simulation", { exact: true })).toBeVisible();
+  const accounts = page.locator('button[name="account"]');
+  await expect(accounts).toHaveCount(1);
+  expect(await overflow(page)).toBe(0);
+  await accounts.getByText("@grace.bsky.test").click();
+
+  await expect(notice(page)).toHaveText(
+    "Grace Hopper (@grace.bsky.test) is connected.",
+  );
+  await expect(channelRows(page)).toHaveCount(1);
+  await expect(channelRows(page)).toContainText("Bluesky · @grace.bsky.test");
+  await expect(channelRows(page)).toContainText("Connected");
 });
 
 test("the dialog that connects an account is one step back in the browser, and closing it leaves the history as it was", async ({

@@ -49,7 +49,22 @@ export const networkInfo: Record<Network, NetworkInfo> = {
       revoke: "Preferences → Account → Authorized apps",
     },
   },
-  bluesky: { label: "Bluesky" },
+  bluesky: {
+    label: "Bluesky",
+    connect: {
+      identifier: {
+        label: "Handle",
+        placeholder: "alice.bsky.social",
+        hint: "The handle of the account, such as alice.bsky.social, without the @.",
+        // A handle is "@name.domain".
+        of: ({ handle }) => handle.replace(/^@/, ""),
+      },
+      // GUESS: where Bluesky's own servers list the apps that an account
+      // has let in. A live run has to confirm it, PLAN.md section 19.
+      revoke:
+        "the apps of the account at bsky.social/account, for an account on Bluesky's own servers",
+    },
+  },
   linkedin: { label: "LinkedIn" },
   threads: { label: "Threads" },
 };
