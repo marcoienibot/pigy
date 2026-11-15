@@ -30,4 +30,6 @@ pnpm preview:e2e   # the build that pnpm e2e tests, on http://localhost:4173
 
 `pnpm preview:e2e` is the way to try a built app by hand: it is the production build in everything but sign-in, which is simulated as under `pnpm dev`, and it starts from an empty database. `pnpm preview` serves the real production build, where signing in takes Google credentials.
 
+A built app installs, from the address bar of Chrome or from Settings, and starts without a connection once somebody has signed in. `pnpm dev` has no service worker, so neither works there.
+
 The end-to-end tests need Chromium once: `pnpm --filter @pigy/e2e exec playwright install chromium`.
