@@ -685,6 +685,28 @@ describe("tokens", () => {
     expect(write.status).toBe(401);
   });
 
+  it("ends the session of a code that comes a second time after its own time, when other codes have been given since", async () => {
+    const sim = await setup();
+    const { code, pushed } = await consented(sim);
+    const { tokens } = await sim.pigy.exchange(issuer, code, pushed.verifier);
+    // Past the time that the code had to be exchanged in. Another person
+    // consents, which is when the server forgets the codes that have had
+    // their time: the one that was exchanged has not had it.
+    sim.world.advance(11 * minute);
+    await consented(sim);
+    const second = await sim.pigy.exchange(issuer, code, pushed.verifier);
+    expect(await body(second.response)).toMatchObject({
+      error: "invalid_grant",
+      error_description: "Code replayed",
+    });
+    // The access token has run out by itself by now, so the session is
+    // shown to be over by its refresh token.
+    const refreshed = await sim.pigy.refresh(issuer, tokens.refresh_token);
+    expect(await body(refreshed.response)).toMatchObject({
+      error: "invalid_grant",
+    });
+  });
+
   it("refuses a code that waited too long", async () => {
     const sim = await setup();
     const { code, pushed } = await consented(sim);
@@ -1064,21 +1086,31 @@ describe("what the world keeps", () => {
     const round = async () => {
       const tokens = await connected(sim);
       await createRecord(sim, tokens.access_token, post("Hi"));
-      await sim.pigy.refresh(issuer, tokens.refresh_token);
+      const renewed = await sim.pigy.refresh(issuer, tokens.refresh_token);
       await sim.pigy.push(issuer);
+      return renewed.tokens;
     };
-    await round();
+    const rows = <Row>(name: string) =>
+      sim.world.table<Row>("bluesky", name).entries();
+    const sessions = () => rows<{ revoked: boolean }>("session");
+    const first = await round();
+    // The one session so far, which is to end.
+    const [ended] = sessions().map(([id]) => id);
+    expect(ended).toBeDefined();
+    // A second session, which lives on, and the first one ends: the codes
+    // that they were begun with have both had their time by the second
+    // round.
+    await connected(sim);
+    const lasting = sessions().find(([id]) => id !== ended)?.[0];
+    await sim.pigy.form(issuer, "/oauth/revoke", { token: first.access_token });
     sim.world.advance(2 * day);
     await round();
 
     const now = sim.world.now().getTime();
-    const rows = <Row>(name: string) =>
-      sim.world.table<Row>("bluesky", name).entries();
     for (const [name, until] of [
       ["replay", (row: number) => row],
       ["challenge", (row: number) => row],
       ["request", (row: { expiresAt: number }) => row.expiresAt],
-      ["code", (row: { expiresAt: number }) => row.expiresAt],
     ] as const) {
       const kept = rows<never>(name);
       // There is something to forget: the second round made some.
@@ -1086,6 +1118,25 @@ describe("what the world keeps", () => {
       for (const [id, row] of kept) {
         expect(until(row), `${name} ${id}`).toBeGreaterThan(now);
       }
+    }
+    // A code that was exchanged is kept for as long as its session lives,
+    // to tell it when it comes again, and forgotten when the session ends.
+    // The code of the second round is kept, and so is the one of the
+    // session that lives on, past its time.
+    const codes = rows<{ expiresAt: number; sessionId: string | null }>(
+      "code",
+    ).map(([, code]) => code);
+    expect(codes.map(({ sessionId }) => sessionId)).not.toContain(ended);
+    expect(codes.map(({ sessionId }) => sessionId)).toContain(lasting);
+    const revoked = new Map(
+      sessions().map(([id, { revoked }]) => [id, revoked]),
+    );
+    expect(codes.length).toBe(2);
+    for (const { expiresAt, sessionId } of codes) {
+      expect(
+        expiresAt > now || revoked.get(sessionId ?? "") === false,
+        `code of ${sessionId}`,
+      ).toBe(true);
     }
     // A server takes its nonce of now and the one before it.
     const span = 2 * minute;

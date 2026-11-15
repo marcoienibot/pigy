@@ -670,7 +670,15 @@ export async function authorize(
     }
     const code = simulatedSecret();
     const now = state.world.now().getTime();
-    forget(state.codes, ({ expiresAt }) => expiresAt <= now);
+    // A code that was exchanged is what tells the same code coming again
+    // from one that the server never gave, however late it comes. So it
+    // is kept for as long as its session, and only a code that nobody
+    // exchanged is forgotten when its own time is over.
+    forget(state.codes, ({ expiresAt, sessionId }) =>
+      sessionId === null
+        ? expiresAt <= now
+        : sessionIsOver(state, sessionId, now),
+    );
     state.codes.put(code, {
       code,
       request: pushed,
@@ -684,6 +692,26 @@ export async function authorize(
     status: 302,
     headers: { Location: redirect.href },
   });
+}
+
+/**
+ * Whether the session `id` can no longer be used: it was ended, it has
+ * lasted as long as a session may, or its refresh token has run out.
+ */
+function sessionIsOver(state: State, id: string, now: number): boolean {
+  const session = state.sessions.get(id);
+  if (
+    !session ||
+    session.revoked ||
+    now - session.createdAt >= sessionLifetimeMs
+  ) {
+    return true;
+  }
+  const refresh = state.world.findToken<BlueskyToken>(
+    "bluesky",
+    session.refreshToken,
+  );
+  return !refresh || state.world.tokenStatus(refresh) !== "valid";
 }
 
 /** Issues the tokens of `session`, new ones, and returns the answer. */
