@@ -47,22 +47,71 @@ export const handleNotFound: NotFoundHandler = (c) =>
  * up, the `state` of a callback. What is logged in place of such an error
  * has the statement and the reason, without the values.
  *
- * The same goes for an error that has such a one beneath it, as its cause
- * or further down: a log prints the causes too. It is logged as a copy
- * that has the cleaned one in that place.
+ * The same goes for an error that has such a one beneath it: as its cause
+ * or further down, among the errors that an `AggregateError` gathers, or
+ * in a plain object or a list that is a cause. A log prints all of those.
+ * It is logged as a copy that has the cleaned one in that place.
+ *
+ * What it cannot find is a message that somebody has made from the message
+ * of such an error. Nothing in the app does that: an error is passed on as
+ * a cause, never quoted.
  *
  * Every error that a route lets through is logged this way, below. Code
  * that catches an error which the database may have thrown, and logs it
  * itself, calls this.
  */
 export function loggable(error: unknown): unknown {
-  if (!(error instanceof Error)) return error;
-  const cause = loggable(error.cause);
+  return cleaned(error, new WeakSet());
+}
+
+// What stands in a log where an error leads back to one that is being
+// cleaned already. Causes can go in a circle, and this runs where errors
+// are handled: it must come to an end, and it must not throw.
+const circular = "[circular]";
+
+function cleaned(value: unknown, onTheWay: WeakSet<object>): unknown {
+  if (typeof value !== "object" || value === null) return value;
+  if (onTheWay.has(value)) return circular;
+  onTheWay.add(value);
+  try {
+    if (Array.isArray(value)) return cleanedList(value, onTheWay);
+    if (value instanceof Error) return cleanedError(value, onTheWay);
+    // Anything else that is not a plain object is left as it is: what it
+    // holds is its own business, and a log does not look into it.
+    if (Object.getPrototypeOf(value) !== Object.prototype) return value;
+    const entries = Object.entries(value);
+    const clean = entries.map(([, held]) => cleaned(held, onTheWay));
+    return clean.every((held, index) => held === entries[index]?.[1])
+      ? value
+      : Object.fromEntries(entries.map(([key], index) => [key, clean[index]]));
+  } finally {
+    // Only what leads back to itself is a circle. The same error in two
+    // places is cleaned in both.
+    onTheWay.delete(value);
+  }
+}
+
+function cleanedList(list: unknown[], onTheWay: WeakSet<object>): unknown[] {
+  const clean = list.map((held) => cleaned(held, onTheWay));
+  return clean.every((held, index) => held === list[index]) ? list : clean;
+}
+
+function cleanedError(error: Error, onTheWay: WeakSet<object>): unknown {
+  const cause = cleaned(error.cause, onTheWay);
   if (error instanceof DrizzleQueryError) {
     return new Error(`Failed query: ${error.query}`, { cause });
   }
-  if (cause === error.cause) return error;
-  const copy = new Error(error.message, { cause });
+  const gathered =
+    error instanceof AggregateError
+      ? cleanedList(error.errors, onTheWay)
+      : undefined;
+  const same =
+    cause === error.cause &&
+    (!(error instanceof AggregateError) || gathered === error.errors);
+  if (same) return error;
+  const copy = gathered
+    ? new AggregateError(gathered, error.message, { cause })
+    : new Error(error.message, { cause });
   copy.name = error.name;
   // The stack of the copy says where the copy was made. What a log needs
   // is where the error was thrown.

@@ -4,7 +4,7 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { expect, it, onTestFinished, vi } from "vitest";
-import { handleError } from "../src/errors.ts";
+import { handleError, loggable } from "../src/errors.ts";
 import app from "../src/index.ts";
 import { logged } from "./helpers.ts";
 
@@ -65,6 +65,14 @@ it.each([
         cause: new Error("Not now", { cause: failedQuery() }),
       }),
   ],
+  [
+    "is one of several failures that a route fails with",
+    () => new AggregateError([new Error("Another"), failedQuery()], "Two"),
+  ],
+  [
+    "is in an object that is the cause of what a route fails with",
+    () => new Error("Not stored", { cause: { error: failedQuery() } }),
+  ],
 ])(
   "logs a query that failed without its values when it %s",
   async (_name, failure) => {
@@ -85,6 +93,31 @@ it.each([
     expect(text).not.toContain("the-hash-of-a-session");
   },
 );
+
+it("comes to an end with an error whose causes go in a circle", () => {
+  const first = new Error("First");
+  const second = new Error("Second", { cause: first });
+  first.cause = second;
+  const itself = failedQuery();
+  itself.cause = itself;
+
+  // This runs where errors are handled. Going round for ever would end in
+  // an exception of its own, in place of the answer and of the log.
+  const [two, one] = [loggable(second), loggable(itself)].map(logged);
+
+  expect(two).toContain("Second");
+  expect(two).toContain("First");
+  expect(one).toContain('from "session"');
+  expect(one).not.toContain("the-hash-of-a-session");
+});
+
+it("cleans an error in every place that it stands in", () => {
+  const query = failedQuery();
+  // The same error twice is no circle: it is cleaned both times.
+  const failure = new AggregateError([query, query], "Twice");
+
+  expect(logged(loggable(failure))).not.toContain("the-hash-of-a-session");
+});
 
 // The statuses that routes do not use yet are covered here, with routes
 // that exist only in this test.

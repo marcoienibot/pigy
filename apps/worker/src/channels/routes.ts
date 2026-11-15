@@ -274,7 +274,12 @@ export function channelRoutes(dependencies: AppDependencies): Hono<AppEnv> {
       //
       // Closing them would take a place for credentials that wait to be
       // revoked, outside the channel, and something that tries again later.
-      c.executionCtx.waitUntil(disconnecting);
+      //
+      // The runtime is handed a promise that never rejects. It reports a
+      // rejection of what it keeps going as an exception that nobody
+      // caught, with the error as it is, next to the one that the route
+      // lets through below: logged twice, once without `loggable`.
+      c.executionCtx.waitUntil(disconnecting.catch(() => {}));
 
       const outcome = await disconnecting;
       if (!outcome.ok && outcome.code === "not_found") throw noSuchChannel();

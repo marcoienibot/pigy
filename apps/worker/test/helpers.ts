@@ -410,10 +410,19 @@ export function expectErrors() {
  * carries, and the same of the errors beneath it.
  */
 export function logged(entry: unknown): string {
-  if (!(entry instanceof Error)) return String(entry);
+  if (Array.isArray(entry)) return entry.map(logged).join("\n");
+  if (!(entry instanceof Error)) {
+    // A log prints what a plain object holds, an error among it.
+    return typeof entry === "object" &&
+      entry !== null &&
+      Object.getPrototypeOf(entry) === Object.prototype
+      ? Object.values(entry).map(logged).join("\n")
+      : String(entry);
+  }
   return [
     entry.stack,
     JSON.stringify({ ...entry }),
+    ...(entry instanceof AggregateError ? [logged(entry.errors)] : []),
     ...(entry.cause === undefined ? [] : [logged(entry.cause)]),
   ].join("\n");
 }
