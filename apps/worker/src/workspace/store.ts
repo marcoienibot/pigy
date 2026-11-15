@@ -489,17 +489,6 @@ export class WorkspaceStore {
    * none under way, the one that has waited longest. The deliveries to one
    * channel go out one after the other, because no adapter can tell two
    * apart that go to one account together.
-   *
-   * A delivery that begins passes the ones to its channel that failed
-   * before they had published a part. Such a delivery could still be taken
-   * up where it stopped: it would look for its first part among what the
-   * account has posted since it began, which is how an adapter finds a
-   * part whose answer was lost. From now on that includes the posts of
-   * this delivery, and it would take a first part that reads the same for
-   * its own. So what it had recorded is dropped here, in the transaction
-   * that begins the other: tried again, it begins anew. A delivery that
-   * has published a part is not concerned: its next part is a reply to
-   * the one before, which no other delivery has.
    */
   startDeliveries(now: number): void {
     this.storage.transactionSync(() => {
@@ -528,24 +517,67 @@ export class WorkspaceStore {
         if (refusal) {
           throw new Error(`A delivery did not begin: ${refusal.message}`);
         }
-        this.db
-          .update(postTargets)
-          .set({ progress: null })
-          .where(
-            and(
-              eq(postTargets.channelId, channelId),
-              ne(postTargets.id, id),
-              inArray(postTargets.status, ["error", "uncertain"]),
-              notExists(
-                this.db
-                  .select({ id: targetPartResults.id })
-                  .from(targetPartResults)
-                  .where(eq(targetPartResults.targetId, postTargets.id)),
-              ),
-            ),
-          )
-          .run();
       }
+    });
+  }
+
+  /**
+   * Takes note that the delivery `run` has passed its checks and is about
+   * to make its first request to the network, and returns whether it is
+   * under way: not if the target has ended, or is on another attempt.
+   *
+   * From here on, no other delivery to the channel that has not published
+   * a part can be taken up where it stopped. It would look for its first
+   * part among what the account has posted since it began, which is how
+   * an adapter finds a part whose answer was lost. That now includes the
+   * posts of this delivery, and it would take a first part that reads the
+   * same for its own. So what the others have recorded is dropped here:
+   * whichever of them is tried again begins anew. That goes for every
+   * other target of the channel, whatever its status: one that failed,
+   * and one that was tried again since and waits its turn behind this
+   * one. A delivery that has published a part is not concerned: its next
+   * part is a reply to the one before, which no other delivery has.
+   *
+   * Not before this point: a delivery that ends without having asked the
+   * network for anything, because its post does not pass the checks, say,
+   * has put nothing on the account that another could take for its own.
+   * The progress of the others is what lets them find a first part that
+   * landed unseen, and dropping it without need means posting twice.
+   *
+   * It is safe to repeat: while this delivery is under way no other to
+   * the channel is, so none has recorded anything since the first time.
+   */
+  aboutToSend({ targetId, attempt }: DeliveryRun): boolean {
+    return this.storage.transactionSync(() => {
+      const target = this.db
+        .select({
+          channelId: postTargets.channelId,
+          status: postTargets.status,
+          attempt: postTargets.attempt,
+        })
+        .from(postTargets)
+        .where(eq(postTargets.id, targetId))
+        .get();
+      if (target?.status !== "sending" || target.attempt !== attempt) {
+        return false;
+      }
+      this.db
+        .update(postTargets)
+        .set({ progress: null })
+        .where(
+          and(
+            eq(postTargets.channelId, target.channelId),
+            ne(postTargets.id, targetId),
+            notExists(
+              this.db
+                .select({ id: targetPartResults.id })
+                .from(targetPartResults)
+                .where(eq(targetPartResults.targetId, postTargets.id)),
+            ),
+          ),
+        )
+        .run();
+      return true;
     });
   }
 

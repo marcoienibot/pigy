@@ -29,6 +29,7 @@ import type { Reach } from "../network/reach.ts";
 import { clipped } from "../text.ts";
 import { type Vault, VaultError, vaultWithoutRequest } from "../vault.ts";
 import {
+  aboutToSend,
   channelAccess,
   deliveryOf,
   mutateWorkspace,
@@ -53,13 +54,17 @@ import { retryWaitSeconds } from "./retry.ts";
  *
  * 1. `prepare` asks the workspace what to publish, brings the limits of
  *    the account up to date and checks the post against them.
- * 2. `publish` of @pigy/providers drives the adapter of the network: each
+ * 2. `about-to-send` tells the workspace that the delivery has passed its
+ *    checks and will ask the network to publish. From then on the other
+ *    deliveries to the channel that have published nothing begin anew when
+ *    they are tried again: see `aboutToSend` in src/workspace/store.ts.
+ * 3. `publish` of @pigy/providers drives the adapter of the network: each
  *    of its steps is a step here, `publish-1`, `publish-2` and so on, with
  *    at most one request that changes something on the network. After
  *    each, `record-publish-N` tells the workspace how far the post has
  *    come, so that clients see a thread go out part by part, and so that a
  *    later attempt goes on from there.
- * 3. `end` tells the workspace how the delivery ended.
+ * 4. `end` tells the workspace how the delivery ended.
  *
  * What the platform stores of a run is to be taken for readable: what the
  * run was started with, and what each step returned. Neither holds a
@@ -523,6 +528,13 @@ export async function deliver(
       reach,
       vault: channelVault,
     } = adapterOf(prepared.channel.network);
+    // Nothing has been asked of the network that could publish, and from
+    // here on it is. Not earlier: a delivery that ends before this point
+    // must leave what the others to its channel have recorded alone.
+    const underWay = await step.do("about-to-send", bookkeepingStep, () =>
+      aboutToSend(env.WORKSPACE, workspace, run),
+    );
+    if (!underWay) throw superseded();
     await publish(
       provider,
       {

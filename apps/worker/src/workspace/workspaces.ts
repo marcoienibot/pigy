@@ -25,8 +25,8 @@ import type {
  * only ways into their Durable Objects: `connectWorkspace` for a client,
  * and for the Worker's own code `mutateWorkspace`, `connectChannel`,
  * `disconnectChannel` and `channelAccess`, and what the publishing
- * workflow asks and reports: `deliveryOf`, `recordProgress` and
- * `renewChannelAccess`.
+ * workflow asks and reports: `deliveryOf`, `aboutToSend`, `recordProgress`
+ * and `renewChannelAccess`.
  */
 
 /**
@@ -205,6 +205,26 @@ export async function deliveryOf(
     .delivery(workspace, run);
   if (delivery === undefined) throw foreign(workspace);
   return delivery;
+}
+
+/**
+ * Tells `workspace` that the delivery `run` has passed its checks and is
+ * about to make its first request to the network. From then on the other
+ * deliveries to its channel that have published nothing begin anew when
+ * they are tried again: what they recorded could lead them to a post of
+ * this one. Returns whether the delivery is under way. It is safe to
+ * repeat.
+ */
+export async function aboutToSend(
+  namespace: Bindings["WORKSPACE"],
+  workspace: WorkspaceIdentity,
+  run: DeliveryRun,
+): Promise<boolean> {
+  const underWay = await namespace
+    .getByName(workspace.id)
+    .aboutToSend(workspace, run);
+  if (underWay === undefined) throw foreign(workspace);
+  return underWay;
 }
 
 /**

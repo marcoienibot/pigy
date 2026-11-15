@@ -174,7 +174,7 @@ What publishes, in `publish/`:
 - `store.ts` is its database: it runs mutators, each at a later time than the one before, numbers the changes, keeps the rejections that a client has yet to hear of and works out what a client is missing. It also stores what a channel has besides its row, the sealed credentials, and what a target has: the progress of its delivery. And it keeps the keys of the calls that are carried out once.
 - `schema.ts` has its tables, `migrations/` what `drizzle-kit` generates from them.
 - `synced.ts` lists the columns that clients get to see, and is the only code that reads or writes them.
-- `workspaces.ts` is the Worker's side: the `workspace` table of D1, and the only ways into an object: `connectWorkspace` for a client, `mutateWorkspace`, `connectChannel`, `disconnectChannel` and `channelAccess` for the Worker's own code, and `deliveryOf`, `recordProgress` and `renewChannelAccess` for the publishing workflow.
+- `workspaces.ts` is the Worker's side: the `workspace` table of D1, and the only ways into an object: `connectWorkspace` for a client, `mutateWorkspace`, `connectChannel`, `disconnectChannel` and `channelAccess` for the Worker's own code, and `deliveryOf`, `aboutToSend`, `recordProgress` and `renewChannelAccess` for the publishing workflow.
 - `routes.ts` has `GET /api/workspaces` and the WebSocket endpoint `/sync/<workspace ID>`.
 
 ## Rules
@@ -277,7 +277,7 @@ A call to `mutateWorkspace` cannot be repeated safely as it is. If it fails on t
    The publishing pipeline needs no change for a network whose adapter keeps to the contract: it knows a network only by `providerOf`, `limits`, `validateContent` and `publish`. Three things to check all the same:
    - A network that refreshes credentials uses a path that so far only a test adapter has taken: `accessOf` in `src/publish/workflow.ts`. It refreshes when a step is refused, and nothing refreshes by a timer yet. `PLAN.md` section 6 says what the timer needs.
    - A network on which pigy can neither look nor repeat a request safely, which is LinkedIn, needs one thing that the pipeline does not have: a step that was cut off after its request went out is run again by the platform, and such an adapter then sends a second time. `PLAN.md` section 8 has it, at the end.
-   - A network whose adapter takes a post for its own by what the account has posted since the delivery began relies on the rule of `startDeliveries`: a delivery that begins passes the failed ones that have published nothing. If its adapter looks for a later part in another way than as a reply to the part before, that rule has to cover the failed deliveries that have published something too.
+   - A network whose adapter takes a post for its own by what the account has posted since the delivery began relies on the rule of `aboutToSend` in `src/workspace/store.ts`: a delivery that is about to make its first request passes the others to its channel that have published nothing, which begin anew when they are tried again. If its adapter looks for a later part in another way than as a reply to the part before, that rule has to cover the deliveries that have published something too.
 
 **Run the conformance suite against a real network.** This posts to a real account. Use an account that is there for the purpose.
 

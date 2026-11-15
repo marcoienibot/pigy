@@ -280,6 +280,23 @@ export function workspaceObject({ now }: { now: Clock }) {
     }
 
     /**
+     * Takes note that the delivery `run` is about to make its first
+     * request to the network, which is when the other deliveries to its
+     * channel that have published nothing lose what they recorded.
+     * Returns whether the delivery is under way, and nothing if
+     * `workspace` is not the one that the object holds.
+     */
+    aboutToSend(
+      workspace: WorkspaceIdentity,
+      run: DeliveryRun,
+    ): boolean | undefined {
+      if (!this.#store.bind(workspaceIdentitySchema.parse(workspace))) {
+        return undefined;
+      }
+      return this.#store.aboutToSend(run);
+    }
+
+    /**
      * Records how far the delivery `run` has come: the parts that are
      * published, which the clients hear of, and the progress to go on
      * from. Carried out once for `key`. Returns nothing if `workspace` is

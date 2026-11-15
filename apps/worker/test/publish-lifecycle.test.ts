@@ -154,6 +154,12 @@ function losingTheFirstPost() {
 
 const statuses = `https://${realMastodonDomain}/api/v1/statuses`;
 
+/** What a workspace keeps of how far a target has come, besides its row. */
+async function progressOf(workspace: string, targetId: string) {
+  const targets = await storedProgress(workspace);
+  return targets.find((target) => target.id === targetId)?.progress;
+}
+
 it("finds a first part whose answer was lost when the delivery is tried again", async () => {
   const { network, intercept } = losingTheFirstPost();
   const context = await ready({ interceptNetwork: intercept });
@@ -192,11 +198,8 @@ it("begins a delivery anew that has published nothing once another has gone to i
   const [targetId = ""] = await publishTo(client, draft.postId, channel);
   await ended(client, draft.postId);
   expect(targetOf(client, targetId).status).toBe("error");
-  const progressOf = async (id: string) =>
-    (await storedProgress(workspace)).find((target) => target.id === id)
-      ?.progress;
   // What the next attempt would go on from: where the account stood.
-  expect(await progressOf(targetId)).toContain('"after"');
+  expect(await progressOf(workspace, targetId)).toContain('"after"');
 
   // A later post goes to the account, with the same text as it happens.
   // It does not wait for the failed one to be tried again or given up:
@@ -206,12 +209,12 @@ it("begins a delivery anew that has published nothing once another has gone to i
   const [laterTarget = ""] = await publishTo(client, later.postId, channel);
   expect(await ended(client, later.postId)).toMatchObject({ status: "sent" });
 
-  // From the moment that the later delivery began, the failed one can no
-  // longer go on from what it recorded. It would look through what the
-  // account has posted since it began, find the post of the later
-  // delivery, and take it for its own first part: two posts in pigy would
-  // stand for one on the network. So its progress is gone.
-  expect(await progressOf(targetId)).toBeNull();
+  // From the moment that the later delivery was about to send, the failed
+  // one can no longer go on from what it recorded. It would look through
+  // what the account has posted since it began, find the post of the
+  // later delivery, and take it for its own first part: two posts in pigy
+  // would stand for one on the network. So its progress is gone.
+  expect(await progressOf(workspace, targetId)).toBeNull();
 
   // Hours later the person tries the failed post again.
   test.advance(2 * 60 * 60 * 1000);
@@ -234,6 +237,107 @@ it("begins a delivery anew that has published nothing once another has gone to i
   const theirs = publishedOf(client, laterTarget, later);
   expect(mine).toEqual([posts()[2]?.id]);
   expect(theirs).toEqual([posts()[1]?.id]);
+});
+
+it("begins a delivery anew that is tried again while the one that goes before it has yet to send", async () => {
+  let asked = 0;
+  const context = await ready({
+    // The server refuses the first status that it is asked to post.
+    interceptNetwork: inPlaceOfPosting(
+      () => ++asked === 1,
+      async () => Response.json({ error: "Not this one" }, { status: 422 }),
+    ),
+  });
+  const { workspace, channel, client, posts } = context;
+  const draft = await writeDraft(client, workspace, "Same text");
+  const [targetId = ""] = await publishTo(client, draft.postId, channel);
+  await ended(client, draft.postId);
+  // Nothing of it is on the network, and it has recorded where the
+  // account stood: what a later attempt would look through from.
+  expect(targetOf(client, targetId).status).toBe("error");
+  expect(posts()).toEqual([]);
+  expect(await progressOf(workspace, targetId)).toContain('"after"');
+
+  // A second post with the same text is published, and the first is tried
+  // again right behind it: in one message, as an outbox sends what was
+  // done offline. Both reach the workspace before it begins either.
+  const later = await writeDraft(client, workspace, "Same text");
+  const laterTarget = newId();
+  client.send({
+    type: "mutate",
+    mutations: [
+      client.mutation("target.add", {
+        id: laterTarget,
+        postId: later.postId,
+        channelId: channel,
+      }),
+      client.mutation("post.publish", { id: later.postId }),
+      client.mutation("target.retry", { id: targetId }),
+    ],
+  });
+  expect((await client.patch()).rejected).toEqual([]);
+  // The one that failed is not failed any more when the other begins: it
+  // waits its turn, behind the other, which was asked for first.
+  expect(targetOf(client, targetId).status).toBe("queued");
+  expect(targetOf(client, laterTarget).status).toBe("queued");
+
+  await ended(client, later.postId);
+  await ended(client, draft.postId);
+
+  // The later post went out first. Had the other gone on from what it
+  // recorded, it would have looked through what the account has posted
+  // since, found that post, and taken it for its own. It began anew
+  // instead, from where the account stood after the later post, and
+  // posted: each post in pigy has a post of its own on the network.
+  expect(targetOf(client, targetId)).toMatchObject({
+    status: "sent",
+    attempt: 2,
+  });
+  expect(posts().map(({ text }) => text)).toEqual(["Same text", "Same text"]);
+  expect(publishedOf(client, laterTarget, later)).toEqual([posts()[0]?.id]);
+  expect(publishedOf(client, targetId, draft)).toEqual([posts()[1]?.id]);
+});
+
+it("finds a first part that landed unseen after a delivery to its account that sent nothing", async () => {
+  const { network, intercept } = losingTheFirstPost();
+  const context = await ready({ interceptNetwork: intercept });
+  const { test, browser, workspace, channel, client, posts, posted } = context;
+  const draft = await writeDraft(client, workspace, "Lost", "Its reply");
+  const [targetId = ""] = await publishTo(client, draft.postId, channel);
+  await ended(client, draft.postId);
+  // The first part is on the network, and pigy does not know.
+  expect(targetOf(client, targetId).status).toBe("error");
+  expect(publishedOf(client, targetId, draft)).toEqual([]);
+  expect(posts().map(({ text }) => text)).toEqual(["Lost"]);
+  network.state = "up";
+
+  // Another post goes to the account, and ends before anything is asked
+  // of the network: it has no text.
+  const empty = await writeDraft(client, workspace, "  ");
+  const [emptyTarget = ""] = await publishTo(client, empty.postId, channel);
+  await ended(client, empty.postId);
+  expect(targetOf(client, emptyTarget)).toMatchObject({
+    status: "error",
+    error: "The post has no text.",
+  });
+  // It has put nothing on the account that the failed delivery could take
+  // for its own, so what that one recorded is still there.
+  expect(await progressOf(workspace, targetId)).toContain('"after"');
+
+  // Hours later, when Mastodon no longer remembers the request of the
+  // first attempt: only looking can spare a second post now.
+  test.advance(2 * 60 * 60 * 1000);
+  await client.connect(browser, workspace);
+  await retry(client, targetId);
+  expect(await ended(client, draft.postId)).toMatchObject({ status: "sent" });
+
+  // The second attempt looked from where the first one began, and found
+  // the part: one request to post it, and one for its reply.
+  expect(posts().map(({ text }) => text)).toEqual(["Lost", "Its reply"]);
+  expect(posted()).toBe(2);
+  expect(publishedOf(client, targetId, draft)).toEqual(
+    posts().map(({ id }) => id),
+  );
 });
 
 it("refuses to delete a post while it is being sent, and deletes it afterwards", async () => {
