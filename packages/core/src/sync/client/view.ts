@@ -135,7 +135,9 @@ export function viewOf(
     time = Math.max(at, time + 1);
     const tx = new ViewTransaction(rows, written, time);
     try {
-      applyMutation(tx, name, args);
+      // As the client that made it: what only the server may run is left
+      // out here as the server will reject it.
+      applyMutation(tx, name, args, "client");
     } catch {
       // Whatever it wrote before it gave up is dropped with `tx`.
       continue;

@@ -177,5 +177,9 @@ export async function synced(store: SyncStore): Promise<void> {
 export function shown(store: SyncStore) {
   const table = <Table extends TableName>(name: Table): Row<Table>[] =>
     [...store.getView()[name].values()].sort((a, b) => (a.id < b.id ? -1 : 1));
-  return { post: table("post"), post_part: table("post_part") };
+  return {
+    post: table("post"),
+    post_part: table("post_part"),
+    channel: table("channel"),
+  };
 }
