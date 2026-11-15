@@ -1,7 +1,13 @@
 import { expect, it } from "vitest";
 import { developmentCredentialKeys } from "../src/development-keys.ts";
 import type { Bindings } from "../src/env.ts";
-import { createVault, type Vault, VaultError, vaultFor } from "../src/vault.ts";
+import {
+  createVault,
+  type Vault,
+  VaultError,
+  vaultFor,
+  vaultWithoutRequest,
+} from "../src/vault.ts";
 import { credentialKey, expectErrors } from "./helpers.ts";
 
 const context = ["channel", "workspace-1", "mastodon", "1@mastodon.example"];
@@ -217,6 +223,45 @@ it.each([
   // Nothing to seal with, so nothing is sealed: whoever asks refuses to
   // store anything.
   expect(vaultFor(bindings(), developmentKeys, origin)).toBeUndefined();
+  expect(String(errors.mock.calls[0]?.[0])).toContain(
+    "CREDENTIAL_KEYS is not set",
+  );
+});
+
+it("opens for work without a request what a request has sealed", async () => {
+  // A step of the publishing workflow is reached at no address. It opens
+  // what a route sealed, with the keys that the route had.
+  const configured = await vaultFor(
+    bindings(`1:${credentialKey(1)}`),
+    undefined,
+    "https://pigy.example",
+  )?.seal(context, credentials);
+  const local = await vaultFor(
+    bindings(),
+    developmentCredentialKeys,
+    "http://localhost:5173",
+  )?.seal(context, credentials);
+
+  expect(
+    await vaultWithoutRequest(
+      bindings(`1:${credentialKey(1)}`),
+      developmentCredentialKeys,
+    )?.open(context, configured ?? ""),
+  ).toEqual(credentials);
+  // The development key, where the build has it: such a build is not
+  // deployed, and what it holds was sealed with that key.
+  expect(
+    await vaultWithoutRequest(bindings(), developmentCredentialKeys)?.open(
+      context,
+      local ?? "",
+    ),
+  ).toEqual(credentials);
+});
+
+it("has no vault for work without a request in a production build without keys", () => {
+  const errors = expectErrors();
+
+  expect(vaultWithoutRequest(bindings(), undefined)).toBeUndefined();
   expect(String(errors.mock.calls[0]?.[0])).toContain(
     "CREDENTIAL_KEYS is not set",
   );

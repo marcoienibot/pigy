@@ -28,6 +28,7 @@ import { InvalidField, loggable, parseJsonBody } from "../errors.ts";
 import { type ProviderContext, providerOf } from "../network/providers.ts";
 import type { Reach } from "../network/reach.ts";
 import { WorldHostMissing } from "../sim/world.ts";
+import { clipped } from "../text.ts";
 import { VaultError, vaultFor } from "../vault.ts";
 import type {
   StoredChannelAccess,
@@ -38,38 +39,18 @@ import {
   disconnectChannel,
   ownWorkspace,
 } from "../workspace/workspaces.ts";
+import { openCredentials, sealCredentials } from "./credentials.ts";
 import { keepPending, takePending } from "./pending.ts";
 
 /**
  * Connecting an account to a workspace and disconnecting it. @pigy/core has
  * the requests and the answers, in src/connect.ts.
  *
- * This is the only code that sees the credentials of a channel: it gets
- * them from the adapter and seals them before they go to the workspace,
- * and it opens them to hand them back to the adapter that gives the access
- * up. They are in no answer and no log.
+ * The credentials of a channel pass through here on their way from an
+ * adapter to the workspace and back to an adapter. They are sealed and
+ * opened by ./credentials.ts and by nothing here, and they are in no
+ * answer and no log.
  */
-
-/**
- * What the sealed credentials of a channel belong to: the account, in its
- * workspace. Sealed for one, they do not open for another.
- */
-function credentialsContext(
-  workspace: WorkspaceIdentity,
-  { network, accountId }: Pick<StoredChannelAccess, "network" | "accountId">,
-): string[] {
-  return ["channel", workspace.id, network, accountId];
-}
-
-/** `text`, cut to at most `length` and never in the middle of a character. */
-function clipped(text: string, length: number): string {
-  let clip = "";
-  for (const character of text) {
-    if (clip.length + character.length > length) break;
-    clip += character;
-  }
-  return clip;
-}
 
 /**
  * An account as a network describes it, as the arguments of the mutator
@@ -312,12 +293,14 @@ async function giveBack(
     if (access.credentials === null) return false;
     const connection = providerOf(access.network, workspace, context);
     if (!connection) return false;
-    const credentials = await context.vault.open(
-      credentialsContext(workspace, access),
-      access.credentials,
+    await connection.provider.disconnect(
+      await openCredentials(
+        context.vault,
+        workspace,
+        access,
+        access.credentials,
+      ),
     );
-    // Checked by the adapter, against its own schema.
-    await connection.provider.disconnect(credentials as Json);
     return true;
   } catch (error) {
     if (error instanceof ProviderError || error instanceof VaultError) {
@@ -444,8 +427,10 @@ export function connectCallbackRoutes(
         limits: await limitsOf(connection.provider, access.credentials),
       };
       const stored = await connectChannel(c.env.WORKSPACE, workspace, channel, {
-        credentials: await vault.seal(
-          credentialsContext(workspace, channel),
+        credentials: await sealCredentials(
+          vault,
+          workspace,
+          channel,
           access.credentials,
         ),
         refreshAt: access.refreshAt?.getTime() ?? null,

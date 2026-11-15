@@ -166,18 +166,39 @@ export function vaultFor(
   developmentKeys: string | undefined,
   origin: string,
 ): Vault | undefined {
-  const configured =
-    env.CREDENTIAL_KEYS ?? (isLocal(origin) ? developmentKeys : undefined);
+  return vaultWith(
+    env.CREDENTIAL_KEYS ?? (isLocal(origin) ? developmentKeys : undefined),
+  );
+}
+
+/**
+ * The vault of this deployment for work that no request stands behind,
+ * such as a step of the publishing workflow, or undefined if it has none.
+ *
+ * Such work is reached at no address, so there is none to go by: without
+ * `CREDENTIAL_KEYS`, the keys are `developmentKeys` wherever the build has
+ * them. What that opens was sealed by a request, which was only given the
+ * key where the app was reached locally, and what it seals takes the place
+ * of something that the same key sealed.
+ */
+export function vaultWithoutRequest(
+  env: Bindings,
+  developmentKeys: string | undefined,
+): Vault | undefined {
+  return vaultWith(env.CREDENTIAL_KEYS ?? developmentKeys);
+}
+
+function vaultWith(configured: string | undefined): Vault | undefined {
   if (configured === undefined) {
     console.error(
-      "Nothing can be sealed, so no account can be connected: CREDENTIAL_KEYS is not set.",
+      "Nothing can be sealed or opened, so no account can be connected or posted to: CREDENTIAL_KEYS is not set.",
     );
     return undefined;
   }
   const vault = createVault(configured);
   if (typeof vault === "string") {
     console.error(
-      `Nothing can be sealed, so no account can be connected: CREDENTIAL_KEYS is not valid. ${vault}.`,
+      `Nothing can be sealed or opened, so no account can be connected or posted to: CREDENTIAL_KEYS is not valid. ${vault}.`,
     );
     return undefined;
   }
