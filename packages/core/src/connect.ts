@@ -151,6 +151,36 @@ export const connectOutcomeSchema = z.object({
 
 export type ConnectOutcome = z.infer<typeof connectOutcomeSchema>;
 
+/**
+ * How a connection ended, as `query` says: the parameters of the address
+ * that the browser was sent to, by name. Undefined if the address is not
+ * one that says how a connection ended.
+ *
+ * The outcome is `connect`. The rest only says more about it, so a value
+ * among them that is not what it should be is left out, and the outcome
+ * stands: a page can always say what happened, if not to which account.
+ */
+export function connectOutcomeOf(query: unknown): ConnectOutcome | undefined {
+  const outcome = z
+    .object({ connect: connectResultSchema })
+    .safeParse(query).data;
+  if (!outcome) return undefined;
+  const { network, workspace, channel } = connectOutcomeSchema.shape;
+  const detail = <Value>(schema: z.ZodType<Value>, name: string) =>
+    schema.safeParse((query as Record<string, unknown>)[name]).data;
+  const named = {
+    network: detail(network, "network"),
+    workspace: detail(workspace, "workspace"),
+    channel: detail(channel, "channel"),
+  };
+  return {
+    connect: outcome.connect,
+    ...(named.network && { network: named.network }),
+    ...(named.workspace && { workspace: named.workspace }),
+    ...(named.channel && { channel: named.channel }),
+  };
+}
+
 /** The path of pigy that a network sends the browser back to. */
 export function connectCallbackPath(network: Network): string {
   return `/connect/${network}/callback`;
