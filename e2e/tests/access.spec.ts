@@ -63,17 +63,22 @@ test("an admin invites a member, changes their role and removes them", async ({
   await expect(row).toHaveCount(0);
 
   // The member is signed out by their next step at the latest, and cannot
-  // get back in. The app can find out before that: it asks the server
-  // again a moment after a step that came soon after another, and leaves
-  // for the sign-in page by itself. So the step is one that can be taken
-  // from there too, opening a screen, and it is taken again if the app's
-  // own way to the sign-in page has cut it short.
-  await expect(async () => {
-    await member.goto("/queue");
-  }).toPass();
-  await expect(member).toHaveURL("/sign-in?returnTo=%2Fqueue");
-  await signIn(member, email);
-  await expect(member).toHaveURL("/invite-only");
+  // get back in. Their step is to open the app again, in a new window. In
+  // the window that was open, the app can be on its way to the sign-in
+  // page by itself: it asks the server again a moment after a step that
+  // came soon after another. A step that the test takes in that window at
+  // the same moment is cut short, is left waiting, or ends where the app
+  // was going.
+  await member.close();
+  const again = await member.context().newPage();
+  // The app starts from what the device knows of the session, and leaves
+  // for the sign-in page with a page load of its own once the server has
+  // answered, which can be before this one is over. So this waits for the
+  // address to be taken, not for the page to have loaded.
+  await again.goto("/queue", { waitUntil: "commit" });
+  await expect(again).toHaveURL("/sign-in?returnTo=%2Fqueue");
+  await signIn(again, email);
+  await expect(again).toHaveURL("/invite-only");
 });
 
 test("the admin from the configuration is listed as fixed", async ({
