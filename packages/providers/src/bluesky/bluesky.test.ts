@@ -671,6 +671,81 @@ describe("publishing", () => {
     expect(feed(test.world)).toEqual([]);
   });
 
+  it("takes a record under its key for its part only if it is what the step writes", async () => {
+    const test = await setup();
+    const { access } = await connected(test);
+    const content = { parts: [{ text: "One" }, { text: "Two" }] };
+    const step = (progress: PublishProgress | null) =>
+      test.provider.publishStep({
+        credentials: access.credentials,
+        content,
+        key: "target",
+        progress,
+      });
+    /** Has the PDS answer every look under a key with this record. */
+    const found = (uri: string, value: Record<string, unknown>) =>
+      test.intercept(async (request, simulator) =>
+        request.url.includes("getRecord")
+          ? Response.json({ uri, cid: "bafyreiexample", value })
+          : simulator(request),
+      );
+    const post = { $type: "app.bsky.feed.post", createdAt: "2026-11-15T09:00:00.000Z" };
+
+    // The first part replies to nothing.
+    const chosen = await step(null);
+    const firstKey = (chosen.state as { rkey: string }).rkey;
+    found(`at://${test.ada.id}/app.bsky.feed.post/${firstKey}`, {
+      ...post,
+      text: "One",
+      reply: {
+        root: { uri: "at://did:plc:bbbbbbbbbbbbbbbbbbbbbbbb/app.bsky.feed.post/3m2abcdefgh22", cid: "bafyreiroot" },
+        parent: { uri: "at://did:plc:bbbbbbbbbbbbbbbbbbbbbbbb/app.bsky.feed.post/3m2abcdefgh22", cid: "bafyreiroot" },
+      },
+    });
+    expect((await failure(() => step(chosen))).kind).toBe("fail");
+
+    // The first part, published, and the key of the second, chosen.
+    test.intercept(undefined);
+    const halfway = await step(await step(null));
+    const second = await step(halfway);
+    const { rkey, refs } = second.state as {
+      rkey: string;
+      refs: { uri: string; cid: string }[];
+    };
+    const [first = { uri: "", cid: "" }] = refs;
+    const uri = `at://${test.ada.id}/app.bsky.feed.post/${rkey}`;
+    const written = {
+      ...post,
+      text: "Two",
+      reply: { root: first, parent: first },
+    };
+    const others: [string, string, Record<string, unknown>][] = [
+      ["under another address", `${uri}x`, written],
+      ["with a picture", uri, { ...written, embed: { $type: "app.bsky.embed.images", images: [] } }],
+      ["with links marked up", uri, { ...written, facets: [] }],
+      ["in a language", uri, { ...written, langs: ["en"] }],
+      ["with labels", uri, { ...written, labels: { $type: "com.atproto.label.defs#selfLabels", values: [] } }],
+      ["of another kind", uri, { ...written, $type: "app.bsky.feed.like" }],
+      ["replying to nothing", uri, { ...post, text: "Two" }],
+      ["replying to another version of the part before", uri, { ...written, reply: { root: first, parent: { ...first, cid: "bafyreiother" } } }],
+      ["in another thread", uri, { ...written, reply: { root: { ...first, uri: `${first.uri}x` }, parent: first } }],
+      ["with the root of another version", uri, { ...written, reply: { root: { ...first, cid: "bafyreiother" }, parent: first } }],
+    ];
+    for (const [what, at, value] of others) {
+      found(at, value);
+      expect((await failure(() => step(second))).kind, what).toBe("fail");
+    }
+    // Nothing was written over what was found.
+    expect(feed(test.world).map(({ post }) => post.text)).toEqual(["One"]);
+
+    // What the step writes, written at another time: the step finds its
+    // part, and writes nothing.
+    found(uri, written);
+    const taken = await step(second);
+    expect(taken.parts.map(({ id }) => id)).toEqual([first.uri, uri]);
+    expect(feed(test.world).map(({ post }) => post.text)).toEqual(["One"]);
+  });
+
   it("does not go on with a thread on another account", async () => {
     const test = await setup();
     const { access } = await connected(test);

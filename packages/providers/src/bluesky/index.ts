@@ -244,6 +244,26 @@ const recordSchema = z.object({
 /** What createRecord answers with. */
 const writtenSchema = z.object({ uri: z.string(), cid: z.string().min(1) });
 
+/**
+ * A post as a step writes one, and nothing besides: what a record that a
+ * step finds under its key has to be for the step to take it for its part.
+ * Only the time at which it was written may be any: it is not recorded.
+ */
+const writtenPostSchema = z.strictObject({
+  $type: z.literal(postCollection),
+  text: z.string(),
+  createdAt: z.string(),
+  reply: z
+    .strictObject({ root: referenceSchema, parent: referenceSchema })
+    .optional(),
+});
+
+type Reference = z.infer<typeof referenceSchema>;
+
+/** Whether two references name the same version of the same record. */
+const sameReference = (a: Reference, b: Reference) =>
+  a.uri === b.uri && a.cid === b.cid;
+
 /** What pigy reads of a post. */
 const postSchema = z.object({
   text: z.string(),
@@ -1220,19 +1240,30 @@ export function createBlueskyProvider({
       const { rkey } = notes;
       const uri = `at://${access.did}/${postCollection}/${rkey}`;
       const [root, parent] = [notes.refs[0], notes.refs.at(-1)];
+      // What the part replies to: the first and the previous part, by the
+      // versions that were published.
+      const reply = root && parent ? { root, parent } : undefined;
       const found = await getRecord(
         access.pds,
         access.did,
         postCollection,
         rkey,
       );
-      let reference: z.infer<typeof referenceSchema>;
+      let reference: Reference;
       if (found) {
-        // A record that says something else is not this part's.
-        const post = postSchema.safeParse(found.value).data;
+        // A record that is not what this step writes is not this part's:
+        // at another address, with another text, replying to anything
+        // else, or with anything that pigy does not send, such as a
+        // picture, links or a language.
+        const post = writtenPostSchema.safeParse(found.value).data;
+        const replies = post?.reply;
         if (
+          found.uri !== uri ||
           post?.text !== part.text ||
-          (post.reply?.parent.uri ?? null) !== (parent?.uri ?? null)
+          (replies && reply
+            ? !sameReference(replies.root, reply.root) ||
+              !sameReference(replies.parent, reply.parent)
+            : replies !== reply)
         ) {
           throw new ProviderError(
             "fail",
@@ -1255,7 +1286,7 @@ export function createBlueskyProvider({
               // write the same record a second time, it finds the first,
               // so this need not be recorded before.
               createdAt: now().toISOString(),
-              ...(root && parent && { reply: { root, parent } }),
+              ...(reply && { reply }),
             },
           }),
           "Bluesky",
