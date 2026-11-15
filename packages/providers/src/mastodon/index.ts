@@ -79,7 +79,8 @@ export type MastodonProviderOptions = {
   clientName: string;
   /**
    * Who can see what is posted. Left out, each account's own default
-   * applies, which is what a cross-poster should respect. The live
+   * applies, which is what a cross-poster should respect: the first step
+   * of a post reads it, and every part is posted with it. The live
    * conformance run sets it, to keep its posts out of public timelines.
    */
   visibility?: MastodonVisibility;
@@ -154,6 +155,17 @@ const accountSchema = z.object({
   url: z.unknown(),
 });
 
+/**
+ * entities/CredentialAccount: an account as its own token sees it, with
+ * what decides who sees its statuses.
+ */
+const ownAccountSchema = accountSchema.extend({
+  /** There, and true, only when moderators have limited the account. */
+  limited: z.boolean().optional(),
+  /** The visibility of a status that names none: the person's setting. */
+  source: z.object({ privacy: z.string().min(1) }),
+});
+
 /** entities/Status. */
 const statusSchema = z.object({
   id: z.string().min(1),
@@ -161,6 +173,21 @@ const statusSchema = z.object({
   uri: z.unknown(),
   content: z.string(),
   in_reply_to_id: z.string().nullish(),
+});
+
+/**
+ * entities/Status in a list, with what a status can have besides its text.
+ * A list that leaves any of it open is not understood, and nothing is
+ * taken from it or posted after it.
+ */
+const listedStatusSchema = statusSchema.extend({
+  visibility: z.string(),
+  /** Empty where there is no content warning. */
+  spoiler_text: z.string(),
+  media_attachments: z.array(z.unknown()),
+  // Null or left out where there is none. Mastodon has quotes from 4.5 on.
+  poll: z.unknown().optional(),
+  quote: z.unknown().optional(),
 });
 
 /** entities/StatusSource. */
@@ -180,6 +207,12 @@ const notesSchema = z.strictObject({
    * anything was sent, and moves on to each part that is published.
    */
   after: z.string().min(1).nullable(),
+  /**
+   * Who sees the parts, in the instance's terms, settled before anything
+   * is sent: every part is posted with it, and no status with another is
+   * taken for a part.
+   */
+  visibility: z.string().min(1),
 });
 
 type Notes = z.infer<typeof notesSchema>;
@@ -486,7 +519,7 @@ export function createMastodonProvider({
     query: Record<string, string>,
   ) {
     return understood(
-      z.array(statusSchema),
+      z.array(listedStatusSchema),
       await call(
         domain,
         `/api/v1/accounts/${encodeURIComponent(accountId)}/statuses?${new URLSearchParams(query)}`,
@@ -533,6 +566,12 @@ export function createMastodonProvider({
    *   this delivery is taken for it, however alike.
    * - It replies to the part before this one, or to nothing if this is the
    *   first.
+   * - It is seen by whom the notes say, which is what every part is posted
+   *   with. A status for the account alone is not the post that everybody
+   *   was to see.
+   * - It has nothing besides its text: no media, no poll, no quote and no
+   *   content warning, because a step posts none of them. Once pigy posts
+   *   media, a status has to have the media of its part instead.
    * - Its text is the text of the part. That takes the source of the
    *   status: its HTML is not the text, a mention has no domain there. The
    *   source is not the text that was sent either. Mastodon writes every
@@ -548,13 +587,13 @@ export function createMastodonProvider({
    * the same place, with every other character the same. Only the person
    * can have written it, by hand and since, and it reads as the part does.
    *
-   * So a status that reads differently, or stands elsewhere, is never taken
-   * for the one that is looked for. What can be taken for it is a status
-   * with the same text in the same place that is newer than this delivery:
-   * the person posted the same by hand since, or a second delivery of the
-   * same text went to the account at the same time. Posting next to that
-   * would make two statuses that nobody can tell apart, so taking it is
-   * right too. Once pigy posts media, a status has to fit in that as well.
+   * So a status that reads differently, stands elsewhere, is seen by
+   * others or has more than text is never taken for the one that is looked
+   * for. What can be taken for it is a status that is the same in all of
+   * that and newer than this delivery: the person posted the same by hand
+   * since, or a second delivery of the same text went to the account at
+   * the same time. Posting next to that would make two statuses that
+   * nobody can tell apart, so taking it is right too.
    *
    * Not found is a status that somebody has edited or deleted since. The
    * part is then posted again.
@@ -565,7 +604,7 @@ export function createMastodonProvider({
    */
   async function findPosted(
     credentials: MastodonCredentials,
-    { accountId, after }: Notes,
+    { accountId, after, visibility }: Notes,
     replyTo: string | null,
     text: string,
   ) {
@@ -589,7 +628,16 @@ export function createMastodonProvider({
     // The end: nothing is newer than what has been looked at.
     if (!newest) return null;
     for (const status of newer) {
-      if ((status.in_reply_to_id ?? null) !== replyTo) continue;
+      if (
+        (status.in_reply_to_id ?? null) !== replyTo ||
+        status.visibility !== visibility ||
+        status.spoiler_text !== "" ||
+        status.media_attachments.length > 0 ||
+        (status.poll ?? null) !== null ||
+        (status.quote ?? null) !== null
+      ) {
+        continue;
+      }
       const source = await sourceText(credentials, status.id);
       if (source !== null && comparableMastodonText(source) === wanted) {
         return { status };
@@ -826,22 +874,32 @@ export function createMastodonProvider({
       if (!part) return stepped(parts, notes);
 
       // The first step of a post sends nothing. It notes whose statuses the
-      // steps after it look through, and which of them were there before
-      // the post. That is recorded before anything is sent, so that a step
-      // which is run again, however much later, can tell what it posted.
+      // steps after it look through, which of them were there before the
+      // post, and who is to see the parts. That is recorded before anything
+      // is sent, so that a step which is run again, however much later, can
+      // tell what it posted.
       const replyTo = parts.at(-1)?.id ?? null;
       if (!notes) {
         const account = understood(
-          accountSchema,
+          ownAccountSchema,
           await call(domain, "/api/v1/accounts/verify_credentials", {
             token: accessToken,
           }),
           domain,
         );
         const [newest] = await listStatuses(access, account.id, { limit: "1" });
+        // Left to itself, Mastodon posts with what the account has set. A
+        // step names it all the same, so that all parts are posted alike
+        // and it knows what it is looking for.
+        const intended = visibility ?? account.source.privacy;
         return stepped(parts, {
           accountId: account.id,
           after: replyTo ?? newest?.id ?? null,
+          // Mastodon makes "unlisted" of what a limited account posts as
+          // "public", app/services/post_status_service.rb. A step that
+          // looked for a public status would not find its own.
+          visibility:
+            intended === "public" && account.limited ? "unlisted" : intended,
         });
       }
 
@@ -875,7 +933,7 @@ export function createMastodonProvider({
             json: {
               status: part.text,
               ...(replyTo !== null && { in_reply_to_id: replyTo }),
-              ...(visibility && { visibility }),
+              visibility: notes.visibility,
             },
           }),
           domain,

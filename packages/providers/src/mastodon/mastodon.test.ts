@@ -121,12 +121,16 @@ function publishAll(
   );
 }
 
-/** Posts a status as the account itself would, from an app of Mastodon's. */
+/**
+ * Posts a status as the account itself would, from an app of Mastodon's.
+ * `more` is what the request says besides the text.
+ */
 async function postByHand(
   { simulator }: Setup,
   { accessToken }: MastodonCredentials,
   status: string,
   replyTo?: string,
+  more: { visibility?: string } = {},
 ) {
   const response = await simulator.fetch(`https://${domain}/api/v1/statuses`, {
     method: "POST",
@@ -134,7 +138,7 @@ async function postByHand(
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ status, in_reply_to_id: replyTo }),
+    body: JSON.stringify({ status, in_reply_to_id: replyTo, ...more }),
   });
   expect(response.status).toBe(200);
   return ((await response.json()) as { id: string }).id;
@@ -614,7 +618,7 @@ describe("limits", () => {
 });
 
 describe("publishing", () => {
-  it("sends the text as it is, and leaves the visibility to the account", async () => {
+  it("sends the text as it is, with the visibility that the account has set", async () => {
     const sim = setup();
     const { credentials } = await connect(sim);
     await publishAll(sim, credentials, {
@@ -624,7 +628,22 @@ describe("publishing", () => {
     expect(request?.headers.get("Authorization")).toBe(
       `Bearer ${credentials.accessToken}`,
     );
-    expect(await request?.json()).toEqual({ status: "  Hello\n\nworld  " });
+    expect(await request?.json()).toEqual({
+      status: "  Hello\n\nworld  ",
+      visibility: "public",
+    });
+
+    // The setting is the account's, not one of pigy's: another account
+    // posts with another.
+    const quiet = sim.simulator.addAccount(domain, "quiet", "Quiet", {
+      privacy: "private",
+    });
+    const other = await connect({ ...sim, ada: quiet });
+    await publishAll(sim, other.credentials, hello);
+    expect(await sim.requests.at(-1)?.json()).toEqual({
+      status: "Hello",
+      visibility: "private",
+    });
   });
 
   it("posts with the visibility it was made with", async () => {
@@ -635,6 +654,46 @@ describe("publishing", () => {
       status: "Hello",
       visibility: "direct",
     });
+  });
+
+  it("keeps to one visibility for all parts, whatever the account sets meanwhile", async () => {
+    const sim = setup();
+    const { credentials } = await connect(sim);
+    const content = { parts: [{ text: "One" }, { text: "Two" }] };
+    let progress: PublishProgress | null = null;
+    // The first step, and the one that posts the first part.
+    for (let step = 0; step < 2; step++) {
+      progress = await sim.provider.publishStep({
+        credentials,
+        content,
+        key: "target-1",
+        progress,
+      });
+    }
+    // The person changes the setting in the middle of the thread. A step
+    // that asked again would post the second part for followers only, and
+    // would not find it again as a public one.
+    sim.hooks.intercept = async (request) => {
+      if (!request.url.endsWith("/verify_credentials")) return undefined;
+      const account = (await (await sim.simulator.fetch(request)).json()) as {
+        source: object;
+      };
+      return Response.json({
+        ...account,
+        source: { ...account.source, privacy: "private" },
+      });
+    };
+    await publishAll(sim, credentials, content, { from: progress });
+    expect(
+      await Promise.all(
+        sim.requests.filter(posts).map(async (request) => {
+          const { visibility } = (await request.json()) as {
+            visibility: string;
+          };
+          return visibility;
+        }),
+      ),
+    ).toEqual(["public", "public"]);
   });
 
   it("keys every part of every delivery differently, and the same when a step is run again", async () => {
@@ -785,8 +844,9 @@ describe("a step that may have posted already", () => {
       parts: [],
       done: false,
       waitSeconds: 0,
-      // An account without a status has none to look after.
-      state: { accountId: sim.ada.id, after: null },
+      // An account without a status has none to look after. The parts are
+      // to be seen by whom the account has set.
+      state: { accountId: sim.ada.id, after: null, visibility: "public" },
     });
     // Two questions, and nothing that changes anything.
     expect(sim.paths().slice(requests)).toEqual([
@@ -799,6 +859,7 @@ describe("a step that may have posted already", () => {
     expect((await delivery(sim, credentials, hello).step()).state).toEqual({
       accountId: sim.ada.id,
       after: newest,
+      visibility: "public",
     });
     expect(sim.requests.filter(posts)).toEqual([]);
   });
@@ -908,6 +969,105 @@ describe("a step that may have posted already", () => {
     expect(texts(sim)).toEqual(["Hello"]);
   });
 
+  it("takes no status that other people see than the part is meant for", async () => {
+    const sim = setup();
+    const { credentials } = await connect(sim);
+    const post = delivery(sim, credentials, hello);
+    await post.step();
+    // The same text, for the account alone. Taking it for the part would
+    // leave the post that everybody was to see unpublished.
+    await postByHand(sim, credentials, "Hello", undefined, {
+      visibility: "direct",
+    });
+
+    const { parts } = await post.part();
+    expect(
+      feed(sim.world).map(
+        ({ post }) => (post as { visibility?: string }).visibility,
+      ),
+    ).toEqual(["direct", "public"]);
+    expect(parts[0]?.id).toBe(feed(sim.world).at(-1)?.post.id);
+  });
+
+  it("finds the part of a limited account, which Mastodon has made unlisted", async () => {
+    const sim = setup();
+    // What such an account posts as public becomes unlisted. A step that
+    // looked for a public status would never find its own.
+    const limited = sim.simulator.addAccount(domain, "limited", "Limited", {
+      limited: true,
+    });
+    const { credentials } = await connect({ ...sim, ada: limited });
+    const post = delivery(sim, credentials, hello);
+    expect((await post.step()).state).toMatchObject({ visibility: "unlisted" });
+    sim.simulator.arm({ kind: "lost-response", operation: "publish" });
+    expect((await failure(post.step)).kind).toBe("retry");
+    sim.world.advance(twoHours);
+
+    expect((await post.part()).done).toBe(true);
+    expect(texts(sim)).toEqual(["Hello"]);
+  });
+
+  it.each([
+    ["a content warning", { spoiler_text: "Careful" }],
+    [
+      "a picture",
+      {
+        media_attachments: [
+          {
+            id: "1",
+            type: "image",
+            url: "https://mastodon.example/media/1.png",
+            description: null,
+          },
+        ],
+      },
+    ],
+    [
+      "a poll",
+      {
+        poll: {
+          id: "1",
+          expired: false,
+          multiple: false,
+          votes_count: 0,
+          options: [
+            { title: "Yes", votes_count: 0 },
+            { title: "No", votes_count: 0 },
+          ],
+        },
+      },
+    ],
+    ["a quote", { quote: { state: "accepted", quoted_status_id: "1" } }],
+  ])(
+    "takes no status with %s for a part that is text alone",
+    async (_what, more) => {
+      const sim = setup();
+      const { credentials } = await connect(sim);
+      const post = delivery(sim, credentials, hello);
+      await post.step();
+      const byHand = await postByHand(sim, credentials, "Hello");
+      // The simulated Mastodon has none of these yet, so the status gets it
+      // on the way from the instance: in the list, as Mastodon has it there.
+      sim.hooks.intercept = async (request) => {
+        if (!new URL(request.url).pathname.endsWith("/statuses"))
+          return undefined;
+        const response = await sim.simulator.fetch(request);
+        if (request.method !== "GET" || !response.ok) return response;
+        const statuses = (await response.json()) as { id: string }[];
+        return Response.json(
+          statuses.map((status) =>
+            status.id === byHand ? { ...status, ...more } : status,
+          ),
+        );
+      };
+
+      // The same words, but not the same post: the part is posted.
+      const { parts } = await post.part();
+      expect(texts(sim)).toEqual(["Hello", "Hello"]);
+      expect(parts[0]?.id).not.toBe(byHand);
+    },
+  );
+
   it("takes no reply that somebody wrote by hand for the next part of a thread", async () => {
     const sim = setup();
     const { credentials } = await connect(sim);
@@ -944,7 +1104,11 @@ describe("a step that may have posted already", () => {
       parts: [],
       done: false,
       waitSeconds: 0,
-      state: { accountId: sim.ada.id, after: since[39] },
+      state: {
+        accountId: sim.ada.id,
+        after: since[39],
+        visibility: "public",
+      },
     });
     expect((await post.step()).state).toMatchObject({ after: since[40] });
     expect(sim.requests.filter(posts)).toEqual([]);
@@ -1012,7 +1176,7 @@ describe("a step that may have posted already", () => {
         parts: [],
         done: false,
         waitSeconds: 0,
-        state: { accountId: sim.ada.id, after: "9" },
+        state: { accountId: sim.ada.id, after: "9", visibility: "public" },
       },
     });
     expect(progress.parts[0]?.id).toBe(byHand);
