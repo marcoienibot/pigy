@@ -4,7 +4,9 @@ import {
   type Caller,
   createStatus,
   deleteStatus,
+  listStatuses,
   showInstance,
+  showSource,
   showStatus,
   verifyCredentials,
 } from "./api.ts";
@@ -61,7 +63,8 @@ export const mastodonFaultKinds = [
 
 /**
  * The requests that a fault can strike: reading the instance, asking whose
- * token it is, and posting, reading and deleting a status.
+ * token it is, and posting, reading and deleting a status. Reading takes in
+ * the list of an account's statuses and the source of one.
  */
 export const mastodonOperations = [
   "instance",
@@ -126,6 +129,8 @@ type Access =
   | { who: "anybody" }
   /** Nothing, but a token that is sent has to be good and have a scope. */
   | { who: "anybody-or-token"; scopes: string[] }
+  /** A token with one of the scopes, of an account or of a client alone. */
+  | { who: "token"; scopes: string[] }
   /** The token of an account, with one of the scopes. */
   | { who: "account"; scopes: string[] };
 
@@ -197,7 +202,7 @@ export function createMastodonSimulator(world: SimWorld): MastodonSimulator {
   function routeOf(
     instance: Instance,
     request: Request,
-    path: string,
+    { pathname: path, searchParams: query }: URL,
   ): Route | undefined {
     const { method } = request;
     if (method === "GET" && path === "/api/v2/instance") {
@@ -236,6 +241,24 @@ export function createMastodonSimulator(world: SimWorld): MastodonSimulator {
                 account: caller.account,
               })
             : apiError(401, "The access token is invalid"),
+      };
+    }
+    const authorId = /^\/api\/v1\/accounts\/([0-9]+)\/statuses$/.exec(
+      path,
+    )?.[1];
+    if (authorId && method === "GET") {
+      return {
+        operation: "read",
+        access: { who: "anybody-or-token", scopes: ["read", "read:statuses"] },
+        run: (caller) => listStatuses(state, instance, authorId, query, caller),
+      };
+    }
+    const sourceId = /^\/api\/v1\/statuses\/([0-9]+)\/source$/.exec(path)?.[1];
+    if (sourceId && method === "GET") {
+      return {
+        operation: "read",
+        access: { who: "token", scopes: ["read", "read:statuses"] },
+        run: (caller) => showSource(state, instance, sourceId, caller),
       };
     }
     const id = /^\/api\/v1\/statuses\/([0-9]+)$/.exec(path)?.[1];
@@ -307,7 +330,7 @@ export function createMastodonSimulator(world: SimWorld): MastodonSimulator {
     if (caller instanceof Response) return caller;
     if (route.access.who !== "anybody") {
       const { scopes } = route.access;
-      if (!caller && route.access.who === "account") {
+      if (!caller && route.access.who !== "anybody-or-token") {
         return apiError(401, "The access token is invalid");
       }
       if (
@@ -388,7 +411,7 @@ export function createMastodonSimulator(world: SimWorld): MastodonSimulator {
       if (path === "/api/v1/apps" && method === "POST") {
         return createApp(state, instance, request);
       }
-      const route = routeOf(instance, request, path);
+      const route = routeOf(instance, request, url);
       if (route) return api(instance, request, route);
       // GUESS: what Mastodon answers for an address it does not have.
       return path.startsWith("/api/")

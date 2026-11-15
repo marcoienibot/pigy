@@ -16,7 +16,9 @@ import { countableLength, renderContent } from "./text.ts";
  * methods/accounts and methods/statuses of its documentation, with the
  * errors of entities/Error. Where the documentation is silent, the code it
  * links to was read: app/controllers/api/v1/statuses_controller.rb,
- * app/services/post_status_service.rb and app/models/status.rb.
+ * app/controllers/api/v1/accounts/statuses_controller.rb,
+ * app/services/post_status_service.rb, app/lib/account_statuses_filter.rb,
+ * app/models/concerns/paginable.rb and app/models/status.rb.
  */
 
 /** Who makes a request, by its token. */
@@ -45,6 +47,20 @@ const notSimulated = [
 ];
 
 const idempotencyLifetimeMs = 60 * 60 * 1000;
+
+// How many statuses a list holds: 20 unless the request asks, 40 at most.
+const defaultListLength = 20;
+const longestList = 40;
+
+// The filters of a list of statuses that the simulated Mastodon does not
+// have. `exclude_reblogs` is not among them: there are no boosts here, so
+// there is nothing to leave out.
+const listFiltersNotSimulated = [
+  "pinned",
+  "tagged",
+  "only_media",
+  "exclude_replies",
+];
 
 /** `GET /api/v2/instance`: entities/Instance, as far as clients read it. */
 export function showInstance(state: State, instance: Instance): Response {
@@ -301,6 +317,78 @@ export async function createStatus(
   return json(200, statusJson(state, status));
 }
 
+/**
+ * `GET /api/v1/accounts/:id/statuses`: what an account has posted, newest
+ * first. Its author gets all of it, everybody else what they may see.
+ *
+ * `max_id` and `since_id` bound the list from above and below. `min_id`
+ * does what `since_id` does and turns the choice around: of what lies
+ * above it, the list holds the oldest, not the newest. That is what lets a
+ * client walk forward from a status it knows. Mastodon also names the
+ * neighbouring lists in a `Link` header, which this leaves out.
+ */
+export function listStatuses(
+  state: State,
+  instance: Instance,
+  accountId: string,
+  query: URLSearchParams,
+  caller: Caller | undefined,
+): Response {
+  const account = state.accounts.get(accountId);
+  if (account?.domain !== instance.domain) {
+    return apiError(404, "Record not found");
+  }
+  const unsupported = listFiltersNotSimulated.find((name) => query.has(name));
+  if (unsupported) {
+    return apiError(
+      422,
+      `The simulated Mastodon does not have ${unsupported} yet`,
+    );
+  }
+  const bounds: Record<string, bigint | undefined> = {};
+  for (const name of ["max_id", "since_id", "min_id"]) {
+    const value = query.get(name);
+    if (!value) continue;
+    // Mastodon's IDs are numbers. What it makes of anything else is not
+    // simulated.
+    if (!/^[0-9]+$/.test(value)) {
+      return apiError(
+        422,
+        `The simulated Mastodon takes only a number as ${name}`,
+      );
+    }
+    bounds[name] = BigInt(value);
+  }
+  // From the code: the number is read the way Ruby's `to_i` reads it,
+  // without its sign, and anything that is no number is 0.
+  const asked = query.get("limit");
+  const limit =
+    asked === null
+      ? defaultListLength
+      : Math.min(Math.abs(Number.parseInt(asked, 10) || 0), longestList);
+
+  const { max_id: below, since_id: since, min_id: after } = bounds;
+  const above = after ?? since;
+  const oldestFirst = state.statuses
+    .all()
+    .filter(
+      (status) =>
+        status.accountId === account.id &&
+        visibleTo(status, caller?.account ?? null) &&
+        (above === undefined || BigInt(status.id) > above) &&
+        (below === undefined || BigInt(status.id) < below),
+    )
+    .sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
+  const listed =
+    after === undefined
+      ? oldestFirst.reverse().slice(0, limit)
+      : oldestFirst.slice(0, limit).reverse();
+  return json(
+    200,
+    listed.map((status) => statusJson(state, status)),
+  );
+}
+
 /** `GET /api/v1/statuses/:id`: one status. */
 export function showStatus(
   state: State,
@@ -313,6 +401,23 @@ export function showStatus(
     return apiError(404, "Record not found");
   }
   return json(200, statusJson(state, status));
+}
+
+/**
+ * `GET /api/v1/statuses/:id/source`: the text of a status as it was
+ * written, which is how Mastodon stores it: entities/StatusSource.
+ */
+export function showSource(
+  state: State,
+  instance: Instance,
+  id: string,
+  caller: Caller | undefined,
+): Response {
+  const status = findStatus(state, instance, id);
+  if (!status || !visibleTo(status, caller?.account ?? null)) {
+    return apiError(404, "Record not found");
+  }
+  return json(200, { id: status.id, text: status.text, spoiler_text: "" });
 }
 
 /** `DELETE /api/v1/statuses/:id`: deletes a status of one's own. */

@@ -1026,6 +1026,170 @@ describe("reading and deleting a status", () => {
   });
 });
 
+describe("the statuses of an account", () => {
+  /** Posts `count` statuses as Ada and returns their IDs, oldest first. */
+  async function posted(sim: Sim, token: string, count: number) {
+    const ids: string[] = [];
+    for (let number = 1; number <= count; number++) {
+      const { status } = await publish(sim, token, {
+        status: `Status ${number}`,
+      });
+      ids.push(status.id);
+    }
+    return ids;
+  }
+
+  /** The IDs that a list of Ada's statuses holds, in its order. */
+  async function listed(sim: Sim, query: string, token?: string) {
+    const response = await api(
+      sim,
+      "GET",
+      `/api/v1/accounts/${sim.ada.id}/statuses${query}`,
+      token,
+    );
+    expect(response.status).toBe(200);
+    return ((await response.json()) as StatusJson[]).map(({ id }) => id);
+  }
+
+  it("are listed newest first, 20 at a time and 40 at most", async () => {
+    const sim = setup();
+    const { token } = await connect(sim);
+    const ids = await posted(sim, token, 45);
+    const newestFirst = ids.toReversed();
+    expect(await listed(sim, "")).toEqual(newestFirst.slice(0, 20));
+    expect(await listed(sim, "?limit=3")).toEqual(newestFirst.slice(0, 3));
+    expect(await listed(sim, "?limit=100")).toEqual(newestFirst.slice(0, 40));
+  });
+
+  it("are bounded by max_id and since_id, and walked forward with min_id", async () => {
+    const sim = setup();
+    const { token } = await connect(sim);
+    const [one, two, three, four, five] = await posted(sim, token, 5);
+    expect(await listed(sim, `?max_id=${three}`)).toEqual([two, one]);
+    // Both leave out what is older. Of the rest, since_id gives the
+    // newest and min_id the ones that follow it directly.
+    expect(await listed(sim, `?since_id=${one}&limit=2`)).toEqual([five, four]);
+    expect(await listed(sim, `?min_id=${one}&limit=2`)).toEqual([three, two]);
+    expect(await listed(sim, `?min_id=${five}`)).toEqual([]);
+    expect(await listed(sim, "?min_id=0&limit=1")).toEqual([one]);
+  });
+
+  it("show the author everything, and others what is public", async () => {
+    const sim = setup();
+    const { token } = await connect(sim);
+    const open = await publish(sim, token, { status: "For all" });
+    const closed = await publish(sim, token, {
+      status: "For me",
+      visibility: "direct",
+    });
+    expect(await listed(sim, "")).toEqual([open.status.id]);
+    expect(await listed(sim, "", token)).toEqual([
+      closed.status.id,
+      open.status.id,
+    ]);
+  });
+
+  it("name the client that each was posted with, and what it replies to", async () => {
+    const sim = setup();
+    const { token } = await connect(sim);
+    const first = await publish(sim, token, { status: "One" });
+    await publish(sim, token, {
+      status: "Two",
+      in_reply_to_id: first.status.id,
+    });
+    const response = await api(
+      sim,
+      "GET",
+      `/api/v1/accounts/${sim.ada.id}/statuses`,
+      token,
+    );
+    expect(await response.json()).toMatchObject([
+      {
+        in_reply_to_id: first.status.id,
+        in_reply_to_account_id: sim.ada.id,
+        application: { name: "pigy", website: "https://app.example" },
+      },
+      { in_reply_to_id: null, application: { name: "pigy" } },
+    ]);
+  });
+
+  it("are those of an account of the instance", async () => {
+    const sim = setup();
+    const response = await api(sim, "GET", "/api/v1/accounts/123/statuses");
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "Record not found" });
+  });
+
+  it("take a token with the scope to read statuses, if they are given one", async () => {
+    const sim = setup();
+    const { token } = await connect(sim, "profile write:statuses");
+    const path = `/api/v1/accounts/${sim.ada.id}/statuses`;
+    expect((await api(sim, "GET", path, token)).status).toBe(403);
+    expect((await api(sim, "GET", path, "pigy-sim-unknown")).status).toBe(401);
+  });
+
+  it.each([["?pinned=true"], ["?exclude_replies=true"], ["?min_id=abc"]])(
+    "refuse %s, which is not simulated, rather than ignore it",
+    async (query) => {
+      const sim = setup();
+      const response = await api(
+        sim,
+        "GET",
+        `/api/v1/accounts/${sim.ada.id}/statuses${query}`,
+      );
+      expect(response.status).toBe(422);
+    },
+  );
+});
+
+describe("the source of a status", () => {
+  it("is the text as Mastodon stores it", async () => {
+    const sim = setup();
+    const { token } = await connect(sim);
+    const text = "1 < 2 & @bob@other.example\n\nhttps://example.com/a";
+    const { status } = await publish(sim, token, { status: `  ${text} \n` });
+    const response = await api(
+      sim,
+      "GET",
+      `/api/v1/statuses/${status.id}/source`,
+      token,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      id: status.id,
+      text,
+      spoiler_text: "",
+    });
+  });
+
+  it("is given to a token that may read the status", async () => {
+    const sim = setup();
+    const { token } = await connect(sim);
+    const { status } = await publish(sim, token, {
+      status: "For me",
+      visibility: "direct",
+    });
+    const path = `/api/v1/statuses/${status.id}/source`;
+    // Not without a token, as the status itself would be if it were public.
+    expect((await api(sim, "GET", path)).status).toBe(401);
+    // Not to a token that lacks the scope.
+    const writing = await connect(sim, "profile write:statuses");
+    expect((await api(sim, "GET", path, writing.token)).status).toBe(403);
+    // And not to an account that cannot see the status.
+    const bob = sim.simulator.addAccount(domain, "bob");
+    const { app } = await register(sim);
+    const callback = await answerConsent(
+      sim.simulator.fetch,
+      authorizationUrl(app.client_id),
+      { account: bob.id },
+    );
+    const { access_token: bobToken } = (await (
+      await tokenRequest(sim, app, callback.searchParams.get("code"))
+    ).json()) as { access_token: string };
+    expect((await api(sim, "GET", path, bobToken)).status).toBe(404);
+  });
+});
+
 describe("rate limits", () => {
   it("tells how much of the limit is left, and when it starts over", async () => {
     const sim = setup();
