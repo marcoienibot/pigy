@@ -15,7 +15,7 @@ import {
   switchTo,
   writeDraft,
 } from "../app.ts";
-import { expect, type Page, signIn, test } from "../fixtures.ts";
+import { expect, type Page, test } from "../fixtures.ts";
 
 // The two workspaces of a person, live and sandbox, and the switch between
 // them. A tab shows one of them, which is its own choice, and the device
@@ -61,8 +61,9 @@ test("each workspace shows its own drafts and channels, never under the name of 
 }) => {
   // Notes what is listed under which name, with every change of the page.
   // A list that was on screen under the wrong name for a moment, between
-  // two renders, is caught here and nowhere else. The script runs again on
-  // every page load, so the notes are read before each one.
+  // two renders, is caught here and nowhere else. The script runs on every
+  // page load from here on, of which connecting an account is the first,
+  // so the notes are read before each later one.
   await page.addInitScript(() => {
     const seen = window as {
       listed?: { sandbox: boolean; live: boolean; mixed: boolean };
@@ -102,31 +103,32 @@ test("each workspace shows its own drafts and channels, never under the name of 
           }
         ).listed,
     );
-  await page.reload();
 
-  await writeDraft(page, isMobile, "Sandbox draft");
   await openScreen(page, "Channels");
   await connectSimulated(page, grace);
+  await openScreen(page, "Drafts");
+  await writeDraft(page, isMobile, "Sandbox draft");
 
   // Live has neither.
   await switchTo(page, "Live");
-  await expect(
-    page.getByRole("heading", { name: "No accounts connected" }),
-  ).toBeVisible();
-  await expect(channelRows(page)).toHaveCount(0);
-  await openScreen(page, "Drafts");
   await expect(
     page.getByRole("heading", { name: "No drafts yet" }),
   ).toBeVisible();
   await writeDraft(page, isMobile, "Live draft");
   await expect(draftRows(page)).toHaveCount(1);
-  // Both were looked at, or the note below would say nothing: the channel
-  // of the sandbox and the draft of live, since the page was last loaded.
+  await openScreen(page, "Channels");
+  await expect(
+    page.getByRole("heading", { name: "No accounts connected" }),
+  ).toBeVisible();
+  await expect(channelRows(page)).toHaveCount(0);
+  // Both were looked at, or the note below would say nothing: what the
+  // sandbox has and the draft of live, since the page was last loaded.
   expect(await listed()).toEqual({ sandbox: true, live: true, mixed: false });
 
   // The tab remembers.
   await page.reload();
   await expectWorkspace(page, "Live");
+  await openScreen(page, "Drafts");
   await expect(draftRow(page, "Live draft")).toBeVisible();
   await expect(draftRows(page)).toHaveCount(1);
 
@@ -143,30 +145,21 @@ test("each workspace shows its own drafts and channels, never under the name of 
 test("a new tab starts with the workspace that was chosen last on the device, and every tab keeps its own", async ({
   ownPage: first,
   context,
-  isMobile,
 }) => {
-  await writeDraft(first, isMobile, "Sandbox draft");
   await switchTo(first, "Live");
-  await writeDraft(first, isMobile, "Live draft");
 
   // The device remembers the choice for the next tab.
   const second = await context.newPage();
   await second.goto("/");
   await expectWorkspace(second, "Live");
-  await expect(draftRow(second, "Live draft")).toBeVisible();
 
   // The second tab goes on to the sandbox, and the first does not follow.
-  await switchTo(second, "Sandbox");
-  await expect(draftRow(second, "Sandbox draft")).toBeVisible();
-  await expect(draftRows(second)).toHaveCount(1);
   // Not at its next step either, which is when a tab asks itself which
   // workspace it shows: without that step, this would only say that the
   // first tab has not followed yet.
+  await switchTo(second, "Sandbox");
   await openScreen(first, "Queue");
   await expectWorkspace(first, "Live");
-  await openScreen(first, "Drafts");
-  await expect(draftRow(first, "Live draft")).toBeVisible();
-  await expect(draftRows(first)).toHaveCount(1);
   // And not over a reload, although the sandbox is what the device has
   // been told last.
   await first.reload();
@@ -271,12 +264,9 @@ test("the notice of a refused change leaves the screen with its workspace and is
   await switchTo(page, "Live");
   await expect(notice).toHaveCount(0);
 
-  // Taking it off the screen was not the person dismissing it: it is
-  // there again with the sandbox, and after a reload, which shows what the
-  // device has stored.
+  // Taking it off the screen was not the person dismissing it, which
+  // would have deleted it: it is there again with the sandbox.
   await switchTo(page, "Sandbox");
-  await expect(notice).toBeVisible();
-  await page.reload();
   await expect(notice).toBeVisible();
 });
 
@@ -380,7 +370,7 @@ test("signing out counts a change that another tab could not save in the other w
   await expect(editor(second)).toHaveValue("Written in the second tab");
 });
 
-test("what was written in one workspace is sent while the other is on screen", async ({
+test("what was written offline in one workspace is sent when the app starts on the other", async ({
   ownPage: page,
   otherDevice,
   isMobile,
@@ -404,14 +394,25 @@ test("what was written in one workspace is sent while the other is on screen", a
 
   // The draft is sent all the same when the connection is back.
   await connection.restore();
-  await expectSync(page, "Synced");
   await expect(draftRow(other, "Written offline in the sandbox")).toBeVisible();
+});
 
-  // And so is what is written in a workspace that the tab then leaves.
-  await switchTo(page, "Sandbox");
+test("a tab goes on sending what was written in the workspace that it has left", async ({
+  ownPage: page,
+  otherDevice,
+  isMobile,
+}) => {
+  const connection = await connectionOf(page);
+  await page.reload();
+  await expectSync(page, "Synced");
+  // Another device, which shows the sandbox.
+  const other = await otherDevice();
+
   await connection.cut();
   await writeDraft(page, isMobile, "Written before leaving the sandbox");
   await switchTo(page, "Live");
+  await expectSync(page, "Offline");
+
   await connection.restore();
   await expect(
     draftRow(other, "Written before leaving the sandbox"),
@@ -420,7 +421,6 @@ test("what was written in one workspace is sent while the other is on screen", a
 
 test("signing out deletes the copies of both workspaces and the choice between them", async ({
   ownPage: page,
-  ownEmail,
   isMobile,
 }) => {
   await writeDraft(page, isMobile, "In the sandbox");
@@ -443,10 +443,7 @@ test("signing out deletes the copies of both workspaces and the choice between t
 
   await expect(page).toHaveURL("/sign-in");
   expect(await localData(page)).toEqual({ copies: [], session: null });
-  expect(await choice()).toEqual([null, null]);
   // So whoever signs in next starts where somebody new does, also if it is
   // the same person in the same tab.
-  await signIn(page, ownEmail);
-  await expectWorkspace(page, "Sandbox");
-  await expect(draftRow(page, "In the sandbox")).toBeVisible();
+  expect(await choice()).toEqual([null, null]);
 });

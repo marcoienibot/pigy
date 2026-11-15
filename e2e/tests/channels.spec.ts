@@ -386,24 +386,34 @@ test("a connection that expired or failed is put in words, once, also for somebo
 test("without a connection the channels are listed from the device, and what needs the server says so", async ({
   ownPage: page,
 }) => {
+  // In place before the page is loaded again, which connecting an account
+  // does: the sockets that are opened from then on can be cut.
   const connection = await connectionOf(page);
-  // The route above only applies to sockets that are opened after it.
-  await page.reload();
   await openScreen(page, "Channels");
   await connectSimulated(page, grace);
   await expectSync(page, "Synced");
+  // The form is open when the connection goes.
+  await page.getByRole("button", { name: "Connect account" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: "Mastodon" }).click();
+  const next = dialog.getByRole("button", { name: "Continue to Mastodon" });
+  await expect(next).toBeEnabled();
 
   await connection.cut();
-  await expectSync(page, "Offline");
 
-  // The list is there, and what cannot be done now says why.
+  // It says why it leads nowhere now.
+  await expect(dialog.getByRole("status")).toContainText(
+    "You are offline. Connecting and disconnecting accounts need a connection.",
+  );
+  await expect(next).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  // So does the screen, which still has the list.
   const offline = page
     .getByRole("main")
     .getByRole("status")
     .filter({ hasText: "You are offline" });
-  await expect(offline).toContainText(
-    "Connecting and disconnecting accounts need a connection",
-  );
+  await expect(offline).toBeVisible();
   await expect(channelRows(page)).toContainText(grace);
   await expect(
     page.getByRole("button", { name: "Connect account" }),
@@ -412,18 +422,11 @@ test("without a connection the channels are listed from the device, and what nee
     page.getByRole("button", { name: `Disconnect ${grace}` }),
   ).toBeDisabled();
 
-  // Also when the app starts without the server.
+  // Also when the app starts without the server: the list is the copy on
+  // the device.
   await page.reload();
   await expect(channelRows(page)).toContainText(grace);
   await expect(offline).toBeVisible();
-  // The form can be reached by its address, and says the same.
-  await page.goto("/channels?add=mastodon");
-  const dialog = page.getByRole("dialog");
-  await expect(dialog.getByRole("status")).toContainText("You are offline");
-  await expect(
-    dialog.getByRole("button", { name: "Continue to Mastodon" }),
-  ).toBeDisabled();
-  await page.keyboard.press("Escape");
 
   await connection.restore();
   await expectSync(page, "Synced");
