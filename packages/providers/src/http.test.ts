@@ -1,6 +1,7 @@
+import type { Fetch } from "@pigy/core";
 import { describe, expect, it } from "vitest";
 import { ProviderError } from "./errors.ts";
-import { httpsUrl, retryAfter, send } from "./http.ts";
+import { httpsUrl, retryAfter, send, sendFollowing } from "./http.ts";
 
 const limits = { timeoutMs: 1000, maxBytes: 100 };
 const url = "https://mastodon.example/api";
@@ -187,6 +188,136 @@ describe("send", () => {
       ),
     );
     expect(error.kind).toBe("retry");
+  });
+});
+
+describe("sendFollowing", () => {
+  const file = "https://ada.example.com/.well-known/atproto-did";
+  const did = () =>
+    new Response("did:plc:ada", { headers: { "Content-Type": "text/plain" } });
+  const redirect =
+    (location: string | undefined, status = 302) =>
+    () =>
+      new Response(null, {
+        status,
+        headers: location === undefined ? {} : { Location: location },
+      });
+
+  /**
+   * A `fetch` that answers each address with what `answers` has for it,
+   * after `delayMs`, and the addresses that it was asked for, in order.
+   */
+  function server(answers: Record<string, () => Response>, delayMs = 0) {
+    const asked: string[] = [];
+    const fetch: Fetch = (input, init) => {
+      const url = String(input);
+      asked.push(url);
+      const answer = answers[url];
+      if (!answer) return Promise.reject(new TypeError(`No host: ${url}`));
+      // Answers when its time comes, or fails when the request is called
+      // off first, as fetch does.
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => resolve(answer()), delayMs);
+        init?.signal?.addEventListener("abort", () => {
+          clearTimeout(timer);
+          reject(init.signal?.reason);
+        });
+      });
+    };
+    return { fetch, asked };
+  }
+
+  /** A way of `length` redirects from `file`, and the answer at its end. */
+  function way(length: number) {
+    const hops = Array.from(
+      { length },
+      (_, hop) => `https://hop${hop}.example.com/did`,
+    );
+    const answers: Record<string, () => Response> = {};
+    [file, ...hops].forEach((url, index) => {
+      const next = hops[index];
+      answers[url] = next === undefined ? did : redirect(next);
+    });
+    return { hops, answers };
+  }
+
+  const follow = (fetch: Fetch, hops = 5, timeoutMs = limits.timeoutMs) =>
+    sendFollowing(fetch, file, {}, { ...limits, timeoutMs }, hops);
+
+  it("follows a redirect to an address relative to the one that it was sent to", async () => {
+    const { fetch, asked } = server({
+      [file]: redirect("/ada/did", 301),
+      "https://ada.example.com/ada/did": did,
+    });
+    const answer = await follow(fetch);
+    expect(answer).toMatchObject({ status: 200, text: "did:plc:ada" });
+    expect(asked).toEqual([file, "https://ada.example.com/ada/did"]);
+  });
+
+  it("refuses a redirect that does not say where to", async () => {
+    const { fetch } = server({ [file]: redirect(undefined) });
+    const error = await failure(() => follow(fetch));
+    expect(error).toMatchObject({ kind: "fail", status: 302 });
+    expect(error.message).toBe(
+      "ada.example.com sends pigy on to an address that it does not follow.",
+    );
+  });
+
+  it("takes an answer with the status 0 for a redirect that it cannot follow", async () => {
+    // What the fetch of a browser answers a redirect with when it was told
+    // not to follow it: an opaque redirect, with the status 0 and no
+    // headers, so not where it leads. A Response cannot be made with that
+    // status, so the test makes what fetch would hand over.
+    const opaque = () =>
+      ({ status: 0, headers: new Headers(), body: null }) as Response;
+    const { fetch } = server({ [file]: opaque });
+    expect(await failure(() => follow(fetch))).toMatchObject({
+      kind: "fail",
+      status: 0,
+    });
+  });
+
+  it("follows a redirect only to an address that pigy may ask", async () => {
+    for (const location of [
+      "http://ada.example.com/did",
+      "https://ada.example.com:8443/did",
+      "https://user:secret@ada.example.com/did",
+      "https://localhost/did",
+      "https://ada.internal/did",
+      "https://10.0.0.5/did",
+      "https://[::1]/did",
+    ]) {
+      // Each would answer, if it were asked.
+      const { fetch, asked } = server({
+        [file]: redirect(location),
+        [location]: did,
+        [new URL(location).href]: did,
+      });
+      const error = await failure(() => follow(fetch));
+      expect(error, location).toMatchObject({ kind: "fail", status: 302 });
+      expect(asked, location).toEqual([file]);
+    }
+  });
+
+  it("follows as many redirects as it is told, and not one more", async () => {
+    const five = way(5);
+    const followed = server(five.answers);
+    expect(await follow(followed.fetch, 5)).toMatchObject({
+      status: 200,
+      text: "did:plc:ada",
+    });
+    expect(followed.asked).toEqual([file, ...five.hops]);
+
+    const six = way(6);
+    const refused = server(six.answers);
+    const error = await failure(() => follow(refused.fetch, 5));
+    expect(error).toMatchObject({ kind: "fail", status: 302 });
+    expect(error.message).toBe(
+      "hop4.example.com sends pigy on to an address that it does not follow.",
+    );
+    // The sixth address is where the fifth sends pigy on to. It is never
+    // asked.
+    expect(refused.asked).toEqual([file, ...six.hops.slice(0, 5)]);
   });
 });
 

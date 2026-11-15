@@ -289,17 +289,16 @@ describe("connecting", () => {
       });
 
     // atproto lets the host of a handle send the request on, "up to a
-    // reasonable number of redirect hops".
-    redirecting(
-      "https://handles.example.com/ada",
-      "https://handles.example.com/ada/did",
+    // reasonable number of redirect hops": five, for pigy.
+    const five = Array.from(
+      { length: 5 },
+      (_, hop) => `https://handles.example.com/ada/${hop}`,
     );
+    redirecting(...five);
     expect((await connected(test)).account.id).toBe(test.ada.id);
-    expect(test.requests.slice(1, 4)).toEqual([
-      `GET ${file}`,
-      "GET https://handles.example.com/ada",
-      "GET https://handles.example.com/ada/did",
-    ]);
+    expect(test.requests.slice(1, 7)).toEqual(
+      [file, ...five].map((url) => `GET ${url}`),
+    );
 
     // Not to a host that nobody on the internet may make pigy ask, and not
     // for ever.
