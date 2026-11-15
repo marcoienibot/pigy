@@ -1,7 +1,6 @@
 import { Link, linkOptions, useRouteContext } from "@tanstack/react-router";
 import { CalendarClock, PenLine, Send, Settings, Share2 } from "lucide-react";
 import { type ReactNode, useEffect } from "react";
-import { toast } from "sonner";
 import {
   CommandPalette,
   useOpenCommandPalette,
@@ -13,6 +12,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { UserMenu } from "@/components/user-menu";
 import { SandboxBanner, WorkspaceSwitch } from "@/components/workspace-switch";
 import { modKey } from "@/lib/keyboard";
+import { dismissWorkspaceNotices } from "@/lib/notices";
 import { cn } from "@/lib/utils";
 
 const navItems = linkOptions([
@@ -66,17 +66,17 @@ export function AppShell({ children }: { children: ReactNode }) {
  * them is on screen under the name of the other, not for a moment, and
  * none can be pressed there. Taking them off through the notice library
  * would not do that. It removes a notice over several frames.
+ *
+ * A few notices are not about a workspace but for the person, and say
+ * which workspace they are about: `lib/notices.ts`. Those are on screen
+ * again in the next list, until the person closes them.
  */
 function Notices() {
   // The library keeps its notices outside of React, and hands the ones
   // that nobody has dismissed to every list that is new. The next list is
-  // that of another workspace, so these end with their own.
-  useEffect(
-    () => () => {
-      for (const { id } of toast.getToasts()) toast.dismiss(id);
-    },
-    [],
-  );
+  // that of another workspace, so the notices of this one end with it.
+  // What is left is handed on: the notices of the person.
+  useEffect(() => dismissWorkspaceNotices, []);
 
   return (
     <>

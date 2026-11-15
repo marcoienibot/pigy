@@ -57,9 +57,10 @@ import {
   listedNetworks,
   networkInfo,
 } from "@/lib/networks";
+import { keepOverSwitch } from "@/lib/notices";
 import { checkSession } from "@/lib/session";
 import { cn } from "@/lib/utils";
-import { showWorkspace } from "@/lib/workspace";
+import { environmentLabels, showWorkspace } from "@/lib/workspace";
 import { useSynced, useSyncState } from "@/sync/react";
 import { unsavedInTab } from "@/sync/workspace-sync";
 
@@ -775,25 +776,39 @@ type Disconnected = { revoked: boolean | undefined } | { failed: string };
  * Says how the disconnect of `channel` went to somebody who has left the
  * screen while it was on its way: in a notice, which every screen shows.
  * Above all when the network did not take the access back: the person has
- * to remove pigy there, and nothing else would tell them. The notice names
- * the account, so it says what it is about wherever it appears.
+ * to remove pigy there, and nothing else would tell them.
+ *
+ * The notice is for the person, not about the workspace on screen, so it
+ * does not leave with a workspace: somebody who goes on to the other one
+ * before they have read it still has to hear it. It can therefore be on
+ * screen under the name of either workspace, and says what it is about
+ * wherever it appears: it names the account, and `workspace`, the one
+ * that the account was connected in.
  */
-function tellElsewhere(channel: Channel, outcome: Disconnected): void {
+function tellElsewhere(
+  channel: Channel,
+  workspace: Workspace,
+  outcome: Disconnected,
+): void {
+  const where = `In the ${environmentLabels[workspace.environment].toLowerCase()} workspace.`;
   if ("failed" in outcome) {
-    toast.error(`${channel.handle} was not disconnected`, {
-      description: outcome.failed,
-    });
+    keepOverSwitch(
+      toast.error(`${channel.handle} was not disconnected`, {
+        description: `${where} ${outcome.failed}`,
+      }),
+    );
   } else if (outcome.revoked !== undefined) {
     const { tone, text } = disconnectNotice(channel, outcome.revoked);
-    if (tone === "bad") {
-      // To be read and acted on: it stays until it is closed.
-      toast.error(text, {
-        duration: Number.POSITIVE_INFINITY,
-        closeButton: true,
-      });
-    } else {
-      toast.success(text);
-    }
+    keepOverSwitch(
+      tone === "bad"
+        ? // To be read and acted on: it stays until it is closed.
+          toast.error(text, {
+            description: where,
+            duration: Number.POSITIVE_INFINITY,
+            closeButton: true,
+          })
+        : toast.success(text, { description: where }),
+    );
   }
 }
 
@@ -860,7 +875,7 @@ function DisconnectDialog({
       }
     }
     if (!here.current) {
-      tellElsewhere(target, outcome);
+      tellElsewhere(target, workspace, outcome);
       return;
     }
     setBusy(false);

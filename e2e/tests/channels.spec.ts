@@ -39,6 +39,36 @@ function alert(page: Page) {
   return page.getByRole("main").getByRole("alert");
 }
 
+/**
+ * Holds back the answer to a disconnect of `page` from now on, until the
+ * function that this returns is called, and has it say then that the
+ * network did not take the access back: what the simulated server never
+ * says. The request itself goes through at once, so the channel is gone
+ * from the server while the page still waits.
+ */
+async function holdDisconnect(page: Page): Promise<() => void> {
+  let release = () => {};
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/workspaces/*/channels/*", async (route) => {
+    const response = await route.fetch();
+    await released;
+    await route.fulfill({ response, json: { revoked: false } });
+  });
+  return release;
+}
+
+/**
+ * The notice that a disconnect of `grace` leaves on whichever screen the
+ * person is on when the network did not take the access back.
+ */
+function warningElsewhere(page: Page) {
+  return page.getByRole("listitem").filter({
+    hasText: `${grace} is disconnected, but pigy could not give its access back to Mastodon`,
+  });
+}
+
 /** How far the page is wider than its window, which it must not be. */
 function overflow(page: Page): Promise<number> {
   return page.evaluate(
@@ -513,18 +543,7 @@ test("a disconnect that is on its way keeps the commands away, and says how it w
   // screen of the app and not to the consent page.
   await openScreen(page, "Drafts");
   await openScreen(page, "Channels");
-  // The answer is held back until the test lets it go, and says then
-  // that the network did not take the access back: what the simulated
-  // server never says. The request itself goes through at once.
-  let release = () => {};
-  const released = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  await page.route("**/api/workspaces/*/channels/*", async (route) => {
-    const response = await route.fetch();
-    await released;
-    await route.fulfill({ response, json: { revoked: false } });
-  });
+  const release = await holdDisconnect(page);
   await page.getByRole("button", { name: `Disconnect ${grace}` }).click();
   const dialog = page.getByRole("alertdialog");
   await dialog.getByRole("button", { name: "Disconnect" }).click();
@@ -564,11 +583,62 @@ test("a disconnect that is on its way keeps the commands away, and says how it w
     page.getByRole("heading", { name: "No drafts yet" }),
   ).toBeVisible();
   release();
+  await expect(warningElsewhere(page)).toContainText(
+    "remove pigy in the settings of the account at Mastodon",
+  );
+});
+
+test("the warning of a disconnect that the person has turned away from stays when the workspace changes, until it is closed", async ({
+  ownPage: page,
+  isMobile,
+}) => {
+  await openScreen(page, "Channels");
+  await connectSimulated(page, grace);
+  // Away and back, so that the Back of the browser leads to another
+  // screen of the app and not to the consent page.
+  await openScreen(page, "Drafts");
+  await openScreen(page, "Channels");
+  const release = await holdDisconnect(page);
+  await page.getByRole("button", { name: `Disconnect ${grace}` }).click();
+  const dialog = page.getByRole("alertdialog");
+  await dialog.getByRole("button", { name: "Disconnect" }).click();
   await expect(
-    page.getByRole("listitem").filter({
-      hasText: `${grace} is disconnected, but pigy could not give its access back to Mastodon`,
-    }),
-  ).toContainText("remove pigy in the settings of the account at Mastodon");
+    dialog.getByRole("button", { name: "Disconnecting…" }),
+  ).toBeDisabled();
+  // The person leaves the screen, and the answer finds them elsewhere.
+  await page.goBack();
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Drafts");
+  release();
+  const warning = warningElsewhere(page);
+  await expect(warning).toBeVisible();
+  // Next to it, a notice that is about the sandbox: the offer to bring
+  // back a draft that was deleted there.
+  await writeDraft(page, isMobile, "Deleted in the sandbox");
+  await draftRow(page, "Deleted in the sandbox").click();
+  await page.getByRole("button", { name: "Delete draft" }).click();
+  const offer = page.getByRole("listitem").filter({ hasText: "Draft deleted" });
+  await expect(offer).toBeVisible();
+
+  await switchTo(page, "Live");
+
+  // The offer has left with the sandbox, where the draft would be brought
+  // back into. That is looked at once: the offer would also leave by
+  // itself, some seconds from now. It says that the switch does take
+  // notices away, so that the warning is not there only because nothing
+  // was.
+  expect(await offer.count()).toBe(0);
+  // The warning is still there. What is left to do at the network is the
+  // person's to do, whichever workspace they look at, and nothing else
+  // would tell them. It is under the name of live now, so it says where
+  // the account was.
+  await expect(warning).toBeVisible();
+  await expect(warning).toContainText("In the sandbox workspace.");
+  await expect(warning).toContainText(
+    "remove pigy in the settings of the account at Mastodon",
+  );
+  // Until the person closes it.
+  await warning.getByRole("button", { name: "Close toast" }).click();
+  await expect(warning).toHaveCount(0);
 });
 
 test("a connection that was begun for the sandbox ends on the sandbox, also in a tab that shows live", async ({
