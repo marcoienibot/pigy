@@ -395,34 +395,51 @@ export function workspaceObject({ now }: { now: Clock }) {
      * again and creates the workflow then: its ID is this delivery's and
      * no other's, see `deliveryInstanceId`, so it is created once however
      * often this is tried.
+     *
+     * A workflow that cannot be created does not keep the others from
+     * being created: the deliveries to other channels have nothing to do
+     * with it. It is logged, and left for the next alarm.
      */
     async #startDeliveries(): Promise<void> {
+      // The runs that this look could not create.
+      const failed = new Set<string>();
       for (;;) {
         const from = this.#store.seq;
         this.#store.startDeliveries(now().getTime());
         this.#publish(from);
-        const runs = this.#store.deliveries(false);
+        const runs = this.#store
+          .deliveries(false)
+          .filter((run) => !failed.has(this.#runId(run)));
         if (runs.length === 0) return;
         const workspace = this.#store.identity;
         for (const run of runs) {
           const { targetId, attempt } = run;
           const id = this.#runId(run);
           try {
-            release(
-              await this.env.PUBLISH.create({
-                id,
-                params: { workspace, targetId, attempt },
-              }),
-            );
+            try {
+              release(
+                await this.env.PUBLISH.create({
+                  id,
+                  params: { workspace, targetId, attempt },
+                }),
+              );
+            } catch (error) {
+              // Created by an earlier try that did not get to say so, if
+              // it is there: a run under this ID is this delivery's own.
+              // `get` fails for an instance that does not exist.
+              release(
+                await this.env.PUBLISH.get(id).catch(() => {
+                  throw error;
+                }),
+              );
+            }
           } catch (error) {
-            // Created by an earlier try that did not get to say so, if it
-            // is there: a run under this ID is this delivery's own. `get`
-            // fails for an instance that does not exist.
-            release(
-              await this.env.PUBLISH.get(id).catch(() => {
-                throw error;
-              }),
+            failed.add(id);
+            console.error(
+              `The workflow of the delivery ${id} was not created`,
+              loggable(error),
             );
+            continue;
           }
           this.#store.dispatched(run);
         }
@@ -720,6 +737,13 @@ export function workspaceObject({ now }: { now: Clock }) {
      * begin: a post was published, or the delivery before it has ended.
      * The alarm is stored with the change that it follows, so it runs also
      * if the object stops before it gets there.
+     *
+     * Only for that. A delivery that is under way without its workflow,
+     * because the workflow could not be created, is nothing that a change
+     * has brought about, and nothing that this change makes any better:
+     * the alarm tries again when its own time comes. Brought forward for
+     * it, the alarm would run at every message of a client, a keystroke
+     * included, for as long as the platform does not create workflows.
      */
     #wake(): void {
       // The change that led here is committed. If this fails, the
@@ -730,7 +754,7 @@ export function workspaceObject({ now }: { now: Clock }) {
           error,
         );
       try {
-        if (this.#store.deliveriesNeed === "start") {
+        if (this.#store.deliveriesNeed === "begin") {
           this.ctx.storage.setAlarm(Date.now()).catch(failed);
         }
       } catch (error) {

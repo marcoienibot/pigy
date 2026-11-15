@@ -636,29 +636,30 @@ export class WorkspaceStore {
   }
 
   /**
-   * What is left to do for the deliveries: `start` if one can begin or has
-   * to get its workflow, `watch` if there is nothing to do but to see that
-   * those under way end, `nothing` if none waits or is under way.
+   * What is left to do for the deliveries: `begin` if a target that waits
+   * can begin, because its channel has no delivery under way. `watch` if
+   * none can and some are under way: there is nothing to do at once, but
+   * to come back and see that they end, and to create the workflow of one
+   * that has none yet. `nothing` if none waits or is under way.
    */
-  get deliveriesNeed(): "start" | "watch" | "nothing" {
+  get deliveriesNeed(): "begin" | "watch" | "nothing" {
     const targets = this.db
       .select({
         channelId: postTargets.channelId,
         status: postTargets.status,
-        attempt: postTargets.attempt,
-        dispatched: postTargets.dispatched,
       })
       .from(postTargets)
       .where(inArray(postTargets.status, ["queued", "sending"]))
       .all();
-    const sending = targets.filter(({ status }) => status === "sending");
-    const busy = new Set(sending.map(({ channelId }) => channelId));
-    const start =
-      sending.some(({ attempt, dispatched }) => dispatched !== attempt) ||
-      targets.some(
-        ({ status, channelId }) => status === "queued" && !busy.has(channelId),
-      );
-    return start ? "start" : targets.length > 0 ? "watch" : "nothing";
+    const busy = new Set(
+      targets
+        .filter(({ status }) => status === "sending")
+        .map(({ channelId }) => channelId),
+    );
+    const begin = targets.some(
+      ({ status, channelId }) => status === "queued" && !busy.has(channelId),
+    );
+    return begin ? "begin" : targets.length > 0 ? "watch" : "nothing";
   }
 
   /**

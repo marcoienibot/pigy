@@ -1,4 +1,9 @@
-import { evictDurableObject, introspectWorkflow } from "cloudflare:test";
+import {
+  evictDurableObject,
+  introspectWorkflow,
+  runDurableObjectAlarm,
+  runInDurableObject,
+} from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import type { Fetch } from "@pigy/core";
 import { feed } from "@pigy/simulators/world";
@@ -28,6 +33,7 @@ import {
   publishedOf,
   publishTo,
   retry,
+  runIdOf,
   runOf,
   started,
   stopWatching,
@@ -530,6 +536,126 @@ it("carries a delivery on when the object of the workspace leaves memory in the 
   expect(await ended(client, thread.postId)).toMatchObject({ status: "sent" });
   expect(posts().map(({ text }) => text)).toEqual(["One", "Two", "Three"]);
   expect(publishedOf(client, targetId, thread)).toHaveLength(3);
+});
+
+/**
+ * Makes the platform fail to create the run of a delivery, for the targets
+ * that `refused` picks out: what an outage of Workflows is to a workspace.
+ */
+function failingToCreate(refused: (targetId: string) => boolean) {
+  const create = env.PUBLISH.create.bind(env.PUBLISH);
+  const failing = vi
+    .spyOn(env.PUBLISH, "create")
+    .mockImplementation(async (options) => {
+      if (refused(options?.params?.targetId ?? "")) {
+        throw new Error("Workflows is out of order");
+      }
+      return create(options);
+    });
+  onTestFinished(() => failing.mockRestore());
+  return failing;
+}
+
+it("begins the deliveries to other accounts when the workflow of one cannot be created", async () => {
+  const context = await ready();
+  const { test, browser, workspace, channel, client, posts } = context;
+  const errors = expectErrors();
+  const other = "other.test";
+  test.network.mastodon.addInstance(other);
+  const account = test.network.mastodon.addAccount(other, "emmy", "Emmy");
+  const second = await connectAccount(test, browser, workspace, {
+    domain: other,
+    accountId: account.id,
+  });
+  await client.connect(browser, workspace);
+  const draft = await writeDraft(client, workspace, "Everywhere");
+  // The platform does not create the run of the first delivery that the
+  // workspace asks it for, and creates every other. The test makes up the
+  // IDs of the targets, to know which is which before the object begins.
+  const [stuck, free] = [newId(), newId()];
+  const creating = failingToCreate((targetId) => targetId === stuck);
+
+  client.send({
+    type: "mutate",
+    mutations: [
+      client.mutation("target.add", {
+        id: stuck,
+        postId: draft.postId,
+        channelId: channel,
+      }),
+      client.mutation("target.add", {
+        id: free,
+        postId: draft.postId,
+        channelId: second,
+      }),
+      client.mutation("post.publish", { id: draft.postId }),
+    ],
+  });
+  expect((await client.patch()).rejected).toEqual([]);
+
+  // The other delivery has nothing to do with it: it went out, in the
+  // same look at the deliveries, and not a minute later.
+  await follow(client, () => targetOf(client, free).status === "sent");
+  expect(posts().map(({ text }) => text)).toEqual(["Everywhere"]);
+  // The one without a run is under way, and nothing carries it.
+  expect(targetOf(client, stuck)).toMatchObject({
+    status: "sending",
+    attempt: 1,
+  });
+  expect(errors).toHaveBeenCalledWith(
+    `The workflow of the delivery ${await runIdOf(workspace, stuck)} was not created`,
+    expect.anything(),
+  );
+
+  // The platform is back, and the object looks after its deliveries the
+  // next time, which a test does not wait a minute for.
+  creating.mockRestore();
+  expect(await runDurableObjectAlarm(objectOf(workspace))).toBe(true);
+  expect(await ended(client, draft.postId)).toMatchObject({ status: "sent" });
+  expect(targetOf(client, stuck)).toMatchObject({ status: "sent", attempt: 1 });
+  expect(posts().map(({ text }) => text)).toEqual(["Everywhere", "Everywhere"]);
+});
+
+it("leaves its alarm alone at a message of a client while a workflow cannot be created", async () => {
+  const context = await ready();
+  const { workspace, channel, client, posts } = context;
+  expectErrors();
+  const creating = failingToCreate(() => true);
+  /** When the object looks after its deliveries next. */
+  const alarm = () =>
+    runInDurableObject(objectOf(workspace), (_, state) =>
+      state.storage.getAlarm(),
+    );
+  const draft = await writeDraft(client, workspace, "Waiting for a run");
+  const [targetId = ""] = await publishTo(client, draft.postId, channel);
+  await follow(client, () => targetOf(client, targetId).status === "sending");
+  // The object has begun the delivery and could not create its run. It
+  // has set its alarm to try again: a minute from then, which is later
+  // than now. Until it has, the alarm is the one that is running, or none.
+  await vi.waitFor(async () =>
+    expect(await alarm()).toBeGreaterThan(Date.now()),
+  );
+  const next = await alarm();
+
+  // The person goes on writing: every keystroke is a message.
+  const other = await writeDraft(client, workspace, "A");
+  for (const text of ["An", "Ano", "Anot"]) {
+    client.mutate("part.setText", { id: other.partIds[0] ?? "", text });
+    await client.patch();
+  }
+
+  // None of them has anything to do with the run that is missing, and
+  // none brought the alarm forward: it would have run each time, asked
+  // the platform again and logged another failure.
+  expect(await alarm()).toBe(next);
+  expect(creating).toHaveBeenCalledTimes(1);
+
+  // The alarm tries again when its time has come, which a test does not
+  // wait for.
+  creating.mockRestore();
+  expect(await runDurableObjectAlarm(objectOf(workspace))).toBe(true);
+  expect(await ended(client, draft.postId)).toMatchObject({ status: "sent" });
+  expect(posts().map(({ text }) => text)).toEqual(["Waiting for a run"]);
 });
 
 it("changes nothing when what a delivery did is recorded a second time", async () => {
