@@ -12,6 +12,11 @@ import {
   type MeResponse,
   meResponseSchema,
   type Role,
+  type SandboxFault,
+  type SandboxFaults,
+  type SandboxFeed,
+  sandboxFaultsSchema,
+  sandboxFeedSchema,
   type Workspace,
   workspaceListResponseSchema,
 } from "@pigy/core";
@@ -195,4 +200,44 @@ export async function disconnectChannel(
     { method: "DELETE" },
   );
   return disconnectResponseSchema.parse(await response.json());
+}
+
+/**
+ * What the simulated world of the sandbox of whoever is signed in has
+ * published, by account. Not synced: the world is the networks', and pigy
+ * keeps no copy of it.
+ */
+export async function fetchSandboxFeed(
+  signal: AbortSignal,
+): Promise<SandboxFeed> {
+  const response = await request("/api/sandbox/feed", { signal });
+  return sandboxFeedSchema.parse(await response.json());
+}
+
+const faultsPath = "/api/sandbox/faults";
+
+/** The ways the simulated networks can be made to fail, and what is armed. */
+export async function fetchSandboxFaults(
+  signal: AbortSignal,
+): Promise<SandboxFaults> {
+  const response = await request(faultsPath, { signal });
+  return sandboxFaultsSchema.parse(await response.json());
+}
+
+/**
+ * Arms `fault`: the next request of its kind to its network fails that
+ * way, once. A fault that the network does not have is refused with an
+ * `ApiError` that names its `field`.
+ */
+export async function armSandboxFault(
+  fault: SandboxFault,
+): Promise<SandboxFaults> {
+  const response = await request(faultsPath, { method: "POST", json: fault });
+  return sandboxFaultsSchema.parse(await response.json());
+}
+
+/** Disarms every fault of every simulated network. */
+export async function disarmSandboxFaults(): Promise<SandboxFaults> {
+  const response = await request(faultsPath, { method: "DELETE" });
+  return sandboxFaultsSchema.parse(await response.json());
 }
