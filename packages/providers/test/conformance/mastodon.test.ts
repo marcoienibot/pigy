@@ -1,3 +1,4 @@
+import type { Fetch } from "@pigy/core";
 import { createMastodonSimulator } from "@pigy/simulators/mastodon";
 import { answerConsent, createWorld, feed } from "@pigy/simulators/world";
 import {
@@ -17,8 +18,17 @@ function simulated() {
   const simulator = createMastodonSimulator(world);
   simulator.addInstance(domain);
   const ada = simulator.addAccount(domain, "ada", "Ada Lovelace");
+  // Counts the requests that ask Mastodon to post a status.
+  let publishRequests = 0;
+  const fetch: Fetch = (input, init) => {
+    const request = new Request(input, init);
+    if (request.method === "POST" && request.url.endsWith("/api/v1/statuses")) {
+      publishRequests++;
+    }
+    return simulator.fetch(request);
+  };
   const provider = createMastodonProvider({
-    fetch: simulator.fetch,
+    fetch,
     now: world.now,
     apps: memoryAppStore(),
     clientName: "pigy",
@@ -43,13 +53,21 @@ function simulated() {
     });
     return access.credentials as MastodonCredentials;
   };
-  return { world, simulator, provider, consent, connect };
+  return {
+    world,
+    simulator,
+    provider,
+    consent,
+    connect,
+    publishRequests: () => publishRequests,
+  };
 }
 
 // The Mastodon adapter against the simulated Mastodon, in a new world for
 // every test.
 describeProvider("Mastodon, simulated", async () => {
-  const { world, simulator, provider, consent, connect } = simulated();
+  const { world, simulator, provider, consent, connect, publishRequests } =
+    simulated();
   const credentials = await connect();
   // A token as a real Mastodon makes them, which the simulation must refuse.
   const unknownToken = "ZA-Yj3aBD8U8Cm7lKUp-lm9O9BmDgdhHzDeqsY8tlL0";
@@ -69,6 +87,7 @@ describeProvider("Mastodon, simulated", async () => {
       consent,
       arm: (kind) => simulator.arm({ kind, operation: "publish" }),
       published: () => feed(world, ["mastodon"]).map(({ post }) => post.text),
+      publishRequests,
       now: world.now,
       advance: world.advance,
     },

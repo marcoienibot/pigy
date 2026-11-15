@@ -40,6 +40,11 @@ export type Simulation = {
   ): void;
   /** The texts of the posts in the world, oldest first. */
   published(): string[];
+  /**
+   * How many requests have asked the network to publish so far, whether or
+   * not it did. Looking for a post is not among them.
+   */
+  publishRequests(): number;
   now(): Date;
   /** Moves the world's clock forward. */
   advance(milliseconds: number): void;
@@ -90,6 +95,16 @@ async function failure(action: () => Promise<unknown>): Promise<ProviderError> {
     throw error;
   }
   throw new Error("Expected a ProviderError, and nothing failed");
+}
+
+/** Fails unless `whole` holds every one of `parts`, in their order. */
+function expectInOrder(whole: string, parts: string[]) {
+  let from = 0;
+  for (const part of parts) {
+    const found = whole.indexOf(part, from);
+    expect(found, `"${part}" after position ${from}`).toBeGreaterThanOrEqual(0);
+    from = found + part.length;
+  }
 }
 
 /**
@@ -219,6 +234,9 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
         expect(recorded(access.credentials)).toEqual(access.credentials);
         // Only a provider that can refresh says when to.
         expect(access.refreshAt !== null).toBe(provider.refresh !== undefined);
+        // This has never run: an access to Mastodon has no end. The pull
+        // request for LinkedIn is the first with one, and has to show that
+        // this fails for an end that has passed already.
         if (access.expiresAt) {
           expect(access.expiresAt.getTime()).toBeGreaterThan(
             simulation.now().getTime(),
@@ -372,20 +390,22 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
             });
           }
         } else {
-          // One post holds all the parts.
+          // One post holds all the parts. This has never run: every network
+          // so far publishes a chain. The pull request for LinkedIn is the
+          // first to get here, and has to show that it fails for an adapter
+          // that publishes the first part alone and returns its ID for
+          // every part.
           expect(new Set(ids).size).toBe(1);
           if (harness.simulation) {
-            expect(harness.simulation.published()).toHaveLength(1);
+            // The text is taken from the network's side, because a provider
+            // that joins the parts may not be able to read a post back.
+            const whole = harness.simulation.published();
+            expect(whole).toHaveLength(1);
+            expectInOrder(whole[0] ?? "", texts);
           }
-          const post =
-            ids[0] && readPost
-              ? await readPost(harness.credentials, ids[0])
-              : null;
-          let position = -1;
-          for (const text of post ? texts : []) {
-            const found = post?.text.indexOf(text, position + 1) ?? -1;
-            expect(found).toBeGreaterThan(position);
-            position = found;
+          if (ids[0] && readPost) {
+            const post = await readPost(harness.credentials, ids[0]);
+            expectInOrder(post?.text ?? "", texts);
           }
         }
       });
@@ -422,7 +442,14 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
         const halfway = records.at(-1) ?? null;
         expect(halfway).toMatchObject({ done: false, parts: [{}] });
 
-        // The second attempt is given what was recorded.
+        // The second attempt comes when no network remembers the first any
+        // more. Until then a network may answer a part that is sent again
+        // with the post it has, which would hide that it was sent again.
+        const { simulation } = harness;
+        simulation?.advance(2 * 60 * 60 * 1000);
+        const requestsBefore = simulation?.publishRequests() ?? 0;
+
+        // It is given what was recorded.
         const { progress } = await publishParts(harness, texts, {
           key,
           from: halfway,
@@ -430,8 +457,11 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
         expect(progress.done).toBe(true);
         expect(progress.parts).toHaveLength(2);
         expect(progress.parts[0]).toEqual(halfway?.parts[0]);
-        if (harness.simulation) {
-          expect(harness.simulation.published()).toEqual(texts);
+        if (simulation) {
+          expect(simulation.published()).toEqual(texts);
+          // The network was asked for the second part and for nothing
+          // else. A part that is recorded is not even looked for again.
+          expect(simulation.publishRequests() - requestsBefore).toBe(1);
         }
       });
 
@@ -607,6 +637,12 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
           publishParts({ ...harness, credentials }, [text]);
         const day = 24 * 60 * 60 * 1000;
 
+        // Of the three cases only the last has ever run: an access to
+        // Mastodon is not refreshed and has no end. The pull request for
+        // Bluesky is the first with a refresh, the one for LinkedIn the
+        // first with an end. Each has to show that its case can fail: for
+        // an adapter whose refresh returns credentials that do not work,
+        // and for one that names an end which the network does not keep.
         if (provider.refresh && access.refreshAt) {
           // Refreshed when it is due, the access goes on.
           simulation.advance(
@@ -641,6 +677,9 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
           return skip("It would end the access that the live run is given");
         }
         await harness.provider.disconnect(harness.credentials);
+        // Stopping here has never run: Mastodon revokes. The pull request
+        // for Threads is the first for a network that does not, and has to
+        // show that disconnecting is still tested for what it does there.
         if (!harness.revokes) return;
         const error = await failure(() => publishParts(harness, ["Gone"]));
         expect(error.kind).toBe("reconnect");
