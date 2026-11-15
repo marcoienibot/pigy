@@ -1,7 +1,7 @@
 import { errorResponseSchema } from "@pigy/core";
 import { expect, it, onTestFinished, vi } from "vitest";
 import { users } from "../src/db/schema.ts";
-import { type Browser, locationOf, me, setup } from "./helpers.ts";
+import { locationOf, me, setup, signInThroughPages } from "./helpers.ts";
 
 // Where `pnpm dev` serves the app. The simulated Google answers only when
 // the app is reached on the machine it runs on.
@@ -19,25 +19,6 @@ function setupSimulated(env: { ADMIN_EMAILS?: string } = {}) {
       ...env,
     },
   });
-}
-
-/** Signs in through the pages of the simulated Google, as a person would. */
-async function signInThroughPages(browser: Browser, email: string) {
-  const start = await browser.fetch("/api/auth/google/start");
-  const consentUrl = locationOf(start);
-  // The consent form posts to the address it was loaded from. A form
-  // submission is not a JSON request, so it is sent without the helper.
-  const submitted = await browser.send(
-    new Request(consentUrl, {
-      method: "POST",
-      body: new URLSearchParams({
-        email,
-        email_verified: "on",
-        action: "continue",
-      }),
-    }),
-  );
-  return browser.fetch(locationOf(submitted));
 }
 
 it("sends the browser to a consent page that the app itself serves", async () => {

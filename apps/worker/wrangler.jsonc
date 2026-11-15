@@ -17,20 +17,28 @@
     }
   ],
   "durable_objects": {
-    // One object per workspace, named after the ID of the workspace.
-    "bindings": [{ "name": "WORKSPACE", "class_name": "WorkspaceDO" }]
+    "bindings": [
+      // One object per workspace, named after the ID of the workspace.
+      { "name": "WORKSPACE", "class_name": "WorkspaceDO" },
+      // One object per sandbox workspace, named after its ID: the simulated
+      // networks as that workspace sees them.
+      { "name": "SIM_WORLD", "class_name": "SimWorldDO" }
+    ]
   },
   // The history of the Durable Object classes, not of their data: the first
-  // deploy creates WorkspaceDO with SQLite storage. An entry that has been
-  // deployed is never changed. Renaming or deleting a class takes a new
-  // entry with a new tag.
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WorkspaceDO"] }],
+  // deploy creates both classes with SQLite storage. An entry that has been
+  // deployed is never changed. Adding, renaming or deleting a class takes a
+  // new entry with a new tag.
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["WorkspaceDO"] },
+    { "tag": "v2", "new_sqlite_classes": ["SimWorldDO"] }
+  ],
   "assets": {
     // No "directory": the Vite plugin in apps/web points it at the built
     // web app.
     "not_found_handling": "single-page-application",
     // Only these paths reach the Worker. Everything else is a static asset
     // or falls back to the app shell.
-    "run_worker_first": ["/api/*", "/sim/*", "/sync/*"]
+    "run_worker_first": ["/api/*", "/connect/*", "/sim/*", "/sync/*"]
   }
 }

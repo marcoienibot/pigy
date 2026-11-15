@@ -266,6 +266,9 @@ importers:
       '@pigy/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@pigy/providers':
+        specifier: workspace:*
+        version: link:../../packages/providers
       '@pigy/simulators':
         specifier: workspace:*
         version: link:../../packages/simulators

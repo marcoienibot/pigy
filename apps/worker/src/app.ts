@@ -3,8 +3,11 @@ import { Hono } from "hono";
 import { adminRoutes } from "./admin/routes.ts";
 import { accessConfig } from "./auth/config.ts";
 import { authRoutes } from "./auth/routes.ts";
+import { channelRoutes, connectCallbackRoutes } from "./channels/routes.ts";
 import type { AppDependencies, AppEnv } from "./env.ts";
 import { handleError, handleNotFound } from "./errors.ts";
+import { simRoutes } from "./sim/routes.ts";
+import { worldPagesPath } from "./sim/world.ts";
 import { syncRoutes, workspaceRoutes } from "./workspace/routes.ts";
 
 /**
@@ -15,11 +18,13 @@ export function createApp(dependencies: AppDependencies): Hono<AppEnv> {
   const { fetch, simulatedGoogle } = dependencies;
   const app = new Hono<AppEnv>();
 
-  app.use("/api/*", async (c, next) => {
-    await next();
-    // What the API answers depends on who asks and changes at any time.
-    c.header("Cache-Control", "no-store");
-  });
+  // What these answer depends on who asks and changes at any time.
+  for (const path of ["/api/*", "/connect/*"]) {
+    app.use(path, async (c, next) => {
+      await next();
+      c.header("Cache-Control", "no-store");
+    });
+  }
 
   app.get("/api/health", (c) =>
     c.json(
@@ -29,7 +34,11 @@ export function createApp(dependencies: AppDependencies): Hono<AppEnv> {
   app.route("/api", authRoutes(dependencies));
   app.route("/api/admin", adminRoutes(dependencies));
   app.route("/api", workspaceRoutes(dependencies));
+  app.route("/api", channelRoutes(dependencies));
   app.route("/sync", syncRoutes(dependencies));
+  app.route("/connect", connectCallbackRoutes(dependencies));
+  // The pages of the simulated networks of a sandbox.
+  app.route(worldPagesPath, simRoutes(dependencies));
 
   // The pages of the simulated Google. The path exists only while sign-in is
   // simulated.

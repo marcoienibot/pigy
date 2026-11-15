@@ -34,14 +34,18 @@ export function requireSameOrigin(c: Context): void {
 }
 
 /**
- * Who the session cookie of the request signs in, or null. Other ways to
- * authenticate, such as API keys, belong next to this function: the `Origin`
- * check is only for cookies.
+ * Who the session cookie of the request signs in, and with which session,
+ * or null. Other ways to authenticate, such as API keys, belong next to
+ * this function: the `Origin` check is only for cookies.
+ *
+ * Routes use `requireUser`. This is for the one that answers a browser
+ * which a network has sent back: it has to send somebody who is not signed
+ * in on to a page, where `requireUser` would answer with an error.
  */
-async function authenticateWithCookie(
+export async function authenticateWithCookie(
   c: Context<AppEnv>,
   { now, simulatedGoogle }: AppDependencies,
-): Promise<Auth | null> {
+): Promise<{ auth: Auth; sessionId: string } | null> {
   const token = readSessionCookie(c);
   if (!token) return null;
   requireSameOrigin(c);
@@ -64,19 +68,23 @@ async function authenticateWithCookie(
   }
   // The cookie has to live as long as the session it belongs to.
   if (session.renewed) writeSessionCookie(c, token, session.expiresAt, time);
-  return session.auth;
+  return { auth: session.auth, sessionId: session.id };
 }
 
-/** Lets only signed-in people through and sets `c.var.auth`. */
+/**
+ * Lets only signed-in people through and sets `c.var.auth` and
+ * `c.var.sessionId`.
+ */
 export function requireUser(
   dependencies: AppDependencies,
 ): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
-    const auth = await authenticateWithCookie(c, dependencies);
-    if (!auth) {
+    const session = await authenticateWithCookie(c, dependencies);
+    if (!session) {
       throw new HTTPException(401, { message: "Sign in to continue" });
     }
-    c.set("auth", auth);
+    c.set("auth", session.auth);
+    c.set("sessionId", session.sessionId);
     await next();
   };
 }

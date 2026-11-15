@@ -1,4 +1,5 @@
 export * from "./access.ts";
+export * from "./connect.ts";
 export * from "./dependencies.ts";
 export * from "./email.ts";
 export * from "./error.ts";
@@ -9,6 +10,7 @@ export * from "./network/limits.ts";
 export * from "./network/mastodon.ts";
 export * from "./network/network.ts";
 export * from "./return-to.ts";
+export * from "./sandbox.ts";
 export * from "./sync/client/connection.ts";
 export * from "./sync/client/copy.ts";
 export * from "./sync/client/memory.ts";

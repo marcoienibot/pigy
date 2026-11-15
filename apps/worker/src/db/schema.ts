@@ -1,7 +1,8 @@
-import { environments } from "@pigy/core";
+import { environments, networks } from "@pigy/core";
 import {
   index,
   integer,
+  primaryKey,
   sqliteTable,
   text,
   uniqueIndex,
@@ -93,4 +94,60 @@ export const workspaces = sqliteTable(
       table.environment,
     ),
   ],
+);
+
+/**
+ * pigy as the Mastodon instances know it: the OAuth client that it
+ * registered with each, the first time somebody connected an account
+ * there. A cache: the adapter replaces an entry that the instance no longer
+ * knows, and one that cannot be read.
+ */
+export const mastodonApps = sqliteTable(
+  "mastodon_app",
+  {
+    /**
+     * Whose instances these are. "live" for the real ones, where everybody
+     * shares a registration. The ID of a sandbox workspace for the
+     * simulated ones of its world: the same domain is another instance in
+     * every world.
+     */
+    scope: text("scope").notNull(),
+    domain: text("domain").notNull(),
+    /** What the adapter stored, sealed by src/vault.ts: it holds a secret. */
+    registration: text("registration").notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.scope, table.domain] })],
+);
+
+/**
+ * The connections of accounts that have begun and whose answer from the
+ * network is still out. A row is taken out when the answer comes, so it is
+ * good for one answer.
+ */
+export const oauthStates = sqliteTable(
+  "oauth_state",
+  {
+    /** The `state` that the network sends back. Random, made by the adapter. */
+    state: text("state").primaryKey(),
+    /**
+     * The session that began. Only the same session can finish, and the row
+     * goes when the session ends.
+     */
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    /** The workspace that the account is connected to. */
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id),
+    network: text("network", { enum: networks }).notNull(),
+    /**
+     * What the adapter needs to finish, sealed by src/vault.ts: it holds
+     * secrets.
+     */
+    pending: text("pending").notNull(),
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [index("oauth_state_expires_at_idx").on(table.expiresAt)],
 );

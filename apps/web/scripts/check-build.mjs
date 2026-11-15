@@ -1,11 +1,13 @@
-// Checks whether a build contains the simulated Google sign-in, which signs
-// anybody in as anybody and must never be deployed.
+// Checks whether a build contains what is for development and tests only and
+// must never be deployed: the simulated Google sign-in, which signs anybody
+// in as anybody, and the development key, which seals the credentials of
+// the channels with a key that is in the repository.
 //
 //   node scripts/check-build.mjs <build directory> <absent|present>
 //
 // `absent` is for the production build. `present` is for the e2e build: it
-// proves that the texts searched for are still the ones the simulated
-// sign-in is made of, so that `absent` cannot pass because they were renamed.
+// proves that the texts searched for are still the ones that these things
+// are made of, so that `absent` cannot pass because they were renamed.
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -15,8 +17,8 @@ if (!directory || !["absent", "present"].includes(expectation)) {
   process.exit(2);
 }
 
-// One text from each part of the simulated sign-in. A bundler can rename
-// identifiers, not the contents of strings.
+// One text from each part of the simulated sign-in, and the development key.
+// A bundler can rename identifiers, not the contents of strings.
 const markers = [
   // The consent page, packages/simulators/src/google/pages.ts.
   "This page stands in for Google in development and tests.",
@@ -24,6 +26,8 @@ const markers = [
   "simulated-google-key-1",
   // The Worker's wiring, apps/worker/src/simulated-google.ts.
   "pigy-simulated.apps.googleusercontent.com",
+  // The development key, apps/worker/src/development-keys.ts.
+  "cGlneS1kZXZlbG9wbWVudC1rZXktbm90LXNlY3JldCE=",
 ];
 
 const files = readdirSync(directory, { recursive: true, withFileTypes: true })
@@ -42,13 +46,13 @@ for (const [marker, places] of found) {
   if (expectation === "absent" && places.length > 0) {
     failed = true;
     console.error(
-      `The production build contains the simulated Google sign-in: "${marker}" is in ${places.join(", ")}`,
+      `The production build contains what is for development only: "${marker}" is in ${places.join(", ")}`,
     );
   }
   if (expectation === "present" && places.length === 0) {
     failed = true;
     console.error(
-      `"${marker}" is not in the e2e build. If the simulated Google sign-in was changed, update the markers in apps/web/scripts/check-build.mjs.`,
+      `"${marker}" is not in the e2e build. If the simulated Google sign-in or the development key was changed, update the markers in apps/web/scripts/check-build.mjs.`,
     );
   }
 }

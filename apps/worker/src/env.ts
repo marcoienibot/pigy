@@ -37,6 +37,11 @@ export type AppDependencies = {
    * development and tests pass one.
    */
   simulatedGoogle: SimulatedGoogle | undefined;
+  /**
+   * Stands in for `CREDENTIAL_KEYS` when it is not set, in the same form.
+   * Only builds for development and tests pass one: it is no secret.
+   */
+  developmentCredentialKeys: string | undefined;
 };
 
 /** Who is making the request. */
@@ -51,5 +56,11 @@ export type AppEnv = {
   Variables: {
     /** Set by `requireUser`. */
     auth: Auth;
+    /**
+     * The ID of the session that the request came with, set by
+     * `requireUser`. It is not the secret of the session: it names the
+     * session and signs nobody in.
+     */
+    sessionId: string;
   };
 };

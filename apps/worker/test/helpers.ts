@@ -1,10 +1,13 @@
 import { env } from "cloudflare:workers";
 import { type Fetch, type MeResponse, meResponseSchema } from "@pigy/core";
 import { createGoogleSimulator } from "@pigy/simulators/google";
+import { createMastodonSimulator } from "@pigy/simulators/mastodon";
+import { createWorld } from "@pigy/simulators/world";
 import { drizzle } from "drizzle-orm/d1";
 import { expect, onTestFinished, vi } from "vitest";
 import { createApp } from "../src/app.ts";
 import { allowedEmails } from "../src/db/schema.ts";
+import { developmentCredentialKeys } from "../src/development-keys.ts";
 import type { Bindings } from "../src/env.ts";
 import { createSimulatedGoogle } from "../src/simulated-google.ts";
 import { clock } from "./clock.ts";
@@ -18,7 +21,11 @@ const googleClient = {
   redirectUris: [`${origin}/api/auth/google/callback`],
 };
 
-type Secrets = "ADMIN_EMAILS" | "GOOGLE_CLIENT_ID" | "GOOGLE_CLIENT_SECRET";
+type Secrets =
+  | "ADMIN_EMAILS"
+  | "GOOGLE_CLIENT_ID"
+  | "GOOGLE_CLIENT_SECRET"
+  | "CREDENTIAL_KEYS";
 
 /**
  * A key for `CREDENTIAL_KEYS`, as a deployment has one: 32 bytes in
@@ -28,12 +35,29 @@ export function credentialKey(fill: number): string {
   return btoa(String.fromCharCode(...new Uint8Array(32).fill(fill)));
 }
 
+/** What the tests are deployed with, unless they say otherwise. */
+export const credentialKeys = `1:${credentialKey(1)}`;
+
 /**
- * The app as it runs in production, with Google credentials, except that
- * the `fetch` it is given leads to a simulated Google and its clock is
- * `clock`, which is also the clock of the workspace objects. The bindings
- * are listed one by one, so that nothing from a `.dev.vars` on this machine
- * gets into the tests.
+ * The Mastodon server that stands for a real one in the tests. It is in a
+ * world of its own, behind the `fetch` that the app is given, which is
+ * where the internet is in production. Its name is not that of the
+ * simulated server of a sandbox, so that a test can tell which of the two
+ * has answered.
+ */
+export const realMastodonDomain = "mastodon.test";
+
+// Google's addresses. The simulated Google has the last word on which of
+// them exist.
+const googleHost = /(^|\.)(google\.com|googleapis\.com)$/;
+
+/**
+ * The app as it runs in production, with Google credentials and a key for
+ * the credentials of the channels, except that the `fetch` it is given
+ * leads to a simulated Google and to `network`, which stands for the real
+ * networks, and that its clock is `clock`, which is also the clock of the
+ * Durable Objects. The bindings are listed one by one, so that nothing from
+ * a `.dev.vars` on this machine gets into the tests.
  */
 export function setup(
   options: {
@@ -41,8 +65,12 @@ export function setup(
     env?: { [Name in Secrets]?: string | undefined };
     /** Builds in a simulated Google, as in development. */
     simulatedGoogle?: boolean;
+    /** Builds in the development key, as in development. */
+    developmentCredentialKeys?: boolean;
     /** Stands between the app and Google, to change what Google answers. */
     intercept?: (google: Fetch) => Fetch;
+    /** The same between the app and the networks. */
+    interceptNetwork?: (network: Fetch) => Fetch;
   } = {},
 ) {
   clock.time = new Date("2026-11-14T10:00:00Z");
@@ -52,39 +80,87 @@ export function setup(
     now: () => new Date(clock.time.getTime() - clock.googleLagMs),
     client: googleClient,
   });
+  const googleFetch = options.intercept?.(google.fetch) ?? google.fetch;
+
+  // What stands for the real networks: one Mastodon server with one
+  // account, and a record of every request that the app made to a network.
+  const world = createWorld({ now });
+  const mastodon = createMastodonSimulator(world);
+  mastodon.addInstance(realMastodonDomain);
+  const network = {
+    world,
+    mastodon,
+    account: mastodon.addAccount(
+      realMastodonDomain,
+      "rosalind",
+      "Rosalind Franklin",
+    ),
+    /** The requests that left the app for a network, as "METHOD address". */
+    requests: [] as string[],
+  };
+  const networkFetch =
+    options.interceptNetwork?.(mastodon.fetch) ?? mastodon.fetch;
+
   const app = createApp({
-    fetch: options.intercept?.(google.fetch) ?? google.fetch,
+    fetch: async (input, init) => {
+      const url = urlOf(input);
+      if (googleHost.test(new URL(url).hostname)) {
+        return googleFetch(input, init);
+      }
+      const method =
+        init?.method ?? (input instanceof Request ? input.method : "GET");
+      network.requests.push(`${method} ${url}`);
+      return networkFetch(input, init);
+    },
     now,
     simulatedGoogle: options.simulatedGoogle
       ? createSimulatedGoogle(now)
+      : undefined,
+    developmentCredentialKeys: options.developmentCredentialKeys
+      ? developmentCredentialKeys
       : undefined,
   });
   const secrets = {
     ADMIN_EMAILS: adminEmail,
     GOOGLE_CLIENT_ID: googleClient.clientId,
     GOOGLE_CLIENT_SECRET: googleClient.clientSecret,
+    CREDENTIAL_KEYS: credentialKeys,
     ...options.env,
   };
   const bindings: Bindings = {
     DB: env.DB,
     VERSION: env.VERSION,
     WORKSPACE: env.WORKSPACE,
+    SIM_WORLD: env.SIM_WORLD,
   };
-  for (const name of Object.keys(secrets) as Secrets[]) {
-    const value = secrets[name];
-    if (value !== undefined) bindings[name] = value;
-  }
+  const configure = (values: { [Name in Secrets]?: string | undefined }) => {
+    for (const name of Object.keys(values) as Secrets[]) {
+      const value = values[name];
+      if (value === undefined) delete bindings[name];
+      else bindings[name] = value;
+    }
+  };
+  configure(secrets);
   return {
     clock,
     google,
+    network,
     db: drizzle(env.DB),
+    /**
+     * Gives the app other secrets from the next request on, as a new
+     * deployment does: its data stays. Undefined takes a secret away.
+     */
+    redeploy: configure,
     /** A browser with no cookies yet. */
     browser: (browserOrigin = origin) =>
       new Browser(
         (request) => app.request(request, undefined, bindings),
         browserOrigin,
       ),
-    /** Moves the clock of the app, of the workspaces and of Google forward. */
+    /**
+     * Moves the clock of the app, of the Durable Objects, of Google and of
+     * the networks forward.
+     */
     advance(milliseconds: number) {
       clock.time = new Date(clock.time.getTime() + milliseconds);
     },
@@ -109,19 +185,20 @@ export class Browser {
   ) {}
 
   /**
-   * Sends a request to the app. Redirects are not followed. `headers`
-   * replace what a browser would send, to imitate other clients: a null
-   * leaves a header out.
+   * Sends a request to the app. Redirects are not followed. `form` is what
+   * a form of a page posts. `headers` replace what a browser would send, to
+   * imitate other clients: a null leaves a header out.
    */
   async fetch(
     path: string,
     init: {
       method?: string;
       json?: unknown;
+      form?: Record<string, string>;
       headers?: Record<string, string | null>;
     } = {},
   ): Promise<Response> {
-    const method = init.method ?? "GET";
+    const method = init.method ?? (init.form ? "POST" : "GET");
     const headers = new Headers();
     if (this.cookies.size > 0) {
       headers.set(
@@ -146,6 +223,7 @@ export class Browser {
         method,
         headers,
         ...(init.json !== undefined && { body: JSON.stringify(init.json) }),
+        ...(init.form && { body: new URLSearchParams(init.form) }),
       }),
     );
 
@@ -176,6 +254,11 @@ export class Browser {
       headers: { Upgrade: "websocket", Origin: this.origin, ...headers },
     });
   }
+}
+
+/** The address that a call of `fetch` is for. */
+export function urlOf(input: RequestInfo | URL): string {
+  return input instanceof Request ? input.url : String(input);
 }
 
 /** Where a redirect leads, as a path within the app or a full address. */
@@ -244,6 +327,32 @@ export async function signedIn(
   // "/" is where a successful sign-in ends. A refusal leads elsewhere.
   expect(locationOf(response)).toBe("/");
   return browser;
+}
+
+/**
+ * Signs in through the pages of the simulated Google, as a person does
+ * where sign-in is simulated: `setup({ simulatedGoogle: true })` without
+ * Google credentials, reached at a local address.
+ */
+export async function signInThroughPages(
+  browser: Browser,
+  email: string,
+): Promise<Response> {
+  const start = await browser.fetch("/api/auth/google/start");
+  const consentUrl = locationOf(start);
+  // The consent form posts to the address it was loaded from. A form
+  // submission is not a JSON request, so it is sent without the helper.
+  const submitted = await browser.send(
+    new Request(consentUrl, {
+      method: "POST",
+      body: new URLSearchParams({
+        email,
+        email_verified: "on",
+        action: "continue",
+      }),
+    }),
+  );
+  return browser.fetch(locationOf(submitted));
 }
 
 /** Who the app takes `browser` for, or null if it is not signed in. */

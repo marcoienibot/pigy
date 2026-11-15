@@ -157,7 +157,12 @@ export async function findSession(
   token: string,
   adminEmails: ReadonlySet<string>,
   now: Date,
-): Promise<{ auth: Auth; expiresAt: Date; renewed: boolean } | null> {
+): Promise<{
+  id: string;
+  auth: Auth;
+  expiresAt: Date;
+  renewed: boolean;
+} | null> {
   const session = await verifiedSession(db, token);
   if (!session) return null;
 
@@ -173,13 +178,18 @@ export async function findSession(
   };
   const expiresAt = new Date(now.getTime() + lifetimeMs);
   if (expiresAt.getTime() - session.expiresAt.getTime() < renewAfterMs) {
-    return { auth, expiresAt: session.expiresAt, renewed: false };
+    return {
+      id: session.id,
+      auth,
+      expiresAt: session.expiresAt,
+      renewed: false,
+    };
   }
   await db
     .update(sessions)
     .set({ expiresAt })
     .where(eq(sessions.id, session.id));
-  return { auth, expiresAt, renewed: true };
+  return { id: session.id, auth, expiresAt, renewed: true };
 }
 
 /** Removes the sessions of `userId` that have run out. */
