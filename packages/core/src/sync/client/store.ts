@@ -766,3 +766,21 @@ export class SyncStore {
     return result;
   }
 }
+
+/**
+ * Resolves in a moment in which none of `stores` holds a mutation that is
+ * not stored: see `SyncStore.whenStored`. For a tab that has a store for
+ * every workspace that it syncs. One of them can take a mutation while
+ * another is waited for, so all of them are asked again after every wait,
+ * and `stores` is asked for them anew: a tab can open another one
+ * meanwhile.
+ */
+export async function whenAllStored(
+  stores: () => Iterable<SyncStore>,
+): Promise<void> {
+  for (;;) {
+    const waiting = [...stores()].filter((store) => store.holdsUnstored());
+    if (waiting.length === 0) return;
+    await Promise.all(waiting.map((store) => store.whenStored()));
+  }
+}

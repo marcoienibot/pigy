@@ -1,7 +1,12 @@
 import { expect, it } from "vitest";
 import { browser, draft, newId, settle } from "../../../test/sync-browser.ts";
 import { appendMutations, applyPatch } from "./copy.ts";
-import { type SyncStore, saveRetryMs, tabAnswerMs } from "./store.ts";
+import {
+  type SyncStore,
+  saveRetryMs,
+  tabAnswerMs,
+  whenAllStored,
+} from "./store.ts";
 
 /** Creates a draft in `store` and returns the IDs of it and its part. */
 function createDraft(store: SyncStore, text: string) {
@@ -17,6 +22,20 @@ function gate() {
     open = resolve;
   });
   return { passed, open };
+}
+
+/**
+ * Makes every write to the stored copy of `device` wait, as on a device
+ * that is slow to write, until the function that this returns is called.
+ */
+function hold(device: ReturnType<typeof browser>): () => void {
+  const { update } = device.storage;
+  const slow = gate();
+  device.storage.update = async (step, options) => {
+    await slow.passed;
+    return update(step, options);
+  };
+  return slow.open;
 }
 
 /**
@@ -511,6 +530,39 @@ it("says that everything is stored only once its listeners have been told, also 
   expect(await toldWhenStored).toBe(0);
   expect(store.holdsUnstored()).toBe(false);
   expect(store.getState()).toMatchObject({ pending: 2, unsaved: 0 });
+});
+
+it("waits for every store of a tab, also for one that takes a mutation while another is waited for", async () => {
+  // A tab that syncs both workspaces of a person, each with a copy of its
+  // own, on a device that is slow to write: what is written in either is
+  // in this tab alone until the test lets it be stored.
+  const live = browser();
+  const sandbox = browser();
+  const stores = [(await live.tab()).store, (await sandbox.tab()).store];
+  const [inLive, inSandbox] = stores as [SyncStore, SyncStore];
+  const storeLive = hold(live);
+  const storeSandbox = hold(sandbox);
+
+  createDraft(inLive, "Written in live");
+  let resolved = false;
+  void whenAllStored(() => stores).then(() => {
+    resolved = true;
+  });
+  // While live is waited for, the person goes on to the sandbox and
+  // writes there.
+  createDraft(inSandbox, "Written in the sandbox");
+  await settle();
+
+  // Live is stored. The sandbox is not, and a page that was loaded again
+  // now would lose what was written there.
+  storeLive();
+  await settle();
+  expect(inLive.holdsUnstored()).toBe(false);
+  expect(resolved).toBe(false);
+
+  storeSandbox();
+  await settle();
+  expect(resolved).toBe(true);
 });
 
 it("has nothing to wait for once the store is closed", async () => {

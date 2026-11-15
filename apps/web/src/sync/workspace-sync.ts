@@ -7,6 +7,7 @@ import {
   type TabChannel,
   type TabMessage,
   type Workspace,
+  whenAllStored,
 } from "@pigy/core";
 import {
   copyName,
@@ -344,19 +345,11 @@ export function syncUnsent(userId: string, workspaces: Workspace[]): void {
  * written, is being written, or could not be written, which the store
  * tries again. For whoever is about to load the page again, which would
  * lose such a change: it is in the memory of this tab and nowhere else.
- *
- * It resolves in a moment in which no store holds such a change. One store
- * can take a change while another one is waited for, so all of them are
- * asked again after every wait.
+ * It resolves in a moment in which no store holds such a change, see
+ * `whenAllStored`.
  */
-export async function whenSaved(): Promise<void> {
-  for (;;) {
-    const waiting = [...stores.values()].filter((store) =>
-      store.holdsUnstored(),
-    );
-    if (waiting.length === 0) return;
-    await Promise.all(waiting.map((store) => store.whenStored()));
-  }
+export function whenSaved(): Promise<void> {
+  return whenAllStored(() => stores.values());
 }
 
 /**
