@@ -112,13 +112,16 @@ function tokenRequest(
   return post(sim, "/oauth/token", form);
 }
 
-/** Registers a client and connects Ada. Returns her token. */
-async function connect(sim: Sim, scope = scopes) {
+/**
+ * Registers a client and connects an account, Ada's unless another is
+ * named. Returns its token.
+ */
+async function connect(sim: Sim, scope = scopes, account = sim.ada.id) {
   const { app } = await register(sim);
   const callback = await answerConsent(
     sim.simulator.fetch,
     authorizationUrl(app.client_id, { scope }),
-    { account: sim.ada.id },
+    { account },
   );
   const response = await tokenRequest(
     sim,
@@ -741,6 +744,68 @@ describe("posting a status", () => {
       { Authorization: `Bearer ${token}` },
     );
     expect(await response.json()).toMatchObject({ visibility: "unlisted" });
+  });
+
+  it("posts with the visibility that the account has set, unless the request names one", async () => {
+    const sim = setup();
+    const quiet = sim.simulator.addAccount(domain, "quiet", "Quiet", {
+      privacy: "private",
+    });
+    const { token } = await connect(sim, scopes, quiet.id);
+    const account = await api(
+      sim,
+      "GET",
+      "/api/v1/accounts/verify_credentials",
+      token,
+    );
+    // This is where a client reads the setting.
+    expect(await account.json()).toMatchObject({
+      source: { privacy: "private" },
+    });
+    expect((await publish(sim, token, { status: "One" })).status).toMatchObject(
+      { visibility: "private" },
+    );
+    expect(
+      (await publish(sim, token, { status: "Two", visibility: "public" }))
+        .status,
+    ).toMatchObject({ visibility: "public" });
+  });
+
+  it("makes unlisted of what a limited account posts as public", async () => {
+    const sim = setup();
+    const limited = sim.simulator.addAccount(domain, "limited", "Limited", {
+      limited: true,
+    });
+    const { token } = await connect(sim, scopes, limited.id);
+    const account = await api(
+      sim,
+      "GET",
+      "/api/v1/accounts/verify_credentials",
+      token,
+    );
+    expect(await account.json()).toMatchObject({ limited: true });
+    // By its setting, which is "public", and by the request alike.
+    for (const body of [
+      { status: "One" },
+      { status: "Two", visibility: "public" },
+    ]) {
+      expect((await publish(sim, token, body)).status).toMatchObject({
+        visibility: "unlisted",
+      });
+    }
+    // Any other visibility stays what it is.
+    expect(
+      (await publish(sim, token, { status: "Three", visibility: "private" }))
+        .status,
+    ).toMatchObject({ visibility: "private" });
+    // An account that is not limited does not say so.
+    const ada = await api(
+      sim,
+      "GET",
+      "/api/v1/accounts/verify_credentials",
+      (await connect(sim)).token,
+    );
+    expect(await ada.json()).not.toHaveProperty("limited");
   });
 
   it("stores the text without the whitespace around it", async () => {

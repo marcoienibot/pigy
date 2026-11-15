@@ -99,8 +99,17 @@ export type MastodonSimulator = {
     domain: string,
     options?: Partial<Omit<Instance, "domain">>,
   ): void;
-  /** Adds an account to an instance, for somebody to connect. */
-  addAccount(domain: string, username: string, name?: string): MastodonAccount;
+  /**
+   * Adds an account to an instance, for somebody to connect. `settings`
+   * has what differs from an account as it is made: the visibility of its
+   * statuses, and whether its moderators have limited it.
+   */
+  addAccount(
+    domain: string,
+    username: string,
+    name?: string,
+    settings?: Pick<MastodonAccount, "privacy" | "limited">,
+  ): MastodonAccount;
   /** Arms a fault, which strikes the next request it applies to. */
   arm(fault: MastodonFault): void;
 };
@@ -436,7 +445,7 @@ export function createMastodonSimulator(world: SimWorld): MastodonSimulator {
       });
     },
 
-    addAccount(domain, username, name = username) {
+    addAccount(domain, username, name = username, settings = {}) {
       if (!state.instances.get(domain)) {
         throw new Error(`The simulated Mastodon has no instance ${domain}`);
       }
@@ -458,6 +467,7 @@ export function createMastodonSimulator(world: SimWorld): MastodonSimulator {
         username,
         handle: `@${username}@${domain}`,
         name,
+        ...settings,
       };
       state.accounts.put(account.id, account);
       return account;

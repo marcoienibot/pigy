@@ -141,6 +141,8 @@ function accountJson(state: State, account: MastodonAccount) {
     last_status_at: null,
     emojis: [],
     fields: [],
+    // Only an account that is limited has the attribute.
+    ...(account.limited && { limited: true }),
   };
 }
 
@@ -149,7 +151,7 @@ export function verifyCredentials(state: State, account: MastodonAccount) {
   return json(200, {
     ...accountJson(state, account),
     source: {
-      privacy: "public",
+      privacy: account.privacy ?? "public",
       sensitive: false,
       language: "en",
       note: "",
@@ -312,7 +314,11 @@ export async function createStatus(
     typeof params.status === "string" ? params.status : "",
     (username, domain) => mentionedAcct(state, instance, username, domain),
   ).replace(/^[\0\t\n\v\f\r ]+|[\0\t\n\v\f\r ]+$/g, "");
-  const visibility = text(params, "visibility") ?? "public";
+  // From the code: a status that names no visibility gets the one that the
+  // account has set, and "public" becomes "unlisted" for an account that
+  // is limited.
+  const asked = text(params, "visibility") ?? account.privacy ?? "public";
+  const visibility = asked === "public" && account.limited ? "unlisted" : asked;
   const errors: string[] = [];
   if (body.trim() === "") errors.push("Text can't be blank");
   if (

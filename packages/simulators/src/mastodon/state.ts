@@ -27,6 +27,17 @@ export type MastodonAccount = SimAccount & {
   /** The instance it lives on. */
   domain: string;
   username: string;
+  /**
+   * Who sees a status of the account that says nothing about it: a setting
+   * of the person's. "public" if left out.
+   */
+  privacy?: Visibility;
+  /**
+   * Whether the moderators of the instance have limited the account, which
+   * Mastodon's code calls silenced. What such an account posts as "public"
+   * becomes "unlisted".
+   */
+  limited?: boolean;
 };
 
 /** pigy, or any other client, as it registered with an instance. */
