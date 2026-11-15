@@ -5,4 +5,8 @@ export * from "./error.ts";
 export * from "./health.ts";
 export * from "./id.ts";
 export * from "./return-to.ts";
+export * from "./sync/mutators.ts";
+export * from "./sync/protocol.ts";
+export * from "./sync/tables.ts";
+export * from "./sync/transaction.ts";
 export * from "./workspace.ts";
