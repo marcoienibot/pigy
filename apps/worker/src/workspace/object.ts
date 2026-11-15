@@ -418,13 +418,8 @@ export function workspaceObject({ now }: { now: Clock }) {
     async #watchDeliveries(): Promise<void> {
       for (const run of this.#store.deliveries(true)) {
         if (!(await this.#isOver(run))) continue;
-        console.error(
-          `The workflow of the delivery ${deliveryInstanceId(run)} ended without a word`,
-        );
         const from = this.#store.seq;
-        // Refused if the workflow has ended the delivery after all, in the
-        // moment that it took to ask.
-        this.#store.mutate(
+        const ended = this.#store.mutate(
           {
             name: "target.end",
             args: {
@@ -437,6 +432,13 @@ export function workspaceObject({ now }: { now: Clock }) {
           },
           now().getTime(),
         );
+        // Refused if the workflow has ended the delivery after all, in the
+        // moment that it took to ask: then nothing was wrong.
+        if (ended.ok) {
+          console.error(
+            `The workflow of the delivery ${deliveryInstanceId(run)} ended without a word`,
+          );
+        }
         this.#publish(from);
       }
     }
@@ -690,17 +692,19 @@ export function workspaceObject({ now }: { now: Clock }) {
      * if the object stops before it gets there.
      */
     #wake(): void {
-      try {
-        if (this.#store.deliveriesNeed === "start") {
-          void this.ctx.storage.setAlarm(Date.now());
-        }
-      } catch (error) {
-        // The change that led here is committed and sent. The deliveries
-        // wait for the next change or the next alarm.
+      // The change that led here is committed. If this fails, the
+      // deliveries wait for the next change or the next alarm.
+      const failed = (error: unknown) =>
         console.error(
           "The deliveries of a workspace were not looked at",
           error,
         );
+      try {
+        if (this.#store.deliveriesNeed === "start") {
+          this.ctx.storage.setAlarm(Date.now()).catch(failed);
+        }
+      } catch (error) {
+        failed(error);
       }
     }
   };
