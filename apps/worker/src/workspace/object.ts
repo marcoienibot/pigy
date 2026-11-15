@@ -49,7 +49,13 @@ export const maxSockets = 32;
  */
 export const maxRejectionsKept = 1000;
 
-/** What the object keeps about a socket. It survives hibernation. */
+/**
+ * What the object keeps about a socket. It survives hibernation, and a
+ * deploy: a socket can stay open while new code replaces the old. A field
+ * that is added here later is therefore missing on the sockets that were
+ * open at the time. Whoever adds one gives it a default where it is read, or
+ * raises a version, which closes those sockets the next time they are used.
+ */
 type SocketState = {
   /** Set by the `hello` of the socket. Until then it receives nothing. */
   clientId: string | null;
