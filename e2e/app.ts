@@ -498,3 +498,97 @@ export function syncSockets(page: Page): string[] {
   });
   return urls;
 }
+
+/** `text` as a pattern that matches it and nothing else. */
+function literally(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** The part of the editor of a draft that publishes it. */
+export function publishPanel(page: Page): Locator {
+  return page.getByRole("region", { name: "Publish" });
+}
+
+/**
+ * The button of the open draft that chooses the channel of `handle`, or
+ * leaves it out. It is pressed while the channel is chosen.
+ */
+export function channelChoice(page: Page, handle: string): Locator {
+  return publishPanel(page).getByRole("button", {
+    name: new RegExp(`^${literally(handle)} on `),
+  });
+}
+
+/**
+ * Writes a new draft with `text` and publishes it to the channel of
+ * `handle` from its editor, as a person does. Starts and ends on the
+ * Drafts screen.
+ */
+export async function publishDraft(
+  page: Page,
+  text: string,
+  handle: string,
+): Promise<void> {
+  await page.getByRole("button", { name: "New draft" }).click();
+  await editor(page).fill(text);
+  await channelChoice(page, handle).click();
+  await expect(channelChoice(page, handle)).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await publishPanel(page).getByRole("button", { name: "Publish now" }).click();
+  // A draft that is published is a draft no more: the editor closes.
+  await expect(editor(page)).toHaveCount(0);
+}
+
+/** The post on the Sent screen whose text has `text` in it. */
+export function sentPost(page: Page, text: string): Locator {
+  return page
+    .getByRole("list", { name: "Sent posts" })
+    .getByRole("article", { name: text });
+}
+
+/** The delivery of `post`, on the Sent screen, to the channel of `handle`. */
+export function deliveryTo(post: Locator, handle: string): Locator {
+  return post.getByRole("listitem", { name: handle, exact: true });
+}
+
+/** The feed of the simulated account `handle`, on the simulator's screen. */
+export function feedOf(page: Page, handle: string): Locator {
+  return page.getByRole("region", {
+    name: new RegExp(` ${literally(handle)}$`),
+  });
+}
+
+/**
+ * Arms a fault from the failure panel of the sandbox: `kind` as the panel
+ * calls it, for the next post to `network`.
+ */
+export async function armFault(
+  page: Page,
+  network: "Mastodon" | "Bluesky",
+  kind: string,
+): Promise<void> {
+  await openScreen(page, "Simulator");
+  await page
+    .getByRole("navigation", { name: "Simulator" })
+    .getByRole("link", { name: "Failures" })
+    .click();
+  await page.getByRole("radio", { name: network }).check();
+  await page.getByRole("radio", { name: kind, exact: true }).check();
+  // Posting is what the panel offers first.
+  await expect(page.getByLabel("Which request")).toHaveValue("publish");
+  await page.getByRole("button", { name: "Arm", exact: true }).click();
+  await expect(page.getByRole("list", { name: "Armed faults" })).toContainText(
+    kind,
+  );
+}
+
+/** How far the page is wider than its window, which it must not be. */
+export function overflowOf(page: Page): Promise<number> {
+  return page.evaluate(
+    () =>
+      document.documentElement.scrollWidth -
+      document.documentElement.clientWidth,
+  );
+}

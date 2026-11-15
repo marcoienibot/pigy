@@ -12,6 +12,7 @@ import {
   grace,
   openConsentPage,
   openScreen,
+  overflowOf,
   sandboxServer,
   switchTo,
   writeDraft,
@@ -69,15 +70,6 @@ function warningElsewhere(page: Page) {
   });
 }
 
-/** How far the page is wider than its window, which it must not be. */
-function overflow(page: Page): Promise<number> {
-  return page.evaluate(
-    () =>
-      document.documentElement.scrollWidth -
-      document.documentElement.clientWidth,
-  );
-}
-
 test("somebody new is led from the empty drafts screen to a connected simulated account", async ({
   ownPage: page,
 }) => {
@@ -109,7 +101,7 @@ test("somebody new is led from the empty drafts screen to a connected simulated 
     page.getByRole("heading", { name: "pigy wants to use your account" }),
   ).toBeVisible();
   // It has to fit the screen, on a phone too.
-  expect(await overflow(page)).toBe(0);
+  expect(await overflowOf(page)).toBe(0);
   await page.getByRole("button", { name: grace }).click();
 
   // Back on the Channels screen of the sandbox, which says what happened
@@ -122,7 +114,7 @@ test("somebody new is led from the empty drafts screen to a connected simulated 
   await expect(channelRows(page)).toContainText("Grace Hopper");
   await expect(channelRows(page)).toContainText(`Mastodon · ${grace}`);
   await expect(channelRows(page)).toContainText("Connected");
-  expect(await overflow(page)).toBe(0);
+  expect(await overflowOf(page)).toBe(0);
   // The address no longer says how the connection ended, so loading the
   // page again does not say it again. The list is waited for first: the
   // notice would not be there before it either.
@@ -219,7 +211,7 @@ test("connects a simulated Bluesky account through the consent page of its serve
   await expect(page.getByText("Simulation", { exact: true })).toBeVisible();
   const accounts = page.locator('button[name="account"]');
   await expect(accounts).toHaveCount(1);
-  expect(await overflow(page)).toBe(0);
+  expect(await overflowOf(page)).toBe(0);
   await accounts.getByText("@grace.bsky.test").click();
 
   await expect(notice(page)).toHaveText(
