@@ -62,12 +62,15 @@ test("an admin invites a member, changes their role and removes them", async ({
   await dialog.getByRole("button", { name: "Remove" }).click();
   await expect(row).toHaveCount(0);
 
-  // The member is signed out by whatever they do next, here a click in the
-  // navigation, and cannot get back in.
-  await member
-    .getByRole("navigation", { name: "Main" })
-    .getByRole("link", { name: "Queue" })
-    .click();
+  // The member is signed out by their next step at the latest, and cannot
+  // get back in. The app can find out before that: it asks the server
+  // again a moment after a step that came soon after another, and leaves
+  // for the sign-in page by itself. So the step is one that can be taken
+  // from there too, opening a screen, and it is taken again if the app's
+  // own way to the sign-in page has cut it short.
+  await expect(async () => {
+    await member.goto("/queue");
+  }).toPass();
   await expect(member).toHaveURL("/sign-in?returnTo=%2Fqueue");
   await signIn(member, email);
   await expect(member).toHaveURL("/invite-only");
