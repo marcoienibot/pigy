@@ -55,8 +55,9 @@ async function boundedText(
  * `host` is how the messages name the other side.
  *
  * It fails with `retry` when no answer came: the host was out of reach, or
- * took too long. Whether the request arrived is unknown then, so what is
- * sent must be safe to send again.
+ * took too long. Whether the request arrived is unknown then. An adapter
+ * that sends what must not happen twice sees to that itself, the way
+ * `Provider.publishStep` says.
  */
 export async function send(
   fetch: Fetch,

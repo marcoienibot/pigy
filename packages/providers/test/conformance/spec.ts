@@ -113,6 +113,20 @@ function expectInOrder(whole: string, parts: string[]) {
 }
 
 /**
+ * What a provider does that cannot look for what it has sent, when it
+ * cannot tell whether a post was published: it fails with `uncertain`, and
+ * does not ask to try again.
+ *
+ * This has never run: Mastodon can look. The pull request for LinkedIn is
+ * the first to get here, and has to show that the tests which call this
+ * fail for an adapter that sends a second time.
+ */
+function expectUncertain(error: unknown) {
+  if (!(error instanceof ProviderError)) throw error;
+  expect(error.kind).toBe("uncertain");
+}
+
+/**
  * Runs the specification for the provider that `setup` returns. `setup` is
  * called for every test: a simulated harness makes a new world each time,
  * so that tests cannot disturb each other.
@@ -192,6 +206,33 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
       );
       return { progress, key, content };
     }
+
+    /**
+     * A runner for a workflow that does not give up: it runs a step again
+     * for as long as the step asks it to, two hours later each time. That
+     * is longer than any network remembers a request: Mastodon keeps a key
+     * for an hour, LinkedIn tells a repeated post for ten minutes.
+     */
+    const patientRunner = (
+      harness: Harness,
+      simulation: Simulation,
+      retried: (error: ProviderError) => void,
+    ): PublishRunner => ({
+      sleep: (_name, seconds) => harness.sleep(seconds),
+      run: async (_name, step) => {
+        // A provider that asks again and again must not hang the test.
+        for (let run = 1; ; run++) {
+          try {
+            return await step();
+          } catch (error) {
+            if (!(error instanceof ProviderError)) throw error;
+            if (error.kind !== "retry" || run === 10) throw error;
+            simulation.advance(2 * 60 * 60 * 1000);
+            retried(error);
+          }
+        }
+      },
+    });
 
     /**
      * A text that is `characters` long, as the network of `limits` counts.
@@ -397,6 +438,11 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
             sleep: (_name, seconds) => harness.sleep(seconds),
             run: async (_name, step) => {
               const next = recorded(await step());
+              // The progress is stored where a secret must not be, with
+              // the adapter's own notes in it.
+              for (const secret of harness.secrets) {
+                expect(JSON.stringify(next)).not.toContain(secret);
+              }
               // A part that was reported stays as it was reported.
               expect(next.parts.slice(0, last?.parts.length ?? 0)).toEqual(
                 last?.parts ?? [],
@@ -536,36 +582,82 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
         }
       });
 
-      it("publishes nothing twice when the answer to a step is lost", async ({
+      it("publishes nothing twice when an answer is lost and the step is run again hours later", async ({
         skip,
       }) => {
         const harness = await setup();
         const { simulation } = harness;
         if (!simulation) return skip("Losing an answer takes a simulation");
-        const text = `${harness.tag} A post whose first answer is lost`;
-        simulation.arm("lost-response");
+        const texts = ["first", "second"].map(
+          (part) =>
+            `${harness.tag} The ${part} part of a thread whose answers are lost`,
+        );
+        // The network carries out every request that publishes a post of
+        // the thread, and the answer to each is lost.
+        const posts = harness.thread === "chain" ? texts.length : 1;
         const errors: ProviderError[] = [];
-        const { progress } = await publishParts(harness, [text], {
-          runner: {
-            sleep: (_name, seconds) => harness.sleep(seconds),
-            run: async (_name, step) => {
-              for (;;) {
-                try {
-                  return await step();
-                } catch (error) {
-                  if (!(error instanceof ProviderError)) throw error;
-                  if (error.kind !== "retry") throw error;
-                  errors.push(error);
-                }
-              }
-            },
-          },
-        });
-        // The step failed once, in a way that asks for another try.
+        simulation.arm("lost-response");
+        let progress: PublishProgress;
+        try {
+          ({ progress } = await publishParts(harness, texts, {
+            runner: patientRunner(harness, simulation, (error) => {
+              errors.push(error);
+              // For the post after this one. The step that is run again now
+              // has nothing to send, so it must leave this fault armed.
+              if (errors.length < posts) simulation.arm("lost-response");
+            }),
+          }));
+        } catch (error) {
+          expectUncertain(error);
+          expect(simulation.published()).toHaveLength(1);
+          return;
+        }
+        // Each step that published failed once, in a way that asks for
+        // another try.
+        expect(errors).toHaveLength(posts);
+        expect(progress.done).toBe(true);
+        expect(progress.parts).toHaveLength(texts.length);
+        // Every post is there once.
+        if (harness.thread === "chain") {
+          expect(simulation.published()).toEqual(texts);
+        } else {
+          expect(simulation.published()).toHaveLength(1);
+        }
+      });
+
+      it("publishes once what never arrived, also when an older post reads the same", async ({
+        skip,
+      }) => {
+        const harness = await setup();
+        const { simulation } = harness;
+        if (!simulation) return skip("Arming a fault takes a simulation");
+        const text = `${harness.tag} A post that is published again on purpose`;
+        const older = await publishParts(harness, [text]);
+        // Long enough for a network to take the second for a post of its
+        // own and not for a repetition of the first.
+        simulation.advance(24 * 60 * 60 * 1000);
+
+        // The network fails before it publishes anything.
+        simulation.arm("server-error");
+        const errors: ProviderError[] = [];
+        let progress: PublishProgress;
+        try {
+          ({ progress } = await publishParts(harness, [text], {
+            runner: patientRunner(harness, simulation, (error) => {
+              errors.push(error);
+            }),
+          }));
+        } catch (error) {
+          expectUncertain(error);
+          expect(simulation.published()).toEqual([text]);
+          return;
+        }
         expect(errors).toHaveLength(1);
         expect(progress.done).toBe(true);
-        // The network carried out both requests and has one post.
-        expect(simulation.published()).toEqual([text]);
+        // A second delivery is a second post. The step that was run again
+        // found nothing of its own, and did not take the older post for it.
+        expect(progress.parts[0]?.id).not.toBe(older.progress.parts[0]?.id);
+        expect(simulation.published()).toEqual([text, text]);
       });
     });
 
@@ -643,6 +735,10 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
         if (!simulation) return skip("Arming a fault takes a simulation");
         simulation.arm("server-error");
         const error = await failure(() => publishParts(harness, ["Down"]));
+        // Every provider so far can find out later whether the network
+        // published before it failed. One that cannot has to answer
+        // `uncertain` here, which the pull request for the first such
+        // network, LinkedIn, adds to this test.
         expect(error.kind).toBe("retry");
         expect(simulation.published()).toEqual([]);
       });

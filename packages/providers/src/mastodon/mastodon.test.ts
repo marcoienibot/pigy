@@ -1,4 +1,4 @@
-import type { Fetch } from "@pigy/core";
+import type { Fetch, PostContent } from "@pigy/core";
 import {
   createMastodonSimulator,
   type Instance,
@@ -7,6 +7,8 @@ import { answerConsent, createWorld, feed } from "@pigy/simulators/world";
 import { describe, expect, it } from "vitest";
 import { memoryAppStore } from "../../test/mastodon-apps.ts";
 import { ProviderError } from "../errors.ts";
+import type { PublishProgress } from "../provider.ts";
+import { publish } from "../publish.ts";
 import {
   createMastodonProvider,
   type MastodonCredentials,
@@ -89,6 +91,54 @@ async function failure(action: () => Promise<unknown>) {
 }
 
 const hello = { parts: [{ text: "Hello" }] };
+
+/** Whether `request` asks the instance to post a status. */
+const posts = (request: Request) =>
+  request.method === "POST" && request.url.endsWith("/api/v1/statuses");
+
+/**
+ * Publishes `content` step by step, the way a workflow does, and returns
+ * the final progress. `from` is the progress to start from.
+ */
+function publishAll(
+  { provider }: Setup,
+  credentials: MastodonCredentials,
+  content: PostContent,
+  { key = "target-1", from = null as PublishProgress | null } = {},
+) {
+  return publish(
+    provider,
+    {
+      credentials: async () => credentials,
+      refresh: async () => {
+        throw new Error("Mastodon has nothing to refresh");
+      },
+      content,
+      key,
+    },
+    { run: (_name, step) => step(), sleep: async () => {} },
+    from,
+  );
+}
+
+/** Posts a status as the account itself would, from an app of Mastodon's. */
+async function postByHand(
+  { simulator }: Setup,
+  { accessToken }: MastodonCredentials,
+  status: string,
+  replyTo?: string,
+) {
+  const response = await simulator.fetch(`https://${domain}/api/v1/statuses`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ status, in_reply_to_id: replyTo }),
+  });
+  expect(response.status).toBe(200);
+  return ((await response.json()) as { id: string }).id;
+}
 
 describe("beginning a connection", () => {
   it("sends the person to the instance, with PKCE and the narrowest scopes", async () => {
@@ -567,11 +617,8 @@ describe("publishing", () => {
   it("sends the text as it is, and leaves the visibility to the account", async () => {
     const sim = setup();
     const { credentials } = await connect(sim);
-    await sim.provider.publishStep({
-      credentials,
-      content: { parts: [{ text: "  Hello\n\nworld  " }] },
-      key: "target-1",
-      progress: null,
+    await publishAll(sim, credentials, {
+      parts: [{ text: "  Hello\n\nworld  " }],
     });
     const request = sim.requests.at(-1);
     expect(request?.headers.get("Authorization")).toBe(
@@ -583,49 +630,40 @@ describe("publishing", () => {
   it("posts with the visibility it was made with", async () => {
     const sim = setup({}, { visibility: "direct" });
     const { credentials } = await connect(sim);
-    await sim.provider.publishStep({
-      credentials,
-      content: hello,
-      key: "target-1",
-      progress: null,
-    });
+    await publishAll(sim, credentials, hello);
     expect(await sim.requests.at(-1)?.json()).toEqual({
       status: "Hello",
       visibility: "direct",
     });
   });
 
-  it("keys every part of every delivery differently, and the same on a new attempt", async () => {
+  it("keys every part of every delivery differently, and the same when a step is run again", async () => {
     const sim = setup();
     const { credentials } = await connect(sim);
     const content = { parts: [{ text: "One" }, { text: "Two" }] };
-    const keyOf = async (key: string, parts: number) => {
-      await sim.provider.publishStep({
-        credentials,
-        content,
-        key,
-        progress:
-          parts === 0
-            ? null
-            : {
-                parts: [{ id: firstId, url: null }],
-                done: false,
-                waitSeconds: 0,
-                state: null,
-              },
-      });
-      return sim.requests.at(-1)?.headers.get("Idempotency-Key");
-    };
-    let firstId = "";
-    const first = await keyOf("target-1", 0);
-    firstId = feed(sim.world)[0]?.post.id ?? "";
-    expect(await keyOf("target-1", 0)).toBe(first);
-    expect(await keyOf("target-1", 1)).not.toBe(first);
-    expect(await keyOf("target-2", 0)).not.toBe(first);
+    const keys = () =>
+      sim.requests
+        .filter(posts)
+        .map((request) => request.headers.get("Idempotency-Key"));
+
+    // The instance is down for the first request to post, so the step that
+    // made it is run again.
+    sim.hooks.intercept = (request) =>
+      posts(request) ? new Response("Bad gateway", { status: 502 }) : undefined;
+    const down = await failure(() => publishAll(sim, credentials, content));
+    expect(down.kind).toBe("retry");
+    delete sim.hooks.intercept;
+    await publishAll(sim, credentials, content);
+    await publishAll(sim, credentials, content, { key: "target-2" });
+
+    const [failed, one, two, otherOne, otherTwo] = keys();
+    expect(one).toBe(failed);
+    expect(new Set([one, two, otherOne, otherTwo]).size).toBe(4);
     // Whatever the caller's key, the header is one that can be sent.
-    expect(await keyOf("Schlüssel\n1 \u{1F511}", 0)).toMatch(
-      /^[A-Za-z0-9_-]{43}$/,
-    );
+    await publishAll(sim, credentials, hello, {
+      key: "Schlüssel\n1 \u{1F511}",
+    });
+    expect(keys().at(-1)).toMatch(/^[A-Za-z0-9_-]{43}$/);
   });
 
   it("makes no request when every part is published", async () => {
@@ -647,7 +685,11 @@ describe("publishing", () => {
     expect(sim.requests).toHaveLength(before);
   });
 
-  it("refuses progress that it cannot read", async () => {
+  it.each([
+    [{ parts: "none" }],
+    // Notes that are not its own, as another adapter might have left them.
+    [{ parts: [], done: false, waitSeconds: 0, state: "prepared" }],
+  ])("refuses progress that it cannot read: %j", async (progress) => {
     const sim = setup();
     const { credentials } = await connect(sim);
     const error = await failure(() =>
@@ -655,7 +697,7 @@ describe("publishing", () => {
         credentials,
         content: hello,
         key: "target-1",
-        progress: { parts: "none" } as never,
+        progress: progress as never,
       }),
     );
     expect(error.kind).toBe("fail");
@@ -666,22 +708,272 @@ describe("publishing", () => {
     const sim = setup();
     const { credentials } = await connect(sim);
     const error = await failure(() =>
-      sim.provider.publishStep({
+      publishAll(
+        sim,
         credentials,
-        content: { parts: [{ text: "One" }, { text: "Two" }] },
-        key: "target-1",
-        progress: {
-          parts: [{ id: "123", url: null }],
-          done: false,
-          waitSeconds: 0,
-          state: null,
+        { parts: [{ text: "One" }, { text: "Two" }] },
+        {
+          from: {
+            parts: [{ id: "123", url: null }],
+            done: false,
+            waitSeconds: 0,
+            state: null,
+          },
         },
-      }),
+      ),
     );
     expect(error).toMatchObject({ kind: "fail", status: 404 });
     expect(error.message).toBe(
       "mastodon.example refused the request: The post you are trying to reply to does not appear to exist.",
     );
+  });
+});
+
+describe("a step that may have posted already", () => {
+  const twoHours = 2 * 60 * 60 * 1000;
+  const texts = (sim: Setup) => feed(sim.world).map(({ post }) => post.text);
+
+  /**
+   * A post on its way, with the progress that is recorded for it. A step
+   * that fails leaves the record as it was, so the next call runs the same
+   * step again, the way a workflow does.
+   */
+  function delivery(
+    sim: Setup,
+    credentials: MastodonCredentials,
+    content: PostContent,
+  ) {
+    let progress: PublishProgress | null = null;
+    const step = async () => {
+      progress = await sim.provider.publishStep({
+        credentials,
+        content,
+        key: "target-1",
+        progress,
+      });
+      return progress;
+    };
+    return {
+      /** Runs one step. */
+      step,
+      /** Runs steps until one of them has published a part. */
+      async part() {
+        const before = progress?.parts.length ?? 0;
+        for (let run = 0; run < 10; run++) {
+          const next = await step();
+          if (next.parts.length > before) return next;
+        }
+        throw new Error("Ten steps have published nothing");
+      },
+    };
+  }
+
+  /** Breaks the connection of the next request to post, before it arrives. */
+  function loseNextRequest(sim: Setup) {
+    sim.hooks.intercept = (request) => {
+      if (!posts(request)) return undefined;
+      delete sim.hooks.intercept;
+      throw new TypeError("fetch failed");
+    };
+  }
+
+  it("sends nothing in its first step, and notes where the account stands", async () => {
+    const sim = setup();
+    const { credentials } = await connect(sim);
+    const requests = sim.requests.length;
+    expect(await delivery(sim, credentials, hello).step()).toEqual({
+      parts: [],
+      done: false,
+      waitSeconds: 0,
+      // An account without a status has none to look after.
+      state: { accountId: sim.ada.id, after: null },
+    });
+    // Two questions, and nothing that changes anything.
+    expect(sim.paths().slice(requests)).toEqual([
+      "GET /api/v1/accounts/verify_credentials",
+      `GET /api/v1/accounts/${sim.ada.id}/statuses`,
+    ]);
+
+    await postByHand(sim, credentials, "The older one");
+    const newest = await postByHand(sim, credentials, "The newest one");
+    expect((await delivery(sim, credentials, hello).step()).state).toEqual({
+      accountId: sim.ada.id,
+      after: newest,
+    });
+    expect(sim.requests.filter(posts)).toEqual([]);
+  });
+
+  it("takes the status that an earlier run posted, and posts no second", async () => {
+    const sim = setup();
+    const { credentials } = await connect(sim);
+    const post = delivery(sim, credentials, hello);
+    await post.step();
+    sim.simulator.arm({ kind: "lost-response", operation: "publish" });
+    expect((await failure(post.step)).kind).toBe("retry");
+    // Long after Mastodon has forgotten the key of the first request.
+    sim.world.advance(twoHours);
+
+    const progress = await post.step();
+    const [status] = feed(sim.world);
+    expect(progress).toMatchObject({
+      parts: [{ id: status?.post.id, url: status?.post.url }],
+      done: true,
+    });
+    expect(texts(sim)).toEqual(["Hello"]);
+    // It asked for the status, not for another one.
+    expect(sim.requests.filter(posts)).toHaveLength(1);
+  });
+
+  it("posts what never arrived", async () => {
+    const sim = setup();
+    const { credentials } = await connect(sim);
+    const post = delivery(sim, credentials, hello);
+    await post.step();
+    // To the adapter this looks the same as an answer that was lost.
+    loseNextRequest(sim);
+    expect((await failure(post.step)).kind).toBe("retry");
+    sim.world.advance(twoHours);
+
+    expect((await post.step()).done).toBe(true);
+    expect(texts(sim)).toEqual(["Hello"]);
+  });
+
+  it("takes no status for the first part that differs in what it sends", async () => {
+    const sim = setup();
+    const { credentials } = await connect(sim);
+    // The same text, from before this post was begun.
+    await postByHand(sim, credentials, "Hello");
+    const post = delivery(sim, credentials, hello);
+    await post.step();
+    // Since then: another text, and the same text as a reply.
+    const other = await postByHand(sim, credentials, "Something else");
+    await postByHand(sim, credentials, "Hello", other);
+
+    const { parts } = await post.part();
+    expect(texts(sim)).toEqual(["Hello", "Something else", "Hello", "Hello"]);
+    // The part is the status that this step posted, the last of them.
+    expect(parts[0]?.id).toBe(feed(sim.world).at(-1)?.post.id);
+  });
+
+  it("takes a status that reads the same in the same place and is newer than the post", async () => {
+    const sim = setup();
+    const { credentials } = await connect(sim);
+    const post = delivery(sim, credentials, hello);
+    await post.step();
+    // The person has posted it by hand in the meantime. A second one next
+    // to it would be a duplicate to everybody who reads it.
+    const byHand = await postByHand(sim, credentials, " Hello\n");
+
+    const { parts } = await post.part();
+    expect(parts[0]?.id).toBe(byHand);
+    expect(texts(sim)).toEqual(["Hello"]);
+  });
+
+  it("takes no reply that somebody wrote by hand for the next part of a thread", async () => {
+    const sim = setup();
+    const { credentials } = await connect(sim);
+    const post = delivery(sim, credentials, {
+      parts: [{ text: "One" }, { text: "Two" }],
+    });
+    const one = (await post.part()).parts[0]?.id ?? "";
+    await postByHand(sim, credentials, "A correction", one);
+
+    const { parts, done } = await post.part();
+    expect(done).toBe(true);
+    expect(texts(sim)).toEqual(["One", "A correction", "Two"]);
+    const two = feed(sim.world).at(-1)?.post;
+    expect(parts[1]?.id).toBe(two?.id);
+    expect(two?.replyToId).toBe(one);
+  });
+
+  it("looks through one list of statuses in a step, and goes on in the next", async () => {
+    const sim = setup();
+    const { credentials } = await connect(sim);
+    const post = delivery(sim, credentials, hello);
+    await post.step();
+    // One more than Mastodon lists at once.
+    const since: string[] = [];
+    for (let number = 1; number <= 41; number++) {
+      since.push(
+        await postByHand(sim, credentials, `Another status, number ${number}`),
+      );
+    }
+
+    // The first forty are not the part. Nothing is posted yet: the part
+    // may be behind them.
+    expect(await post.step()).toEqual({
+      parts: [],
+      done: false,
+      waitSeconds: 0,
+      state: { accountId: sim.ada.id, after: since[39] },
+    });
+    expect((await post.step()).state).toMatchObject({ after: since[40] });
+    expect(sim.requests.filter(posts)).toEqual([]);
+    // With nothing left to look at, the part is posted.
+    expect((await post.step()).done).toBe(true);
+    expect(texts(sim).at(-1)).toBe("Hello");
+  });
+
+  it("finds what it posted behind many statuses that are newer than the post", async () => {
+    const sim = setup();
+    const { credentials } = await connect(sim);
+    const post = delivery(sim, credentials, hello);
+    await post.step();
+    // The first request never arrives.
+    loseNextRequest(sim);
+    await failure(post.step);
+    for (let number = 1; number <= 45; number++) {
+      await postByHand(sim, credentials, `Another status, number ${number}`);
+    }
+    // The second arrives, behind all of those, and its answer is lost.
+    sim.simulator.arm({ kind: "lost-response", operation: "publish" });
+    expect((await failure(post.part)).kind).toBe("retry");
+    sim.world.advance(twoHours);
+
+    const requests = sim.requests.length;
+    const { parts } = await post.step();
+    expect(parts[0]?.id).toBe(feed(sim.world).at(-1)?.post.id);
+    expect(texts(sim).filter((text) => text === "Hello")).toHaveLength(1);
+    // It went on from where the steps before it had looked to, and did
+    // not read the 45 again.
+    expect(sim.paths().slice(requests)).toEqual([
+      `GET /api/v1/accounts/${sim.ada.id}/statuses`,
+      `GET /api/v1/statuses/${parts[0]?.id}/source`,
+    ]);
+  });
+
+  it("goes on when a status is deleted while it looks", async () => {
+    const sim = setup();
+    const { credentials } = await connect(sim);
+    const post = delivery(sim, credentials, hello);
+    await post.step();
+    await postByHand(sim, credentials, "Hello");
+    // Listed a moment ago, and gone when its text is asked for.
+    sim.hooks.intercept = (request) =>
+      request.url.endsWith("/source")
+        ? Response.json({ error: "Record not found" }, { status: 404 })
+        : undefined;
+    expect((await post.part()).done).toBe(true);
+    expect(texts(sim)).toEqual(["Hello", "Hello"]);
+  });
+
+  it("stops looking at a server that lists the same statuses again", async () => {
+    const sim = setup();
+    const { credentials } = await connect(sim);
+    await postByHand(sim, credentials, "From before");
+    const post = delivery(sim, credentials, hello);
+    await post.step();
+    // A server that speaks Mastodon's API and does not know `min_id`: it
+    // lists the newest statuses, whatever it is asked to begin after.
+    sim.hooks.intercept = (request) => {
+      const url = new URL(request.url);
+      if (!url.searchParams.has("min_id")) return undefined;
+      url.searchParams.delete("min_id");
+      return sim.simulator.fetch(new Request(url, request));
+    };
+    // It does not take the list for news again and again: it posts.
+    expect((await post.step()).done).toBe(true);
+    expect(texts(sim)).toEqual(["From before", "Hello"]);
   });
 });
 
@@ -691,11 +983,8 @@ describe("reading a post", () => {
     const { credentials } = await connect(sim);
     const text =
       '1 < 2 & "quotes"\nSecond line: https://example.com/a/path/that/is/longer/than/thirty/characters?x=1\n\nNew paragraph';
-    const { parts } = await sim.provider.publishStep({
-      credentials,
-      content: { parts: [{ text }] },
-      key: "target-1",
-      progress: null,
+    const { parts } = await publishAll(sim, credentials, {
+      parts: [{ text }],
     });
     expect(
       await sim.provider.readPost?.(credentials, parts[0]?.id ?? ""),
@@ -725,19 +1014,16 @@ describe("reading a post", () => {
 });
 
 describe("what an answer means", () => {
-  /** Publishes against an instance that answers with `response`. */
+  /**
+   * Publishes against an instance that answers the request to post with
+   * `response`.
+   */
   async function publishAgainst(response: () => Response) {
     const sim = setup();
     const { credentials } = await connect(sim);
-    sim.hooks.intercept = response;
-    const error = await failure(() =>
-      sim.provider.publishStep({
-        credentials,
-        content: hello,
-        key: "target-1",
-        progress: null,
-      }),
-    );
+    sim.hooks.intercept = (request) =>
+      posts(request) ? response() : undefined;
+    const error = await failure(() => publishAll(sim, credentials, hello));
     return { error, credentials };
   }
 
@@ -745,12 +1031,7 @@ describe("what an answer means", () => {
     const sim = setup();
     const { credentials } = await connect(sim);
     const error = await failure(() =>
-      sim.provider.publishStep({
-        credentials,
-        content: { parts: [{ text: " " }] },
-        key: "target-1",
-        progress: null,
-      }),
+      publishAll(sim, credentials, { parts: [{ text: " " }] }),
     );
     expect(error).toMatchObject({ kind: "fail", status: 422 });
     expect(error.message).toBe(

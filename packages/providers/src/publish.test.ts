@@ -329,7 +329,7 @@ describe("publish, when the network refuses the credentials before their time", 
 
   it("refreshes for no other failure", async () => {
     // `job` fails the test if it is asked to refresh.
-    for (const kind of ["retry", "fail", "reconnect"] as const) {
+    for (const kind of ["retry", "fail", "reconnect", "uncertain"] as const) {
       const failure = new ProviderError(kind, "No");
       const provider = {
         publishStep: async () => {

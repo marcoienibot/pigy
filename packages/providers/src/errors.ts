@@ -11,10 +11,20 @@
  * - `reconnect`: the network no longer accepts the credentials, and
  *   nothing but the person can change that. They have to connect the
  *   account again.
+ * - `uncertain`: a post may or may not have been published, and the
+ *   provider has no way to find out. Do not try again. A person has to
+ *   look at the account, and only they can say whether to publish once
+ *   more. Only `publishStep` fails this way, and `Provider.publishStep`
+ *   says when.
  *
  * A caller that switches over the kinds must name every one of them.
  */
-export type ProviderErrorKind = "retry" | "refresh" | "fail" | "reconnect";
+export type ProviderErrorKind =
+  | "retry"
+  | "refresh"
+  | "fail"
+  | "reconnect"
+  | "uncertain";
 
 /**
  * Every failure of a provider. Anything else that a provider throws is a

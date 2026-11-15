@@ -1,4 +1,9 @@
-import type { Clock, Fetch, Limits } from "@pigy/core";
+import {
+  type Clock,
+  type Fetch,
+  type Limits,
+  stripMastodonText,
+} from "@pigy/core";
 import { z } from "zod";
 import { ProviderError, quotable } from "../errors.ts";
 import {
@@ -24,7 +29,9 @@ export { parseInstanceDomain } from "./domain.ts";
 /**
  * The adapter for Mastodon, written from https://docs.joinmastodon.org:
  * methods/apps, methods/oauth, methods/instance, methods/accounts,
- * methods/statuses, api/rate-limits and entities/Error.
+ * methods/statuses, api/rate-limits and entities/Error. How Mastodon
+ * treats a repeated request is from its code,
+ * app/services/post_status_service.rb.
  *
  * Mastodon is many servers. An account lives on one, its instance, and
  * every request goes to that instance. pigy is not known to an instance
@@ -155,6 +162,30 @@ const statusSchema = z.object({
   content: z.string(),
   in_reply_to_id: z.string().nullish(),
 });
+
+/** entities/StatusSource. */
+const sourceSchema = z.object({ text: z.string() });
+
+/**
+ * What a step of a post notes for the steps after it. It is stored with the
+ * progress, as it is, so there is no secret in it.
+ */
+const notesSchema = z.strictObject({
+  /** The account that posts, by its ID on the instance. */
+  accountId: z.string().min(1),
+  /**
+   * The status after which the next part is looked for, or null if the
+   * account had none: none of the account's statuses up to this one is the
+   * next part. It starts as the newest status that the account had before
+   * anything was sent, and moves on to each part that is published.
+   */
+  after: z.string().min(1).nullable(),
+});
+
+type Notes = z.infer<typeof notesSchema>;
+
+// The most statuses that Mastodon lists in one answer.
+const listLength = 40;
 
 // What pigy asks an account for, besides seeing who it is. `write:media`
 // is for the media that pigy does not post yet: a registration cannot gain
@@ -437,6 +468,107 @@ export function createMastodonProvider({
     );
   }
 
+  /** Statuses of an account, newest first: methods/accounts, "statuses". */
+  async function listStatuses(
+    { domain, accessToken }: MastodonCredentials,
+    accountId: string,
+    query: Record<string, string>,
+  ) {
+    return understood(
+      z.array(statusSchema),
+      await call(
+        domain,
+        `/api/v1/accounts/${encodeURIComponent(accountId)}/statuses?${new URLSearchParams(query)}`,
+        { token: accessToken },
+      ),
+      domain,
+    );
+  }
+
+  /** The text of a status as it was written, or null if the status is gone. */
+  async function sourceText(
+    { domain, accessToken }: MastodonCredentials,
+    id: string,
+  ): Promise<string | null> {
+    try {
+      return understood(
+        sourceSchema,
+        await call(
+          domain,
+          `/api/v1/statuses/${encodeURIComponent(id)}/source`,
+          {
+            token: accessToken,
+          },
+        ),
+        domain,
+      ).text;
+    } catch (error) {
+      if (error instanceof ProviderError && error.status === 404) return null;
+      throw error;
+    }
+  }
+
+  /**
+   * Looks for the status that an earlier run of a step has posted for a
+   * part. A step does this before it posts, because it cannot know whether
+   * it is the first run: an earlier one may have posted the part and lost
+   * the answer.
+   *
+   * The status is the one that fits in everything a step sends:
+   *
+   * - It is the account's own, and newer than what the notes name: the
+   *   part before this one, or for the first part the newest status that
+   *   the account had before anything was sent. So nothing from before
+   *   this delivery is taken for it, however alike.
+   * - It replies to the part before this one, or to nothing if this is the
+   *   first.
+   * - Its text is the text of the part, as Mastodon stores it. That takes
+   *   the source of the status: its HTML is not the text, a mention has no
+   *   domain there.
+   *
+   * So a status that reads differently, or stands elsewhere, is never taken
+   * for the one that is looked for. What can be taken for it is a status
+   * with the same text in the same place that is newer than this delivery:
+   * the person posted the same by hand since, or a second delivery of the
+   * same text went to the account at the same time. Posting next to that
+   * would make two statuses that nobody can tell apart, so taking it is
+   * right too. Once pigy posts media, a status has to fit in that as well.
+   *
+   * Not found is a status that somebody has edited or deleted since. The
+   * part is then posted again.
+   *
+   * One call reads one list of statuses. It returns the status, or the
+   * status up to which it has looked in vain, or null when there is
+   * nothing left to look at.
+   */
+  async function findPosted(
+    credentials: MastodonCredentials,
+    { accountId, after }: Notes,
+    replyTo: string | null,
+    text: string,
+  ) {
+    const stored = stripMastodonText(text);
+    // `min_id` lists the statuses that follow one, where `since_id` would
+    // list the newest. "0" is below every ID: the account had no status.
+    const cursor = after ?? "0";
+    const statuses = await listStatuses(credentials, accountId, {
+      min_id: cursor,
+      limit: String(listLength),
+      exclude_reblogs: "true",
+    });
+    const [newest] = statuses;
+    // The end is an empty list, or the same list again from a server that
+    // does not know `min_id`.
+    if (!newest || newest.id === cursor) return null;
+    for (const status of statuses.reverse()) {
+      if ((status.in_reply_to_id ?? null) !== replyTo) continue;
+      if ((await sourceText(credentials, status.id)) === stored) {
+        return { status };
+      }
+    }
+    return { lookedUpTo: newest.id };
+  }
+
   function parseCredentials(credentials: Json): MastodonCredentials {
     const parsed = credentialsSchema.safeParse(credentials);
     if (
@@ -637,52 +769,96 @@ export function createMastodonProvider({
     },
 
     async publishStep({ credentials, content, key, progress }) {
-      const { domain, accessToken } = parseCredentials(credentials);
+      const access = parseCredentials(credentials);
+      const { domain, accessToken } = access;
       const recorded =
         progress === null ? null : publishProgressSchema.safeParse(progress);
-      if (recorded && !recorded.success) {
+      const state = recorded?.data?.state ?? null;
+      const notes = state === null ? null : notesSchema.safeParse(state).data;
+      if ((recorded && !recorded.success) || notes === undefined) {
         throw new ProviderError(
           "fail",
           "pigy cannot read how far it had come with this post.",
         );
       }
       const parts = recorded?.data.parts ?? [];
-      const done = (published: PublishProgress["parts"]): PublishProgress => ({
+      const stepped = (
+        published: PublishProgress["parts"],
+        noted: Notes | null,
+      ): PublishProgress => ({
         parts: published,
         done: published.length >= content.parts.length,
         waitSeconds: 0,
-        state: null,
+        state: noted,
       });
 
-      // Each step posts the next part, as a reply to the one before.
       const index = parts.length;
       const part = content.parts[index];
-      if (!part) return done(parts);
-      const status = understood(
-        statusSchema,
-        await call(domain, "/api/v1/statuses", {
-          method: "POST",
-          token: accessToken,
-          headers: {
-            // Mastodon answers a second request with the same key with the
-            // status that the first one made, for an hour. That is what
-            // makes a step safe to run again. The key is hashed, so that it
-            // is a valid header whatever the caller's key, and tells the
-            // instance nothing.
-            "Idempotency-Key": base64Url(await sha256(`${key}\n${index}`)),
-          },
-          json: {
-            status: part.text,
-            ...(index > 0 && { in_reply_to_id: parts[index - 1]?.id }),
-            ...(visibility && { visibility }),
-          },
-        }),
-        domain,
+      if (!part) return stepped(parts, notes);
+
+      // The first step of a post sends nothing. It notes whose statuses the
+      // steps after it look through, and which of them were there before
+      // the post. That is recorded before anything is sent, so that a step
+      // which is run again, however much later, can tell what it posted.
+      const replyTo = parts.at(-1)?.id ?? null;
+      if (!notes) {
+        const account = understood(
+          accountSchema,
+          await call(domain, "/api/v1/accounts/verify_credentials", {
+            token: accessToken,
+          }),
+          domain,
+        );
+        const [newest] = await listStatuses(access, account.id, { limit: "1" });
+        return stepped(parts, {
+          accountId: account.id,
+          after: replyTo ?? newest?.id ?? null,
+        });
+      }
+
+      // Every step after it looks for the next part among what the account
+      // has posted since. Where there is more of that than one list holds,
+      // the step notes how far it has looked, and the next one goes on
+      // from there. The step that gets to the end without finding the part
+      // posts it, as a reply to the one before.
+      const looked = await findPosted(access, notes, replyTo, part.text);
+      if (looked && "lookedUpTo" in looked) {
+        return stepped(parts, { ...notes, after: looked.lookedUpTo });
+      }
+      const status =
+        looked?.status ??
+        understood(
+          statusSchema,
+          await call(domain, "/api/v1/statuses", {
+            method: "POST",
+            token: accessToken,
+            headers: {
+              // Mastodon answers a second request with the same key with
+              // the status that the first one made. It keeps a key for an
+              // hour, and only once the status is saved, so the key is not
+              // what makes a step safe to run again: looking first is. The
+              // key is a second guard for that hour, should a look miss a
+              // status that is there. It is hashed, so that it is a valid
+              // header whatever the caller's key, and tells the instance
+              // nothing.
+              "Idempotency-Key": base64Url(await sha256(`${key}\n${index}`)),
+            },
+            json: {
+              status: part.text,
+              ...(replyTo !== null && { in_reply_to_id: replyTo }),
+              ...(visibility && { visibility }),
+            },
+          }),
+          domain,
+        );
+      return stepped(
+        [
+          ...parts,
+          { id: status.id, url: httpsUrl(status.url) ?? httpsUrl(status.uri) },
+        ],
+        // The part after this one is newer than this one.
+        { ...notes, after: status.id },
       );
-      return done([
-        ...parts,
-        { id: status.id, url: httpsUrl(status.url) ?? httpsUrl(status.uri) },
-      ]);
     },
 
     async readPost(credentials, id) {

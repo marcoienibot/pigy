@@ -178,9 +178,9 @@ Notes that shape the design:
 | Connecting | `beginConnect` takes pigy's callback address and, on networks with no single place to sign in, what the person typed to say where their account lives. It returns the address to send the browser to, the `state` that the callback will carry, and `pending`: what to keep under that state until then. `completeConnect` takes `pending` and the parameters of the callback and returns the account for display (ID, handle, name, avatar, profile link) and the access. It is called once per callback and fails for good whatever went wrong: the code in a callback is good for one exchange, so the person begins again |
 | Access | The credentials, opaque and stored encrypted, with two times: `refreshAt`, when to call `refresh`, and `expiresAt`, when the access ends unless it is refreshed. Either is null where it does not apply. Only adapters of networks that can renew an access have `refresh`. It is called by a timer when `refreshAt` comes, and at once when a method fails with `refresh`, one refresh at a time per channel. `disconnect` gives the access back where the network has a way |
 | Limits | `limits` asks what the account may post. The answer is data that names its network, defined in `packages/core` with the counting that goes with it: `countCharacters` and `validateContent` are pure and run in the browser too. Adapters do not validate. They send what they are given, and the network is the judge |
-| Publishing | `publishStep` takes the content, a key that names the delivery, and the progress that the step before returned. It makes at most one request that changes something and returns the new progress: the parts that are published, each with its ID and link, whether the post is done, how long to wait before the next step, and the adapter's own notes. Section 8 has the rules |
+| Publishing | `publishStep` takes the content, a key that names the delivery, and the progress that the step before returned. It makes at most one request that changes something and returns the new progress: the parts that are published, each with its ID and link, whether the post is done, how long to wait before the next step, and the adapter's own notes. The progress is stored as it is, so it holds no secret. A step can be run again at any time without publishing a part twice. Section 8 has the rules |
 | Reading and deleting | `readPost` returns the text and what the post replies to, on networks that let pigy read. `deletePost` is fine with a post that is gone |
-| Errors | Every failure is a `ProviderError` with one of four kinds: `retry` (with the time the network named, if any), `refresh` (renew the credentials now, then try again), `fail` (with a message for the person) and `reconnect`. Messages may quote the network, without the secrets of the request |
+| Errors | Every failure is a `ProviderError` with one of five kinds: `retry` (with the time the network named, if any), `refresh` (renew the credentials now, then try again), `fail` (with a message for the person), `reconnect`, and `uncertain` (a post may or may not be published, and a person has to look). Messages may quote the network, without the secrets of the request |
 
 How the four networks map onto it. Mastodon is built. The other three columns are the design that the interface was checked against, for whoever builds them to check in turn:
 
@@ -196,11 +196,13 @@ How the four networks map onto it. Mastodon is built. The other three columns ar
 | `expiresAt` | None | None known | 60 days after issue | 60 days after the last refresh |
 | `disconnect` | Revokes the token | Revokes the tokens | To decide | Nothing to call |
 | `limits` | Read from the instance | Fixed: 300 graphemes | Fixed: 3000 | Fixed: 500 |
-| Steps of `publishStep` | One per part: post the status, as a reply to the part before | Two per part: choose the record key, then write the record with the references to the first and the previous part | One for the whole post: the parts joined | Per part: create a container, wait, publish it |
-| Adapter's notes between steps | None | The record key in use, and the reference of each part | None | The container in use |
+| Steps of `publishStep` | One that notes where the account's statuses stand, then one per part: look for the status, and post it if it is not there, as a reply to the part before. More steps that only look, where the account has posted more since than one list holds | Two per part: choose the record key, then write the record with the references to the first and the previous part | One for the whole post: the parts joined | Per part: create a container, wait, publish it |
+| Adapter's notes between steps | The account's ID, and the status after which the next part is looked for | The record key in use, and the reference of each part | None | The container in use |
+| A step that is run again | Finds the status it posted among the account's own, or posts it | Writes the record under the same key | Sends again. It cannot look | Publishes the same container |
 | `readPost` | Yes | Yes | No: reading takes a permission that LinkedIn restricts | Yes |
 | What asks for `refresh` | Nothing | An access token that the server refuses | Nothing | A token that Threads refuses as expired |
 | What asks for `reconnect` | 401, a missing scope | A refresh that is refused | 401 | An invalid token that cannot be refreshed |
+| What asks for `uncertain` | Nothing | Nothing | A request to post that ends without a clear answer | Nothing known |
 
 The handle of a LinkedIn account is its name: LinkedIn gives pigy no other. The time of a refresh for Threads, and how Bluesky tells a token that has expired from one that was revoked, are for those adapters to settle.
 
@@ -210,6 +212,8 @@ What was decided along the way, and why:
 - **Credentials carry what revoking them takes.** On Mastodon that is the registration the token was issued to. The stored registration of an instance can then change, or be lost, without breaking a channel.
 - **Optional methods for what a network cannot do.** `refresh` and `readPost` are missing from an adapter rather than present and failing, so the type says what a caller can count on.
 - **Scopes for media are asked for now.** A registration with a Mastodon instance cannot gain a scope later. Asking for `write:media` in phase 3 spares everybody a second connection in phase 7.
+- **A step asks the network what happened, and does not trust a window of time.** Mastodon remembers an idempotency key for an hour, LinkedIn tells a repeated post for about ten minutes. A person presses "Retry" hours after a post failed, so neither is a guarantee. Section 8 has what takes their place.
+- **`uncertain` is a kind of its own.** Where a network lets pigy neither look nor repeat a request safely, the truthful answer is that nobody knows whether the post is there. Sending again would be a guess, and so would giving up.
 - **`refresh` is a kind of its own.** A token can be refused before the time pigy has for it: the clocks differ, or a refresh for another post replaced it while this step ran. `reconnect` would mark a healthy channel as broken, and `retry` would hand the step the same token until the workflow gave up.
 - **A connection is never completed twice.** The code in a callback is good for one exchange. A failure halfway may have spent it, so asking the caller to try again would promise what cannot be kept.
 
@@ -275,8 +279,8 @@ Simulator state lives in a `SimWorldDO` per user, so one person's simulated post
 
 1. A post becomes due: the user chose "now", or the WorkspaceDO alarm fired.
 2. The WorkspaceDO marks the post `sending` and starts one `PublishWorkflow` per target, with an ID derived from the target so that a second start is a no-op.
-3. The workflow runs one durable step per remote call: upload each media item, publish part 1, publish part 2 as a reply, and so on. Each result is written back to the WorkspaceDO as it happens, so the UI shows progress live.
-4. Transient failures (rate limit, server error, timeout) retry with backoff. Permanent failures (invalid content, revoked access) stop, mark the target `error` with a readable reason, and send a notification.
+3. The workflow runs durable steps, each with at most one request that changes something on a network: upload each media item, publish part 1, publish part 2 as a reply, and so on. Each result is written back to the WorkspaceDO as it happens, so the UI shows progress live.
+4. Transient failures (rate limit, server error, timeout) retry with backoff. Permanent failures (invalid content, revoked access) stop, mark the target `error` with a readable reason, and send a notification. So does a failure that leaves open whether a post was published, on a network where pigy cannot find out: the reason then asks the person to look before they retry.
 5. If a thread fails midway, the sent parts stay recorded. "Retry" continues from the failed part and never re-posts a sent one.
 
 How the workflow and an adapter share the work:
@@ -289,18 +293,26 @@ How the workflow and an adapter share the work:
   - `refresh` has the WorkspaceDO renew the credentials at once, whatever `refreshAt` says, and runs the step again with the new ones. `publish` does this inside the same workflow step. If the stored credentials are no longer the ones that were refused, another refresh has replaced them, and they are used as they are. A refresh that the network refuses, or new credentials that are refused too, mean `reconnect`.
   - `fail` ends the target with the message.
   - `reconnect` ends it and marks the channel.
+  - `uncertain` ends it with the message, which asks the person to look at the account. The workflow does not run the step again by itself. If the person finds nothing and presses "Retry", the step runs again from the recorded progress, and sends.
+- Before a step is run again, the run before it has to be over: a request that is still on its way to a network, or still being worked on there, shows nowhere yet. So a target has one run at a time, and the backoff after `retry` starts at a minute, which is longer than an adapter waits for an answer.
 - A step may ask for a wait before the next one, which is how Threads gets the time to prepare a post, and how media will get the time to be processed.
 - The progress lists the published parts one by one. "Retry" starts a new run from the progress that was recorded, with the same key.
 - The key names the delivery: the ID of the target. It is what Mastodon's idempotency keys are made from, so publishing a post a second time on purpose takes a new key.
 
-Avoiding duplicates when a retry follows an uncertain result:
+Avoiding duplicates when a step is run again. A step may have reached the network with only its answer lost, and it may be run again a moment or days later. So an adapter does not rely on what a network remembers for a while. Before a request that publishes, the recorded progress holds what a later run needs to find out whether the request was carried out, and a step that does not find it there records it first and sends nothing. A step that finds it asks the network:
 
-| Network | Mechanism |
-| --- | --- |
-| Mastodon | `Idempotency-Key` header derived from target and part. Mastodon remembers a key for an hour |
-| Bluesky | The record key is generated and stored before the call, so a retry writes the same record |
-| Threads | The container ID is stored before publishing, and a container publishes only once |
-| LinkedIn | No idempotency key. Rely on LinkedIn's duplicate-content rejection and treat it as success (to verify) |
+| Network | Recorded before the request | A step that is run again |
+| --- | --- | --- |
+| Mastodon | The account's ID and its newest status, by a first step that sends nothing. For a later part, the part before it | Looks through the account's statuses that are newer than that for one with the text of the part that replies to the part before it, or to nothing for the first part. Takes it for the part if it is there, posts if it is not. The `Idempotency-Key`, made from target and part, is sent as well: Mastodon remembers it for an hour |
+| Bluesky | The record key, generated by a step of its own | Writes the same record under the same key |
+| Threads | The container ID, by the step that creates the container | Publishes the same container, which publishes only once |
+| LinkedIn | Nothing that would help: LinkedIn lets pigy read no posts and takes no key | Sends. Because that is not safe, a request that ends without a clear answer is not retried: the step fails with `uncertain`, and a person looks. Inside about ten minutes LinkedIn refuses the same content again, which the adapter can take for success (to verify) |
+
+What this guarantees: no part is published twice, however late a step is run again, as long as the run before it is over and what it published is still on the network as it was published. A status that the person has edited or deleted in the meantime is not found, and is posted again.
+
+The rule by which Mastodon's adapter finds a status cannot take another post for the one it looks for unless that post says the same in the same place and is newer than the delivery: the person posted the text by hand in the meantime, or a second delivery of the same text went to the same account at the same time. The two would have been duplicates. A step reads one list of 40 statuses. If the account has posted more than that since, the step posts nothing and notes how far it has looked, and the next step goes on from there, so a post is never sent before everything newer has been looked at.
+
+What `uncertain` does not cover is a step that is cut off after its request went out and before any outcome was recorded. A workflow runs such a step again by itself, and an adapter that cannot look sends a second time without ever having failed. Only LinkedIn is of that kind. Its pull request has to settle it: the WorkspaceDO can note that a step has begun before the adapter is called, and treat a step that began and left no outcome as `uncertain`.
 
 ## 9. Scheduling and queue
 
@@ -463,6 +475,7 @@ To confirm when the relevant phase starts:
 - Whether Threads reply chains need the `threads_manage_replies` permission.
 - Whether Bluesky video upload works with the OAuth scopes pigy requests.
 - LinkedIn's behaviour on duplicate content, and the current API version string.
+- How a LinkedIn step that was cut off after it sent is kept from being run again, see the end of section 8.
 - Current media size and duration limits per network.
 - Workflows support in the Workers Vitest pool, which has had isolation caveats. WebSockets to Durable Objects were confirmed in phase 2a: they work, hibernation included.
 - Whether usage fits the Cloudflare free plan.
@@ -479,6 +492,8 @@ Open since phase 3a, all of it about Mastodon and none of it confirmed against a
 - That a repeated idempotency key for a status that was deleted since is answered with 404.
 - What Mastodon answers for an address it does not have. The simulator answers 404, with JSON under `/api/` and with a page elsewhere.
 - Mastodon gives out the same token again for the same client, account and scopes. If one Mastodon account is connected to two workspaces, disconnecting one revokes the token of the other, which then has to be connected again. To decide in phase 3b: accept it, or revoke only when no other channel uses the token.
+- That the adapter finds a status which it has posted. It goes by the list of the account's own statuses, walked forward with `min_id`, and by the source of a status, which has to be the text that was sent without the whitespace around it. Both are as the documentation and Mastodon's code have them. A live run does not show whether they hold: inside the hour Mastodon answers a repeated request by its key as well, and a live run cannot wait an hour. To confirm by hand: lose an answer, wait, and run the step again.
+- That a request to post which Mastodon is still working on shows neither in the list nor under its key. This is why the workflow waits before it runs a step again.
 - The limits that Mastodon keeps per IP address are not simulated. Registrations are limited to 5 in 10 minutes per address, and Cloudflare Workers share theirs with others. The adapter reports it as a failure to try again later.
 
 ## 20. Moving to a custom domain later

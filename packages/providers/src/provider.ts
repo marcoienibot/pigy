@@ -128,7 +128,8 @@ export type PublishedPart = z.infer<typeof publishedPartSchema>;
 /**
  * How far the publishing of a post has come. Plain JSON, so that it can be
  * the recorded result of a step of a workflow and the starting point of the
- * next.
+ * next. It is stored as it is, where everybody who can read the records of
+ * a workflow reads it too. So there is never a secret in it.
  */
 export const publishProgressSchema = z.strictObject({
   /**
@@ -143,7 +144,11 @@ export const publishProgressSchema = z.strictObject({
    * needs time for what the last step started.
    */
   waitSeconds: z.number().nonnegative(),
-  /** The adapter's own notes from one step to the next. Opaque. */
+  /**
+   * The adapter's own notes from one step to the next. Opaque to the
+   * caller, and no place for a secret: no token, no key, nothing that the
+   * credentials hold. A step gets the credentials anew every time.
+   */
   state: jsonSchema,
 });
 
@@ -255,13 +260,52 @@ export type Provider = {
    * the network.
    *
    * The caller records the result before it runs the next step, and runs
-   * steps until `done`. A step that failed with `retry` is run again with
-   * the same request. That never publishes anything twice, also when the
-   * failed attempt did reach the network and only its answer was lost.
-   * After `fail`, the parts in the last recorded progress stay published,
-   * and a later attempt starts from that progress.
+   * steps until `done`: `publish` in publish.ts is this loop. After `fail`,
+   * the parts in the last recorded progress stay published, and a later
+   * attempt starts from that progress.
    *
-   * `publish` in publish.ts is this loop.
+   * A step is run again, with the same request, when its outcome is not
+   * known: it failed with `retry`, or it was cut off before its result was
+   * recorded. That can be at once or days later, when a person asks for
+   * another try. The run before may have reached the network all the same,
+   * so that only its answer was lost. This is what a provider guarantees
+   * for it:
+   *
+   * 1. No request that publishes is made before the progress says that it
+   *    is about to be. The progress a step is given holds what a later run
+   *    needs to tell whether the request was carried out: where the
+   *    account's posts stood, a key of the provider's own making. A step
+   *    that does not find that in its progress sends nothing. It returns
+   *    progress that holds it, which the caller records, and the step
+   *    after that sends.
+   * 2. A step whose progress says so takes itself for a second run, and
+   *    settles what the first one did by asking the network, never by how
+   *    long ago it was. It looks for what the first run would have
+   *    published and takes that for its own, or it sends a request that
+   *    the network carries out once, however often and however late it
+   *    gets it. What a network remembers for an hour, or for ten minutes,
+   *    is not such a request. So no part is published twice.
+   * 3. A provider whose network offers neither cannot run such a step
+   *    again safely. When a request of its that publishes ends without a
+   *    clear answer, because none came or because the one that came leaves
+   *    open whether the request was carried out, it fails with `uncertain`
+   *    and never with `retry`. The caller ends the delivery there and asks
+   *    a person to look. If they find nothing and ask for another try, the
+   *    step is run again from the recorded progress, and sends. This does
+   *    not cover a step that was cut off after its request went out: it
+   *    never got to fail. The caller of such a provider has to keep a step
+   *    that began and left no outcome from being run again by itself. No
+   *    provider of this kind exists yet. The first settles how.
+   *
+   * Two things no provider can see to, so the caller does:
+   *
+   * - A step is run again only when the run before it is over. A request
+   *   that is still on its way, or still being worked on, shows nowhere
+   *   yet. So there is one run at a time per key, and after `retry` the
+   *   caller waits: until the time the error names, and when it names
+   *   none, longer than a network takes over a request.
+   * - What a person has deleted or changed on the network since is no
+   *   longer what a step looks for, and may be published again.
    */
   publishStep(request: PublishRequest): Promise<PublishProgress>;
 
