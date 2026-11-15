@@ -342,23 +342,69 @@ function loadsOf(page: Page): Promise<{ loads: number; leaving: boolean }> {
   }));
 }
 
+/**
+ * Notes what `page` asks the caches for, by its path, once the page has
+ * had the answer and has acted on it. The note is kept where `countLoads`
+ * keeps its own, across a reload. Call it before the page is opened.
+ */
+async function noteCacheAnswers(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const { match } = CacheStorage.prototype;
+    CacheStorage.prototype.match = function (request, options) {
+      const answer = match.call(this, request, options);
+      const settled = () => {
+        // This runs before what the page does with the answer: the page
+        // gets the promise after this has been put on it. What the page
+        // does, it does in the microtasks of the answer, which are over
+        // when the next task begins. So the note is made in a task.
+        setTimeout(() => {
+          const answered: string[] = JSON.parse(
+            sessionStorage.getItem("answered") ?? "[]",
+          );
+          answered.push(
+            String(request instanceof Request ? request.url : request),
+          );
+          sessionStorage.setItem("answered", JSON.stringify(answered));
+        });
+      };
+      answer.then(settled, settled);
+      return answer;
+    };
+  });
+}
+
+/** What `noteCacheAnswers` has noted in `page`. */
+function cacheAnswersOf(page: Page): Promise<string[]> {
+  return page.evaluate(() =>
+    JSON.parse(sessionStorage.getItem("answered") ?? "[]"),
+  );
+}
+
 test("a page that the service worker of its own build takes on stays as it is", async ({
   page,
 }) => {
   await countLoads(page);
+  await noteCacheAnswers(page);
   // The first page load of the browser: the server answers it, and the
   // service worker is installed behind it.
   await page.goto("/sign-in");
   await serviceWorkerAnswersFor(page);
 
   // The page asks the caches whether the worker has its build when the
-  // worker takes it on, and would load itself again on the answer. The
-  // caches answer in the order in which they are asked, so by the time
-  // the test has its own answer, the page has had the one it asked for
-  // and has acted on it.
-  await page.evaluate(async () => {
-    await caches.match("/");
+  // worker takes it on, by the script that it was started from, and would
+  // load itself again on the answer. Nothing says when that answer comes:
+  // the caches promise no order between it and anything that the test
+  // could ask them. So the page itself says when it has had the answer
+  // and has acted on it, and only then does the test look at what it did.
+  // A page that no longer asks fails here too, for want of the note.
+  const script = await page.evaluate(() => {
+    const element = document.querySelector<HTMLScriptElement>(
+      'script[type="module"][src]',
+    );
+    return element && new URL(element.src).pathname;
   });
+  expect(script, "The app shell loads no script").not.toBeNull();
+  await expect.poll(() => cacheAnswersOf(page)).toContain(script);
   expect(await loadsOf(page)).toEqual({ loads: 1, leaving: false });
 });
 
