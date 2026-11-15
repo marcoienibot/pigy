@@ -86,6 +86,37 @@ test("a deleted draft can be brought back", async ({
   await expect(draftRows(page)).toHaveCount(2);
 });
 
+test("the notice of a deleted draft brings back that draft, also after another was deleted", async ({
+  ownPage: page,
+  isMobile,
+}) => {
+  await writeDraft(page, isMobile, "Deleted first");
+  await writeDraft(page, isMobile, "Deleted second");
+  for (const text of ["Deleted first", "Deleted second"]) {
+    await draftRow(page, text).click();
+    await page.getByRole("button", { name: "Delete draft" }).click();
+    await expect(draftRow(page, text)).toHaveCount(0);
+  }
+
+  // Two notices that say the same, stacked, with the newer one in front
+  // and first in the list. Pointing at the stack spreads it out.
+  const notices = page
+    .getByRole("listitem")
+    .filter({ hasText: "Draft deleted" });
+  await expect(notices).toHaveCount(2);
+  await notices.first().hover();
+  await notices.last().getByRole("button", { name: "Undo" }).click();
+
+  // The older notice is about the draft that was deleted first.
+  await expect(editor(page)).toHaveValue("Deleted first");
+  await expect(notices).toHaveCount(1);
+  // And the one that is left is still about its own.
+  await notices.getByRole("button", { name: "Undo" }).click();
+  await expect(editor(page)).toHaveValue("Deleted second");
+  await backToList(page, isMobile);
+  await expect(draftRows(page)).toHaveCount(2);
+});
+
 test("Enter and Backspace are about the row that has the focus", async ({
   ownPage: page,
   isMobile,

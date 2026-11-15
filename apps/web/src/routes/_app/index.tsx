@@ -67,8 +67,11 @@ function Drafts() {
   const open = drafts.find((draft) => draft.id === openId);
   const list = useRef<HTMLDivElement>(null);
   const editor = useRef<HTMLTextAreaElement>(null);
-  /** The draft that was deleted last, while it can be brought back. */
-  const deleted = useRef<{ draft: Draft; notice: string | number }>(null);
+  /**
+   * The drafts that were deleted and can still be brought back, each with
+   * the notice that offers it. The one that was deleted last is at the end.
+   */
+  const deleted = useRef<{ draft: Draft; notice: string | number }[]>([]);
 
   const rowOf = (id: string) =>
     list.current?.querySelector<HTMLElement>(`[data-draft="${id}"]`);
@@ -90,10 +93,15 @@ function Drafts() {
     }
   }, [open, openId, navigate]);
 
-  const restore = () => {
-    if (!deleted.current) return;
-    const { draft, notice } = deleted.current;
-    deleted.current = null;
+  /** The draft of `notice` can no longer be brought back. */
+  const forget = (notice: string | number) => {
+    deleted.current = deleted.current.filter(
+      (entry) => entry.notice !== notice,
+    );
+  };
+
+  const restore = (draft: Draft, notice: string | number) => {
+    forget(notice);
     toast.dismiss(notice);
     // A post that is deleted is gone for every device, so what comes back
     // is a new draft with the same text.
@@ -121,16 +129,14 @@ function Drafts() {
     mutate("post.delete", { id: draft.id });
     // Nothing to bring back of a draft without text.
     if (draft.text === "") return;
-    const notice = toast("Draft deleted", {
-      action: { label: "Undo", onClick: restore },
-      onDismiss: () => {
-        if (deleted.current?.notice === notice) deleted.current = null;
-      },
-      onAutoClose: () => {
-        if (deleted.current?.notice === notice) deleted.current = null;
-      },
+    const notice: string | number = toast("Draft deleted", {
+      // Its own draft, also when others were deleted after it and their
+      // notices are on screen next to this one.
+      action: { label: "Undo", onClick: () => restore(draft, notice) },
+      onDismiss: () => forget(notice),
+      onAutoClose: () => forget(notice),
     });
-    deleted.current = { draft, notice };
+    deleted.current.push({ draft, notice });
   };
 
   /** The draft whose row in the list has the focus, if one has. */
@@ -196,14 +202,17 @@ function Drafts() {
   });
 
   useKeyDown((event) => {
+    // The draft that was deleted last, and with the next press the one
+    // before it.
+    const last = deleted.current.at(-1);
     if (
       withMod(event) &&
       event.key.toLowerCase() === "z" &&
-      deleted.current &&
+      last &&
       !isBusy(event)
     ) {
       event.preventDefault();
-      restore();
+      restore(last.draft, last.notice);
     }
   });
 
