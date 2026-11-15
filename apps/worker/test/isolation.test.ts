@@ -376,6 +376,9 @@ describe("the pages of a simulated network", () => {
 
     expect(page.status).toBe(401);
     expect(await page.text()).not.toContain("@ada");
+    // The address is the same for everybody, and what it shows is not: no
+    // answer to it is one to keep, also not this one.
+    expect(page.headers.get("Cache-Control")).toBe("no-store");
   });
 
   it("show everybody their own world, whatever the address", async () => {
@@ -448,6 +451,9 @@ describe("the pages of a simulated network", () => {
     // Read as an address, this would name another host than it seems to.
     ["a host with credentials", `user@${sandboxMastodonDomain}`],
     ["a host with a port", `${sandboxMastodonDomain}:8443`],
+    // Made of the letters of a host name, and none: it cannot be read as
+    // an address at all.
+    ["a host that is no name", "xn--"],
   ])("have none for %s", async (_name, host) => {
     const { test, admin } = await start();
 
@@ -456,6 +462,8 @@ describe("the pages of a simulated network", () => {
     );
 
     expect(response.status).toBe(404);
+    // Whether a world has a server is one person's business too.
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
     // Nothing was asked of a real host by that name either.
     expect(test.network.requests).toEqual([]);
   });

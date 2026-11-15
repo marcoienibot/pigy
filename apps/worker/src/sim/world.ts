@@ -89,5 +89,11 @@ export function worldPage(path: string, search: string): URL | undefined {
   const [, host, page] =
     /^([a-z0-9.-]+)(\/.*)$/.exec(path.slice(worldPagesPath.length + 1)) ?? [];
   if (!host || page !== "/oauth/authorize") return undefined;
-  return new URL(`https://${host}${page}${search}`);
+  try {
+    return new URL(`https://${host}${page}${search}`);
+  } catch {
+    // Not everything that is made of the letters of a host name is one:
+    // "xn--" is none. No world has such a host.
+    return undefined;
+  }
 }

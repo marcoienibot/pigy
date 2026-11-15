@@ -18,8 +18,10 @@ export function createApp(dependencies: AppDependencies): Hono<AppEnv> {
   const { fetch, simulatedGoogle } = dependencies;
   const app = new Hono<AppEnv>();
 
-  // What these answer depends on who asks and changes at any time.
-  for (const path of ["/api/*", "/connect/*"]) {
+  // What these answer depends on who asks and changes at any time. The
+  // pages under /sim are one person's too: those of a simulated network
+  // show the world of whoever is signed in.
+  for (const path of ["/api/*", "/connect/*", "/sim/*"]) {
     app.use(path, async (c, next) => {
       await next();
       c.header("Cache-Control", "no-store");
