@@ -284,7 +284,9 @@ export class SyncStore {
         break;
       }
       case "connection":
-        this.setState({ connection: message.connection });
+        // The tab with the socket knows best. It hears this only from a
+        // tab that has just lost the socket to it.
+        if (!this.holding) this.setState({ connection: message.connection });
         break;
       case "connection?":
         if (this.holding) {
