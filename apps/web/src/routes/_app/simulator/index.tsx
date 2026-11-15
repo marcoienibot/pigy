@@ -51,6 +51,8 @@ function Feeds() {
     network,
   } = Route.useSearch();
   const channels = useSynced(selectChannels);
+  // One clock for every time that the feeds show.
+  const now = useNow();
   const {
     data: feed,
     failure,
@@ -202,6 +204,7 @@ function Feeds() {
                             <li key={post.id} className="px-3 py-2">
                               <Chain
                                 chain={chainOf(post)}
+                                now={now}
                                 wanted={
                                   account.handle === wantedAccount ||
                                   wantedAccount === undefined
@@ -232,10 +235,12 @@ function Feeds() {
 function Chain({
   chain,
   wanted,
+  now,
 }: {
   chain: FeedChain;
   /** The ID of the post to bring into view, if it is in this feed. */
   wanted: string | undefined;
+  now: number;
 }) {
   const thread = chain.posts.length > 1;
   return (
@@ -257,7 +262,7 @@ function Chain({
                 "after:absolute after:top-3.5 after:-bottom-2 after:left-[0.4rem] after:w-px after:bg-border",
             )}
           >
-            <FeedPost post={post} wanted={post.id === wanted} />
+            <FeedPost post={post} wanted={post.id === wanted} now={now} />
           </li>
         ))}
       </ol>
@@ -268,7 +273,7 @@ function Chain({
         >
           {chain.branches.map((branch) => (
             <li key={branch.posts[0]?.id}>
-              <Chain chain={branch} wanted={wanted} />
+              <Chain chain={branch} wanted={wanted} now={now} />
             </li>
           ))}
         </ol>
@@ -277,8 +282,15 @@ function Chain({
   );
 }
 
-function FeedPost({ post, wanted }: { post: SandboxPost; wanted: boolean }) {
-  const now = useNow();
+function FeedPost({
+  post,
+  wanted,
+  now,
+}: {
+  post: SandboxPost;
+  wanted: boolean;
+  now: number;
+}) {
   return (
     <article
       aria-current={wanted || undefined}
