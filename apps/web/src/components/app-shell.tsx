@@ -1,6 +1,7 @@
-import { Link, linkOptions } from "@tanstack/react-router";
+import { Link, linkOptions, useRouteContext } from "@tanstack/react-router";
 import { CalendarClock, PenLine, Send, Settings, Share2 } from "lucide-react";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect } from "react";
+import { toast } from "sonner";
 import {
   CommandPalette,
   useOpenCommandPalette,
@@ -44,13 +45,45 @@ function CommandsButton() {
  * notices.
  */
 export function AppShell({ children }: { children: ReactNode }) {
+  const { workspace } = useRouteContext({ from: "/_app" });
   return (
     <CommandPalette>
       <Shell>{children}</Shell>
-      <Rejections />
+      <Notices key={workspace.id} />
+    </CommandPalette>
+  );
+}
+
+/**
+ * The notices of the workspace on screen: where they are shown, and those
+ * of its refused changes.
+ *
+ * A notice is about the workspace that it was made in, and so is what it
+ * offers to do: the undo of a deleted draft would bring the draft back
+ * into that workspace. So this is made anew for every workspace, like the
+ * screens, with the workspace as its key. The notices of the one before
+ * leave the page in the step in which the shell changes its name: none of
+ * them is on screen under the name of the other, not for a moment, and
+ * none can be pressed there. Taking them off through the notice library
+ * would not do that. It removes a notice over several frames.
+ */
+function Notices() {
+  // The library keeps its notices outside of React, and hands the ones
+  // that nobody has dismissed to every list that is new. The next list is
+  // that of another workspace, so these end with their own.
+  useEffect(
+    () => () => {
+      for (const { id } of toast.getToasts()) toast.dismiss(id);
+    },
+    [],
+  );
+
+  return (
+    <>
       {/* On a phone, above the bottom bar. */}
       <Toaster position="bottom-right" mobileOffset={{ bottom: 72 }} />
-    </CommandPalette>
+      <Rejections />
+    </>
   );
 }
 

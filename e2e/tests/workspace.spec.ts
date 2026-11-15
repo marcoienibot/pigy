@@ -32,6 +32,37 @@ async function askToSignOut(page: Page): Promise<void> {
   await page.getByRole("menuitem", { name: "Sign out" }).click();
 }
 
+/**
+ * Notes, with every change of the page from now on, whether a notice with
+ * `text` in it is on the page, and under which name: that of the sandbox,
+ * which has its banner, or that of live. Returns how to read the notes.
+ *
+ * A notice that stayed for a moment after the name had changed is caught
+ * here and nowhere else: by the time a test looks, it is gone either way.
+ */
+async function watchNotice(page: Page, text: string) {
+  type Seen = { inSandbox: boolean; inLive: boolean; liveWithout: boolean };
+  await page.evaluate((text) => {
+    const seen = { inSandbox: false, inLive: false, liveWithout: false };
+    Object.assign(window, { seenNotice: seen });
+    new MutationObserver(() => {
+      const sandbox = document.querySelector('[role="note"]') !== null;
+      const shown = [...document.querySelectorAll("li")].some((item) =>
+        item.textContent?.includes(text),
+      );
+      if (shown && sandbox) seen.inSandbox = true;
+      if (shown && !sandbox) seen.inLive = true;
+      if (!shown && !sandbox) seen.liveWithout = true;
+    }).observe(document, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+  }, text);
+  return () =>
+    page.evaluate(() => (window as unknown as { seenNotice: Seen }).seenNotice);
+}
+
 test("somebody new starts in the sandbox, which says so on every screen, and live does not", async ({
   ownPage: page,
 }) => {
@@ -209,20 +240,45 @@ test("the offer to bring a deleted draft back goes when the workspace changes", 
   isMobile,
 }) => {
   await writeDraft(page, isMobile, "Deleted in the sandbox");
+  // The notice leaves by itself ten seconds after it has come, and the
+  // notice library takes a notice off the screen over several frames. The
+  // clock of the page stands still from here on, so neither happens
+  // unless the test says so: only the switch can make the notice go,
+  // however long the machine takes over the steps.
+  const now = Date.now();
+  await page.clock.install({ time: now });
+  await page.clock.pauseAt(now + 1_000);
   await draftRow(page, "Deleted in the sandbox").click();
   await page.getByRole("button", { name: "Delete draft" }).click();
   const notice = page
     .getByRole("listitem")
     .filter({ hasText: "Draft deleted" });
+  // A notice is put on screen a moment after the app has said so, which
+  // the clock is moved for.
+  await page.clock.runFor(1_000);
   await expect(notice).toBeVisible();
+  const seen = await watchNotice(page, "Draft deleted");
 
-  await switchTo(page, "Live");
+  // The choice of the switch opens a moment after it is asked for, like a
+  // notice. From the choice on, the clock stands still.
+  await workspaceSwitch(page).click();
+  await page.clock.runFor(1_000);
+  await page.getByRole("menuitemradio", { name: /^Live/ }).click();
+  await expectWorkspace(page, "Live");
 
-  // The notice leaves by itself ten seconds after it has come. It is gone
-  // well before that: in live there is nothing to bring the draft back
-  // into. A notice that only ran out would fail this check, which waits
-  // half as long.
-  await expect(notice).toHaveCount(0);
+  // In live there is nothing to bring the draft back into. The notice is
+  // gone the moment the page says "live", not a while later: this looks
+  // once and does not wait.
+  expect(await notice.count()).toBe(0);
+  // It was never there under the name of live, between two renders
+  // either. The first two say that the page was watched in both
+  // workspaces, without which the third would say nothing.
+  expect(await seen()).toEqual({
+    inSandbox: true,
+    liveWithout: true,
+    inLive: false,
+  });
+  await page.clock.resume();
   // And the keys that undo bring nothing into live.
   await page.keyboard.press("ControlOrMeta+z");
   await switchTo(page, "Sandbox");
@@ -261,15 +317,34 @@ test("the notice of a refused change leaves the screen with its workspace and is
     .getByRole("listitem")
     .filter({ hasText: "An edit was not saved" });
   await expect(notice).toBeVisible();
+  const seen = await watchNotice(page, "An edit was not saved");
 
-  // It is about the sandbox, and is not shown under the name of live.
+  // It is about the sandbox, and is not shown under the name of live: not
+  // when the page first says "live", which is looked at once and not
+  // waited for, and not between two renders on the way there.
   await switchTo(page, "Live");
-  await expect(notice).toHaveCount(0);
+  expect(await notice.count()).toBe(0);
+  expect(await seen()).toEqual({
+    inSandbox: true,
+    liveWithout: true,
+    inLive: false,
+  });
 
   // Taking it off the screen was not the person dismissing it, which
-  // would have deleted it: it is there again with the sandbox.
+  // would have deleted it: it is there again with the sandbox, and with
+  // what it offers.
   await switchTo(page, "Sandbox");
   await expect(notice).toBeVisible();
+  await expect(
+    notice.getByRole("button", { name: "Keep as new draft" }),
+  ).toBeVisible();
+  // Dismissed by the person, it is gone for good: also from the copy,
+  // which is where it would come back from after loading the page again.
+  await notice.getByRole("button", { name: "Close toast" }).click();
+  await expect(notice).toHaveCount(0);
+  await page.reload();
+  await expectSync(page, "Synced");
+  await expect(notice).toHaveCount(0);
 });
 
 test("signing out counts the changes that were not synced in the workspace that is not on screen", async ({

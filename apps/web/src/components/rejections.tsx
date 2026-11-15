@@ -20,8 +20,10 @@ function lostText({ name, args }: StoredRejection): string {
  * and why. By then the screen shows the data without the change. A notice
  * stays until it is dismissed, here or in another tab, and comes back
  * after a reload if it was not. The notices are those of the workspace on
- * screen: when the tab goes on to the other one, they leave the screen
- * with it and are there again when it comes back.
+ * screen: the shell makes this anew for every workspace, together with
+ * where the notices are shown. So when the tab goes on to the other one,
+ * they leave the screen with it, without being dismissed, and are there
+ * again when it comes back.
  *
  * An edit that was refused has text in it that exists nowhere else by now,
  * for example because the draft was deleted on another device while it was
@@ -64,9 +66,7 @@ export function Rejections() {
         }),
       });
     }
-    // Those that were dismissed in another tab, and those of the workspace
-    // that was on screen before this one: its rejections are still to be
-    // seen.
+    // Those that were dismissed in another tab.
     const keys = new Set(rejections.map(({ key }) => key));
     for (const key of shown.current) {
       if (keys.has(key)) continue;

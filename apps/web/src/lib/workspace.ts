@@ -72,19 +72,6 @@ export function forgetWorkspaceChoice(): void {
   localStorage.removeItem(storageKey);
 }
 
-const leaving = new Set<() => void>();
-
-/**
- * Calls `listener` when this tab is about to show another workspace. For
- * what is on screen and belongs to no screen, such as a notice that offers
- * to undo something: it is about the workspace that goes, and must not
- * stay under the name of the other one. Returns how to stop.
- */
-export function onLeaveWorkspace(listener: () => void): () => void {
-  leaving.add(listener);
-  return () => leaving.delete(listener);
-}
-
 /**
  * Returns the function behind the switch between live and sandbox: it
  * makes this tab show the workspace of `environment`, on the screen that
@@ -120,7 +107,6 @@ export function useSwitchWorkspace(): (environment: Environment) => void {
       }
       showWorkspace(next);
       localStorage.setItem(storageKey, next.id);
-      for (const listener of [...leaving]) listener();
       await router.navigate({ to: ".", search: {}, replace: true });
     },
     [router, me, workspace, workspaces],

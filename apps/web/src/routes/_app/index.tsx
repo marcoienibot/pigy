@@ -36,7 +36,6 @@ import {
 import { connectableNetworks } from "@/lib/networks";
 import { timeAgo, useNow } from "@/lib/time";
 import { cn } from "@/lib/utils";
-import { onLeaveWorkspace } from "@/lib/workspace";
 import { useMutate, useSynced } from "@/sync/react";
 
 type DraftsSearch = {
@@ -81,12 +80,11 @@ function Drafts() {
   const editor = useRef<HTMLTextAreaElement>(null);
   /**
    * The drafts that were deleted and can still be brought back, each with
-   * the notice that offers it and with how to stop waiting for the tab to
-   * leave the workspace. The one that was deleted last is at the end.
+   * the notice that offers it. The one that was deleted last is at the
+   * end. They are those of this workspace: the screen is made anew for
+   * the other one, and so are the notices.
    */
-  const deleted = useRef<
-    { draft: Draft; notice: string | number; stop: () => void }[]
-  >([]);
+  const deleted = useRef<{ draft: Draft; notice: string | number }[]>([]);
 
   const rowOf = (id: string) =>
     list.current?.querySelector<HTMLElement>(`[data-draft="${id}"]`);
@@ -110,11 +108,9 @@ function Drafts() {
 
   /** The draft of `notice` can no longer be brought back. */
   const forget = (notice: string | number) => {
-    deleted.current = deleted.current.filter((entry) => {
-      if (entry.notice !== notice) return true;
-      entry.stop();
-      return false;
-    });
+    deleted.current = deleted.current.filter(
+      (entry) => entry.notice !== notice,
+    );
   };
 
   const restore = (draft: Draft, notice: string | number) => {
@@ -154,11 +150,10 @@ function Drafts() {
       onDismiss: () => forget(notice),
       onAutoClose: () => forget(notice),
     });
-    // The notice outlives this screen, and it must not outlive the
-    // workspace: under the other one, there is nothing to bring the draft
-    // back into.
-    const stop = onLeaveWorkspace(() => toast.dismiss(notice));
-    deleted.current.push({ draft, notice, stop });
+    // The notice outlives this screen. It does not outlive the workspace,
+    // where there would be nothing to bring the draft back into: the shell
+    // sees to that.
+    deleted.current.push({ draft, notice });
   };
 
   /** The draft whose row in the list has the focus, if one has. */
