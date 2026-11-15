@@ -2,11 +2,14 @@ import {
   applyMutation,
   type Change,
   environmentSchema,
+  inReadingOrder,
+  type Limits,
   type Mutation,
   MutationRejected,
   type MutationSource,
   type MutatorArgs,
   type Network,
+  type PostContent,
   type Rejection,
   type RejectionCode,
   type Row,
@@ -14,7 +17,18 @@ import {
   type Transaction,
   tableNames,
 } from "@pigy/core";
-import { and, asc, count, eq, gt, lt, lte } from "drizzle-orm";
+import {
+  and,
+  asc,
+  count,
+  eq,
+  gt,
+  inArray,
+  lt,
+  lte,
+  ne,
+  notExists,
+} from "drizzle-orm";
 import {
   type DrizzleSqliteDODatabase,
   drizzle,
@@ -27,7 +41,9 @@ import {
   channels,
   clientMutations,
   keyedCalls,
+  postTargets,
   rejections,
+  targetPartResults,
   workspaceRecord,
 } from "./schema.ts";
 import { deleteRow, findRows, readRow, readRows, writeRow } from "./synced.ts";
@@ -100,6 +116,39 @@ export type StoredChannelAccess = {
 export type DisconnectChannelOutcome =
   | { ok: true; access: StoredChannelAccess }
   | ({ ok: false } & Refusal);
+
+/**
+ * One attempt at the delivery of a target: what a run of the publishing
+ * workflow stands for, and what it names itself with when it reports.
+ */
+export type DeliveryRun = { targetId: string; attempt: number };
+
+/** What a delivery publishes, where to, and from where it goes on. */
+export type Delivery = {
+  channel: {
+    id: string;
+    network: Network;
+    accountId: string;
+    /** True if the network has refused the access of the channel. */
+    needsReconnect: boolean;
+    /** What the account may post, and when its network said so. */
+    limits: Limits | null;
+    limitsCheckedAt: number | null;
+  };
+  /** The text of the parts of the post, in order. */
+  content: PostContent;
+  /**
+   * How far the attempts before have come, as an adapter returned it, or
+   * null if the delivery begins at the beginning.
+   */
+  progress: unknown;
+};
+
+/** The credentials of a channel after a refresh, sealed, with their times. */
+export type RenewedChannelAccess = ChannelAccess & {
+  /** When the access ends now, in milliseconds since the epoch, or null. */
+  expiresAt: number | null;
+};
 
 /**
  * The longest reason that a refusal carries. Part of a reason can be text
@@ -418,6 +467,242 @@ export class WorkspaceStore {
         "server",
       );
       return refusal ? { ok: false, ...refusal } : { ok: true, access };
+    });
+  }
+
+  /** The workspace that the object holds. */
+  get identity(): WorkspaceIdentity {
+    const record = this.db
+      .select({
+        id: workspaceRecord.id,
+        ownerId: workspaceRecord.ownerId,
+        environment: workspaceRecord.environment,
+      })
+      .from(workspaceRecord)
+      .get();
+    if (!record) throw new Error("The object is not tied to a workspace yet");
+    return record;
+  }
+
+  /**
+   * Begins the deliveries whose turn has come: for every channel that has
+   * none under way, the one that has waited longest. The deliveries to one
+   * channel go out one after the other, because no adapter can tell two
+   * apart that go to one account together.
+   *
+   * A delivery that begins passes the ones to its channel that failed
+   * before they had published a part. Such a delivery could still be taken
+   * up where it stopped: it would look for its first part among what the
+   * account has posted since it began, which is how an adapter finds a
+   * part whose answer was lost. From now on that includes the posts of
+   * this delivery, and it would take a first part that reads the same for
+   * its own. So what it had recorded is dropped here, in the transaction
+   * that begins the other: tried again, it begins anew. A delivery that
+   * has published a part is not concerned: its next part is a reply to
+   * the one before, which no other delivery has.
+   */
+  startDeliveries(now: number): void {
+    this.storage.transactionSync(() => {
+      const busy = new Set(
+        this.db
+          .select({ channelId: postTargets.channelId })
+          .from(postTargets)
+          .where(eq(postTargets.status, "sending"))
+          .all()
+          .map(({ channelId }) => channelId),
+      );
+      const waiting = this.db
+        .select({ id: postTargets.id, channelId: postTargets.channelId })
+        .from(postTargets)
+        .where(eq(postTargets.status, "queued"))
+        .orderBy(asc(postTargets.queuedAt), asc(postTargets.id))
+        .all();
+      for (const { id, channelId } of waiting) {
+        if (busy.has(channelId)) continue;
+        busy.add(channelId);
+        const [refusal] = this.run(
+          [{ name: "target.start", args: { id } }],
+          now,
+          "server",
+        );
+        if (refusal) {
+          throw new Error(`A delivery did not begin: ${refusal.message}`);
+        }
+        this.db
+          .update(postTargets)
+          .set({ progress: null })
+          .where(
+            and(
+              eq(postTargets.channelId, channelId),
+              ne(postTargets.id, id),
+              inArray(postTargets.status, ["error", "uncertain"]),
+              notExists(
+                this.db
+                  .select({ id: targetPartResults.id })
+                  .from(targetPartResults)
+                  .where(eq(targetPartResults.targetId, postTargets.id)),
+              ),
+            ),
+          )
+          .run();
+      }
+    });
+  }
+
+  /**
+   * The deliveries that are under way: with a workflow if `dispatched`,
+   * and those that have yet to get theirs if not.
+   */
+  deliveries(dispatched: boolean): DeliveryRun[] {
+    return this.db
+      .select({
+        targetId: postTargets.id,
+        attempt: postTargets.attempt,
+        dispatched: postTargets.dispatched,
+      })
+      .from(postTargets)
+      .where(eq(postTargets.status, "sending"))
+      .all()
+      .filter((run) => (run.dispatched === run.attempt) === dispatched)
+      .map(({ targetId, attempt }) => ({ targetId, attempt }));
+  }
+
+  /** Takes note that the workflow of a delivery was created. */
+  dispatched({ targetId, attempt }: DeliveryRun): void {
+    this.db
+      .update(postTargets)
+      .set({ dispatched: attempt })
+      .where(
+        and(eq(postTargets.id, targetId), eq(postTargets.attempt, attempt)),
+      )
+      .run();
+  }
+
+  /**
+   * What is left to do for the deliveries: `start` if one can begin or has
+   * to get its workflow, `watch` if there is nothing to do but to see that
+   * those under way end, `nothing` if none waits or is under way.
+   */
+  get deliveriesNeed(): "start" | "watch" | "nothing" {
+    const targets = this.db
+      .select({
+        channelId: postTargets.channelId,
+        status: postTargets.status,
+        attempt: postTargets.attempt,
+        dispatched: postTargets.dispatched,
+      })
+      .from(postTargets)
+      .where(inArray(postTargets.status, ["queued", "sending"]))
+      .all();
+    const sending = targets.filter(({ status }) => status === "sending");
+    const busy = new Set(sending.map(({ channelId }) => channelId));
+    const start =
+      sending.some(({ attempt, dispatched }) => dispatched !== attempt) ||
+      targets.some(
+        ({ status, channelId }) => status === "queued" && !busy.has(channelId),
+      );
+    return start ? "start" : targets.length > 0 ? "watch" : "nothing";
+  }
+
+  /**
+   * What the delivery `run` publishes, or undefined if it is not under
+   * way: the target has ended, or is on another attempt by now.
+   */
+  delivery({ targetId, attempt }: DeliveryRun): Delivery | undefined {
+    const target = this.db
+      .select({
+        postId: postTargets.postId,
+        channelId: postTargets.channelId,
+        status: postTargets.status,
+        attempt: postTargets.attempt,
+        progress: postTargets.progress,
+      })
+      .from(postTargets)
+      .where(eq(postTargets.id, targetId))
+      .get();
+    if (target?.status !== "sending" || target.attempt !== attempt) {
+      return undefined;
+    }
+    const channel = readRow(this.db, "channel", target.channelId);
+    // A target does not go on without its channel: disconnecting ends it.
+    if (!channel) return undefined;
+    return {
+      channel: {
+        id: channel.id,
+        network: channel.network,
+        accountId: channel.accountId,
+        needsReconnect: channel.status === "needs_reconnect",
+        limits: channel.limits,
+        limitsCheckedAt: channel.limitsCheckedAt,
+      },
+      content: {
+        parts: inReadingOrder(
+          findRows(this.db, "post_part", "postId", target.postId),
+        ).map(({ text }) => ({ text })),
+      },
+      progress: target.progress ?? null,
+    };
+  }
+
+  /**
+   * Records how far a delivery has come: the parts that are published,
+   * through the mutator `target.progress`, which clients hear of, and the
+   * progress that the next attempt goes on from, next to the row. Both in
+   * one transaction, and once for `key`: see `once`.
+   */
+  recordProgress(
+    { targetId, attempt }: DeliveryRun,
+    parts: MutatorArgs<"target.progress">["parts"],
+    progress: unknown,
+    now: number,
+    key: string,
+  ): MutationOutcome {
+    return this.once(key, now, () => {
+      const [refusal] = this.run(
+        [{ name: "target.progress", args: { id: targetId, attempt, parts } }],
+        now,
+        "server",
+      );
+      if (refusal) return { ok: false, ...refusal };
+      this.db
+        .update(postTargets)
+        .set({ progress })
+        .where(eq(postTargets.id, targetId))
+        .run();
+      return { ok: true };
+    });
+  }
+
+  /**
+   * Stores the credentials that a refresh has returned in place of the
+   * ones it started from, `expected`, and returns whether it did. It does
+   * not if the channel no longer holds those: another refresh has replaced
+   * them, or the channel is gone. When the access ends goes through the
+   * mutator `channel.renew`, in the same transaction.
+   */
+  renewChannelAccess(
+    channelId: string,
+    expected: string,
+    { credentials, refreshAt, expiresAt }: RenewedChannelAccess,
+    now: number,
+  ): boolean {
+    return this.storage.transactionSync(() => {
+      const [renewed] = this.db
+        .update(channels)
+        .set({ credentials, refreshAt })
+        .where(
+          and(eq(channels.id, channelId), eq(channels.credentials, expected)),
+        )
+        .returning({ id: channels.id })
+        .all();
+      if (!renewed) return false;
+      const [refusal] = this.run(
+        [{ name: "channel.renew", args: { id: channelId, expiresAt } }],
+        now,
+        "server",
+      );
+      if (refusal) throw new Error(`Not renewed: ${refusal.message}`);
+      return true;
     });
   }
 

@@ -11,7 +11,7 @@ import { allowedEmails } from "../src/db/schema.ts";
 import { developmentCredentialKeys } from "../src/development-keys.ts";
 import type { Bindings } from "../src/env.ts";
 import { createSimulatedGoogle } from "../src/simulated-google.ts";
-import { clock } from "./clock.ts";
+import { clock, deployment } from "./clock.ts";
 
 const origin = "https://pigy.test";
 export const adminEmail = "admin@example.com";
@@ -102,17 +102,18 @@ export function setup(
   const networkFetch =
     options.interceptNetwork?.(mastodon.fetch) ?? mastodon.fetch;
 
+  const appFetch: Fetch = async (input, init) => {
+    const url = urlOf(input);
+    if (googleHost.test(new URL(url).hostname)) {
+      return googleFetch(input, init);
+    }
+    const method =
+      init?.method ?? (input instanceof Request ? input.method : "GET");
+    network.requests.push(`${method} ${url}`);
+    return networkFetch(input, init);
+  };
   const app = createApp({
-    fetch: async (input, init) => {
-      const url = urlOf(input);
-      if (googleHost.test(new URL(url).hostname)) {
-        return googleFetch(input, init);
-      }
-      const method =
-        init?.method ?? (input instanceof Request ? input.method : "GET");
-      network.requests.push(`${method} ${url}`);
-      return networkFetch(input, init);
-    },
+    fetch: appFetch,
     now,
     simulatedGoogle: options.simulatedGoogle
       ? createSimulatedGoogle(now)
@@ -133,12 +134,23 @@ export function setup(
     VERSION: env.VERSION,
     WORKSPACE: env.WORKSPACE,
     SIM_WORLD: env.SIM_WORLD,
+    PUBLISH: env.PUBLISH,
   };
+  // The publishing workflow is not built here: the runtime constructs it.
+  // It reads what this app was built and deployed with from `deployment`.
+  deployment.fetch = appFetch;
+  deployment.secrets = {};
+  deployment.providerOf = undefined;
   const configure = (values: { [Name in Secrets]?: string | undefined }) => {
     for (const name of Object.keys(values) as Secrets[]) {
       const value = values[name];
-      if (value === undefined) delete bindings[name];
-      else bindings[name] = value;
+      if (value === undefined) {
+        delete bindings[name];
+        delete deployment.secrets[name];
+      } else {
+        bindings[name] = value;
+        deployment.secrets[name] = value;
+      }
     }
   };
   configure(secrets);

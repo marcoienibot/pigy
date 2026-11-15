@@ -11,8 +11,11 @@ import type { Bindings } from "../env.ts";
 import type {
   ChannelAccess,
   ConnectChannelOutcome,
+  Delivery,
+  DeliveryRun,
   DisconnectChannelOutcome,
   MutationOutcome,
+  RenewedChannelAccess,
   StoredChannelAccess,
   WorkspaceIdentity,
 } from "./store.ts";
@@ -20,8 +23,10 @@ import type {
 /**
  * The Worker's side of workspaces: which there are, whose they are, and the
  * only ways into their Durable Objects: `connectWorkspace` for a client,
- * and `mutateWorkspace`, `connectChannel`, `disconnectChannel` and
- * `channelAccess` for the Worker's own code.
+ * and for the Worker's own code `mutateWorkspace`, `connectChannel`,
+ * `disconnectChannel` and `channelAccess`, and what the publishing
+ * workflow asks and reports: `deliveryOf`, `recordProgress` and
+ * `renewChannelAccess`.
  */
 
 /**
@@ -183,6 +188,67 @@ export async function channelAccess(
     .channelAccess(workspace, channelId);
   if (access === undefined) throw foreign(workspace);
   return access;
+}
+
+/**
+ * What the delivery `run` of `workspace` publishes and where it goes on
+ * from, or null if it is not under way: it has ended, by a disconnect for
+ * example, or is on a later attempt.
+ */
+export async function deliveryOf(
+  namespace: Bindings["WORKSPACE"],
+  workspace: WorkspaceIdentity,
+  run: DeliveryRun,
+): Promise<Delivery | null> {
+  const delivery = await namespace
+    .getByName(workspace.id)
+    .delivery(workspace, run);
+  if (delivery === undefined) throw foreign(workspace);
+  return delivery;
+}
+
+/**
+ * Records how far the delivery `run` of `workspace` has come: `parts` is
+ * every part that is published, in order, with the ID to give its result
+ * if it has none, and `progress` what the adapter returned, for the next
+ * attempt to go on from. Clients that are connected see the new parts at
+ * once. It is refused with `not_current` if the delivery is not under way
+ * any more. `key` names the call, as for `mutateWorkspace`: it is carried
+ * out once.
+ */
+export async function recordProgress(
+  namespace: Bindings["WORKSPACE"],
+  workspace: WorkspaceIdentity,
+  run: DeliveryRun,
+  parts: MutatorArgs<"target.progress">["parts"],
+  progress: unknown,
+  key: string,
+): Promise<MutationOutcome> {
+  const outcome = await namespace
+    .getByName(workspace.id)
+    .recordProgress(workspace, run, parts, progress, key);
+  if (!outcome) throw foreign(workspace);
+  return outcome;
+}
+
+/**
+ * Stores the credentials that a refresh has returned for a channel of
+ * `workspace`, sealed, in place of the ones that it started from,
+ * `expected`. Returns whether it did: not if the channel holds others by
+ * now, which another refresh has put there, or is gone.
+ */
+export async function renewChannelAccess(
+  namespace: Bindings["WORKSPACE"],
+  workspace: WorkspaceIdentity,
+  channelId: string,
+  expected: string,
+  access: RenewedChannelAccess,
+): Promise<boolean> {
+  const renewed = await namespace
+    .getByName(workspace.id)
+    .renewChannelAccess(workspace, channelId, expected, access);
+  if (renewed === undefined) throw foreign(workspace);
+  return renewed;
 }
 
 function foreign(workspace: WorkspaceIdentity): Error {

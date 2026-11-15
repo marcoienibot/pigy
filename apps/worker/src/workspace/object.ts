@@ -19,13 +19,22 @@ import {
   syncSchemaVersion,
 } from "@pigy/core";
 import type { Bindings } from "../env.ts";
+import { loggable } from "../errors.ts";
+import {
+  deliveryInstanceId,
+  lostTrackMessage,
+  release,
+} from "../publish/delivery.ts";
 import {
   type ChannelAccess,
   type ConnectChannelOutcome,
   callKeySchema,
+  type Delivery,
+  type DeliveryRun,
   type DisconnectChannelOutcome,
   type MutationOutcome,
   type Patch,
+  type RenewedChannelAccess,
   type StoredChannelAccess,
   type WorkspaceIdentity,
   WorkspaceStore,
@@ -54,6 +63,13 @@ export const maxSockets = 32;
  * that has had many mutations rejected on one socket.
  */
 export const maxRejectionsKept = 1000;
+
+/**
+ * How often the object looks after the deliveries that are under way, in
+ * milliseconds: whether their workflows are still there, and whether one
+ * that could not be started can be now.
+ */
+export const deliveryWatchMs = 60 * 1000;
 
 /**
  * What the object keeps about a socket. It survives hibernation, and a
@@ -248,6 +264,200 @@ export function workspaceObject({ now }: { now: Clock }) {
       return this.#store.channelAccess(channelId) ?? null;
     }
 
+    /**
+     * What the delivery `run` publishes, for the workflow that carries it,
+     * or null if it is not under way any more. Returns nothing if
+     * `workspace` is not the one that the object holds.
+     */
+    delivery(
+      workspace: WorkspaceIdentity,
+      run: DeliveryRun,
+    ): Delivery | null | undefined {
+      if (!this.#store.bind(workspaceIdentitySchema.parse(workspace))) {
+        return undefined;
+      }
+      return this.#store.delivery(run) ?? null;
+    }
+
+    /**
+     * Records how far the delivery `run` has come: the parts that are
+     * published, which the clients hear of, and the progress to go on
+     * from. Carried out once for `key`. Returns nothing if `workspace` is
+     * not the one that the object holds.
+     */
+    recordProgress(
+      workspace: WorkspaceIdentity,
+      run: DeliveryRun,
+      parts: MutatorArgs<"target.progress">["parts"],
+      progress: unknown,
+      key: string,
+    ): MutationOutcome | undefined {
+      if (!this.#store.bind(workspaceIdentitySchema.parse(workspace))) {
+        return undefined;
+      }
+      const from = this.#store.seq;
+      const outcome = this.#store.recordProgress(
+        run,
+        parts,
+        progress,
+        now().getTime(),
+        callKeySchema.parse(key),
+      );
+      this.#publish(from);
+      return outcome;
+    }
+
+    /**
+     * Stores the credentials that a refresh returned, sealed, in place of
+     * `expected`, the ones that it started from, and returns whether it
+     * did: not if the channel holds others by now. Returns nothing if
+     * `workspace` is not the one that the object holds.
+     */
+    renewChannelAccess(
+      workspace: WorkspaceIdentity,
+      channelId: string,
+      expected: string,
+      access: RenewedChannelAccess,
+    ): boolean | undefined {
+      if (!this.#store.bind(workspaceIdentitySchema.parse(workspace))) {
+        return undefined;
+      }
+      const from = this.#store.seq;
+      const renewed = this.#store.renewChannelAccess(
+        channelId,
+        expected,
+        access,
+        now().getTime(),
+      );
+      this.#publish(from);
+      return renewed;
+    }
+
+    /**
+     * Looks after the deliveries: begins the ones whose turn has come,
+     * each as a run of the publishing workflow, and ends the ones whose
+     * workflow is over without having said so. It runs soon after anything
+     * changes that can make a delivery begin, and every `deliveryWatchMs`
+     * while one is under way.
+     *
+     * It never fails: the runtime gives up on an alarm that keeps failing,
+     * and the deliveries would wait for ever. What goes wrong is logged,
+     * and tried again the next time.
+     */
+    override async alarm(): Promise<void> {
+      try {
+        await this.#watchDeliveries();
+        await this.#startDeliveries();
+      } catch (error) {
+        console.error(
+          "The deliveries of a workspace were not looked after",
+          loggable(error),
+        );
+      }
+      // Nothing is awaited between the last look at the deliveries above
+      // and this one, so nothing can have come in between.
+      if (this.#store.deliveriesNeed !== "nothing") {
+        // By the clock of the runtime, which is the one that alarms go by.
+        await this.ctx.storage.setAlarm(Date.now() + deliveryWatchMs);
+      }
+    }
+
+    /**
+     * Begins every delivery whose turn it is and creates its workflow,
+     * until there is none left to begin.
+     *
+     * The target is `sending` before its workflow exists, so that the
+     * workflow finds it so. If the object stops in between, the alarm runs
+     * again and creates the workflow then: its ID is made of the target
+     * and the attempt, so it is created once however often this is tried.
+     */
+    async #startDeliveries(): Promise<void> {
+      for (;;) {
+        const from = this.#store.seq;
+        this.#store.startDeliveries(now().getTime());
+        this.#publish(from);
+        const runs = this.#store.deliveries(false);
+        if (runs.length === 0) return;
+        const workspace = this.#store.identity;
+        for (const run of runs) {
+          const id = deliveryInstanceId(run);
+          try {
+            release(
+              await this.env.PUBLISH.create({
+                id,
+                params: { workspace, ...run },
+              }),
+            );
+          } catch (error) {
+            // Created by an earlier try that did not get to say so, if it
+            // is there. `get` fails for an instance that does not exist.
+            release(
+              await this.env.PUBLISH.get(id).catch(() => {
+                throw error;
+              }),
+            );
+          }
+          this.#store.dispatched(run);
+        }
+      }
+    }
+
+    /**
+     * Ends the deliveries whose workflow is over and has not ended them:
+     * it failed in a way that it could not report, or somebody stopped it.
+     * Nothing else would ever end such a delivery, and the ones behind it
+     * would wait for good. How far it got is not known, so a person has to
+     * look.
+     */
+    async #watchDeliveries(): Promise<void> {
+      for (const run of this.#store.deliveries(true)) {
+        if (!(await this.#isOver(run))) continue;
+        console.error(
+          `The workflow of the delivery ${deliveryInstanceId(run)} ended without a word`,
+        );
+        const from = this.#store.seq;
+        // Refused if the workflow has ended the delivery after all, in the
+        // moment that it took to ask.
+        this.#store.mutate(
+          {
+            name: "target.end",
+            args: {
+              id: run.targetId,
+              attempt: run.attempt,
+              status: "uncertain",
+              error: lostTrackMessage,
+              reconnect: false,
+            } satisfies MutatorArgs<"target.end">,
+          },
+          now().getTime(),
+        );
+        this.#publish(from);
+      }
+    }
+
+    /** Whether the workflow of a delivery has stopped for good. */
+    async #isOver(run: DeliveryRun): Promise<boolean> {
+      let status: InstanceStatus["status"];
+      try {
+        const instance = await this.env.PUBLISH.get(deliveryInstanceId(run));
+        try {
+          ({ status } = await instance.status());
+        } finally {
+          release(instance);
+        }
+      } catch (error) {
+        // Gone: its record was deleted, which happens only to one that is
+        // over. Any other failure says nothing about the workflow.
+        if (/not[_ ]found/i.test(String(error))) return true;
+        throw error;
+      }
+      // A workflow that completes ends its delivery first. One that has
+      // completed and left the delivery under way has not done its work.
+      return (
+        status === "errored" || status === "terminated" || status === "complete"
+      );
+    }
+
     override webSocketMessage(
       socket: WebSocket,
       message: string | ArrayBuffer,
@@ -420,11 +630,16 @@ export function workspaceObject({ now }: { now: Clock }) {
      * that it cannot send them to is closed instead, for its client to
      * connect again and get them from its cursor: none is left open without
      * them, where it would wait for nothing.
+     *
+     * Every change of the workspace passes through here, so this is also
+     * where the object sees whether a change has made a delivery ready to
+     * begin.
      */
     #publish(
       from: number,
       origin?: { socket: WebSocket; rejected: Rejection[] },
     ): void {
+      this.#wake();
       const sockets = this.ctx
         .getWebSockets()
         .filter((socket) => socket.readyState === WebSocket.OPEN);
@@ -459,6 +674,27 @@ export function workspaceObject({ now }: { now: Clock }) {
           console.error("The changes of a workspace were not sent", error);
           abandon(socket);
         }
+      }
+    }
+
+    /**
+     * Has the alarm run at once if a change has made a delivery ready to
+     * begin: a post was published, or the delivery before it has ended.
+     * The alarm is stored with the change that it follows, so it runs also
+     * if the object stops before it gets there.
+     */
+    #wake(): void {
+      try {
+        if (this.#store.deliveriesNeed === "start") {
+          void this.ctx.storage.setAlarm(Date.now());
+        }
+      } catch (error) {
+        // The change that led here is committed and sent. The deliveries
+        // wait for the next change or the next alarm.
+        console.error(
+          "The deliveries of a workspace were not looked at",
+          error,
+        );
       }
     }
   };

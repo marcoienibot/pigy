@@ -1,6 +1,8 @@
 import { createApp } from "./app.ts";
 import { developmentCredentialKeys } from "./development-keys.ts";
+import { providerOf } from "./network/providers.ts";
 import { outboundFetch } from "./outbound.ts";
+import { publishWorkflow } from "./publish/workflow.ts";
 import { simWorldObject } from "./sim/object.ts";
 import { createSimulatedGoogle } from "./simulated-google.ts";
 import { workspaceObject } from "./workspace/object.ts";
@@ -18,12 +20,14 @@ const simulated =
   import.meta.env.MODE === "test" ||
   import.meta.env.MODE === "e2e";
 
-export default createApp({
+const dependencies = {
   fetch: outboundFetch(import.meta.env.MODE),
   now,
   simulatedGoogle: simulated ? createSimulatedGoogle(now) : undefined,
   developmentCredentialKeys: simulated ? developmentCredentialKeys : undefined,
-});
+};
+
+export default createApp(dependencies);
 
 /**
  * The Durable Object of a workspace, under the name that wrangler.jsonc binds
@@ -38,3 +42,13 @@ export class WorkspaceDO extends workspaceObject({ now }) {}
  * app, not a tool for its development.
  */
 export class SimWorldDO extends simWorldObject({ now }) {}
+
+/**
+ * The workflow that publishes a post to a channel, bound as `PUBLISH`. It
+ * is built with what the app is built with: the same `fetch` leads to the
+ * networks, and the same key opens what the routes sealed.
+ */
+export class PublishWorkflow extends publishWorkflow({
+  ...dependencies,
+  providerOf,
+}) {}

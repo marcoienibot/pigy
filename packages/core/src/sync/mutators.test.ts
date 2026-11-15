@@ -334,6 +334,38 @@ it("replaces the limits of a channel, and says when", () => {
   ).toBe("not_found");
 });
 
+it("moves the end of the access of a channel when its credentials are renewed", () => {
+  const workspace = memoryWorkspace();
+  workspace.mutate(
+    "channel.connect",
+    account({ expiresAt: 9000 }),
+    1000,
+    "server",
+  );
+
+  workspace.mutate(
+    "channel.renew",
+    { id: channelId, expiresAt: 20_000 },
+    5000,
+    "server",
+  );
+
+  // Nothing else about the channel changes: it was connected when it was.
+  expect(workspace.rows("channel")).toEqual([
+    channel(1000, { expiresAt: 20_000 }),
+  ]);
+  expect(
+    rejectionOf(() =>
+      workspace.mutate(
+        "channel.renew",
+        { id: otherChannelId, expiresAt: null },
+        6000,
+        "server",
+      ),
+    ),
+  ).toBe("not_found");
+});
+
 it.each([
   ["another account of the network", { accountId: "2@mastodon.example" }],
   // The IDs of two networks are unrelated, also when they read the same.
@@ -407,6 +439,7 @@ it("removes a channel, and accepts that it is gone already", () => {
 it.each([
   ["channel.connect", account()],
   ["channel.setLimits", { id: channelId, limits }],
+  ["channel.renew", { id: channelId, expiresAt: 5000 }],
   ["channel.disconnect", { id: channelId }],
 ])("refuses %s from a client", (name, args) => {
   const workspace = memoryWorkspace();

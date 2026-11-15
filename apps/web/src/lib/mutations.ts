@@ -17,6 +17,7 @@ const refused: Record<MutatorName, string> = {
   // made. They are named all the same: the list is of every mutator.
   "channel.connect": "An account was not connected",
   "channel.setLimits": "The limits of an account were not updated",
+  "channel.renew": "The access to an account was not renewed",
   "channel.disconnect": "An account was not disconnected",
   "target.start": "A post was not sent",
   "target.progress": "A published post was not recorded",

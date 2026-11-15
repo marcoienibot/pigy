@@ -33,6 +33,15 @@
     { "tag": "v1", "new_sqlite_classes": ["WorkspaceDO"] },
     { "tag": "v2", "new_sqlite_classes": ["SimWorldDO"] }
   ],
+  "workflows": [
+    // One run per attempt at the delivery of a post to a channel. The
+    // Durable Object of the workspace starts them.
+    {
+      "name": "pigy-publish",
+      "binding": "PUBLISH",
+      "class_name": "PublishWorkflow"
+    }
+  ],
   "assets": {
     // No "directory": the Vite plugin in apps/web points it at the built
     // web app.

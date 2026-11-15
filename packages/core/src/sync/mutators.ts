@@ -422,6 +422,26 @@ export const mutators = {
   ),
 
   /**
+   * Stores when the access of a channel ends now that the server has
+   * renewed its credentials, where the network has that. It keeps the new
+   * credentials with the channel in the same step.
+   */
+  "channel.renew": mutator(
+    channelRowSchema.pick({ id: true, expiresAt: true }),
+    (tx, { id, expiresAt }) => {
+      const channel = tx.get("channel", id);
+      if (!channel) {
+        throw new MutationRejected(
+          "not_found",
+          "This account is no longer connected",
+        );
+      }
+      tx.put("channel", { ...channel, expiresAt });
+    },
+    { serverOnly: true },
+  ),
+
+  /**
    * Removes a channel, and with it the access that the server keeps for
    * it. Does nothing if the channel is gone.
    *

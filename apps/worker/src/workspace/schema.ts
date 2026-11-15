@@ -109,6 +109,22 @@ export const postTargets = sqliteTable(
     error: text("error"),
     queuedAt: integer("queued_at"),
     sentAt: integer("sent_at"),
+
+    // The columns below are not synced: they are the bookkeeping of the
+    // deliveries, which store.ts reads and writes.
+
+    /**
+     * How far the publishing has come, as the adapter of the network
+     * returned it from its last step: the progress that the next attempt
+     * goes on from. It holds no secret. Null if nothing is recorded, and
+     * for a delivery that has to begin anew.
+     */
+    progress: text("progress", { mode: "json" }).$type<unknown>(),
+    /**
+     * The attempt that a workflow was created for. A target that is
+     * `sending` in a later attempt than this has yet to get its workflow.
+     */
+    dispatched: integer("dispatched").notNull().default(0),
   },
   (table) => [
     // A post goes to a channel once.

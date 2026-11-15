@@ -142,6 +142,7 @@ Some mutators are the server's own. A client that sends one has it rejected with
 | --- | --- |
 | `channel.connect` | Stores an account that was just connected as a channel with the status `connected`. An account that has a channel keeps it, under the ID it had |
 | `channel.setLimits` | Replaces what the account of a channel may post, when its network has been asked again |
+| `channel.renew` | Stores when the access of a channel ends, after the server has renewed its credentials |
 | `channel.disconnect` | Removes a channel. Does nothing if the channel is gone. Its targets go the way "Publishing" below says |
 | `target.start` | Begins the delivery of a target that waited its turn: `sending`, in a new attempt |
 | `target.progress` | Adds the results of the parts that a delivery has published |
