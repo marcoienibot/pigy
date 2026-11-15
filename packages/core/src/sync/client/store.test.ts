@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import { browser, draft, newId, settle } from "../../../test/sync-browser.ts";
 import { applyPatch } from "./copy.ts";
-import type { SyncStore } from "./store.ts";
+import { type SyncStore, saveRetryMs } from "./store.ts";
 
 /** Creates a draft in `store` and returns the IDs of it and its part. */
 function createDraft(store: SyncStore, text: string) {
@@ -26,7 +26,8 @@ it("shows a mutation before it is stored", async () => {
 
   // Nothing was awaited: the view has the draft when `mutate` returns.
   expect(texts(store)).toEqual(["Hello"]);
-  expect(store.getState().pending).toBe(1);
+  // Not stored yet is not the same as could not be stored.
+  expect(store.getState()).toMatchObject({ pending: 1, unsaved: 0 });
   expect(notified).toBe(1);
   // It is not in the outbox yet, which is what is stored.
   expect(store.head.outbox).toEqual([]);
@@ -214,6 +215,45 @@ it("keeps showing a mutation that could not be stored, and stores it with the ne
   await settle();
   expect(texts(store)).toEqual(["Kept", "Next"]);
   expect(store.head.outbox.map(({ id }) => id)).toEqual([1, 2]);
+  expect(store.getState()).toMatchObject({ pending: 2, unsaved: 0 });
+  // The attempt that was planned for later has nothing left to do.
+  await device.advance(saveRetryMs);
+  expect(store.head.outbox.map(({ id }) => id)).toEqual([1, 2]);
+  expect(device.errors).toHaveLength(1);
+});
+
+it("says that a mutation is not stored when storing it fails, and tries again by itself", async () => {
+  const device = browser();
+  const { store } = await device.tab();
+  const { update } = device.storage;
+  device.storage.update = () => Promise.reject(new Error("The disk is full"));
+
+  createDraft(store, "Kept");
+  await settle();
+
+  // It is counted as what it is: a change that is in the memory of this
+  // tab and nowhere else. The app must not call that saved.
+  expect(store.getState()).toMatchObject({ pending: 1, unsaved: 1 });
+  expect(texts(store)).toEqual(["Kept"]);
+  expect(device.errors).toHaveLength(1);
+  expect((await device.storage.read())?.head.outbox).toEqual([]);
+
+  // It is tried again after a pause, and nothing else has to happen for
+  // that. The disk is still full.
+  await device.advance(saveRetryMs - 1);
+  expect(device.errors).toHaveLength(1);
+  await device.advance(1);
+  expect(device.errors).toHaveLength(2);
+  expect(store.getState()).toMatchObject({ pending: 1, unsaved: 1 });
+
+  // There is room again, and the next attempt stores it.
+  device.storage.update = update;
+  await device.advance(saveRetryMs);
+  expect(store.getState()).toMatchObject({ pending: 1, unsaved: 0 });
+  expect((await device.storage.read())?.head.outbox).toMatchObject([
+    { id: 1, name: "post.create" },
+  ]);
+  expect(texts(store)).toEqual(["Kept"]);
 });
 
 it("stores a mutation that a person makes in a tab that is too old for the copy", async () => {

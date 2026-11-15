@@ -26,7 +26,23 @@ type Description = {
   reload?: true;
 };
 
-function describe({ connection, pending, outdated }: SyncState): Description {
+function describe({
+  connection,
+  pending,
+  unsaved,
+  outdated,
+}: SyncState): Description {
+  // Before anything about the connection: these changes are not on their
+  // way anywhere, and the advice to reload would lose them.
+  if (unsaved > 0) {
+    return {
+      label: `Not saved · ${changes(unsaved)}`,
+      detail: `pigy could not save ${changes(unsaved)} on this device, which may be out of space. ${
+        unsaved === 1 ? "It exists" : "They exist"
+      } only in this window: keep it open while pigy tries again.`,
+      tone: "stuck",
+    };
+  }
   const kept =
     pending > 0
       ? `${changes(pending)} ${pending === 1 ? "is" : "are"} saved on this device`

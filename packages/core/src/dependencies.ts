@@ -11,3 +11,9 @@ export type Fetch = (
 
 /** Stands in for `new Date()`. */
 export type Clock = () => Date;
+
+/**
+ * Stands in for `setTimeout`: calls `callback` once, after `delayMs`.
+ * Returns how to call that off.
+ */
+export type Schedule = (callback: () => void, delayMs: number) => () => void;

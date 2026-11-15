@@ -5,6 +5,7 @@ import {
   memoryTabs,
   type PatchMessage,
   type Row,
+  type Schedule,
   type SocketEvents,
   SyncConnection,
   SyncStore,
@@ -133,6 +134,14 @@ export function browser() {
      */
     unanswered: [] as { answer(access: Access): void; signal: AbortSignal }[],
   };
+  const schedule: Schedule = (callback, delayMs) => {
+    const timer = { at: time + delayMs, callback };
+    timers.push(timer);
+    return () => {
+      const index = timers.indexOf(timer);
+      if (index >= 0) timers.splice(index, 1);
+    };
+  };
 
   return {
     storage,
@@ -158,6 +167,7 @@ export function browser() {
         storage,
         channel: tabs.join(),
         now: () => new Date(time),
+        schedule,
         onError: (error) => errors.push(error),
       });
       await store.open();
@@ -185,14 +195,7 @@ export function browser() {
               })
             : Promise.resolve(access);
         },
-        schedule: (callback, delayMs) => {
-          const timer = { at: time + delayMs, callback };
-          timers.push(timer);
-          return () => {
-            const index = timers.indexOf(timer);
-            if (index >= 0) timers.splice(index, 1);
-          };
-        },
+        schedule,
         onError: (error) => errors.push(error),
       });
       return { store, connection };

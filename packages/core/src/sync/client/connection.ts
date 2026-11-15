@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { Fetch } from "../../dependencies.ts";
+import type { Fetch, Schedule } from "../../dependencies.ts";
 import { workspaceListResponseSchema } from "../../workspace.ts";
 import {
   type HelloMessage,
@@ -36,9 +36,6 @@ export type SocketEvents = {
 
 /** Starts the handshake of a socket to the workspace. */
 export type OpenSocket = (events: SocketEvents) => Socket;
-
-/** Calls `callback` once, after `delayMs`. Returns how to call that off. */
-export type Schedule = (callback: () => void, delayMs: number) => () => void;
 
 /** Why a handshake failed, as far as `GET /api/workspaces` tells. */
 export type Access =

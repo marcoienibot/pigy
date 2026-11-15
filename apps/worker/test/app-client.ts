@@ -3,6 +3,7 @@ import {
   memoryStorage,
   memoryTabs,
   type Row,
+  type Schedule,
   SyncConnection,
   SyncStore,
   type TableName,
@@ -54,15 +55,24 @@ export function device(browser: Browser, workspaceId: string) {
 
     /** Opens the app in a tab, which does not hold the socket yet. */
     async tab() {
+      const timers: { at: number; callback: () => void }[] = [];
+      const schedule: Schedule = (callback, delayMs) => {
+        const timer = { at: clock.time.getTime() + delayMs, callback };
+        timers.push(timer);
+        return () => {
+          const index = timers.indexOf(timer);
+          if (index >= 0) timers.splice(index, 1);
+        };
+      };
       const store = new SyncStore({
         storage,
         channel: tabs.join(),
         now: () => clock.time,
+        schedule,
         onError: (error) => errors.push(error),
       });
       await store.open();
 
-      const timers: { at: number; callback: () => void }[] = [];
       let lose = () => {};
       const link: Link = {
         opened: 0,
@@ -131,14 +141,7 @@ export function device(browser: Browser, workspaceId: string) {
         },
         checkAccess: () =>
           checkAccess((input) => browser.fetch(String(input)), workspaceId),
-        schedule: (callback, delayMs) => {
-          const timer = { at: clock.time.getTime() + delayMs, callback };
-          timers.push(timer);
-          return () => {
-            const index = timers.indexOf(timer);
-            if (index >= 0) timers.splice(index, 1);
-          };
-        },
+        schedule,
         onError: (error) => errors.push(error),
       });
       // A tab that outlived its test would connect again when the next

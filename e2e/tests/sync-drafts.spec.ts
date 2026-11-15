@@ -1,5 +1,6 @@
 import {
   backToList,
+  breakStorage,
   connectionOf,
   draftRow,
   draftRows,
@@ -244,6 +245,56 @@ test("what is typed stays when the same draft is changed elsewhere", async ({
   await expectSync(page, "Synced");
   await expect(editor(page)).toHaveValue("What I am typing right now");
   await expect(editor(other)).toHaveValue("What I am typing right now");
+});
+
+test("a change that the device cannot save is not called saved", async ({
+  ownPage: page,
+  isMobile,
+}) => {
+  await writeDraft(page, isMobile, "Written while there was room");
+  await expectSync(page, "Synced");
+
+  // The device has no room left: the local copy cannot be written.
+  const storage = await breakStorage(page);
+  await draftRow(page, "Written while there was room").click();
+  await editor(page).fill("Written with no room left");
+
+  // The connection is fine, and that is not what the indicator is about
+  // now: the change is in this window and nowhere else.
+  await expectSync(page, "Not saved · 1 change");
+  await backToList(page, isMobile);
+  await page
+    .getByRole("button", { name: "Sync: Not saved · 1 change" })
+    .filter({ visible: true })
+    .first()
+    .click();
+  const detail = page.getByRole("dialog");
+  await expect(detail).toContainText("could not save 1 change on this device");
+  await expect(detail).toContainText("only in this window");
+  await page.keyboard.press("Escape");
+
+  // Signing out would lose it, so the app asks first, although the copy on
+  // the device holds nothing that the server has not got.
+  await page
+    .getByRole("button", { name: "Account" })
+    .filter({ visible: true })
+    .click();
+  await page.getByRole("menuitem", { name: "Sign out" }).click();
+  const dialog = page.getByRole("alertdialog");
+  await expect(dialog).toContainText("1 change has not been synced");
+  await dialog.getByRole("button", { name: "Stay signed in" }).click();
+
+  // There is room again. The next change is saved, and the one before it
+  // with it: both reach the server.
+  await storage.repair();
+  await draftRow(page, "Written with no room left").click();
+  await editor(page).press("End");
+  await page.keyboard.type(", and then some");
+  await expectSync(page, "Synced");
+  await page.reload();
+  await expect(editor(page)).toHaveValue(
+    "Written with no room left, and then some",
+  );
 });
 
 test("signing out deletes the local copy, and signs the other tabs out", async ({

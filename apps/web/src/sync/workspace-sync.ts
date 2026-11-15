@@ -1,6 +1,7 @@
 import {
   checkAccess,
   type OpenSocket,
+  type Schedule,
   SyncConnection,
   SyncStore,
   type TabChannel,
@@ -23,6 +24,11 @@ export type WorkspaceSync = {
 function report(error: unknown): void {
   console.error("Sync", error);
 }
+
+const schedule: Schedule = (callback, delayMs) => {
+  const timer = setTimeout(callback, delayMs);
+  return () => clearTimeout(timer);
+};
 
 function webSocketTo(path: string): OpenSocket {
   return (events) => {
@@ -58,6 +64,7 @@ async function open(
     storage,
     channel,
     now: () => new Date(),
+    schedule,
     onError: report,
   });
   await store.open();
@@ -67,10 +74,7 @@ async function open(
     open: webSocketTo(`/sync/${workspaceId}`),
     checkAccess: (signal) =>
       checkAccess((input, init) => fetch(input, init), workspaceId, signal),
-    schedule: (callback, delayMs) => {
-      const timer = setTimeout(callback, delayMs);
-      return () => clearTimeout(timer);
-    },
+    schedule,
     onError: report,
   });
 

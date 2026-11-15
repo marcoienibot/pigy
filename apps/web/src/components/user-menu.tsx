@@ -47,7 +47,8 @@ function Avatar({ name }: { name: string }) {
  * name. In the header of a phone it is only the avatar.
  */
 export function UserMenu({ placement }: { placement: "sidebar" | "header" }) {
-  const { user } = useRouteContext({ from: "/_app" }).me;
+  const { me, store } = useRouteContext({ from: "/_app" });
+  const { user } = me;
   const inSidebar = placement === "sidebar";
   // Whether the last attempt to sign out failed, until the person has
   // answered that.
@@ -78,9 +79,12 @@ export function UserMenu({ placement }: { placement: "sidebar" | "header" }) {
   };
 
   // Signing out deletes the local copy, and with it what the server has
-  // not got yet: only the person can say whether that may go.
+  // not got yet: only the person can say whether that may go. That is what
+  // the copies hold, and what this window could not store in its copy,
+  // which a count of the copies does not have.
   const askOrSignOut = async () => {
-    const count = await countUnsynced(user.id).catch(() => 0);
+    const stored = await countUnsynced(user.id).catch(() => 0);
+    const count = stored + store.getState().unsaved;
     if (count > 0) setUnsynced(count);
     else await signOutAndLeave();
   };

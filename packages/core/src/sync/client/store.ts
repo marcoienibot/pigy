@@ -1,4 +1,4 @@
-import type { Clock } from "../../dependencies.ts";
+import type { Clock, Schedule } from "../../dependencies.ts";
 import { uuidv7 } from "../../id.ts";
 import type { MutatorArgs, MutatorName } from "../mutators.ts";
 import { syncSchemaVersion } from "../protocol.ts";
@@ -45,6 +45,13 @@ export type SyncState = {
   /** How many mutations the server has not confirmed. */
   pending: number;
   /**
+   * How many of them this tab could not store. They are in its memory and
+   * nowhere else, so they are gone if the tab is closed, and they are not
+   * sent. The store keeps trying to store them. This has nothing to do with
+   * the connection: it is the device that fails.
+   */
+  unsaved: number;
+  /**
    * This tab runs a version of the app that is older than the server or
    * than the copy. It has to be loaded again.
    */
@@ -72,6 +79,12 @@ export interface TabChannel {
   listen(listener: (message: TabMessage) => void): () => void;
 }
 
+/**
+ * How long the store waits before it tries again to store mutations that
+ * it could not store, in milliseconds.
+ */
+export const saveRetryMs = 5_000;
+
 const noRejections: readonly StoredRejection[] = [];
 
 /**
@@ -92,10 +105,14 @@ export class SyncStore {
   private state: SyncState = {
     connection: "connecting",
     pending: 0,
+    unsaved: 0,
     outdated: false,
   };
   /** Mutations that are shown and not stored yet, oldest first. */
   private readonly unsaved: MutationCall[] = [];
+  /** Whether the last attempt to store `unsaved` failed. */
+  private saveFailed = false;
+  private cancelSaveRetry: (() => void) | undefined;
   private readonly listeners = new Set<() => void>();
   /** The work on the storage, which is done one piece at a time. */
   private queue: Promise<unknown> = Promise.resolve();
@@ -112,6 +129,7 @@ export class SyncStore {
       storage: ClientStorage;
       channel: TabChannel;
       now: Clock;
+      schedule: Schedule;
       /** Told of failures of the storage that nobody waits for. */
       onError: (error: unknown) => void;
     },
@@ -136,6 +154,7 @@ export class SyncStore {
   /** Stops following the other tabs. What is stored stays. */
   close(): void {
     this.closed = true;
+    this.cancelSaveRetry?.();
     this.stopListening();
     this.listeners.clear();
   }
@@ -177,20 +196,7 @@ export class SyncStore {
   mutate<Name extends MutatorName>(name: Name, args: MutatorArgs<Name>): void {
     this.unsaved.push({ name, args, at: this.options.now().getTime() });
     this.refresh(true);
-    if (this.saveQueued) return;
-    this.saveQueued = true;
-    this.enqueue(async () => {
-      // From here on a new mutation needs another round.
-      this.saveQueued = false;
-      const calls = this.unsaved.slice();
-      // They leave `unsaved` in the same moment as they enter the outbox
-      // in memory, so the view never has them twice or not at all.
-      await this.run(
-        (head) => appendMutations(head, calls),
-        { own: true },
-        () => this.unsaved.splice(0, calls.length),
-      );
-    }).catch(this.options.onError);
+    this.save();
   }
 
   /** Forgets a rejection, in every tab: the person has seen it. */
@@ -281,6 +287,43 @@ export class SyncStore {
     return () => {
       if (this.wakeListener === listener) this.wakeListener = undefined;
     };
+  }
+
+  /** Stores the mutations that are shown and not stored yet. */
+  private save(): void {
+    if (this.saveQueued) return;
+    this.saveQueued = true;
+    this.cancelSaveRetry?.();
+    this.cancelSaveRetry = undefined;
+    this.enqueue(async () => {
+      // From here on a new mutation needs another round.
+      this.saveQueued = false;
+      const calls = this.unsaved.slice();
+      if (calls.length === 0) return;
+      // They leave `unsaved` in the same moment as they enter the outbox
+      // in memory, so the view never has them twice or not at all.
+      await this.run(
+        (head) => appendMutations(head, calls),
+        { own: true },
+        () => {
+          this.unsaved.splice(0, calls.length);
+          this.saveFailed = false;
+        },
+      );
+    }).catch((error: unknown) => {
+      this.options.onError(error);
+      if (this.closed) return;
+      // The mutations stay in `unsaved` and on screen. The app is told
+      // that they are not stored, and they are tried again: after a pause,
+      // or with the next mutation, whichever comes first.
+      this.saveFailed = true;
+      this.refresh(false);
+      if (this.saveQueued) return;
+      this.cancelSaveRetry = this.options.schedule(() => {
+        this.cancelSaveRetry = undefined;
+        this.save();
+      }, saveRetryMs);
+    });
   }
 
   /**
@@ -418,7 +461,10 @@ export class SyncStore {
       this.view = viewOf(this.copy.tables, [...outbox, ...this.unsaved]);
     }
     const pending = outbox.length + this.unsaved.length;
-    if (pending !== this.state.pending) this.state = { ...this.state, pending };
+    const unsaved = this.saveFailed ? this.unsaved.length : 0;
+    if (pending !== this.state.pending || unsaved !== this.state.unsaved) {
+      this.state = { ...this.state, pending, unsaved };
+    }
     this.notify();
   }
 

@@ -124,6 +124,33 @@ export async function connectionOf(page: Page) {
   };
 }
 
+/**
+ * Makes every write to IndexedDB fail in `page`, as on a device that has
+ * no room left, until `repair()` is called. Reading still works.
+ */
+export async function breakStorage(page: Page) {
+  await page.evaluate(() => {
+    const { transaction } = IDBDatabase.prototype;
+    IDBDatabase.prototype.transaction = function (names, mode, options) {
+      if (mode === "readwrite") {
+        throw new DOMException("No room left", "QuotaExceededError");
+      }
+      return transaction.call(this, names, mode, options);
+    };
+    Object.assign(window, {
+      repairStorage() {
+        IDBDatabase.prototype.transaction = transaction;
+      },
+    });
+  });
+  return {
+    repair: () =>
+      page.evaluate(() =>
+        (window as unknown as { repairStorage(): void }).repairStorage(),
+      ),
+  };
+}
+
 /** The names of the databases with local copies, and the stored session. */
 export function localData(page: Page) {
   return page.evaluate(async () => ({
