@@ -4,7 +4,8 @@
   "type": "module",
   "sideEffects": false,
   "exports": {
-    "./google": "./src/google/index.ts"
+    "./google": "./src/google/index.ts",
+    "./world": "./src/world/index.ts"
   },
   "scripts": {
     "typecheck": "tsc -b",
