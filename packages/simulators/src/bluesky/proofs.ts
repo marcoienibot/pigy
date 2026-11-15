@@ -215,6 +215,10 @@ export async function checkAssertion(
         audience: issuer,
         currentDate: state.world.now(),
         maxTokenAge: assertionMaxAgeSeconds,
+        // RFC 7523 section 3: the JWT must contain an "exp", and the
+        // server rejects one that has expired. The age above requires an
+        // "iat" as well.
+        requiredClaims: ["exp"],
         clockTolerance: 10,
       },
     ));

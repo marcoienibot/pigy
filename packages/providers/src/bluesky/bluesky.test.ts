@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import { newClientKey } from "../../test/bluesky-keys.ts";
 import { ProviderError } from "../errors.ts";
 import type { Json, PublishProgress } from "../provider.ts";
+import { claims } from "./identity.ts";
 import {
   type BlueskyClientKey,
   type BlueskyCredentials,
@@ -16,7 +17,6 @@ import {
   createBlueskyProvider,
   parseHandle,
 } from "./index.ts";
-import { claims } from "./identity.ts";
 
 const origin = "https://pigy.example";
 const redirectUri = `${origin}/connect/bluesky/callback`;
@@ -206,7 +206,10 @@ describe("claims", () => {
   // The "DID" specification of atproto: the first handle in the list that
   // is written the way a handle is counts, and the others are ignored.
   const claimed = (alsoKnownAs: string[]) =>
-    claims({ id: "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa", alsoKnownAs }, "ada.bsky.test");
+    claims(
+      { id: "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa", alsoKnownAs },
+      "ada.bsky.test",
+    );
 
   it("takes the first handle in the list, whatever comes before it that is none", () => {
     expect(claimed(["at://ada.bsky.test"])).toBe(true);
@@ -302,13 +305,19 @@ describe("connecting", () => {
     // for ever.
     const refused = [
       ...privateAddresses.map((address) => [`${address}/did`]),
-      Array.from({ length: 6 }, (_, hop) => `https://handles.example.com/${hop}`),
+      Array.from(
+        { length: 6 },
+        (_, hop) => `https://handles.example.com/${hop}`,
+      ),
     ];
     for (const hops of refused) {
       redirecting(...hops);
       test.requests.length = 0;
       const error = await failure(() =>
-        test.provider.beginConnect({ redirectUri, identifier: "ada.bsky.test" }),
+        test.provider.beginConnect({
+          redirectUri,
+          identifier: "ada.bsky.test",
+        }),
       );
       // Said of the handle that the person typed, and not of a server.
       expect(error.message, hops.join()).toBe(
@@ -818,7 +827,10 @@ describe("publishing", () => {
           ? Response.json({ uri, cid: "bafyreiexample", value })
           : simulator(request),
       );
-    const post = { $type: "app.bsky.feed.post", createdAt: "2026-11-15T09:00:00.000Z" };
+    const post = {
+      $type: "app.bsky.feed.post",
+      createdAt: "2026-11-15T09:00:00.000Z",
+    };
 
     // The first part replies to nothing.
     const chosen = await step(null);
@@ -827,8 +839,14 @@ describe("publishing", () => {
       ...post,
       text: "One",
       reply: {
-        root: { uri: "at://did:plc:bbbbbbbbbbbbbbbbbbbbbbbb/app.bsky.feed.post/3m2abcdefgh22", cid: "bafyreiroot" },
-        parent: { uri: "at://did:plc:bbbbbbbbbbbbbbbbbbbbbbbb/app.bsky.feed.post/3m2abcdefgh22", cid: "bafyreiroot" },
+        root: {
+          uri: "at://did:plc:bbbbbbbbbbbbbbbbbbbbbbbb/app.bsky.feed.post/3m2abcdefgh22",
+          cid: "bafyreiroot",
+        },
+        parent: {
+          uri: "at://did:plc:bbbbbbbbbbbbbbbbbbbbbbbb/app.bsky.feed.post/3m2abcdefgh22",
+          cid: "bafyreiroot",
+        },
       },
     });
     expect((await failure(() => step(chosen))).kind).toBe("fail");
@@ -850,15 +868,47 @@ describe("publishing", () => {
     };
     const others: [string, string, Record<string, unknown>][] = [
       ["under another address", `${uri}x`, written],
-      ["with a picture", uri, { ...written, embed: { $type: "app.bsky.embed.images", images: [] } }],
+      [
+        "with a picture",
+        uri,
+        { ...written, embed: { $type: "app.bsky.embed.images", images: [] } },
+      ],
       ["with links marked up", uri, { ...written, facets: [] }],
       ["in a language", uri, { ...written, langs: ["en"] }],
-      ["with labels", uri, { ...written, labels: { $type: "com.atproto.label.defs#selfLabels", values: [] } }],
+      [
+        "with labels",
+        uri,
+        {
+          ...written,
+          labels: { $type: "com.atproto.label.defs#selfLabels", values: [] },
+        },
+      ],
       ["of another kind", uri, { ...written, $type: "app.bsky.feed.like" }],
       ["replying to nothing", uri, { ...post, text: "Two" }],
-      ["replying to another version of the part before", uri, { ...written, reply: { root: first, parent: { ...first, cid: "bafyreiother" } } }],
-      ["in another thread", uri, { ...written, reply: { root: { ...first, uri: `${first.uri}x` }, parent: first } }],
-      ["with the root of another version", uri, { ...written, reply: { root: { ...first, cid: "bafyreiother" }, parent: first } }],
+      [
+        "replying to another version of the part before",
+        uri,
+        {
+          ...written,
+          reply: { root: first, parent: { ...first, cid: "bafyreiother" } },
+        },
+      ],
+      [
+        "in another thread",
+        uri,
+        {
+          ...written,
+          reply: { root: { ...first, uri: `${first.uri}x` }, parent: first },
+        },
+      ],
+      [
+        "with the root of another version",
+        uri,
+        {
+          ...written,
+          reply: { root: { ...first, cid: "bafyreiother" }, parent: first },
+        },
+      ],
     ];
     for (const [what, at, value] of others) {
       found(at, value);

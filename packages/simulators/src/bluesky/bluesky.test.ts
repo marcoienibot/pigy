@@ -414,6 +414,34 @@ describe("pushing an authorization request", () => {
     });
   });
 
+  it("refuses an assertion without a time at which it ends", async () => {
+    const sim = await setup();
+    const push = async (claims: Record<string, unknown>) =>
+      body(
+        await sim.pigy.form(issuer, "/oauth/par", {
+          client_assertion: await assertion(sim.client, issuer, start, {
+            claims,
+          }),
+          response_type: "code",
+          code_challenge: pkce().challenge,
+          code_challenge_method: "S256",
+          state: "state",
+          redirect_uri: redirectUri,
+          scope,
+        }),
+      );
+    // RFC 7523 section 3: the JWT must contain an "exp". Signed by the
+    // client's key and right in everything else.
+    expect(await push({ exp: undefined })).toMatchObject({
+      error: "invalid_client",
+      error_description: expect.stringMatching(/"exp"/),
+    });
+    // The same with one is taken.
+    expect(await push({})).toMatchObject({
+      request_uri: expect.any(String),
+    });
+  });
+
   it("refuses an assertion that comes a second time", async () => {
     const sim = await setup();
     await sim.pigy.push(issuer);
