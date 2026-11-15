@@ -81,6 +81,17 @@ const takeOverMs = 3_000;
  */
 const updateCheckMs = 10_000;
 
+/**
+ * What `promise` resolves to, or `fallback` if it has not resolved after
+ * `ms` milliseconds.
+ */
+function within<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
+  ]);
+}
+
 /** Whether a newer version of the app is installed and waits. */
 let ready = false;
 const listeners = new Set<() => void>();
@@ -155,12 +166,11 @@ async function takenOn(): Promise<void> {
  * window could hold the lock there either.
  */
 export function mayTakeOver(): Promise<boolean> {
-  return Promise.race([
+  return within(
     unsavedInSomeWindow().then((unsaved) => !unsaved),
-    new Promise<boolean>((resolve) =>
-      setTimeout(() => resolve(false), takeOverMs),
-    ),
-  ]);
+    takeOverMs,
+    false,
+  );
 }
 
 /**
@@ -189,12 +199,11 @@ export async function startServiceWorker(): Promise<void> {
   const registration = await container.getRegistration();
   if (controlled && registration?.waiting && (await mayTakeOver())) {
     registration.waiting.postMessage(activateMessage);
-    const tookOver = await Promise.race([
+    const tookOver = await within(
       replaced.then(() => true),
-      new Promise<boolean>((resolve) =>
-        setTimeout(() => resolve(false), takeOverMs),
-      ),
-    ]);
+      takeOverMs,
+      false,
+    );
     if (tookOver) return new Promise(() => {});
   }
 
@@ -254,10 +263,7 @@ export async function checkForUpdate(): Promise<void> {
  * taken the same way, as a page that starts takes it.
  */
 export async function reloadToUpdate(): Promise<"blocked"> {
-  await Promise.race([
-    checkForUpdate(),
-    new Promise((resolve) => setTimeout(resolve, updateCheckMs)),
-  ]);
+  await within(checkForUpdate(), updateCheckMs, undefined);
   // What this window holds itself comes first, so that the lock which is
   // looked for next is another window's: this one gives its own back when
   // its changes are stored.
