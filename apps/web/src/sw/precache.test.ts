@@ -46,8 +46,11 @@ function server(files: Record<string, string>) {
   return { fetch, requests };
 }
 
-/** The caches of a browser, in memory. */
-function browserCaches() {
+/**
+ * The caches of a browser, in memory. With `full`, the device has no room
+ * for the file at that path: writing it fails.
+ */
+function browserCaches({ full }: { full?: string } = {}) {
   const stores = new Map<string, Map<string, Response>>();
   const caches: Platform["caches"] = {
     async open(name) {
@@ -56,6 +59,7 @@ function browserCaches() {
       return {
         match: async (path) => store.get(path)?.clone(),
         put: async (path, response) => {
+          if (path === full) throw new Error("No room left");
           store.set(path, response);
         },
       };
@@ -174,6 +178,53 @@ describe("installing", () => {
     ).rejects.toThrow(
       "Cannot keep /: the app shell is of another version: it loads /assets/index-333.css",
     );
+  });
+
+  it("leaves nothing behind when the server does not have a file", async () => {
+    const { "/assets/queue-222.js": _gone, ...left } = files;
+    const { fetch } = server(left);
+    const browser = browserCaches();
+
+    await expect(
+      precache(build, { caches: browser.caches, fetch, origin }).install(),
+    ).rejects.toThrow("Cannot keep /assets/queue-222.js");
+
+    // The files that the server did have were written. Left where they
+    // are, they would stay until a later version takes over, and every
+    // release whose install fails would add its own.
+    expect(browser.names()).toEqual([]);
+  });
+
+  it("leaves nothing behind when the device has no room for a file", async () => {
+    const { fetch } = server(files);
+    const browser = browserCaches({ full: "/assets/queue-222.js" });
+
+    await expect(
+      precache(build, { caches: browser.caches, fetch, origin }).install(),
+    ).rejects.toThrow("No room left");
+
+    expect(browser.names()).toEqual([]);
+  });
+
+  it("does not delete a cache of its build that was there before it began", async () => {
+    // The worker that is active is of this build and answers from this
+    // cache: the release changed the service worker and no file of the
+    // app. While the new worker installs, the next release is deployed,
+    // with other styles.
+    const browser = browserCaches();
+    browser.keep("pigy-app-2", files);
+    const { fetch } = server({
+      ...files,
+      "/": shellOf("/assets/index-222.js", "/assets/index-333.css"),
+      "/assets/index-333.css": "body { color: red }",
+    });
+
+    await expect(
+      precache(build, { caches: browser.caches, fetch, origin }).install(),
+    ).rejects.toThrow("Cannot keep /: the app shell is of another version");
+
+    // The app goes on running from what the active worker has.
+    expect(await browser.contents("pigy-app-2")).toEqual(files);
   });
 
   it("takes an app shell that was changed on its way, if it loads this build", async () => {

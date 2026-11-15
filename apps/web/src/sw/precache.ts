@@ -94,11 +94,19 @@ export function precache(build: Build, { caches, fetch, origin }: Platform) {
   return {
     /**
      * Fills the cache of this build, or fails: a service worker that has
-     * not got every file must not be installed.
+     * not got every file must not be installed. One that fails leaves
+     * nothing behind, or the files of every release that could not be
+     * installed would stay on the device until a later one takes over.
      */
     async install(): Promise<void> {
+      // The worker that is active can be of this build and answer from
+      // this cache: a build is named after the files of the app, and a
+      // release that changes only the service worker has the same ones.
+      const existed = (await caches.keys()).includes(name);
       const cache = await caches.open(name);
-      await Promise.all(
+      // Every file is seen to its end, also once one of them has failed,
+      // so that nothing is written after the cache has been deleted.
+      const written = await Promise.allSettled(
         build.files.map(async (path) => {
           // What a build before this one has kept under the same name
           // spares the download, so an update costs what has changed.
@@ -113,6 +121,12 @@ export function precache(build: Build, { caches, fetch, origin }: Platform) {
           return cache.put(path, response);
         }),
       );
+      const failed = written.find((file) => file.status === "rejected");
+      if (!failed) return;
+      // A cache that was there before is not this install's to delete: the
+      // app may be running from it.
+      if (!existed) await caches.delete(name);
+      throw failed.reason;
     },
 
     /** Deletes what the builds before this one have kept. */
