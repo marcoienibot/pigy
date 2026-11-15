@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { browser, draft, newId, settle } from "../../../test/sync-browser.ts";
-import { applyPatch } from "./copy.ts";
+import { appendMutations, applyPatch } from "./copy.ts";
 import { type SyncStore, saveRetryMs } from "./store.ts";
 
 /** Creates a draft in `store` and returns the IDs of it and its part. */
@@ -349,6 +349,63 @@ it("leaves a mutation as it is while it is being stored", async () => {
   await settle();
   expect(texts(store)).toEqual(["Hey you"]);
   expect(store.getState()).toMatchObject({ pending: 3, unsaved: 1 });
+});
+
+it("stores a mutation once when the copy cannot be read right after", async () => {
+  const device = browser();
+  const { store } = await device.tab();
+  // Another tab stores a mutation, and its message is still on its way
+  // when this tab stores one of its own. The test stores it in that tab's
+  // place, and tells nobody.
+  await device.storage.update((head) => {
+    if (!head) throw new Error("The copy exists");
+    return appendMutations(head, [
+      { name: "post.delete", args: { id: newId() }, at: 0 },
+    ]);
+  });
+  // This tab finds that it has missed a write when it has stored its own,
+  // and reads the copy again. From here on that fails.
+  const { read } = device.storage;
+  device.storage.read = () => Promise.reject(new Error("Cannot be read"));
+  const stored = async () =>
+    (await read())?.head.outbox.map(({ id, name }) => [id, name]);
+
+  const { partId } = createDraft(store, "");
+  await settle();
+  expect(device.errors).toHaveLength(1);
+  // The draft is stored, and that is the end of storing it: it is not
+  // counted as a change that could not be stored, which would be tried
+  // again. And it stays on screen, where the person goes on typing into it.
+  expect(await stored()).toEqual([
+    [1, "post.delete"],
+    [2, "post.create"],
+  ]);
+  expect(store.getState().unsaved).toBe(0);
+  expect(texts(store)).toEqual([""]);
+  for (const text of ["H", "He"]) {
+    store.mutate("part.setText", { id: partId, text });
+    await settle();
+  }
+  expect(texts(store)).toEqual(["He"]);
+  // What this tab has made: the draft and one change of its text, which
+  // the second key has replaced in the stored outbox, under the same ID.
+  expect(store.getState()).toMatchObject({ pending: 2, unsaved: 0 });
+
+  // After a pause the store tries again, and what it tries is the read.
+  // Nothing was stored a second time: tried again as a write, the draft
+  // would be there twice, and the server would refuse the second one.
+  device.storage.read = read;
+  await device.advance(saveRetryMs);
+  expect(await stored()).toEqual([
+    [1, "post.delete"],
+    [2, "post.create"],
+    [3, "part.setText"],
+  ]);
+  // The tab has the copy as it is stored, the other tab's mutation
+  // included, and shows what it showed.
+  expect(store.head).toEqual((await read())?.head);
+  expect(store.getState()).toMatchObject({ pending: 3, unsaved: 0 });
+  expect(texts(store)).toEqual(["He"]);
 });
 
 it("stores a mutation that a person makes in a tab that is too old for the copy", async () => {

@@ -13,6 +13,7 @@ import {
   type Meta,
   type MutationCall,
   openCopy,
+  type PendingMutation,
   replaces,
   type Step,
   type StoredRejection,
@@ -82,7 +83,8 @@ export interface TabChannel {
 
 /**
  * How long the store waits before it tries again to store mutations that
- * it could not store, in milliseconds.
+ * it could not store, or to read a copy that it could not read, in
+ * milliseconds.
  */
 export const saveRetryMs = 5_000;
 
@@ -119,6 +121,14 @@ export class SyncStore {
   /** Whether the last attempt to store `unsaved` failed. */
   private saveFailed = false;
   private cancelSaveRetry: (() => void) | undefined;
+  /**
+   * Mutations of this tab that are in the stored outbox and not in the one
+   * in memory, by ID and in the order of their IDs. Another tab had written
+   * before them, so the copy has to be read again to have them, and until
+   * that has worked they are shown from here.
+   */
+  private readonly ahead = new Map<number, PendingMutation>();
+  private cancelCatchUp: (() => void) | undefined;
   private readonly listeners = new Set<() => void>();
   /** The work on the storage, which is done one piece at a time. */
   private queue: Promise<unknown> = Promise.resolve();
@@ -161,6 +171,7 @@ export class SyncStore {
   close(): void {
     this.closed = true;
     this.cancelSaveRetry?.();
+    this.cancelCatchUp?.();
     this.stopListening();
     this.listeners.clear();
   }
@@ -317,17 +328,25 @@ export class SyncStore {
       const calls = this.unsaved.slice();
       if (calls.length === 0) return;
       this.saving = calls.length;
-      // They leave `unsaved` in the same moment as they enter the outbox
-      // in memory, so the view never has them twice or not at all.
-      await this.run(
+      const { write } = await this.commit(
         (head) => appendMutations(head, calls),
         { own: true },
-        () => {
-          this.unsaved.splice(0, calls.length);
-          this.saving = 0;
-          this.saveFailed = false;
-        },
       );
+      // They are stored, so they are done with here, whatever fails next:
+      // stored again, they would be other mutations, with IDs of their
+      // own, and the server would run them a second time. They leave
+      // `unsaved` in the same moment as they enter the outbox in memory, or
+      // `ahead`, so the view never has them twice or not at all.
+      this.unsaved.splice(0, calls.length);
+      this.saving = 0;
+      this.saveFailed = false;
+      await this.follow(write, true).catch((error: unknown) => {
+        // The storage has the mutations and the memory of this tab is
+        // behind, which reading the copy again makes up for.
+        this.options.onError(error);
+        this.refresh(true);
+        this.catchUpLater();
+      });
     }).catch((error: unknown) => {
       this.options.onError(error);
       if (this.closed) return;
@@ -356,8 +375,37 @@ export class SyncStore {
   }
 
   /**
+   * Reads the stored copy again after a pause, and again until that has
+   * worked: this tab has stored something that its memory does not have.
+   */
+  private catchUpLater(): void {
+    if (this.closed || this.cancelCatchUp) return;
+    this.cancelCatchUp = this.options.schedule(() => {
+      this.cancelCatchUp = undefined;
+      this.reload().catch((error: unknown) => {
+        this.options.onError(error);
+        this.catchUpLater();
+      });
+    }, saveRetryMs);
+  }
+
+  /**
    * Runs `step` in a transaction of the storage and brings the memory of
    * this tab up to what was written.
+   */
+  private async run<Result>(
+    step: (head: Head) => Step<Result>,
+    options: { durable?: boolean; own?: boolean },
+  ): Promise<Result | undefined> {
+    const { write, result } = await this.commit(step, options);
+    await this.follow(write);
+    return result;
+  }
+
+  /**
+   * Runs `step` in a transaction of the storage. When this returns, what
+   * the step wrote is stored, and nothing of it is in the memory of this
+   * tab yet.
    *
    * `own` is for what the person did in this tab: a mutation, a rejection
    * that they dismissed. That is stored whatever the schema of the copy.
@@ -365,14 +413,11 @@ export class SyncStore {
    * and SYNC.md section 6 says what becomes of them. Everything else is
    * what this tab knows of the server, and a tab that is too old for the
    * copy must not write it over the rows of a newer schema.
-   *
-   * `saved` is called when mutations of `unsaved` are in the outbox.
    */
-  private async run<Result>(
+  private async commit<Result>(
     step: (head: Head) => Step<Result>,
     options: { durable?: boolean; own?: boolean },
-    saved?: () => void,
-  ): Promise<Result | undefined> {
+  ): Promise<Step<Result | undefined>> {
     const { write, result: outcome } = await this.options.storage.update(
       (head) => {
         if (!head) throw new Error("The local copy is gone");
@@ -387,9 +432,17 @@ export class SyncStore {
       },
       options.durable ? { durable: true } : {},
     );
-    const { meta, result } = outcome;
-    this.checkSchema(meta);
-    if (this.closed || !this.copy) return result;
+    this.checkSchema(outcome.meta);
+    return { write, result: outcome.result };
+  }
+
+  /**
+   * Brings the memory of this tab up to `write`, which is stored, and
+   * tells the other tabs of it. `saved` says that the write has put
+   * mutations of `unsaved` into the outbox.
+   */
+  private async follow(write: Write | null, saved = false): Promise<void> {
+    if (this.closed || !this.copy) return;
     let rows = Boolean(write?.rows || write?.outbox);
     if (write) {
       if (write.meta.version === this.copy.head.meta.version + 1) {
@@ -402,14 +455,19 @@ export class SyncStore {
         if (saved) rows = false;
       } else {
         // Another tab wrote in between and its message is still on its way.
+        // The copy is read again, which can fail, and the mutations are no
+        // longer in `unsaved`.
+        if (saved) {
+          for (const mutation of write.outbox?.put ?? []) {
+            this.ahead.set(mutation.id, mutation);
+          }
+        }
         await this.read();
         rows = true;
       }
       this.options.channel.post({ type: "write", write });
     }
-    saved?.();
     this.refresh(rows);
-    return result;
   }
 
   private async read(): Promise<void> {
@@ -425,6 +483,8 @@ export class SyncStore {
       head: stored.head,
       tables: applyChanges(emptyTables(), false, stored.rows),
     };
+    // What was read is not older than what this tab has stored.
+    this.ahead.clear();
   }
 
   /**
@@ -492,10 +552,17 @@ export class SyncStore {
   private refresh(rows: boolean): void {
     if (this.closed || !this.copy) return;
     const { outbox } = this.copy.head;
-    if (rows) {
-      this.view = viewOf(this.copy.tables, [...outbox, ...this.unsaved]);
-    }
-    const pending = outbox.length + this.unsaved.length;
+    const mutations = [
+      // A mutation of `ahead` can have taken the place of one that the
+      // outbox in memory still has, and its ID.
+      ...(this.ahead.size > 0
+        ? outbox.filter(({ id }) => !this.ahead.has(id))
+        : outbox),
+      ...this.ahead.values(),
+      ...this.unsaved,
+    ];
+    if (rows) this.view = viewOf(this.copy.tables, mutations);
+    const pending = mutations.length;
     const unsaved = this.saveFailed ? this.unsaved.length : 0;
     if (pending !== this.state.pending || unsaved !== this.state.unsaved) {
       this.state = { ...this.state, pending, unsaved };
