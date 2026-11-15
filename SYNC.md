@@ -161,7 +161,7 @@ A row of `channel` is a connected account: its network, the network's ID of the 
 
 ### Publishing
 
-A post is published to channels. Where it goes is a row of `post_target` for each channel: a **target**, the delivery of the post to that channel. A post has at most one target per channel. What a delivery has published is a row of `target_part_result` for each part: the network's ID of the post that the part is in, and a link to it.
+A post is published to channels. Where it goes is a row of `post_target` for each channel: a **target**, the delivery of the post to that channel. A post has at most one target per channel. What a delivery has published is a row of `target_part_result` for each part: the network's ID of the post that the part is in, and a link to it. The link is null where the network gives none, and for every post of a sandbox: a simulated post has no address that a browser can open. `GET /api/sandbox/feed` shows those, under the same IDs.
 
 A client chooses the channels of a draft with `target.add` and `target.remove`, and asks for the post to be sent with `post.publish`. That is all it does. The server sends, and the client sees the rows change:
 
@@ -223,5 +223,7 @@ This is not part of the contract, but it explains its edges.
 
 - Messages are not rate-limited, and nothing limits how much a workspace stores. Both are bounded only by what one signed-in user does to their own workspace.
 - A client cannot ask for part of a workspace: it holds all of it.
+- Deleting a post removes it from the workspace and nothing from the networks: what it published stays published.
+- A draft has one part. No mutator adds a second yet, so a client cannot write a thread, although the server publishes one.
 - When the schema version changes, a client of the new version drops its rows and says hello with the cursor `null`, unless it knows how to convert them. It keeps its client ID and its `lastMutationId`. Its unconfirmed mutations are sent as they are, and rejected if the new mutators do not take them.
 - If the data of a workspace is ever restored to an earlier state, clients whose cursor is ahead get a snapshot, but a client can stay ahead unnoticed if the workspace then catches up with its cursor. Restoring has to come with a way to make every client start over, such as a new schema version.
