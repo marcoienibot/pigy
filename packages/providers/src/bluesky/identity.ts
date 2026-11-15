@@ -32,17 +32,25 @@ const disallowedTlds = [
  * be a public one too.
  */
 export function parseHandle(typed: string): string | null {
-  const handle = typed.trim().replace(/^@/, "").toLowerCase();
-  if (
-    handle.length > 253 ||
-    !/^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/.test(
-      handle,
-    )
-  ) {
-    return null;
-  }
+  const handle = handleSyntax(typed.trim().replace(/^@/, ""));
+  if (!handle) return null;
   const tld = handle.slice(handle.lastIndexOf(".") + 1);
   return disallowedTlds.includes(tld) ? null : publicHost(handle);
+}
+
+/**
+ * `value` in lowercase if it is written the way a handle is, "Handle
+ * Identifier Syntax", or null. A handle that is written so may still be
+ * one that nobody may have: `parseHandle` says that.
+ */
+function handleSyntax(value: string): string | null {
+  const handle = value.toLowerCase();
+  return handle.length <= 253 &&
+    /^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/.test(
+      handle,
+    )
+    ? handle
+    : null;
 }
 
 /** A DID of a method that atproto blesses, or null. */
@@ -113,12 +121,20 @@ export function pdsOf(
   return publicOrigin(service?.serviceEndpoint);
 }
 
-/** Whether a DID document claims `handle` for its account. */
+/**
+ * Whether a DID document claims `handle` for its account. A document
+ * claims one handle: the first entry of `alsoKnownAs` that is `at://`
+ * followed by something written the way a handle is. The entries after it
+ * are ignored, "DID" of atproto.
+ */
 export function claims(
   document: z.infer<typeof didDocumentSchema>,
   handle: string,
 ): boolean {
-  return (document.alsoKnownAs ?? []).some(
-    (name) => name.toLowerCase() === `at://${handle}`,
-  );
+  for (const name of document.alsoKnownAs ?? []) {
+    if (!name.startsWith("at://")) continue;
+    const claimed = handleSyntax(name.slice("at://".length));
+    if (claimed) return claimed === handle;
+  }
+  return false;
 }

@@ -16,6 +16,7 @@ import {
   createBlueskyProvider,
   parseHandle,
 } from "./index.ts";
+import { claims } from "./identity.ts";
 
 const origin = "https://pigy.example";
 const redirectUri = `${origin}/connect/bluesky/callback`;
@@ -201,6 +202,35 @@ describe("parseHandle", () => {
   });
 });
 
+describe("claims", () => {
+  // The "DID" specification of atproto: the first handle in the list that
+  // is written the way a handle is counts, and the others are ignored.
+  const claimed = (alsoKnownAs: string[]) =>
+    claims({ id: "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa", alsoKnownAs }, "ada.bsky.test");
+
+  it("takes the first handle in the list, whatever comes before it that is none", () => {
+    expect(claimed(["at://ada.bsky.test"])).toBe(true);
+    expect(
+      claimed([
+        "https://ada.example.com",
+        "at://not a handle",
+        "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+        "at://ada.bsky.test/app.bsky.feed.post/3m2abcdefgh22",
+        "at://ADA.bsky.test",
+        "at://grace.bsky.test",
+      ]),
+    ).toBe(true);
+  });
+
+  it("ignores a handle that comes after the first", () => {
+    expect(claimed([])).toBe(false);
+    expect(claimed(["at://grace.bsky.test", "at://ada.bsky.test"])).toBe(false);
+    // A handle that atproto does not let anybody have is written like
+    // one all the same: it is the account's, and the others are not.
+    expect(claimed(["at://ada.example", "at://ada.bsky.test"])).toBe(false);
+  });
+});
+
 describe("clientMetadata", () => {
   it("publishes the public halves of the keys, and what the adapter asks for", async () => {
     const keys = [await newClientKey("key-2"), await newClientKey("key-1")];
@@ -354,6 +384,22 @@ describe("connecting", () => {
       test.provider.beginConnect({ redirectUri, identifier: "ada.bsky.test" }),
     );
     expect(error).toMatchObject({ kind: "fail" });
+    expect(error.message).toMatch(/does not claim/);
+  });
+
+  it("takes the first handle that the document of an account names for its own, and no other", async () => {
+    const test = await setup();
+    // The document names another handle first, and the one that was typed
+    // after it.
+    test.intercept(
+      rewriting(`/${test.ada.id}`, (document) => ({
+        ...document,
+        alsoKnownAs: ["at://grace.bsky.test", "at://ada.bsky.test"],
+      })),
+    );
+    const error = await failure(() =>
+      test.provider.beginConnect({ redirectUri, identifier: "ada.bsky.test" }),
+    );
     expect(error.message).toMatch(/does not claim/);
   });
 
