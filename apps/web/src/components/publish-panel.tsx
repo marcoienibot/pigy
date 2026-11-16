@@ -1,0 +1,265 @@
+import { uuidv7 } from "@pigy/core";
+import { Link, useNavigate, useRouteContext } from "@tanstack/react-router";
+import { Check, Send, TriangleAlert } from "lucide-react";
+import { useId } from "react";
+import { toast } from "sonner";
+import { Avatar } from "@/components/avatar";
+import { Button } from "@/components/ui/button";
+import { Kbd } from "@/components/ui/kbd";
+import { selectChannels } from "@/lib/channels";
+import type { Draft } from "@/lib/drafts";
+import { dialogIsOpen, modKey, useKeyDown, withMod } from "@/lib/keyboard";
+import { connectableNetworks, networkInfo } from "@/lib/networks";
+import {
+  audienceOf,
+  blockedReasons,
+  type Choice,
+  compose,
+  selectDraftTargets,
+  targetsOf,
+} from "@/lib/publish";
+import { cn } from "@/lib/utils";
+import { useMutate, useSynced, useSyncState } from "@/sync/react";
+
+/**
+ * Where a draft goes, and "Publish now": under the text of the editor.
+ *
+ * The channels are chosen with mutators, like every change of a draft, so
+ * the choice is saved at once and syncs. What a chosen account would
+ * refuse is said next to the choice, and the post cannot be published
+ * while there is any: `validateContent`, which the server checks with too.
+ *
+ * Publishing is a mutation like the others: it is made on this device at
+ * once, and reaches the server when the device does. Offline, the panel
+ * says so, and so does the notice after it.
+ */
+export function PublishPanel({
+  draft,
+  onPublished,
+}: {
+  draft: Draft;
+  /** The draft has been published, and is a draft no more. */
+  onPublished: () => void;
+}) {
+  const { workspace } = useRouteContext({ from: "/_app" });
+  const sandbox = workspace.environment === "sandbox";
+  const channels = useSynced(selectChannels);
+  const targets = useSynced(selectDraftTargets);
+  const mutate = useMutate();
+  const navigate = useNavigate();
+  const offline = useSyncState().connection === "offline";
+  const { choices, blocked } = compose(
+    draft.text,
+    channels,
+    targetsOf(targets, draft.id),
+  );
+  const id = useId();
+  const noteId = (channelId: string) => `${id}-${channelId}`;
+  const [network] = connectableNetworks;
+
+  const toggle = ({ channel, chosen }: Choice) => {
+    if (chosen) {
+      mutate("target.remove", { postId: draft.id, channelId: channel.id });
+    } else {
+      mutate("target.add", {
+        id: uuidv7(new Date()),
+        postId: draft.id,
+        channelId: channel.id,
+      });
+    }
+  };
+
+  const publish = () => {
+    if (blocked) return;
+    mutate("post.publish", { id: draft.id });
+    const audience = audienceOf(choices);
+    // A notice of this workspace: it leaves with it, and so does what it
+    // offers, which leads to the post in this workspace.
+    toast(
+      offline
+        ? `Publishing to ${audience} when this device is back online`
+        : `Publishing to ${audience}`,
+      {
+        ...(offline && {
+          description:
+            "The post waits on this device, and goes out once pigy can reach its server.",
+        }),
+        action: {
+          label: "View",
+          onClick: () =>
+            void navigate({ to: "/sent", search: { post: draft.id } }),
+        },
+      },
+    );
+    onPublished();
+  };
+
+  useKeyDown((event) => {
+    // Also from the text, where the person is when they are done with it.
+    if (withMod(event) && event.key === "Enter" && !dialogIsOpen()) {
+      event.preventDefault();
+      publish();
+    }
+  });
+
+  // The notes that go with the choice: what keeps an account from taking
+  // the post. A channel that needs connecting again says so whether or
+  // not it is chosen: it cannot be.
+  const notes = choices.filter(
+    (choice) =>
+      choice.needsReconnect || (choice.chosen && choice.refuses.length > 0),
+  );
+
+  return (
+    <section
+      aria-label="Publish"
+      className="flex shrink-0 flex-col gap-2 border-t px-4 py-3 md:px-6"
+    >
+      {choices.length === 0 ? (
+        <p className="text-muted-foreground">
+          {sandbox
+            ? "Connect a simulated account to publish this draft to."
+            : "Connect an account to publish this draft to."}{" "}
+          {network && (
+            <Link
+              to="/channels"
+              search={{ add: network }}
+              className="font-medium text-foreground underline underline-offset-4"
+            >
+              Connect {sandbox ? "a simulated" : "an"} account
+            </Link>
+          )}
+        </p>
+      ) : (
+        <fieldset className="min-w-0">
+          <legend className="mb-1.5 text-xs text-muted-foreground">
+            Publish to
+          </legend>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {choices.map((choice) => (
+              <ChannelChip
+                key={choice.channel.id}
+                choice={choice}
+                describedBy={
+                  notes.includes(choice) ? noteId(choice.channel.id) : undefined
+                }
+                onToggle={() => toggle(choice)}
+              />
+            ))}
+          </div>
+        </fieldset>
+      )}
+
+      {notes.length > 0 && (
+        <ul className="flex flex-col gap-1 text-xs">
+          {notes.map(({ channel, needsReconnect, refuses }) => (
+            <li
+              key={channel.id}
+              id={noteId(channel.id)}
+              className="flex items-start gap-1.5 text-amber-700 dark:text-amber-400"
+            >
+              <TriangleAlert
+                aria-hidden="true"
+                className="mt-px size-3.5 shrink-0"
+              />
+              <span className="min-w-0">
+                {needsReconnect ? (
+                  <>
+                    {channel.handle} has to be connected again before pigy can
+                    post to it.{" "}
+                    <Link
+                      to="/channels"
+                      search={{ reconnect: channel.id }}
+                      className="font-medium underline underline-offset-4"
+                    >
+                      Reconnect {channel.handle}
+                    </Link>
+                  </>
+                ) : (
+                  <>
+                    {networkInfo[channel.network].label} would refuse this for{" "}
+                    {channel.handle}: {refuses.join(" ")}
+                  </>
+                )}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
+        <p
+          role="status"
+          className="min-w-0 flex-1 basis-48 text-xs text-muted-foreground"
+        >
+          {blocked && blocked !== "no-channels"
+            ? blockedReasons[blocked]
+            : offline
+              ? "You are offline. What you publish now goes out when this device is back online."
+              : null}
+        </p>
+        <Button disabled={blocked !== null} onClick={publish}>
+          <Send aria-hidden="true" />
+          Publish now
+          <span className="hidden items-center gap-0.5 md:inline-flex">
+            <Kbd>{modKey}</Kbd>
+            <Kbd>↵</Kbd>
+          </span>
+        </Button>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * A channel to choose or leave out: a button that is pressed when the
+ * draft goes there. One that needs connecting again cannot be chosen, and
+ * one that was chosen before can only be left out.
+ */
+function ChannelChip({
+  choice,
+  describedBy,
+  onToggle,
+}: {
+  choice: Choice;
+  /** The ID of the note that says what is wrong with the channel. */
+  describedBy: string | undefined;
+  onToggle: () => void;
+}) {
+  const { channel, chosen, needsReconnect, refuses } = choice;
+  const troubled = needsReconnect || (chosen && refuses.length > 0);
+  return (
+    <button
+      type="button"
+      aria-pressed={chosen}
+      aria-describedby={describedBy}
+      disabled={needsReconnect && !chosen}
+      onClick={onToggle}
+      className={cn(
+        "inline-flex h-8 max-w-full items-center gap-1.5 rounded-full border py-1 pr-3 pl-1 text-sm outline-none",
+        "hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring",
+        "disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent",
+        chosen
+          ? "border-primary bg-primary/10 font-medium"
+          : "text-muted-foreground",
+        troubled && "border-amber-500/70",
+      )}
+    >
+      <Avatar
+        name={channel.name}
+        src={channel.avatarUrl}
+        className="size-6 text-[0.625rem]"
+      />
+      <span className="truncate">{channel.handle}</span>
+      <span className="sr-only"> on {networkInfo[channel.network].label}</span>
+      {troubled ? (
+        <TriangleAlert
+          aria-hidden="true"
+          className="size-3.5 shrink-0 text-amber-700 dark:text-amber-400"
+        />
+      ) : (
+        chosen && <Check aria-hidden="true" className="size-3.5 shrink-0" />
+      )}
+    </button>
+  );
+}
