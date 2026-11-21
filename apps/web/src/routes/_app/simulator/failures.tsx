@@ -3,6 +3,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { TriangleAlert } from "lucide-react";
 import { type FormEvent, useCallback, useId, useRef, useState } from "react";
 import { EmptyState } from "@/components/page";
+import { RefreshFailure } from "@/components/refresh-failure";
 import { Button } from "@/components/ui/button";
 import {
   NativeSelect,
@@ -39,7 +40,8 @@ export const Route = createFileRoute("/_app/simulator/failures")({
  *
  * A fault is used up by the request that it strikes, which a post from
  * any window makes, so the list is asked for again whenever a delivery
- * moves on: `useWorldChanges`.
+ * moves on, and every few seconds while one is under way:
+ * `useWorldChanges`.
  */
 function Failures() {
   const {
@@ -47,15 +49,16 @@ function Failures() {
     failure,
     loading,
     refresh,
-    replace,
+    change: changeFaults,
   } = useFetched(fetchSandboxFaults);
-  useWorldChanges(refresh);
+  useWorldChanges(refresh, loading);
 
   // The one request that changes the faults, if one is on its way. Each
   // answers with the list as it left it, and the answers of two could
   // arrive the other way round: the list would then be the one from
   // before the later change. So there is one at a time, and what starts
-  // one is disabled meanwhile.
+  // one is disabled meanwhile. The list is not read meanwhile either: a
+  // read that is asked for then is made after the answer, by `useFetched`.
   const [changing, setChanging] = useState<Change | null>(null);
   const underWay = useRef(false);
   const change = useCallback(
@@ -64,14 +67,14 @@ function Failures() {
       underWay.current = true;
       setChanging(which);
       try {
-        replace(await request());
+        await changeFaults(request);
         return true;
       } finally {
         underWay.current = false;
         setChanging(null);
       }
     },
-    [replace],
+    [changeFaults],
   );
 
   if (!faults) {
@@ -93,6 +96,14 @@ function Failures() {
 
   return (
     <div className="flex flex-col gap-6">
+      {failure !== null && (
+        <RefreshFailure
+          what="The list of armed faults"
+          failure={failure}
+          loading={loading}
+          onRetry={refresh}
+        />
+      )}
       <ArmForm faults={faults} changing={changing} change={change} />
       <Armed faults={faults} changing={changing} change={change} />
     </div>

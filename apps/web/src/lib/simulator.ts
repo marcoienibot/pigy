@@ -112,6 +112,19 @@ export function selectDeliveries(tables: Tables): string {
 }
 
 /**
+ * Whether a delivery of the workspace is under way. While one is, the
+ * world can change without a change of the workspace: a network that asks
+ * to be tried again has used up a fault, or has taken a post and lost its
+ * answer, and the workflow waits without a word.
+ */
+export function selectSending(tables: Tables): boolean {
+  for (const target of tables.post_target.values()) {
+    if (target.status === "sending") return true;
+  }
+  return false;
+}
+
+/**
  * A post of a feed and the replies that follow it, as the feed shows them:
  * a chain that goes on while a post has one reply is one list, the way a
  * thread is read. Where a post has several replies, each begins a chain of

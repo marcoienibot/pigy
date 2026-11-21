@@ -10,10 +10,16 @@ export type Fetched<Data> = {
   failure: unknown;
   /** A request is on its way. */
   loading: boolean;
-  /** Asks again, in place of a request that is on its way. */
+  /**
+   * Asks again, in place of a request that is on its way. While a change
+   * is on its way, it asks once the change has been answered.
+   */
   refresh: () => void;
-  /** Takes `data` for the answer, as from a request that changed it. */
-  replace: (data: Data) => void;
+  /**
+   * Makes `request`, which changes what was fetched and answers with what
+   * it left, and takes that for the answer. Fails as the request does.
+   */
+  change: (request: () => Promise<Data>) => Promise<void>;
 };
 
 /**
@@ -26,6 +32,14 @@ export type Fetched<Data> = {
  * a screen that is made anew for the other workspace holds nothing of the
  * one before.
  *
+ * What is on screen is never older than an answer that was on screen
+ * before, also where the screen changes what it fetched, with `change`.
+ * The answers of a change and of a read that are on their way together
+ * can arrive in either order, and nobody can tell which of them the
+ * server made last. So the two are never on their way together: a read
+ * that is asked for during a change waits for its answer, and a read that
+ * a change finds on its way is given up and made again after it.
+ *
  * `request` has to be the same function on every render: one that is
  * declared outside the component.
  */
@@ -37,21 +51,34 @@ export function useFetched<Data>(
     failure: unknown;
     loading: boolean;
   }>({ data: null, failure: null, loading: true });
-  const current = useRef<AbortController>(null);
+  // The read that is on its way, if one is.
+  const reading = useRef<AbortController>(null);
+  // How many changes are on their way, and whether a read is owed once
+  // they have been answered.
+  const changing = useRef(0);
+  const owed = useRef(false);
+  // The component has gone: nothing is asked for it any more.
+  const gone = useRef(false);
 
   const refresh = useCallback(() => {
-    current.current?.abort();
+    if (gone.current) return;
+    if (changing.current > 0) {
+      owed.current = true;
+      return;
+    }
+    reading.current?.abort();
     const controller = new AbortController();
-    current.current = controller;
+    reading.current = controller;
     setState((before) => ({ ...before, loading: true }));
     request(controller.signal).then(
       (data) => {
-        if (!controller.signal.aborted) {
-          setState({ data, failure: null, loading: false });
-        }
+        if (controller.signal.aborted) return;
+        reading.current = null;
+        setState({ data, failure: null, loading: false });
       },
       (failure: unknown) => {
         if (controller.signal.aborted) return;
+        reading.current = null;
         checkSignedOut(failure);
         setState((before) => ({ ...before, failure, loading: false }));
       },
@@ -59,17 +86,41 @@ export function useFetched<Data>(
   }, [request]);
 
   useEffect(() => {
+    gone.current = false;
     refresh();
-    return () => current.current?.abort();
+    return () => {
+      gone.current = true;
+      reading.current?.abort();
+      reading.current = null;
+    };
   }, [refresh]);
 
-  const replace = useCallback((data: Data) => {
-    // An answer that is on its way is from before the change.
-    current.current?.abort();
-    setState({ data, failure: null, loading: false });
-  }, []);
+  const change = useCallback(
+    async (request: () => Promise<Data>) => {
+      if (reading.current) {
+        // Its answer could be from before the change or from after it.
+        reading.current.abort();
+        reading.current = null;
+        owed.current = true;
+      }
+      changing.current += 1;
+      try {
+        const data = await request();
+        if (!gone.current) {
+          setState((before) => ({ ...before, data, failure: null }));
+        }
+      } finally {
+        changing.current -= 1;
+        if (changing.current === 0 && owed.current) {
+          owed.current = false;
+          refresh();
+        }
+      }
+    },
+    [refresh],
+  );
 
-  return { ...state, refresh, replace };
+  return { ...state, refresh, change };
 }
 
 /**

@@ -13,6 +13,7 @@ import {
   firstNetwork,
   offeredOperations,
   selectDeliveries,
+  selectSending,
 } from "@/lib/simulator";
 
 function feedPost(id: string, replies: SandboxPost[] = []): SandboxPost {
@@ -94,5 +95,33 @@ describe("selectDeliveries", () => {
         }),
       ),
     ).not.toBe(started);
+  });
+});
+
+describe("selectSending", () => {
+  it("says that a delivery is under way only while one is being sent: not for one that waits its turn, has ended or was never asked for", () => {
+    const ada = channel();
+    const published = post({ status: "sending" });
+    const sending = (...statuses: Parameters<typeof target>[2][]) =>
+      selectSending(
+        tablesOf({
+          post: [published],
+          post_target: statuses.map((with_) =>
+            target(published.id, ada.id, with_),
+          ),
+        }),
+      );
+    expect(sending()).toBe(false);
+    // Nothing has been asked of a network for any of these, or will be
+    // without a change of the workspace.
+    expect(
+      sending(
+        { status: "pending" },
+        { status: "queued" },
+        { status: "sent" },
+        { status: "error" },
+      ),
+    ).toBe(false);
+    expect(sending({ status: "sent" }, { status: "sending" })).toBe(true);
   });
 });

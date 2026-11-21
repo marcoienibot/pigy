@@ -4,6 +4,7 @@ import { RefreshCw } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { Avatar } from "@/components/avatar";
 import { EmptyState } from "@/components/page";
+import { RefreshFailure } from "@/components/refresh-failure";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { fetchSandboxFeed } from "@/lib/api";
@@ -42,7 +43,8 @@ export const Route = createFileRoute("/_app/simulator/")({
  * What the simulated networks of the sandbox have published, by account:
  * every account of the world, each with its posts, a thread as a chain of
  * replies. It is asked for anew whenever a delivery of the workspace moves
- * on, and when the person asks, with Refresh.
+ * on, every few seconds while one is under way, and when the person asks,
+ * with Refresh.
  */
 function Feeds() {
   const {
@@ -61,8 +63,9 @@ function Feeds() {
   } = useFetched(fetchSandboxFeed);
 
   // A delivery that moves on has done something in the world, and so may
-  // what was missed while the connection or the person was away.
-  useWorldChanges(refresh);
+  // one that is under way, and what was missed while the connection or
+  // the person was away.
+  useWorldChanges(refresh, loading);
 
   useShortcuts((event) => {
     if (event.key.toLowerCase() !== "r") return;
@@ -137,13 +140,12 @@ function Feeds() {
         </Button>
       </div>
       {failure !== null && (
-        <p
-          role="alert"
-          className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive"
-        >
-          The feeds could not be refreshed: {failureMessage(failure)} What is
-          shown is from before.
-        </p>
+        <RefreshFailure
+          what="The feeds"
+          failure={failure}
+          loading={loading}
+          onRetry={refresh}
+        />
       )}
       {networks.map((name) => (
         <section key={name} aria-label={networkInfo[name].label}>
