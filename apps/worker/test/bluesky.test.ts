@@ -8,8 +8,9 @@ import {
   type PostRecord,
 } from "@pigy/simulators/bluesky";
 import { feed } from "@pigy/simulators/world";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { developmentBlueskyClientKeys } from "../src/development-keys.ts";
+import { WorkspaceStore } from "../src/workspace/store.ts";
 import {
   channelsOf,
   connectBlueskyInSandbox,
@@ -23,10 +24,15 @@ import {
 import {
   adminEmail,
   blueskyClientKey,
+  expectErrors,
+  expectWarnings,
+  logged,
   realBlueskyHandle,
   realBlueskyPds,
   setup,
   signedIn,
+  type TestSetup,
+  urlOf,
 } from "./helpers.ts";
 import {
   ended,
@@ -235,6 +241,97 @@ describe("connecting a Bluesky account", () => {
         .tokens("bluesky")
         .every((token) => test.network.world.tokenStatus(token) !== "valid"),
     ).toBe(true);
+  });
+
+  /** Makes the workspace fail to store a channel, in the way of `how`. */
+  function failingToStore(how: "throws" | "refuses") {
+    const stores = vi
+      .spyOn(WorkspaceStore.prototype, "connectChannel")
+      .mockImplementation(() => {
+        if (how === "throws") {
+          throw new Error("The database of the workspace is in trouble");
+        }
+        return {
+          ok: false,
+          code: "invalid_arguments",
+          message: "Not this channel",
+        };
+      });
+    onTestFinished(() => stores.mockRestore());
+    return stores;
+  }
+
+  /** What Bluesky has issued, and which of it still works. */
+  const sessionTokens = ({ network }: Pick<TestSetup, "network">) =>
+    network.world.tokens("bluesky").map((token) => ({
+      token: token.token,
+      status: network.world.tokenStatus(token),
+    }));
+
+  it.each(["throws", "refuses"] as const)(
+    "gives the access back when the workspace %s while it stores the channel",
+    async (how) => {
+      const { test, browser, workspaces } = await start();
+      const stores = failingToStore(how);
+      const errors = expectErrors();
+
+      const outcome = await connectBlueskyLive(test, browser, workspaces.live);
+
+      // The connection got as far as the channel: Bluesky has handed over
+      // a session, and the workspace did not keep it.
+      expect(stores).toHaveBeenCalledOnce();
+      expect(outcome).toMatchObject({ connect: "failed", network: "bluesky" });
+      expect(await channelsOf(browser, workspaces.live)).toEqual([]);
+      // The answer does not wait for Bluesky. What the app has asked the
+      // runtime to keep going is all that is left of the request for
+      // somebody who has closed the tab.
+      await Promise.all(test.keptAlive);
+      // Nobody holds the refresh token of that session, so nobody could
+      // end it later. It is ended now: none of its tokens works.
+      const tokens = sessionTokens(test);
+      expect(tokens.length).toBeGreaterThan(0);
+      expect(tokens.filter(({ status }) => status === "valid")).toEqual([]);
+      expect(test.network.requests).toContain(
+        "POST https://bsky.social/oauth/revoke",
+      );
+      // The log says why the connection failed, and holds no token.
+      const log = errors.mock.calls.flat().map(logged).join("\n");
+      expect(log).toContain(
+        how === "throws" ? "is in trouble" : "Not this channel",
+      );
+      for (const { token } of tokens) expect(log).not.toContain(token);
+    },
+  );
+
+  it("says in the log, without a secret, when Bluesky does not take the access of a failed connection back", async () => {
+    const { test, browser, workspaces } = await start({
+      // Bluesky is in trouble where it takes a token back.
+      interceptNetwork: (network: Fetch): Fetch => {
+        return async (input, init) =>
+          urlOf(input).endsWith("/oauth/revoke")
+            ? Response.json({ error: "server_error" }, { status: 500 })
+            : network(input, init);
+      },
+    });
+    failingToStore("throws");
+    const errors = expectErrors();
+    const warnings = expectWarnings();
+
+    const outcome = await connectBlueskyLive(test, browser, workspaces.live);
+    await Promise.all(test.keptAlive);
+
+    // The person is told what they would be told anyway.
+    expect(outcome).toMatchObject({ connect: "failed" });
+    // The operator reads that a session is left at Bluesky. Its tokens
+    // are still good there, so they above all must not be in the log.
+    const log = [...errors.mock.calls, ...warnings.mock.calls]
+      .flat()
+      .map(logged)
+      .join("\n");
+    expect(log).toContain("was not given back");
+    const tokens = sessionTokens(test);
+    expect(tokens.some(({ status }) => status === "valid")).toBe(true);
+    for (const { token } of tokens) expect(log).not.toContain(token);
   });
 
   it("keeps none of the session's secrets where a client can see them", async () => {

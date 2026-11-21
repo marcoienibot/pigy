@@ -4,9 +4,10 @@ import {
   maxConnectIdentifierLength,
   sandboxMastodonDomain,
 } from "@pigy/core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { pendingLifetimeMs } from "../src/channels/pending.ts";
 import { oauthStates } from "../src/db/schema.ts";
+import { WorkspaceStore } from "../src/workspace/store.ts";
 import {
   channelsOf,
   connectInSandbox,
@@ -712,6 +713,45 @@ describe("an account that is connected again", () => {
     // It has the access of the second connection.
     const [after] = await storedAccess(workspaces.sandbox);
     expect(after?.credentials).not.toBe(before?.credentials);
+  });
+
+  it("keeps the access of its channel when the second connection is not stored", async () => {
+    const { test, browser, workspaces } = await start();
+    const first = await connectLive(test, browser, workspaces.live);
+    expect(first.connect).toBe("connected");
+    // The workspace fails the next time that it is to store a channel.
+    const stores = vi
+      .spyOn(WorkspaceStore.prototype, "connectChannel")
+      .mockImplementation(() => {
+        throw new Error("The database of the workspace is in trouble");
+      });
+    onTestFinished(() => stores.mockRestore());
+    expectErrors();
+
+    const second = await connectLive(test, browser, workspaces.live);
+    // Whatever the app has left to do for a connection that failed.
+    await Promise.all(test.keptAlive);
+
+    expect(stores).toHaveBeenCalledOnce();
+    expect(second).toMatchObject({ connect: "failed", network: "mastodon" });
+    // Mastodon gave the second connection the token that the account had
+    // with pigy already, which is the one that the channel posts with. A
+    // connection that gave its access back when it is not stored, as one
+    // to Bluesky does, would have taken the access of that channel away.
+    const tokens = test.network.world
+      .tokens("mastodon")
+      .filter(({ accountId }) => accountId !== null);
+    expect(
+      tokens.map((token) => test.network.world.tokenStatus(token)),
+    ).toEqual(["valid"]);
+    expect(
+      test.network.requests.filter((request) =>
+        request.endsWith("/oauth/revoke"),
+      ),
+    ).toEqual([]);
+    expect(await channelsOf(browser, workspaces.live)).toMatchObject([
+      { id: first.channel, status: "connected" },
+    ]);
   });
 
   it("is told from another account of the same server", async () => {
