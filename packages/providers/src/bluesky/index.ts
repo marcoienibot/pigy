@@ -841,6 +841,40 @@ export function createBlueskyProvider({
     return tokens;
   }
 
+  /**
+   * Ends the session that the token endpoint began with `answer`, where a
+   * connection got that far and is not completed: the tokens are not what
+   * atproto has them be, or something failed after they came. The refresh
+   * token stands for the session, as in `disconnect`.
+   *
+   * As far as it goes, and without a word: the caller is about to fail
+   * with what went wrong, which this must not replace. A session that the
+   * server does not take back stands until it ends by itself.
+   */
+  async function endUnkept(
+    flow: z.infer<typeof pendingSchema>,
+    answer: Answer,
+    secrets: readonly string[],
+  ): Promise<void> {
+    if (answer.status !== 200 || !flow.revocationEndpoint) return;
+    // Read apart from the rest of the answer, which may be what is wrong
+    // with it.
+    const token = z
+      .object({ refresh_token: z.string().min(1) })
+      .safeParse(answer.json).data?.refresh_token;
+    if (!token) return;
+    try {
+      await asClient(
+        flow,
+        flow.revocationEndpoint,
+        { token, token_type_hint: "refresh_token" },
+        [...secrets, token],
+      );
+    } catch {
+      // Nothing is made of it: see above.
+    }
+  }
+
   /** The access that `tokens` give, as a caller keeps it. */
   function accessOf(
     session: Omit<BlueskyCredentials, "accessToken" | "refreshToken">,
@@ -1106,36 +1140,46 @@ export function createBlueskyProvider({
           },
           secrets,
         );
-        const tokens = tokensOf(answer, flow.did);
-        // The account was resolved when the connection began, minutes
-        // ago, which the specification allows as a cache: it has a client
-        // keep what it resolved for an authorization for less than ten
-        // minutes, and a connection that has begun is kept for ten.
-        const profile = await profileOf(flow.did, flow.pds, flow.handle);
-        const access = accessOf(
-          {
-            did: flow.did,
-            pds: flow.pds,
-            issuer: flow.issuer,
-            tokenEndpoint: flow.tokenEndpoint,
-            revocationEndpoint: flow.revocationEndpoint,
-            clientId: flow.clientId,
-            keyId: flow.keyId,
-            dpopKey: flow.dpopKey,
-          },
-          tokens,
-        );
-        return {
-          account: {
-            // The DID is the account. The handle can change.
-            id: flow.did,
-            handle: `@${flow.handle}`,
-            name: profile.name,
-            avatarUrl: profile.avatarUrl,
-            profileUrl: `https://bsky.app/profile/${flow.did}`,
-          },
-          access,
-        };
+        try {
+          const tokens = tokensOf(answer, flow.did);
+          // The account was resolved when the connection began, minutes
+          // ago, which the specification allows as a cache: it has a
+          // client keep what it resolved for an authorization for less
+          // than ten minutes, and a connection that has begun is kept for
+          // ten.
+          const profile = await profileOf(flow.did, flow.pds, flow.handle);
+          const access = accessOf(
+            {
+              did: flow.did,
+              pds: flow.pds,
+              issuer: flow.issuer,
+              tokenEndpoint: flow.tokenEndpoint,
+              revocationEndpoint: flow.revocationEndpoint,
+              clientId: flow.clientId,
+              keyId: flow.keyId,
+              dpopKey: flow.dpopKey,
+            },
+            tokens,
+          );
+          return {
+            account: {
+              // The DID is the account. The handle can change.
+              id: flow.did,
+              handle: `@${flow.handle}`,
+              name: profile.name,
+              avatarUrl: profile.avatarUrl,
+              profileUrl: `https://bsky.app/profile/${flow.did}`,
+            },
+            access,
+          };
+        } catch (failed) {
+          // The server has answered, and may have begun a session with
+          // its answer, which this method does not hand out: the caller
+          // gets an error and no credentials, so nobody could end the
+          // session later.
+          await endUnkept(flow, answer, secrets);
+          throw failed;
+        }
       } catch (failed) {
         throw forGood(failed);
       }

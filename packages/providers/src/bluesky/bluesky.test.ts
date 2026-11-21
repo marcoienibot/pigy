@@ -611,6 +611,85 @@ describe("connecting", () => {
     }
   });
 
+  /** What Bluesky has issued in `world`, and which of it still works. */
+  const sessionTokens = ({ world }: Pick<Setup, "world">) =>
+    world.tokens("bluesky").map((token) => ({
+      token: token.token,
+      status: world.tokenStatus(token),
+    }));
+
+  it.each([
+    ["for another account", { sub: "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb" }],
+    ["without the access it asked for", { scope: "atproto" }],
+    ["that are not bound to its key", { token_type: "Bearer" }],
+    // An answer that is not what atproto has it be, and has begun a
+    // session all the same.
+    ["in an answer that it cannot read", { sub: 1 }],
+  ])("ends the session that came with tokens %s", async (_name, changed) => {
+    const test = await setup();
+    const { start, params } = await consented(test);
+    test.intercept(async (request, simulator) => {
+      const response = await simulator(request);
+      if (!request.url.endsWith("/oauth/token") || response.status !== 200) {
+        return response;
+      }
+      // The server has begun the session. Only what it says of it is
+      // changed on the way.
+      return Response.json(
+        { ...(await response.json()), ...changed },
+        { headers: response.headers },
+      );
+    });
+
+    const error = await failure(() =>
+      test.provider.completeConnect({ pending: start.pending, params }),
+    );
+
+    // The caller gets no credentials, so nobody could end the session
+    // later. It is ended: none of its tokens works.
+    const tokens = sessionTokens(test);
+    expect(tokens.length).toBeGreaterThan(0);
+    expect(tokens.filter(({ status }) => status === "valid")).toEqual([]);
+    // What went wrong is still what the caller is told, without a token.
+    expect(error.kind).toBe("fail");
+    expect(error.message).not.toContain("give the access back");
+    for (const { token } of tokens) {
+      expect(error.message).not.toContain(token);
+    }
+  });
+
+  it("fails with what was wrong with the tokens when the server does not take them back either", async () => {
+    const test = await setup();
+    const { start, params } = await consented(test);
+    test.intercept(async (request, simulator) => {
+      if (request.url.endsWith("/oauth/revoke")) {
+        throw new TypeError("The server is out of reach");
+      }
+      const response = await simulator(request);
+      if (!request.url.endsWith("/oauth/token") || response.status !== 200) {
+        return response;
+      }
+      return Response.json(
+        { ...(await response.json()), token_type: "Bearer" },
+        { headers: response.headers },
+      );
+    });
+
+    const error = await failure(() =>
+      test.provider.completeConnect({ pending: start.pending, params }),
+    );
+
+    // The adapter tried: the session stands, so only the request shows
+    // it.
+    expect(
+      test.requests.some((request) => request.includes("/oauth/revoke")),
+    ).toBe(true);
+    // Not `retry`, which the server that is out of reach would be by
+    // itself: the code is spent, and the tokens were refused.
+    expect(error.kind).toBe("fail");
+    expect(error.message).toContain("not bound to its key");
+  });
+
   it("says nothing in a message of what the connection is made with", async () => {
     const test = await setup();
     const { start, params } = await consented(test);
