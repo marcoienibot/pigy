@@ -28,6 +28,18 @@ export function timeAgo(time: number, now: number): string {
     : dayMonthAndYear.format(date);
 }
 
+/**
+ * When `time` was at `now`, as the end of a sentence: "Published 5m ago",
+ * "Published just now", "Published on 3 Mar". `timeAgo` alone is for
+ * where a time stands by itself, as in a list.
+ */
+export function whenAgo(time: number, now: number): string {
+  const ago = now - time;
+  if (ago < minute) return "just now";
+  if (ago < 7 * day) return `${timeAgo(time, now)} ago`;
+  return `on ${timeAgo(time, now)}`;
+}
+
 /** The time, to the minute: the component renders again when it changes. */
 export function useNow(): number {
   const [now, setNow] = useState(Date.now);

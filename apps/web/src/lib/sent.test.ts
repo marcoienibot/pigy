@@ -106,8 +106,31 @@ describe("selectSent", () => {
         ],
       }),
     );
-    // It would fail at once, without asking the network.
-    expect(item?.targets[0]?.canRetry).toBe(false);
+    // It would fail at once, without asking the network: what is offered
+    // is to connect the account again.
+    expect(item?.targets[0]).toMatchObject({
+      canRetry: false,
+      reconnect: true,
+    });
+  });
+
+  it("asks to connect an account again only for a delivery that failed", () => {
+    const broken = channel({ status: "needs_reconnect" });
+    const published = post({ status: "error" });
+    const [item] = selectSent(
+      tablesOf({
+        post: [published],
+        post_part: [part(published.id)],
+        channel: [broken, grace],
+        post_target: [
+          // Sent before the account broke: nothing is left to try.
+          target(published.id, broken.id, { status: "sent", queuedAt: 1 }),
+          // Failed for another reason, at an account that works.
+          target(published.id, grace.id, { status: "error", queuedAt: 1 }),
+        ],
+      }),
+    );
+    expect(item?.targets.map((one) => one.reconnect)).toEqual([false, false]);
   });
 
   it("has the published parts of a thread in the order of the post", () => {

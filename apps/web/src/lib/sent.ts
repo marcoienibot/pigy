@@ -48,6 +48,11 @@ export type SentTarget = {
    * so it is not offered then.
    */
   canRetry: boolean;
+  /**
+   * The delivery has failed, and its channel has to be connected again
+   * before it can be tried again.
+   */
+  reconnect: boolean;
 };
 
 export type SentPost = {
@@ -132,6 +137,7 @@ export function selectSent(tables: Tables): SentPost[] {
               failed &&
               channel !== null &&
               channel.status !== "needs_reconnect",
+            reconnect: failed && channel?.status === "needs_reconnect",
           };
         })
         .sort(

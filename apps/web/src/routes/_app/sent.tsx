@@ -33,7 +33,7 @@ import {
   targetExplanation,
   targetStatusWords,
 } from "@/lib/sent";
-import { timeAgo, useNow } from "@/lib/time";
+import { timeAgo, useNow, whenAgo } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { useMutate, useSynced, useSyncState } from "@/sync/react";
 
@@ -276,7 +276,7 @@ function SentItem({
         <p className="flex flex-wrap items-center gap-x-2 px-3 pt-1 pb-2 text-xs text-muted-foreground">
           <Status words={words} />
           <span aria-hidden="true">·</span>
-          <span>Published {timeAgo(post.publishedAt, now)}</span>
+          <span>Published {whenAgo(post.publishedAt, now)}</span>
           {post.parts.length > 1 && (
             <>
               <span aria-hidden="true">·</span>
@@ -313,12 +313,10 @@ function TargetRow({
   now: number;
 }) {
   const mutate = useMutate();
-  const { channel, status, error, published } = target;
+  const { channel, status, error, published, reconnect } = target;
   const handle = channel?.handle ?? "A disconnected account";
   const network = channel && networkInfo[channel.network].label;
   const explanation = targetExplanation(target);
-  const failed = status === "error" || status === "uncertain";
-  const reconnect = failed && channel?.status === "needs_reconnect";
 
   return (
     <li
