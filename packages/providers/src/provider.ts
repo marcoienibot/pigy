@@ -221,11 +221,12 @@ export type Provider = {
    * to a part that landed unseen: a caller keeps it.
    *
    * False where a step looks through what the account has posted since
-   * the delivery began, or cannot look at all. To such a provider a post
-   * of a later delivery that reads the same is its own. A caller that
-   * lets a delivery pass one that has failed and published no part drops
-   * what the failed one recorded, so that it begins anew when it is tried
-   * again: `publishStep` has the rule.
+   * the delivery began: it takes a post of a later delivery that reads
+   * the same for its own. False also where a step cannot look at all,
+   * and records nothing to go on from. A caller that lets a delivery pass
+   * one that has failed and published no part drops what the failed one
+   * recorded, so that it begins anew when it is tried again:
+   * `publishStep` has the rule.
    */
   readonly tellsDeliveriesApart: boolean;
 
@@ -387,10 +388,10 @@ export type Provider = {
    *   can, and one that has published a part, may be taken up from its
    *   recorded progress after another has gone to the account. The
    *   deliveries run one after the other for every provider all the
-   *   same: a refresh is one at a time per account, and deliveries are
-   *   what refreshes. pigy keeps to this per channel. An account that is
-   *   connected as two channels, in two workspaces, is not covered:
-   *   PLAN.md section 8 says what can happen then.
+   *   same: a refresh is one at a time per channel, and deliveries are
+   *   what refreshes. pigy keeps to all of this per channel. An account
+   *   that is connected as two channels, in two workspaces, is not
+   *   covered: PLAN.md section 8 says what can happen then.
    * - What a person has deleted or changed on the network since is no
    *   longer what a step looks for, and may be published again.
    */
