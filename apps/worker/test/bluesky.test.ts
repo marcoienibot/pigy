@@ -392,10 +392,16 @@ describe("connecting a Bluesky account", () => {
       connect: "connected",
       channel: channel?.id,
     });
-    // The second call stored nothing: the channel has the credentials of
-    // the first, which are the same sealed text only because nothing was
-    // written again.
     expect(await storedAccess(workspaces.live)).toHaveLength(1);
+    // The second call changed nothing: the workspace has changed once.
+    // Carried out again, `channel.connect` would have written the row a
+    // second time, with a later `connectedAt`, and clients would have
+    // heard of a second change.
+    const client = new SyncClient();
+    expect(await client.connect(browser, workspaces.live)).toMatchObject({
+      to: 1,
+    });
+    client.disconnect();
     // The session of the channel stands. Given back, the channel would say
     // `connected` with an access that is gone.
     expect(test.network.requests).not.toContain(
