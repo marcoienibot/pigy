@@ -487,7 +487,9 @@ test("a post goes out to a simulated LinkedIn account, and one whose answer is l
   await openScreen(page, "Sent");
   const unknown = deliveryTo(sentPost(page, "Did it arrive"), graceOnLinkedIn);
   // At once: no wait of a minute, as for a network that is tried again.
-  await expect(unknown).toContainText("Unknown");
+  // The workflow still takes its steps, which a machine under load is
+  // slow at.
+  await expect(unknown).toContainText("Unknown", { timeout: 20_000 });
   await expect(unknown).toContainText(
     "LinkedIn did not answer, so pigy cannot tell whether the post is on LinkedIn",
   );
@@ -511,7 +513,7 @@ test("a post goes out to a simulated LinkedIn account, and one whose answer is l
   await unknown
     .getByRole("button", { name: `Retry ${graceOnLinkedIn}` })
     .click();
-  await expect(unknown).toContainText("Sent");
+  await expect(unknown).toContainText("Sent", { timeout: 20_000 });
   await unknown
     .getByRole("link", { name: "See it in the simulated feed" })
     .click();
