@@ -27,6 +27,7 @@ import {
 } from "../publish/delivery.ts";
 import {
   type ChannelAccess,
+  type ConnectChannelCall,
   type ConnectChannelOutcome,
   callKeySchema,
   type Delivery,
@@ -208,13 +209,16 @@ export function workspaceObject({ now }: { now: Clock }) {
     /**
      * Stores an account that somebody has connected as a channel, together
      * with the access to it, which the Worker has sealed. The clients that
-     * are connected receive the channel, and never the access. Returns
+     * are connected receive the channel, and never the access. With a key
+     * in `call` it is carried out once, and with `handBack` it returns the
+     * access that the channel held before, sealed as it was stored. Returns
      * nothing if `workspace` is not the one that the object holds.
      */
     connectChannel(
       workspace: WorkspaceIdentity,
       channel: MutatorArgs<"channel.connect">,
       access: ChannelAccess,
+      call: ConnectChannelCall = {},
     ): ConnectChannelOutcome | undefined {
       if (!this.#store.bind(workspaceIdentitySchema.parse(workspace))) {
         return undefined;
@@ -224,6 +228,10 @@ export function workspaceObject({ now }: { now: Clock }) {
         channel,
         access,
         now().getTime(),
+        {
+          key: callKeySchema.optional().parse(call.key),
+          handBack: call.handBack === true,
+        },
       );
       this.#publish(from);
       return outcome;

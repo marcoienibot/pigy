@@ -40,6 +40,7 @@ import {
   changeLog,
   channels,
   clientMutations,
+  type KeyedOutcome,
   keyedCalls,
   postTargets,
   rejections,
@@ -96,10 +97,26 @@ export type ChannelAccess = {
   refreshAt: number | null;
 };
 
-/** The channel that an account was stored as, or why it was not. */
+/**
+ * The channel that an account was stored as, or why it was not. `replaced`
+ * is the access that the channel held until then, if the account had a
+ * channel already: from the connection before, which nothing else holds
+ * from here on.
+ */
 export type ConnectChannelOutcome =
-  | { ok: true; channelId: string }
+  | { ok: true; channelId: string; replaced: StoredChannelAccess | null }
   | ({ ok: false } & Refusal);
+
+/** How the Worker asks for a channel to be stored. */
+export type ConnectChannelCall = {
+  /** What names the call, which is then carried out once. */
+  key?: string | undefined;
+  /**
+   * Whether to hand back the access that the connection replaced: where
+   * the caller gives it back to its network.
+   */
+  handBack?: boolean;
+};
 
 /** What it takes to act for the account of a channel. */
 export type StoredChannelAccess = {
@@ -382,11 +399,11 @@ export class WorkspaceStore {
    * other. A call that failed, which is one that threw, has not happened
    * and left no key behind.
    */
-  private once(
+  private once<Outcome extends KeyedOutcome>(
     key: string | undefined,
     now: number,
-    call: () => MutationOutcome,
-  ): MutationOutcome {
+    call: () => Outcome,
+  ): Outcome {
     return this.storage.transactionSync(() => {
       if (key === undefined) return call();
       const handled = this.db
@@ -394,7 +411,9 @@ export class WorkspaceStore {
         .from(keyedCalls)
         .where(eq(keyedCalls.key, key))
         .get();
-      if (handled) return handled.outcome;
+      // The caller answers for the key: it names this call, so what is
+      // kept under it is an outcome of this call.
+      if (handled) return handled.outcome as Outcome;
       const outcome = call();
       this.db.insert(keyedCalls).values({ key, outcome, handledAt: now }).run();
       // Nobody repeats a call after this long.
@@ -412,13 +431,39 @@ export class WorkspaceStore {
    * of, and the access next to it, which they do not. Both in one
    * transaction, so that there is never a channel without its access, or
    * with the access of an earlier connection.
+   *
+   * It hands back the access that the channel held before, if the account
+   * had one: read in the same transaction, so it is what this connection
+   * replaced and nothing else, for the caller to give back to a network
+   * on which it would stand otherwise.
+   *
+   * With a `key`, it is carried out once: see `once`. A repeat is answered
+   * as the first call was, with what that one replaced. That is kept
+   * under the key for as long as the key, sealed as it was, so only a
+   * caller that says `handBack` is handed anything: one that has
+   * something to do with it.
    */
   connectChannel(
     channel: MutatorArgs<"channel.connect">,
     access: ChannelAccess,
     now: number,
+    { key, handBack = false }: ConnectChannelCall = {},
   ): ConnectChannelOutcome {
-    return this.storage.transactionSync(() => {
+    return this.once(key, now, (): ConnectChannelOutcome => {
+      const account = and(
+        eq(channels.network, channel.network),
+        eq(channels.accountId, channel.accountId),
+      );
+      const before = this.db
+        .select({
+          network: channels.network,
+          accountId: channels.accountId,
+          credentials: channels.credentials,
+          connectedAt: channels.connectedAt,
+        })
+        .from(channels)
+        .where(account)
+        .get();
       const [refusal] = this.run(
         [{ name: "channel.connect", args: channel }],
         now,
@@ -430,16 +475,16 @@ export class WorkspaceStore {
       const [stored] = this.db
         .update(channels)
         .set(access)
-        .where(
-          and(
-            eq(channels.network, channel.network),
-            eq(channels.accountId, channel.accountId),
-          ),
-        )
+        .where(account)
         .returning({ id: channels.id })
         .all();
       if (!stored) throw new Error("The channel was not stored");
-      return { ok: true, channelId: stored.id };
+      return {
+        ok: true,
+        channelId: stored.id,
+        // A channel without credentials held nothing to give back.
+        replaced: handBack && before?.credentials ? before : null,
+      };
     });
   }
 

@@ -10,6 +10,7 @@ import { workspaces } from "../db/schema.ts";
 import type { Bindings } from "../env.ts";
 import type {
   ChannelAccess,
+  ConnectChannelCall,
   ConnectChannelOutcome,
   Delivery,
   DeliveryRun,
@@ -142,16 +143,24 @@ export async function mutateWorkspace<Name extends MutatorName>(
  * Stores an account that was connected to `workspace` as a channel, with
  * the access to it, sealed. An account that has a channel already keeps
  * it. Clients that are connected receive the channel at once.
+ *
+ * `call.key` names the call, as for `mutateWorkspace`: it is carried out
+ * once, and a caller that cannot tell whether it arrived repeats it with
+ * the same key and is answered as the first time. With `call.handBack`,
+ * the answer has the access that the channel held before, sealed, if the
+ * account had a channel already: this connection has replaced it, and the
+ * workspace keeps it only for the repeats of this call.
  */
 export async function connectChannel(
   namespace: Bindings["WORKSPACE"],
   workspace: WorkspaceIdentity,
   channel: MutatorArgs<"channel.connect">,
   access: ChannelAccess,
+  call: ConnectChannelCall = {},
 ): Promise<ConnectChannelOutcome> {
   const outcome = await namespace
     .getByName(workspace.id)
-    .connectChannel(workspace, channel, access);
+    .connectChannel(workspace, channel, access, call);
   if (!outcome) throw foreign(workspace);
   return outcome;
 }

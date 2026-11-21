@@ -230,6 +230,15 @@ export const rejections = sqliteTable(
 );
 
 /**
+ * How a call of the Worker that came with a key ended: done, with what the
+ * call hands back besides, or refused. What it hands back is plain data,
+ * and a secret among it is sealed: the access that a connection replaced.
+ */
+export type KeyedOutcome =
+  | { ok: true; [handedBack: string]: unknown }
+  | { ok: false; code: RejectionCode; message: string };
+
+/**
  * The calls of the Worker that came with a key, and how each ended: a call
  * that comes a second time is answered from here and not carried out again.
  * A row is kept for as long as a caller may still repeat the call.
@@ -239,11 +248,7 @@ export const keyedCalls = sqliteTable(
   {
     key: text("key").primaryKey(),
     /** What the call was answered with. */
-    outcome: text("outcome", { mode: "json" })
-      .$type<
-        { ok: true } | { ok: false; code: RejectionCode; message: string }
-      >()
-      .notNull(),
+    outcome: text("outcome", { mode: "json" }).$type<KeyedOutcome>().notNull(),
     handledAt: integer("handled_at").notNull(),
   },
   (table) => [index("keyed_call_handled_at_idx").on(table.handledAt)],
