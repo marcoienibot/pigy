@@ -60,5 +60,9 @@ export async function formParams(
 ): Promise<URLSearchParams | undefined> {
   const type = request.headers.get("Content-Type") ?? "";
   if (!type.startsWith("application/x-www-form-urlencoded")) return undefined;
-  return new URLSearchParams(await request.text());
+  const params = new URLSearchParams();
+  for (const [name, value] of await request.formData()) {
+    if (typeof value === "string") params.append(name, value);
+  }
+  return params;
 }
