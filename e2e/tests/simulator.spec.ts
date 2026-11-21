@@ -227,23 +227,23 @@ test("the failure panel says what the server answered when it refuses a fault, a
   await openFailures(page);
   const form = page.getByRole("form", { name: "Make the next request fail" });
   // The panel offers only what the server has declared, so the server of
-  // the test never refuses it: the test answers in its place, once, as the
-  // route does for a fault that the network does not have.
-  await page.route(
-    faultsRoute,
-    (route) =>
-      route.request().method() === "POST"
-        ? route.fulfill({
-            status: 400,
-            json: {
-              error: "InvalidInputError",
-              message: "Mastodon has no such fault.",
-              field: "kind",
-            },
-          })
-        : route.fallback(),
-    { times: 1 },
-  );
+  // the test never refuses it: the test answers in its place, as the route
+  // does for a fault that the network does not have. Only the first time
+  // that a fault is armed: the panel also reads its list by this route,
+  // and those requests pass.
+  let refused = false;
+  await page.route(faultsRoute, (route) => {
+    if (refused || route.request().method() !== "POST") return route.fallback();
+    refused = true;
+    return route.fulfill({
+      status: 400,
+      json: {
+        error: "InvalidInputError",
+        message: "Mastodon has no such fault.",
+        field: "kind",
+      },
+    });
+  });
   const arm = form.getByRole("button", { name: "Arm", exact: true });
   await arm.click();
   await expect(form.getByRole("alert")).toHaveText(
