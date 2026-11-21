@@ -16,7 +16,10 @@ import { forgetTabChoice, forgetWorkspaceChoice } from "@/lib/workspace";
 import { countUnsynced, deleteCopies } from "@/sync/indexed-db";
 import {
   closeWorkspaceSync,
-  unsavedInSomeWindow,
+  holdUnsaved,
+  stopWorkspaceConnections,
+  unsavedInOtherWindow,
+  unsavedInWindowsOf,
   whenSaved,
 } from "@/sync/workspace-sync";
 
@@ -37,10 +40,16 @@ export type Session = { me: MeResponse; workspaces: Workspace[] };
 const storageKey = "pigy-session";
 
 /**
- * `ended`: the server has said that the session is over, and the copies
- * were kept because they hold changes that were not synced.
+ * `ended`: the server has said that the session is over. The copies are
+ * still there: `endSession` deletes them, and this with them, once they
+ * hold nothing that was not synced and no window needs them.
+ *
+ * `key` tells the sessions of one person on this device apart: it is made
+ * when a session is taken on, see `adopt`, and what a tab has found out
+ * about one session is not acted on when the device holds another by then.
+ * A session that a version of the app before this one stored has none.
  */
-type Stored = Session & { ended: boolean };
+type Stored = Session & { ended: boolean; key: string | undefined };
 
 function read(): Stored | null {
   try {
@@ -54,14 +63,32 @@ function read(): Stored | null {
       me: me.data,
       workspaces: list.data.workspaces,
       ended: stored.ended === true,
+      key: typeof stored.key === "string" ? stored.key : undefined,
     };
   } catch {
     return null;
   }
 }
 
-function write({ me, workspaces }: Session, ended = false): void {
-  localStorage.setItem(storageKey, JSON.stringify({ me, workspaces, ended }));
+function write(
+  { me, workspaces }: Session,
+  { ended, key }: Pick<Stored, "ended" | "key">,
+): void {
+  localStorage.setItem(
+    storageKey,
+    JSON.stringify({ me, workspaces, ended, key }),
+  );
+}
+
+/**
+ * What this device holds now, if that is still the session `of`: the same
+ * person and the same key. Null if it holds another one, or none.
+ */
+function still(of: Stored): Stored | null {
+  const now = read();
+  return now && now.me.user.id === of.me.user.id && now.key === of.key
+    ? now
+    : null;
 }
 
 /**
@@ -132,7 +159,14 @@ export async function loadSession(
   } catch (error) {
     // The session that this device knows of is over, and whether there is
     // a new one cannot be found out: the sign-in page says what is left.
-    if (stored) return null;
+    // It does not ask the server a second time when this question got no
+    // answer, which would be the same wait once more.
+    if (stored) {
+      if (!signal.aborted && unanswered(error)) {
+        unansweredAt = performance.now();
+      }
+      return null;
+    }
     // The router has given this navigation up, and wants no answer.
     if (signal.aborted) throw error;
     // Only a request that got no answer says that the server cannot be
@@ -145,6 +179,24 @@ export async function loadSession(
 }
 
 /**
+ * When a question of `loadSession` about a session that is over got no
+ * answer, on the clock of `performance.now()`: see `serverJustSilent`.
+ */
+let unansweredAt = Number.NEGATIVE_INFINITY;
+
+/**
+ * Whether the server has just left `loadSession` without an answer, on the
+ * way to the sign-in page: that page then says so without asking again.
+ * True once per such question, and only right after it: whoever tries
+ * again asks the server.
+ */
+export function serverJustSilent(): boolean {
+  const just = performance.now() - unansweredAt < 1_000;
+  unansweredAt = Number.NEGATIVE_INFINITY;
+  return just;
+}
+
+/**
  * Makes `session` the one that this device knows of. Whoever signs in gets
  * a device without anybody else's data. If a session of their own ended
  * here with changes that were not synced, the changes are theirs again,
@@ -152,7 +204,7 @@ export async function loadSession(
  */
 async function adopt(session: Session): Promise<void> {
   await deleteCopies(session.me.user.id);
-  write(session);
+  write(session, { ended: false, key: crypto.randomUUID() });
 }
 
 let checking: Promise<void> | undefined;
@@ -231,11 +283,19 @@ const heldListeners = new Set<() => void>();
  * person can choose to go without the changes. Nobody else chooses that
  * for them.
  *
- * Nothing is sent for the session that is over meanwhile: the server
- * refuses the socket of the tab, and a store sends only what is stored.
+ * For the whole wait the tab holds the Web Lock that says so to the other
+ * windows, see `holdUnsaved`: a sign-in page that is opened meanwhile
+ * keeps the copies, also for a write that is under way and has not failed.
+ *
+ * Nothing is sent for the session that is over meanwhile. The server
+ * would take it: it serves a socket that was open when a session ended
+ * for up to five minutes more, SYNC.md section 2. So whoever starts this
+ * wait has taken the tab off the network first, with
+ * `stopWorkspaceConnections`: see `sessionOver`.
  */
 function savedOrDiscarded(): Promise<void> {
   saving ??= new Promise<void>((resolve) => {
+    holdUnsaved();
     const timer = setTimeout(() => {
       held = true;
       for (const listener of heldListeners) listener();
@@ -266,34 +326,118 @@ export function onSessionEndHeld(listener: () => void): () => void {
 /**
  * Lets the tab that `sessionEndHeld` is true of leave, without the
  * changes that it could not store: the person has said so.
+ *
+ * The stores of the tab are shut here and now, whatever another tab has
+ * done to the session meanwhile: that is what lets the changes go, and
+ * with them the question that the browser asks before a page leaves with
+ * such changes, which the person has just answered. If the page is still
+ * there when this is called again, the leave did not happen, and the tab
+ * leaves for the sign-in page now, which looks after what is left.
  */
 export function discardUnsaved(): void {
+  closeWorkspaceSync();
+  if (discarded) {
+    left = false;
+    go(toSignIn);
+    return;
+  }
+  discarded = true;
   discard?.();
+}
+
+/** Whether the person has let the changes of this tab go. */
+let discarded = false;
+
+/** Whether this tab has begun to leave the page. It does so once. */
+let left = false;
+
+/** Leaves the page, with `leave`, unless the tab is leaving already. */
+function go(leave: () => void): void {
+  if (left) return;
+  left = true;
+  leave();
+}
+
+/** To the sign-in page, and from there back to where the tab is. */
+function toSignIn(): void {
+  // A full page load, so that nothing of the session stays in memory.
+  const here = location.pathname + location.search + location.hash;
+  location.assign(
+    here === "/"
+      ? "/sign-in"
+      : `/sign-in?${new URLSearchParams({ returnTo: here })}`,
+  );
+}
+
+/** Starts the tab again, as whoever this device now says is signed in. */
+function startAgain(): void {
+  closeWorkspaceSync();
+  location.reload();
+}
+
+/** The end of a session as this tab sees it through, once: `sessionOver`. */
+let over: Promise<void> | undefined;
+
+/**
+ * For a tab that has learned that the session `of`, which this device
+ * holds, is over without the person's doing: from the server, with
+ * `found`, or from another tab. In this order:
+ *
+ * 1. The device records that the session is over, at once. A tab that is
+ *    opened from now on does not show the copies as if the session were
+ *    good, and the other tabs hear of the end now and not when this one
+ *    has stored its changes.
+ * 2. The tab goes off the network, and stays for what it has not stored:
+ *    `savedOrDiscarded`.
+ * 3. It looks again at what the device holds, because the wait can have
+ *    lasted, and what was true before it may not be: the same person can
+ *    have signed in again, in another tab. Only if the device still holds
+ *    this session, ended, does the tab go on as it began: the one that
+ *    found out decides what becomes of the copies, with `endSession`, and
+ *    goes to the sign-in page, and one that heard of it starts again, which
+ *    takes it there. Otherwise it ends nothing: it starts again, as
+ *    whoever is signed in now.
+ *
+ * A tab that leaves for another reason meanwhile, because somebody else
+ * has signed in or the person has signed out, has left: nothing here acts
+ * after that, and no tab leaves twice.
+ */
+function sessionOver(of: Stored, { found }: { found: boolean }): void {
+  over ??= (async () => {
+    if (!of.ended) write(of, { ended: true, key: of.key });
+    stopWorkspaceConnections();
+    await savedOrDiscarded();
+    // Signing out leaves by itself, and has dealt with the session.
+    if (left || signingOut) return;
+    if (!found || !still(of)?.ended) {
+      go(startAgain);
+      return;
+    }
+    // If this fails, as IndexedDB can on a device that is in trouble, the
+    // sign-in page finds what is left and deals with it.
+    await endSession().catch((error: unknown) => console.error(error));
+    go(toSignIn);
+  })();
 }
 
 async function check(): Promise<void> {
   const stored = read();
-  if (!stored || stored.ended || signingOut) return;
+  if (!stored || stored.ended || signingOut || left) return;
   let fresh: Session | null;
   try {
     fresh = await fetchSession();
   } catch {
     return;
   }
-  if (signingOut) return;
+  if (signingOut || left) return;
+  // The answer is about the session that the device held when the server
+  // was asked. If it holds another one by now, or none, the answer says
+  // nothing about that one, and the `storage` listener below has seen to
+  // this tab.
+  const now = still(stored);
+  if (!now) return;
   if (!fresh) {
-    // What this tab has not stored is stored first, and then kept with
-    // the copy: `endSession` closes the stores, and the page goes.
-    await savedOrDiscarded();
-    if (signingOut) return;
-    await endSession();
-    // A full page load, so that nothing of the session stays in memory.
-    const here = location.pathname + location.search + location.hash;
-    location.assign(
-      here === "/"
-        ? "/sign-in"
-        : `/sign-in?${new URLSearchParams({ returnTo: here })}`,
-    );
+    sessionOver(now, { found: true });
     return;
   }
   if (fresh.me.user.id !== stored.me.user.id) {
@@ -303,12 +447,17 @@ async function check(): Promise<void> {
     // before, so it starts again as the new one, at once: what it could
     // not store is not waited for, because what a device holds of one
     // person goes when another signs in, stored or not.
+    left = true;
     closeWorkspaceSync();
     await adopt(fresh);
     location.reload();
     return;
   }
-  write(fresh);
+  // Another tab has heard that the session is over, and this answer was
+  // on its way before that. The tabs are leaving for the sign-in page,
+  // which asks the server again.
+  if (now.ended) return;
+  write(fresh, now);
   if (JSON.stringify(fresh.me) !== JSON.stringify(stored.me)) {
     for (const listener of listeners) listener();
   }
@@ -316,7 +465,9 @@ async function check(): Promise<void> {
 
 /**
  * For when the server has said that the session this device knows of is
- * over: deletes the local copies of its user and forgets the user.
+ * over. It records that at once, if nothing has yet, so that no tab shows
+ * the copies as if the session were good. Then it deletes the local copies
+ * of its user and forgets the user.
  *
  * Unless the copies hold changes that were never synced. A session ends
  * without the person's doing, after 30 days or when an invitation is
@@ -325,29 +476,40 @@ async function check(): Promise<void> {
  * that they are there. They are synced when the same person signs in
  * again, and deleted when somebody else does or when the person says so.
  *
- * They also stay while a window holds changes that it could not store:
- * that window is about to hear that the session is over, and waits until
- * it has stored them, which takes the copy. See the `storage` listener
- * below. The tab that calls this has waited for its own, if it had any.
+ * They also stay while another window holds changes that it has not
+ * stored: that window has heard that the session is over, or is about to,
+ * and waits until it has stored them, which takes the copy. See
+ * `sessionOver`. The tab that calls this has waited for its own, if it had
+ * any, and its sync is closed here.
+ *
+ * The sign-in page calls this every time it is loaded, so copies that were
+ * kept for a window, or for changes that have been synced or deleted
+ * since, go the next time somebody is there and nothing needs them.
+ *
+ * What it reads at its start can be untrue a moment later: the same
+ * person signs in again in another tab. So it looks again before it
+ * deletes anything, and leaves a session alone that is not the one it
+ * found over.
  */
 export async function endSession(): Promise<void> {
   const stored = read();
-  if (stored?.ended) return;
-  // Asked before this tab closes its stores: it does not matter that the
-  // tab is counted itself where it goes without its changes. A copy that
-  // is kept for nothing says nothing on the sign-in page, and goes with
-  // the next sign-in of somebody else.
-  const waited = await unsavedInSomeWindow();
+  if (stored && !stored.ended) write(stored, { ended: true, key: stored.key });
   closeWorkspaceSync();
-  if (stored && (waited || (await countUnsynced(stored.me.user.id)) > 0)) {
-    write(stored, true);
-  } else {
-    // Also when this device knows of nobody: a copy can be left behind by
-    // a deletion that failed.
-    await deleteCopies();
-    localStorage.removeItem(storageKey);
-    forgetWorkspaceChoice();
+  // Whether the device still holds what this was called about: the same
+  // session, ended, or nobody.
+  const unchanged = () =>
+    stored ? still(stored)?.ended === true : read() === null;
+  if (stored) {
+    if (await unsavedInOtherWindow()) return;
+    if ((await countUnsynced(stored.me.user.id)) > 0) return;
   }
+  if (!unchanged()) return;
+  // Also when this device knows of nobody: a copy can be left behind by
+  // a deletion that failed.
+  await deleteCopies();
+  if (!unchanged()) return;
+  localStorage.removeItem(storageKey);
+  forgetWorkspaceChoice();
 }
 
 /**
@@ -363,17 +525,25 @@ export function holdsSession(): boolean {
 
 /**
  * The changes on this device that were kept when a session ended, and
- * whose they are. Null if there are none.
+ * whose they are. Null if there are none. `count` is what the copies hold.
+ * `unstored` is what other windows say that they could not store: they are
+ * in no copy, and those windows stay open for them, see `sessionOver`.
+ * Whatever discards the first discards the second, so whoever asks about
+ * that counts both.
  */
 export async function keptChanges(): Promise<{
   count: number;
+  unstored: number;
   email: string;
 } | null> {
   const stored = read();
   if (!stored?.ended) return null;
   const { id, email } = stored.me.user;
+  // In this order, as the sign-out counts: a change that a window stores
+  // in between is counted twice and not left out.
+  const unstored = await unsavedInWindowsOf(id);
   const count = await countUnsynced(id);
-  return count > 0 ? { count, email } : null;
+  return count + unstored > 0 ? { count, unstored, email } : null;
 }
 
 // The other tabs of this browser follow what this module stores: when
@@ -403,23 +573,27 @@ window.addEventListener("storage", (event) => {
     // again: they come back to what they left.
     if (before?.[0] !== after?.[0]) forgetTabChoice();
     const same = after !== null && after[0] === before?.[0];
+    const stored = read();
+    // The session of the person has ended by itself, and another tab has
+    // found out. What this tab has not stored is stored before it starts
+    // again, as in the tab that found out: see `sessionOver`. That reads
+    // what the device holds now, which can be later news than this event.
+    if (same && after[1] === true) {
+      if (stored?.ended && stored.me.user.id === after[0]) {
+        sessionOver(stored, { found: false });
+      }
+      return;
+    }
     // The same person is signed in again while this tab waits for what it
-    // could not store after their session had ended. It goes on waiting:
-    // starting again now would lose those changes for nothing.
-    if (same && saving) return;
-    // The session of the person has ended by itself, and the copies were
-    // kept. What this tab has not stored is stored before it starts
-    // again, as in the tab that found out: see `savedOrDiscarded`.
+    // has not stored after their session had ended. It goes on waiting:
+    // starting again now would lose those changes for nothing. When the
+    // wait is over, the tab starts again as whoever is signed in then.
+    if (same && over) return;
     // Anything else is no reason to wait, also for a tab that waits
     // already: the person has signed out or has had the changes that were
     // kept deleted, which they were asked about, or somebody else has
     // signed in, and nothing of the person before is shown to them.
-    const leave = () => {
-      closeWorkspaceSync();
-      location.reload();
-    };
-    if (same && after[1] === true) void savedOrDiscarded().then(leave);
-    else leave();
+    go(startAgain);
   }
 });
 

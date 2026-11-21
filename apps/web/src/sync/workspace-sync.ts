@@ -6,6 +6,7 @@ import {
   SyncStore,
   type TabChannel,
   type TabMessage,
+  tabAnswerMs,
   type Workspace,
   whenAllStored,
 } from "@pigy/core";
@@ -30,6 +31,12 @@ import {
 export type WorkspaceSync = {
   /** What the screens read and write. */
   store: SyncStore;
+  /**
+   * Gives up the socket and the place in the line for it, for good. The
+   * store goes on: it shows the copy, stores what is written and tries
+   * again what it could not store. See `stopWorkspaceConnections`.
+   */
+  disconnect(): void;
   /** Stops syncing in this tab. The copy stays on the device. */
   close(): void;
 };
@@ -101,6 +108,13 @@ function ask(event: BeforeUnloadEvent): void {
  * changes again would lose them, and left as it is under the new version
  * it would run a build whose files are gone.
  *
+ * A window whose session has ended holds it too, from the moment it hears
+ * of the end until it leaves: see `holdUnsaved`. It waits for what it has
+ * not stored, which can be a write that is under way and has not failed,
+ * and nobody may take the copies from under that write. A new version of
+ * the app does not take over meanwhile either, which is right for the
+ * same reason.
+ *
  * The name is a contract between the versions of the app, and must not
  * change: the window that holds the lock and the window that looks for it
  * run different versions whenever a new one waits, and a window that
@@ -110,6 +124,26 @@ const unsavedLock = "pigy/unsaved";
 
 /** Gives `unsavedLock` back, while this tab holds it or has asked for it. */
 let releaseUnsavedLock: (() => void) | undefined;
+
+/**
+ * Resolves when this tab has given `unsavedLock` back, and the browser
+ * knows: at once if it never had it.
+ */
+let unsavedLockGone: Promise<unknown> = Promise.resolve();
+
+/** Whether this tab holds `unsavedLock` whatever its stores hold. */
+let holding = false;
+
+/**
+ * Has this tab hold `unsavedLock` from now until `closeWorkspaceSync`,
+ * whatever it holds: for a tab that waits for what it has not stored after
+ * its session has ended. The other windows, the sign-in page among them,
+ * read from the lock that the copies are still needed.
+ */
+export function holdUnsaved(): void {
+  holding = true;
+  changed();
+}
 
 /**
  * Holds `unsavedLock` while `unsaved`, and gives it back when not. The tab
@@ -122,7 +156,7 @@ function sayUnsaved(unsaved: boolean): void {
       releaseUnsavedLock = resolve;
     });
     // Shared, so that every window with such changes gets it at once.
-    navigator.locks
+    unsavedLockGone = navigator.locks
       .request(unsavedLock, { mode: "shared" }, () => stored)
       .catch(report);
   } else if (!unsaved && releaseUnsavedLock) {
@@ -147,6 +181,57 @@ export async function unsavedInSomeWindow(): Promise<boolean> {
   }
 }
 
+/**
+ * Whether another window of the app in this browser holds changes that it
+ * has not stored, or waits to store them after its session has ended. It
+ * is asked once this tab has given the lock back, so a tab that has closed
+ * its sync does not find itself. A tab that still holds changes does.
+ */
+export async function unsavedInOtherWindow(): Promise<boolean> {
+  await unsavedLockGone;
+  return unsavedInSomeWindow();
+}
+
+/**
+ * How many changes the windows of `userId` in this browser say that they
+ * could not store, for a page that has no store to ask with, as the
+ * sign-in page: the stores answer on the channel of the person, as they do
+ * for `SyncStore.unsavedInAllTabs`. Nobody is asked, and nothing is waited
+ * for, unless a window holds the lock that says that there is something to
+ * ask about. Then the windows have `tabAnswerMs` to answer, and the wait is
+ * over a moment after the last answer: nobody knows how many will come.
+ */
+export async function unsavedInWindowsOf(userId: string): Promise<number> {
+  if (!(await unsavedInSomeWindow())) return 0;
+  const everyTab = new BroadcastChannel(`pigy/${userId}`);
+  const counts = new Map<string, number>();
+  await new Promise<void>((resolve) => {
+    let quiet: ReturnType<typeof setTimeout> | undefined;
+    const limit = setTimeout(resolve, tabAnswerMs);
+    everyTab.onmessage = ({ data }: MessageEvent<TabMessage>) => {
+      if (data?.type !== "unsaved") return;
+      counts.set(data.tab, data.count);
+      clearTimeout(quiet);
+      quiet = setTimeout(() => {
+        clearTimeout(limit);
+        resolve();
+      }, answersEndMs);
+    };
+    const ask: TabMessage = { type: "unsaved?" };
+    everyTab.postMessage(ask);
+  });
+  everyTab.close();
+  let count = 0;
+  for (const held of counts.values()) count += held;
+  return count;
+}
+
+/**
+ * How long after an answer to `unsavedInWindowsOf` no other one is
+ * expected, in milliseconds. The windows answer as they hear the question.
+ */
+const answersEndMs = 250;
+
 /** A store of this tab has changed, or the tab has another set of them. */
 function changed(): void {
   const unsaved = unsavedInTab() > 0;
@@ -158,7 +243,7 @@ function changed(): void {
   else window.removeEventListener("beforeunload", ask);
   // The windows that start are told as well, or they would let a new
   // version of the app take over, under which this one could not stay.
-  sayUnsaved(unsaved);
+  sayUnsaved(unsaved || holding);
   for (const watcher of [...watchers]) watcher();
 }
 
@@ -233,7 +318,7 @@ async function open(
   // the socket. One that finds out later that it is too old gives the
   // lock back, or lets it pass when its turn comes.
   const waiting = new AbortController();
-  if (!store.getState().outdated) {
+  if (!store.getState().outdated && !disconnected) {
     navigator.locks
       .request(`${name}/socket`, { signal: waiting.signal }, () =>
         connection.run(),
@@ -260,6 +345,13 @@ async function open(
   const leaving = (event: PageTransitionEvent) => {
     if (!event.persisted) store.leaving();
   };
+  const disconnect = () => {
+    window.removeEventListener("online", online);
+    waiting.abort();
+    // The store says why, where this tab held the socket: the indicator
+    // must not go on saying that the copy follows the server.
+    connection.stop("signed-out");
+  };
   window.addEventListener("online", online);
   window.addEventListener("pagehide", leaving);
   document.addEventListener("visibilitychange", visible);
@@ -269,6 +361,7 @@ async function open(
 
   return {
     store,
+    disconnect,
     close() {
       window.removeEventListener("online", online);
       window.removeEventListener("pagehide", leaving);
@@ -352,6 +445,26 @@ export function whenSaved(): Promise<void> {
   return whenAllStored(() => stores.values());
 }
 
+/** Whether the syncs of this tab are to stay without a socket. */
+let disconnected = false;
+
+/**
+ * Takes this tab off the network as far as sync goes, and keeps it there:
+ * every socket that it holds is closed, it leaves the line for the others,
+ * and a sync that it starts after this opens none. For a tab that has
+ * learned that its session is over and stays for what it has not stored.
+ * The server goes on serving a socket that was open when a session ended,
+ * for up to five minutes, so without this the tab would send what it
+ * stores during its wait, for a session that is over. The stores are not
+ * touched: they show the copies, store, and try again.
+ */
+export function stopWorkspaceConnections(): void {
+  disconnected = true;
+  for (const sync of syncs.values()) {
+    void sync.then(({ disconnect }) => disconnect()).catch(() => {});
+  }
+}
+
 /**
  * Stops every sync of this tab. For when the tab is done with what it
  * holds: the person has signed out, here or in another tab, or the session
@@ -365,6 +478,8 @@ export function closeWorkspaceSync(): void {
   }
   syncs.clear();
   stores.clear();
+  holding = false;
   changed();
   lookedForUnsent = false;
+  disconnected = false;
 }

@@ -1,4 +1,4 @@
-import { useState, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -16,6 +16,12 @@ import {
 import { useUnsavedInTab } from "@/lib/workspace";
 
 /**
+ * How long the button of `SessionEnded` waits for the page to go before
+ * it can be pressed again, in milliseconds.
+ */
+const leaveMs = 5_000;
+
+/**
  * Says that the session has ended, in a window that stays open after that
  * because it holds changes which it has not stored: see `savedOrDiscarded`
  * in `lib/session.ts`. It is over the app and cannot be closed, so nothing
@@ -30,6 +36,14 @@ export function SessionEnded() {
   const held = useSyncExternalStore(onSessionEndHeld, sessionEndHeld);
   const unsaved = useUnsavedInTab();
   const [leaving, setLeaving] = useState(false);
+  // The page is gone a moment after the person has said that it may go.
+  // If it is still here, something kept it, and the button has to work
+  // again: it is the only way out of a dialog that cannot be closed.
+  useEffect(() => {
+    if (!leaving) return;
+    const timer = setTimeout(() => setLeaving(false), leaveMs);
+    return () => clearTimeout(timer);
+  }, [leaving]);
   if (!held) return null;
 
   return (
@@ -40,7 +54,8 @@ export function SessionEnded() {
           <AlertDialogDescription>
             {
               // None is counted while a write is under way that has not
-              // failed: it is slow, and may yet end either way.
+              // failed: it is slow, and may yet end either way. Nor once
+              // the person has let them go, and the page is leaving.
               unsaved === 0
                 ? "pigy has not finished saving your last changes on this device."
                 : `pigy could not save ${

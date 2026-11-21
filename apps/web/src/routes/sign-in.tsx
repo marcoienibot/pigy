@@ -20,6 +20,7 @@ import {
   forgetSession,
   holdsSession,
   keptChanges,
+  serverJustSilent,
 } from "@/lib/session";
 
 type SignInSearch = {
@@ -47,6 +48,12 @@ export const Route = createFileRoute("/sign-in")({
   // server is given a time to answer in: a request that is never answered
   // is one without an answer when that is up.
   beforeLoad: async ({ search, abortController }) => {
+    // The app has just asked on its way here, for a device that holds a
+    // session which is over, and got no answer in its time: the same
+    // question would be the same wait again, with nothing on screen.
+    if (serverJustSilent()) {
+      return { server: "unreachable", signIn: false } as const;
+    }
     let me: Awaited<ReturnType<typeof fetchMe>>;
     try {
       me = await answeredInTime(fetchMe, abortController.signal);
@@ -68,11 +75,14 @@ export const Route = createFileRoute("/sign-in")({
       throw redirect({ href: safeReturnTo(search.returnTo), replace: true });
     }
     // Nobody is signed in, so what this device holds of a session goes
-    // before somebody else signs in here.
+    // before somebody else signs in here, unless something needs it: on
+    // every load of this page, so that what was kept goes when nothing
+    // needs it any more.
     await endSession();
     return { server: "answered", signIn: true } as const;
   },
-  // What did not go: changes that were never synced.
+  // What did not go: changes that were never synced, and what other
+  // windows are still trying to store.
   loader: () => keptChanges(),
   component: SignIn,
 });
@@ -154,27 +164,54 @@ function SignIn() {
 /**
  * Says that this device holds changes of a session that ended before they
  * were synced, what becomes of them, and lets the person discard them.
+ *
+ * `count` of them are in the copies. `unstored` are in other windows,
+ * which could not store them and stay open to try again. Deleting takes
+ * those too, because the windows start again when the copies go, so the
+ * question that is asked first counts both.
  */
-function KeptChanges({ count, email }: { count: number; email: string }) {
+function KeptChanges({
+  count,
+  unstored,
+  email,
+}: {
+  count: number;
+  unstored: number;
+  email: string;
+}) {
   const router = useRouter();
   const [confirming, setConfirming] = useState(false);
-  const changes = count === 1 ? "1 change" : `${count} changes`;
+  const all = count + unstored;
+  const changes = all === 1 ? "1 change" : `${all} changes`;
 
   return (
     <div className="mt-4 rounded-lg border px-3 py-2 text-left">
-      <p>
-        You were signed out before {changes} made on this device as{" "}
-        <span className="font-medium">{email}</span> could be synced. Sign in
-        with that account to sync {count === 1 ? "it" : "them"}. If somebody
-        else signs in, {count === 1 ? "it is" : "they are"} deleted.
-      </p>
+      {count > 0 && (
+        <p>
+          You were signed out before{" "}
+          {count === 1 ? "1 change" : `${count} changes`} made on this device as{" "}
+          <span className="font-medium">{email}</span> could be synced. Sign in
+          with that account to sync {count === 1 ? "it" : "them"}. If somebody
+          else signs in, {count === 1 ? "it is" : "they are"} deleted.
+        </p>
+      )}
+      {unstored > 0 && (
+        <p className={count > 0 ? "mt-2" : undefined}>
+          Another window of pigy holds{" "}
+          {unstored === 1 ? "1 change" : `${unstored} changes`} of{" "}
+          <span className="font-medium">{email}</span> that it could not save on
+          this device. It keeps trying.{" "}
+          {unstored === 1 ? "The change is" : "They are"} lost if that window is
+          closed or somebody else signs in.
+        </p>
+      )}
       <Button
         variant="link"
         size="sm"
         className="mt-1 h-auto px-0 text-destructive"
         onClick={() => setConfirming(true)}
       >
-        Delete {count === 1 ? "this change" : "these changes"}
+        Delete {all === 1 ? "this change" : "these changes"}
       </Button>
       <AlertDialog open={confirming} onOpenChange={setConfirming}>
         <AlertDialogContent>
@@ -182,6 +219,8 @@ function KeptChanges({ count, email }: { count: number; email: string }) {
             <AlertDialogTitle>Delete {changes}?</AlertDialogTitle>
             <AlertDialogDescription>
               They exist only on this device and cannot be brought back.
+              {unstored > 0 &&
+                " The other window of pigy goes to the sign-in page too."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
