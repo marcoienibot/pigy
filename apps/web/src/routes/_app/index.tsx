@@ -571,7 +571,7 @@ function Editor({
           }
         }}
       />
-      <PublishPanel draft={draft} onPublished={onPublished} />
+      <PublishPanel draft={draft} editor={ref} onPublished={onPublished} />
     </>
   );
 }

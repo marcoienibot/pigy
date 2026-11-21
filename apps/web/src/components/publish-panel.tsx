@@ -1,14 +1,20 @@
 import { uuidv7 } from "@pigy/core";
 import { Link, useNavigate, useRouteContext } from "@tanstack/react-router";
 import { Check, Send, TriangleAlert } from "lucide-react";
-import { useId } from "react";
+import { type RefObject, useId } from "react";
 import { toast } from "sonner";
 import { Avatar } from "@/components/avatar";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { selectChannels } from "@/lib/channels";
 import type { Draft } from "@/lib/drafts";
-import { dialogIsOpen, modKey, useKeyDown, withMod } from "@/lib/keyboard";
+import {
+  dialogIsOpen,
+  isBusy,
+  modKey,
+  useKeyDown,
+  withMod,
+} from "@/lib/keyboard";
 import { connectableNetworks, networkInfo } from "@/lib/networks";
 import {
   audienceOf,
@@ -35,9 +41,12 @@ import { useMutate, useSynced, useSyncState } from "@/sync/react";
  */
 export function PublishPanel({
   draft,
+  editor,
   onPublished,
 }: {
   draft: Draft;
+  /** The field that the text of the draft is typed into. */
+  editor: RefObject<HTMLTextAreaElement | null>;
   /** The draft has been published, and is a draft no more. */
   onPublished: () => void;
 }) {
@@ -95,20 +104,22 @@ export function PublishPanel({
   };
 
   useKeyDown((event) => {
-    // Also from the text, where the person is when they are done with it.
-    if (withMod(event) && event.key === "Enter" && !dialogIsOpen()) {
-      event.preventDefault();
-      publish();
-    }
+    if (!withMod(event) || event.key !== "Enter") return;
+    // Not a key that somebody else has taken, one that is held down, or
+    // one that ends the composition of a character.
+    if (event.defaultPrevented || event.repeat || event.isComposing) return;
+    // From the text of the draft, where the person is when they are done
+    // with it, and from the page. Not from what a key press is meant for
+    // otherwise: a menu, which Enter chooses in, a dialog, another field.
+    const fromText = event.target === editor.current && !dialogIsOpen();
+    if (!fromText && isBusy(event)) return;
+    event.preventDefault();
+    publish();
   });
 
   // The notes that go with the choice: what keeps an account from taking
-  // the post. A channel that needs connecting again says so whether or
-  // not it is chosen: it cannot be.
-  const notes = choices.filter(
-    (choice) =>
-      choice.needsReconnect || (choice.chosen && choice.refuses.length > 0),
-  );
+  // the post.
+  const notes = choices.filter((choice) => choice.troubled);
 
   return (
     <section
@@ -141,7 +152,7 @@ export function PublishPanel({
                 key={choice.channel.id}
                 choice={choice}
                 describedBy={
-                  notes.includes(choice) ? noteId(choice.channel.id) : undefined
+                  choice.troubled ? noteId(choice.channel.id) : undefined
                 }
                 onToggle={() => toggle(choice)}
               />
@@ -226,8 +237,7 @@ function ChannelChip({
   describedBy: string | undefined;
   onToggle: () => void;
 }) {
-  const { channel, chosen, needsReconnect, refuses } = choice;
-  const troubled = needsReconnect || (chosen && refuses.length > 0);
+  const { channel, chosen, needsReconnect, troubled } = choice;
   return (
     <button
       type="button"

@@ -54,6 +54,12 @@ export type Choice = {
    * before it sends, and the editor does not refuse what it cannot check.
    */
   refuses: string[];
+  /**
+   * Something keeps the account from taking the post, which the editor
+   * says in a note next to the choice: it needs connecting again, whether
+   * or not it is chosen, or it is chosen and would refuse the text.
+   */
+  troubled: boolean;
 };
 
 /** Why a draft cannot be published as it is. */
@@ -97,11 +103,14 @@ export function compose(
         : validateContent(channel.limits, { parts: [{ text }] }).map(
             ({ message }) => message,
           );
+    const isChosen = chosen.has(channel.id);
+    const needsReconnect = channel.status === "needs_reconnect";
     return {
       channel,
-      chosen: chosen.has(channel.id),
-      needsReconnect: channel.status === "needs_reconnect",
+      chosen: isChosen,
+      needsReconnect,
       refuses,
+      troubled: needsReconnect || (isChosen && refuses.length > 0),
     };
   });
   const picked = choices.filter((choice) => choice.chosen);

@@ -114,6 +114,19 @@ describe("compose", () => {
     });
   });
 
+  it("marks an account that something keeps from taking the post: one that needs connecting again, or a chosen one that refuses the text", () => {
+    const broken = channel({ status: "needs_reconnect" });
+    const long = "a".repeat(400);
+    const troubled = (chosen: string[]) =>
+      compose(long, [mastodon, bluesky, broken], new Set(chosen)).choices.map(
+        (choice) => choice.troubled,
+      );
+    // Bluesky would refuse the text, which matters once it is chosen. The
+    // broken account cannot take a post whether or not it is chosen.
+    expect(troubled([])).toEqual([false, false, true]);
+    expect(troubled([mastodon.id, bluesky.id])).toEqual([false, true, true]);
+  });
+
   it("does not publish to an account that needs connecting again", () => {
     const broken = channel({ status: "needs_reconnect" });
     expect(compose("Hello", [broken], new Set()).choices).toMatchObject([
