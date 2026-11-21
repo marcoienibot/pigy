@@ -278,8 +278,10 @@ describe("connecting a Bluesky account", () => {
       const outcome = await connectBlueskyLive(test, browser, workspaces.live);
 
       // The connection got as far as the channel: Bluesky has handed over
-      // a session, and the workspace did not keep it.
-      expect(stores).toHaveBeenCalledOnce();
+      // a session, and the workspace did not keep it. A workspace that
+      // throws is asked a second time, in case only its answer was lost,
+      // and one that refuses has answered.
+      expect(stores).toHaveBeenCalledTimes(how === "throws" ? 2 : 1);
       expect(outcome).toMatchObject({ connect: "failed", network: "bluesky" });
       expect(await channelsOf(browser, workspaces.live)).toEqual([]);
       // The answer does not wait for Bluesky. What the app has asked the
@@ -302,6 +304,172 @@ describe("connecting a Bluesky account", () => {
       for (const { token } of tokens) expect(log).not.toContain(token);
     },
   );
+
+  /**
+   * A Bluesky whose token endpoint holds the answer in which it hands out
+   * a session, until `release` is called: the session stands at Bluesky,
+   * and pigy does not have it yet. `reached` settles when the answer has
+   * got that far.
+   */
+  function heldTokenAnswer() {
+    let reach = () => {};
+    let release = () => {};
+    const reached = new Promise<void>((resolve) => {
+      reach = resolve;
+    });
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const interceptNetwork = (network: Fetch): Fetch => {
+      return async (input, init) => {
+        const response = await network(input, init);
+        // Only the answer with the tokens: the server refuses the first
+        // request once, for a nonce.
+        if (urlOf(input).endsWith("/oauth/token") && response.ok) {
+          reach();
+          await released;
+        }
+        return response;
+      };
+    };
+    return { interceptNetwork, reached, release: () => release() };
+  }
+
+  it("gives the access back when nobody waits for the callback and the channel is not stored", async () => {
+    const tokenAnswer = heldTokenAnswer();
+    const { test, browser, workspaces } = await start(tokenAnswer);
+    failingToStore("throws");
+    expectErrors();
+    const before = test.keptAlive.length;
+
+    // Somebody who consents and closes the tab while pigy exchanges the
+    // code: Bluesky has issued the session, and nobody reads the answer of
+    // the callback.
+    const unread = connectBlueskyLive(test, browser, workspaces.live);
+    await tokenAnswer.reached;
+    expect(sessionTokens(test).some(({ status }) => status === "valid")).toBe(
+      true,
+    );
+    // The runtime ends what is left of such a request, except the work that
+    // it was asked to keep going. So that work has to be there by now,
+    // before the workspace is asked and fails, and it is all that this
+    // test waits for.
+    const kept = test.keptAlive.slice(before);
+    expect(kept).toHaveLength(1);
+    tokenAnswer.release();
+    await Promise.all(kept);
+
+    // It went to its end, which is the revocation: no token works.
+    expect(
+      sessionTokens(test).filter(({ status }) => status === "valid"),
+    ).toEqual([]);
+    expect(await unread).toMatchObject({ connect: "failed" });
+  });
+
+  it("keeps the access of a channel that the workspace stored when only its answer was lost", async () => {
+    const { test, browser, workspaces } = await start();
+    const connectChannel = WorkspaceStore.prototype.connectChannel;
+    // The workspace stores the channel, and its answer does not arrive.
+    const stores = vi
+      .spyOn(WorkspaceStore.prototype, "connectChannel")
+      .mockImplementationOnce(function (this: WorkspaceStore, ...call) {
+        connectChannel.apply(this, call);
+        throw new Error("The answer of the workspace was lost");
+      });
+    onTestFinished(() => stores.mockRestore());
+    const errors = expectErrors();
+
+    const outcome = await connectBlueskyLive(test, browser, workspaces.live);
+    await Promise.all(test.keptAlive);
+
+    // The callback asked again, and was answered as the first time: the
+    // person is told what is true, and the channel was stored once.
+    expect(stores).toHaveBeenCalledTimes(2);
+    const [channel] = await channelsOf(browser, workspaces.live);
+    expect(channel).toMatchObject({ status: "connected" });
+    expect(outcome).toMatchObject({
+      connect: "connected",
+      channel: channel?.id,
+    });
+    // The second call stored nothing: the channel has the credentials of
+    // the first, which are the same sealed text only because nothing was
+    // written again.
+    expect(await storedAccess(workspaces.live)).toHaveLength(1);
+    // The session of the channel stands. Given back, the channel would say
+    // `connected` with an access that is gone.
+    expect(test.network.requests).not.toContain(
+      "POST https://bsky.social/oauth/revoke",
+    );
+    expect(
+      sessionTokens(test).filter(({ status }) => status !== "valid"),
+    ).toEqual([]);
+    // The operator still reads that the workspace failed once.
+    expect(errors.mock.calls.flat().map(logged).join("\n")).toContain(
+      "was lost",
+    );
+  });
+
+  it("stores the channel with a second call when the first one never happened", async () => {
+    const { test, browser, workspaces } = await start();
+    // The workspace fails once, before it has stored anything.
+    const stores = vi
+      .spyOn(WorkspaceStore.prototype, "connectChannel")
+      .mockImplementationOnce(() => {
+        throw new Error("The database of the workspace is in trouble");
+      });
+    onTestFinished(() => stores.mockRestore());
+    expectErrors();
+
+    const outcome = await connectBlueskyLive(test, browser, workspaces.live);
+    await Promise.all(test.keptAlive);
+
+    expect(stores).toHaveBeenCalledTimes(2);
+    expect(outcome).toMatchObject({ connect: "connected" });
+    expect(await channelsOf(browser, workspaces.live)).toMatchObject([
+      { id: outcome.channel, status: "connected" },
+    ]);
+    // Nothing was given back: the session is the channel's.
+    expect(
+      sessionTokens(test).filter(({ status }) => status !== "valid"),
+    ).toEqual([]);
+  });
+
+  it("ends the session of the connection before when the account is connected again", async () => {
+    const { test, browser, workspaces } = await start();
+    const first = await connectBlueskyLive(test, browser, workspaces.live);
+    const before = sessionTokens(test).map(({ token }) => token);
+    expect(before.length).toBeGreaterThan(0);
+    // The second connection is a later one, as it is in life.
+    test.advance(60_000);
+
+    const second = await connectBlueskyLive(test, browser, workspaces.live);
+    // The earlier session is given back apart from the answer.
+    await Promise.all(test.keptAlive);
+
+    // The same channel, with the session of the second connection.
+    expect(second).toMatchObject({
+      connect: "connected",
+      channel: first.channel,
+    });
+    // Nothing holds the session of the first connection any more, so
+    // nothing could end it later: it is ended now. The session of the
+    // second is the channel's, and stands.
+    const tokens = sessionTokens(test);
+    const earlier = tokens.filter(({ token }) => before.includes(token));
+    const later = tokens.filter(({ token }) => !before.includes(token));
+    expect(earlier.map(({ status }) => status)).not.toContain("valid");
+    expect(later.length).toBeGreaterThan(0);
+    expect(later.filter(({ status }) => status !== "valid")).toEqual([]);
+    // And it is what the channel acts with: the network takes it back
+    // when the channel is disconnected, which it would not if the channel
+    // held the session that was ended.
+    expect(
+      await disconnected(browser, workspaces.live, second.channel ?? ""),
+    ).toBe(true);
+    expect(
+      sessionTokens(test).filter(({ status }) => status === "valid"),
+    ).toEqual([]);
+  });
 
   it("says in the log, without a secret, when Bluesky does not take the access of a failed connection back", async () => {
     const { test, browser, workspaces } = await start({

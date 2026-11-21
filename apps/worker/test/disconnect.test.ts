@@ -166,7 +166,7 @@ it("removes a channel whose access the network does not take back", async () => 
   expect(await channelsOf(browser, workspaces.live)).toEqual([]);
   expect(await storedAccess(workspaces.live)).toEqual([]);
   expect(warnings).toHaveBeenCalledExactlyOnceWith(
-    "The access of a channel was not given back: mastodon.test is having trouble (HTTP 503).",
+    "An access was not given back to its network: mastodon.test is having trouble (HTTP 503).",
   );
   // The network was asked, and still has the token.
   expect(test.network.requests).toContain(
@@ -183,6 +183,8 @@ it("gives the access back when nobody waits for the answer", async () => {
   const revocation = gatedRevocation("on the way");
   const { test, browser, workspaces } = await start(revocation);
   const { channel = "" } = await connectLive(test, browser, workspaces.live);
+  // The connection had work of its own kept going, which is over.
+  const before = test.keptAlive.length;
   revocation.arm();
 
   // Somebody who clicks and closes the tab: the channel is removed, the
@@ -194,7 +196,7 @@ it("gives the access back when nobody waits for the answer", async () => {
   // The runtime ends what is left of such a request, except the work that
   // it was asked to keep going. So that work has to be there by now, and
   // it is all that this test waits for.
-  const kept = [...test.keptAlive];
+  const kept = test.keptAlive.slice(before);
   expect(kept).toHaveLength(1);
   revocation.release();
   await Promise.all(kept);

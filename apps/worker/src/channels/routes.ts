@@ -322,7 +322,8 @@ export function channelRoutes(dependencies: AppDependencies): Hono<AppEnv> {
 /**
  * Gives the access that a channel had to its account back to the network,
  * and returns whether that worked. It never throws: the channel is gone by
- * then, and whoever disconnects is told whether the access went with it.
+ * then, or holds another access, and whoever disconnects is told whether
+ * the access went with it.
  */
 function giveBack(
   workspace: WorkspaceIdentity,
@@ -346,24 +347,26 @@ function giveBack(
 }
 
 /**
- * Gives an access back to its network with `giveBack`, and returns whether
- * that worked: `giveBack` says no where there is nothing to give back
+ * Gives an access back to its network with `attempt`, and returns whether
+ * that worked: `attempt` says no where there is nothing to give back
  * with. It never throws, and what it logs holds no secret: whoever lets
  * go of an access is told whether the network took it, and has nothing
- * else to do about it.
+ * else to do about it. The access is that of a channel that is gone, of a
+ * connection that never became a channel, or one that a later connection
+ * of its account has replaced.
  */
-async function givenBack(giveBack: () => Promise<boolean>): Promise<boolean> {
+async function givenBack(attempt: () => Promise<boolean>): Promise<boolean> {
   try {
-    return await giveBack();
+    return await attempt();
   } catch (error) {
     if (error instanceof ProviderError || error instanceof VaultError) {
       // Their messages hold no secret.
       console.warn(
-        `The access of a channel was not given back: ${error.message}`,
+        `An access was not given back to its network: ${error.message}`,
       );
     } else {
       console.error(
-        "The access of a channel was not given back",
+        "An access was not given back to its network",
         loggable(error),
       );
     }
@@ -467,7 +470,7 @@ export function connectCallbackRoutes(
       if (!workspace) return back("expired");
       workspaceId = workspace.id;
 
-      const connection = providerOf(network, workspace, {
+      const context: ProviderContext = {
         env: c.env,
         fetch,
         now,
@@ -477,56 +480,47 @@ export function connectCallbackRoutes(
           developmentBlueskyClientKeys,
           url.origin,
         ),
-      });
+      };
+      const connection = providerOf(network, workspace, context);
       if (!connection) return back("failed");
 
       const { provider } = connection;
-      const { account, access } = await provider.completeConnect({
-        pending: flow.pending,
-        params: url.searchParams,
-      });
-      // From here on the network has an access for pigy, and this request
-      // holds the only copy of what could end it. If the channel is not
-      // stored, for whatever reason, the access is given back before the
-      // request lets go of it: nobody could later. On Bluesky it is a
-      // session with a refresh token, which would stand at the network for
-      // months with nobody to use it or to end it.
-      //
-      // Not where the network gives every connection of an account the
-      // same access, as Mastodon does with its token: the account may have
-      // a channel already, here or in another workspace, that goes on with
-      // that token, and the next connection is handed it again, so nothing
-      // is left behind. The adapter says which it is.
-      //
-      // One case is accepted: the workspace has stored the channel and its
-      // answer was lost on the way. The channel then says `connected` with
-      // an access that is given back here, and needs connecting again when
-      // it is next used. The person is told that the connection failed,
-      // and connects again. Leaving the access would not be better: this
-      // request cannot tell that case from a channel that was not stored.
-      const abandon = () => {
-        if (!provider.accessPerConnection) return;
-        // To its end also when the person has closed the tab meanwhile:
-        // nothing is left to give the access back with afterwards. The
-        // answer does not wait for it. It never rejects.
-        c.executionCtx.waitUntil(
-          givenBack(async () => {
-            await provider.disconnect(access.credentials);
-            return true;
-          }),
-        );
-      };
-      try {
-        const channel = {
-          network,
-          ...channelOf(account, access.expiresAt, connection.reach, now()),
-          limits: await limitsOf(provider, access.credentials),
+      // What is given back to the network on the way, each to its end and
+      // none of them rejecting. The answer does not wait for them.
+      const givingBack: Promise<boolean>[] = [];
+      const connecting = (async () => {
+        const { account, access } = await provider.completeConnect({
+          pending: flow.pending,
+          params: url.searchParams,
+        });
+        // From here on the network has an access for pigy, and this
+        // request holds the only copy of what could end it. If the channel
+        // is not stored, for whatever reason, the access is given back
+        // before the request lets go of it: nobody could later. On Bluesky
+        // it is a session with a refresh token, which would stand at the
+        // network for months with nobody to use it or to end it.
+        //
+        // Not where the network gives every connection of an account the
+        // same access, as Mastodon does with its token: the account may
+        // have a channel already, here or in another workspace, that goes
+        // on with that token, and the next connection is handed it again,
+        // so nothing is left behind. The adapter says which it is.
+        const abandon = () => {
+          if (!provider.accessPerConnection) return;
+          givingBack.push(
+            givenBack(async () => {
+              await provider.disconnect(access.credentials);
+              return true;
+            }),
+          );
         };
-        const stored = await connectChannel(
-          c.env.WORKSPACE,
-          workspace,
-          channel,
-          {
+        try {
+          const channel = {
+            network,
+            ...channelOf(account, access.expiresAt, connection.reach, now()),
+            limits: await limitsOf(provider, access.credentials),
+          };
+          const sealed = {
             credentials: await sealCredentials(
               vault,
               workspace,
@@ -534,18 +528,72 @@ export function connectCallbackRoutes(
               access.credentials,
             ),
             refreshAt: access.refreshAt?.getTime() ?? null,
-          },
-        );
-        if (!stored.ok) {
+          };
+          // The call has a key, which no other call has: the ID that this
+          // request made up for the channel. The workspace carries a call
+          // with a key out once, so it can be repeated.
+          const store = () =>
+            connectChannel(c.env.WORKSPACE, workspace, channel, sealed, {
+              key: `channel.connect/${channel.id}`,
+              handBack: provider.accessPerConnection,
+            });
+          // A call that throws may have stored the channel all the same:
+          // its answer can be lost on the way back. Giving the access back
+          // then would end the session of a channel that says `connected`,
+          // and on a reconnect that of a channel that worked a moment ago.
+          // So the call is repeated, once: if the first one arrived, the
+          // repeat is answered as it was and stores nothing, and if it did
+          // not, the repeat is the call. Only when that fails too is the
+          // access given back. A channel that was stored by a call whose
+          // answer and whose repeat were both lost is left with an access
+          // that is gone, and needs connecting again when it is next used:
+          // that is accepted.
+          const stored = await store().catch((error: unknown) => {
+            console.error(
+              "A channel was not stored at the first try",
+              loggable(error),
+            );
+            return store();
+          });
+          if (!stored.ok) {
+            abandon();
+            return stored;
+          }
+          // The account had a channel, whose access this connection has
+          // replaced, and nothing holds the earlier one any more. Where
+          // every connection has an access of its own, it is given back:
+          // it is a session that would stand at the network otherwise.
+          // Never where connections share one, as on Mastodon: there it is
+          // the access that the channel goes on with.
+          if (stored.replaced && provider.accessPerConnection) {
+            givingBack.push(giveBack(workspace, stored.replaced, context));
+          }
+          return stored;
+        } catch (error) {
           abandon();
-          console.error(`A channel was not stored: ${stored.message}`);
-          return back("failed");
+          throw error;
         }
-        return back("connected", stored.channelId);
-      } catch (error) {
-        abandon();
-        throw error;
+      })();
+      // From the exchange of the code on, the work goes to its end whether
+      // or not anybody waits for the answer: the runtime drops what is left
+      // of a request when its client goes away, unless it was asked to keep
+      // it going. Somebody who closes the tab while the code is exchanged,
+      // or while the channel is stored, would leave an access at the
+      // network that was never stored and never given back. So the runtime
+      // is asked before anything is awaited, as where a channel is
+      // disconnected, and with a promise that never rejects, for the
+      // reason given there. The runtime gives such work 30 seconds once
+      // the client is gone.
+      c.executionCtx.waitUntil(
+        connecting.catch(() => {}).then(() => Promise.all(givingBack)),
+      );
+
+      const stored = await connecting;
+      if (!stored.ok) {
+        console.error(`A channel was not stored: ${stored.message}`);
+        return back("failed");
       }
+      return back("connected", stored.channelId);
     } catch (error) {
       // Whatever fails, and wherever: the database while it is asked who
       // this is, a key that is gone, the network, the workspace. The

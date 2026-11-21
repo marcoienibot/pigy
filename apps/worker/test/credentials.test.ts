@@ -292,7 +292,7 @@ describe("what leaves the app", () => {
     // The log did get the failures and the client did get the channel, so
     // there was something to leak into.
     expect(left).toContain("A connection could not be finished");
-    expect(left).toContain("The access of a channel was not given back");
+    expect(left).toContain("An access was not given back to its network");
     expect(left).toContain(`@rosalind@${realMastodonDomain}`);
     for (const secret of secrets) expect(left).not.toContain(secret);
   });

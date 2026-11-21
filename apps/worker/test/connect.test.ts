@@ -715,6 +715,31 @@ describe("an account that is connected again", () => {
     expect(after?.credentials).not.toBe(before?.credentials);
   });
 
+  it("does not give the access of the connection before back, which on Mastodon is its own", async () => {
+    const { test, browser, workspaces } = await start();
+    await connectLive(test, browser, workspaces.live);
+
+    const second = await connectLive(test, browser, workspaces.live);
+    // Whatever the app has left to do for the connection.
+    await Promise.all(test.keptAlive);
+
+    expect(second.connect).toBe("connected");
+    // Mastodon gave the second connection the token of the first. A
+    // connection that ended the access that it replaced, as one to
+    // Bluesky does, would have ended its own.
+    const tokens = test.network.world
+      .tokens("mastodon")
+      .filter(({ accountId }) => accountId !== null);
+    expect(
+      tokens.map((token) => test.network.world.tokenStatus(token)),
+    ).toEqual(["valid"]);
+    expect(
+      test.network.requests.filter((request) =>
+        request.endsWith("/oauth/revoke"),
+      ),
+    ).toEqual([]);
+  });
+
   it("keeps the access of its channel when the second connection is not stored", async () => {
     const { test, browser, workspaces } = await start();
     const first = await connectLive(test, browser, workspaces.live);
@@ -732,7 +757,8 @@ describe("an account that is connected again", () => {
     // Whatever the app has left to do for a connection that failed.
     await Promise.all(test.keptAlive);
 
-    expect(stores).toHaveBeenCalledOnce();
+    // Asked twice: the answer of the first call could have been lost.
+    expect(stores).toHaveBeenCalledTimes(2);
     expect(second).toMatchObject({ connect: "failed", network: "mastodon" });
     // Mastodon gave the second connection the token that the account had
     // with pigy already, which is the one that the channel posts with. A
