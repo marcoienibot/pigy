@@ -113,6 +113,8 @@ const versionMismatchSchema = z.looseObject({
  */
 export class SyncConnection {
   private state: "new" | "running" | "ended" = "new";
+  /** Whether `stop()` came before `run()`. */
+  private stopped = false;
   private finish = () => {};
   private unsubscribe = () => {};
   private socket: Socket | undefined;
@@ -166,9 +168,11 @@ export class SyncConnection {
   /**
    * Holds the socket of the copy. The promise resolves when that is over:
    * after `stop()`, or when the connection has given up for good, which the
-   * `connection` and `outdated` of the store tell apart.
+   * `connection` and `outdated` of the store tell apart. A connection that
+   * was stopped before its turn came opens no socket: its run is over.
    */
   run(): Promise<void> {
+    if (this.stopped) return Promise.resolve();
     if (this.state !== "new") throw new Error("A connection runs once");
     const { store, onError } = this.options;
     if (store.getState().outdated) {
@@ -198,9 +202,21 @@ export class SyncConnection {
     return ended;
   }
 
-  /** Closes the socket and stops connecting. */
-  stop(): void {
-    this.end();
+  /**
+   * Closes the socket and stops connecting, for good. With `connection`,
+   * the store says that from then on, in the tab that held the socket: for
+   * whoever stops because of something that the store should say, such as a
+   * session that is over. A connection that has not run yet never will:
+   * the tab may still be in line for the socket, and its turn can come
+   * after this.
+   */
+  stop(connection?: ConnectionState): void {
+    if (this.state === "new") {
+      this.state = "ended";
+      this.stopped = true;
+      return;
+    }
+    this.end(connection);
   }
 
   /**

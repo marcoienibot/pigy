@@ -1013,6 +1013,39 @@ it("closes the socket and stays away when it is stopped", async () => {
   expect(store.getState().connection).toBe("online");
 });
 
+it("says why it was stopped, and sends nothing that is stored after that", async () => {
+  const { device, socket, store, connection } = await online();
+
+  // As for a session that the tab has learned is over, while its socket
+  // is open and would still be served.
+  connection.stop("signed-out");
+
+  expect(socket.closed).toBe(true);
+  expect(store.getState().connection).toBe("signed-out");
+  // The store goes on: a mutation is stored, and stays on the device.
+  store.mutate("post.delete", { id: newId() });
+  await settle();
+  await device.advance(10 * 60_000);
+  expect(store.getState().pending).toBe(1);
+  expect(socket.mutates).toEqual([]);
+  expect(device.sockets).toHaveLength(1);
+});
+
+it("opens no socket when it was stopped before its turn came", async () => {
+  const device = browser();
+  const { store, connection } = await device.tab();
+
+  // The tab was in line for the socket when it was stopped, and its turn
+  // comes after that: the lock of the socket is granted all the same.
+  connection.stop("signed-out");
+  await connection.run();
+
+  await device.advance(10 * 60_000);
+  expect(device.sockets).toHaveLength(0);
+  // It never held the socket, so it has nothing to say about it.
+  expect(store.getState().connection).toBe("connecting");
+});
+
 it("lets another tab take the socket over, with the mutations that were waiting", async () => {
   const device = browser();
   const one = await device.holder();
