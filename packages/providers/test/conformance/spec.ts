@@ -963,6 +963,48 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
         expect(error.kind).toBe("reconnect");
         expect(harness.simulation.published()).toEqual([]);
       });
+
+      it("ends one connection and no other when it gives an access back, where it says that every connection has its own", async ({
+        skip,
+      }) => {
+        const harness = await setup();
+        const { provider, redirectUri, identifier, simulation } = harness;
+        if (!simulation) return skip("Consenting takes a browser");
+        if (!provider.accessPerConnection) {
+          // A caller never gives back an access there that it has not
+          // kept: the contract says so.
+          return skip("Every connection of the account has the same access");
+        }
+        const connect = async () => {
+          const start = await provider.beginConnect({
+            redirectUri,
+            identifier,
+          });
+          const { access } = await provider.completeConnect({
+            pending: start.pending,
+            params: await simulation.consent(start.url, "allow"),
+          });
+          return access.credentials;
+        };
+        // The same account, connected twice: a channel that is in use, and
+        // a connection after it that the caller could not keep.
+        const kept = await connect();
+        const dropped = await connect();
+        const publishWith = (credentials: Json, text: string) =>
+          publishParts({ ...harness, credentials }, [`${harness.tag} ${text}`]);
+
+        await provider.disconnect(dropped);
+
+        if (harness.revokes) {
+          const error = await failure(() => publishWith(dropped, "Gone"));
+          expect(error.kind).toBe("reconnect");
+        }
+        // The connection from before goes on.
+        expect((await publishWith(kept, "Still here")).progress.done).toBe(
+          true,
+        );
+        expect(simulation.published()).toEqual([`${harness.tag} Still here`]);
+      });
     });
   });
 }

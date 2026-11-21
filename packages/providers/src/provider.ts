@@ -230,6 +230,21 @@ export type Provider = {
   readonly tellsDeliveriesApart: boolean;
 
   /**
+   * Whether every connection gets an access of its own: one that
+   * `disconnect` ends for that connection, and for no other of the same
+   * account.
+   *
+   * False where the network hands a new connection the access that the
+   * account has with pigy already, as Mastodon gives out the token that
+   * exists for the same registration, account and scopes. Giving the
+   * access of one connection back there ends the others too.
+   *
+   * A caller goes by it when a connection was completed and its access
+   * could not be kept: see `completeConnect`.
+   */
+  readonly accessPerConnection: boolean;
+
+  /**
    * Starts connecting an account: works out where to send the person. The
    * caller redirects the browser to `url` and keeps `pending` until the
    * network sends the browser back.
@@ -253,6 +268,16 @@ export type Provider = {
    * What is no failure of a network, but one of what the adapter was made
    * with, comes out of it as out of every method: as it is, and not as a
    * `fail`. The connection is over then too.
+   *
+   * What it returns is an access that stands at the network. A caller
+   * that then fails to keep it, because its storage fails, say, holds the
+   * only copy of what could end it. Where `accessPerConnection`, it gives
+   * the access back with `disconnect` before it lets go of it: nobody
+   * could later, and on a network that renews an access the session would
+   * stand for as long as the network lets one. Where not, it must not:
+   * the access may be the one that a connection from before goes on with,
+   * and the same access is handed out the next time, so nothing is left
+   * behind that the next connection does not hold.
    */
   completeConnect(
     callback: ConnectCallback,

@@ -953,6 +953,9 @@ export function createBlueskyProvider({
     // and recorded, and nowhere else: `publishStep`. No other delivery
     // writes under that key.
     tellsDeliveriesApart: true,
+    // Every connection is a session of its own, with its own tokens and
+    // its own key: `disconnect` ends that session.
+    accessPerConnection: true,
 
     async beginConnect({ redirectUri, identifier }) {
       const handle = parseHandle(identifier ?? "");

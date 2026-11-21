@@ -685,6 +685,10 @@ export function createMastodonProvider({
     // the delivery began: `publishStep`. A status of another delivery
     // that reads the same is among them.
     tellsDeliveriesApart: false,
+    // Mastodon gives out the token that the account has with the same
+    // registration and scopes already, to every connection: `disconnect`
+    // revokes that one token, under all of them.
+    accessPerConnection: false,
 
     async beginConnect({ redirectUri, identifier }) {
       const domain = parseInstanceDomain(identifier ?? "");
