@@ -213,7 +213,8 @@ export async function deliveryOf(
  * deliveries to its channel that have published nothing begin anew when
  * they are tried again: what they recorded could lead them to a post of
  * this one. Returns whether the delivery is under way. It is safe to
- * repeat.
+ * repeat. Not to be called for a channel whose adapter tells the
+ * deliveries to an account apart: see `aboutToSend` of the store.
  */
 export async function aboutToSend(
   namespace: Bindings["WORKSPACE"],

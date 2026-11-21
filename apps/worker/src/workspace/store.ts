@@ -546,10 +546,17 @@ export class WorkspaceStore {
    * to make its first request to the network, and returns whether it is
    * under way: not if the target has ended, or is on another attempt.
    *
+   * Only for a channel of a network whose adapter cannot tell the
+   * deliveries to an account apart, which is one that has
+   * `tellsDeliveriesApart` of the contract as false, as Mastodon's. The
+   * workflow does not call this for the others, as for Bluesky: there a
+   * part is found under a key that the delivery recorded, which is the
+   * only way to a first part that landed unseen and must not be dropped.
+   *
    * From here on, no other delivery to the channel that has not published
    * a part can be taken up where it stopped. It would look for its first
    * part among what the account has posted since it began, which is how
-   * an adapter finds a part whose answer was lost. That now includes the
+   * such an adapter finds a part whose answer was lost. That now includes the
    * posts of this delivery, and it would take a first part that reads the
    * same for its own. So what the others have recorded is dropped here:
    * whichever of them is tried again begins anew. That goes for every

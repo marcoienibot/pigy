@@ -34,6 +34,7 @@ import {
   postOf,
   publishedOf,
   publishTo,
+  retry,
   started,
   storedProgress,
   targetOf,
@@ -456,5 +457,94 @@ describe("publishing to Bluesky", () => {
     } finally {
       writes.holding = false;
     }
+  });
+});
+
+describe("a first part that landed on Bluesky unseen", () => {
+  const createRecord = `https://${realBlueskyPds}/xrpc/com.atproto.repo.createRecord`;
+
+  /**
+   * A Bluesky that writes the first record that it is asked to write and
+   * loses the answer, and is out of reach from then on, until the test
+   * brings it back. `writes` counts the records that it wrote.
+   */
+  function losingTheFirstWrite() {
+    const network = { state: "up" as "up" | "down", writes: 0 };
+    const intercept =
+      (reach: Fetch): Fetch =>
+      async (input, init) => {
+        if (network.state === "down") {
+          throw new TypeError("The network is down");
+        }
+        const request = new Request(input, init);
+        const writes =
+          request.method === "POST" && request.url === createRecord;
+        const response = await reach(request);
+        // Only a write that the PDS carried out: it refuses the first
+        // request of every step once, for a nonce.
+        if (writes && response.ok && ++network.writes === 1) {
+          network.state = "down";
+          throw new TypeError("The answer was lost");
+        }
+        return response;
+      };
+    return { network, intercept };
+  }
+
+  it("is found when the delivery is tried again after another has gone to the account", async () => {
+    const { network, intercept } = losingTheFirstWrite();
+    const context = await started({ interceptNetwork: intercept });
+    const { test, browser, workspaces } = context;
+    const workspace = workspaces.live;
+    const { channel = "" } = await connectBlueskyLive(test, browser, workspace);
+    const client = new SyncClient();
+    await client.connect(browser, workspace);
+    const texts = () =>
+      feed(test.network.world, ["bluesky"])
+        .map(({ post }) => post.text)
+        .sort();
+    const progressOf = async (targetId: string) =>
+      (await storedProgress(workspace)).find(({ id }) => id === targetId)
+        ?.progress ?? "";
+
+    const draft = await writeDraft(client, workspace, "Lost", "Its reply");
+    const [targetId = ""] = await publishTo(client, draft.postId, channel);
+    await ended(client, draft.postId);
+    // The first part is on the network, and pigy does not know: it gave
+    // up on a server that it could not reach any more.
+    expect(targetOf(client, targetId).status).toBe("error");
+    expect(publishedOf(client, targetId, draft)).toEqual([]);
+    expect(texts()).toEqual(["Lost"]);
+    // What finds it: the key that it was written under, recorded before.
+    const [lost] = feed(test.network.world, ["bluesky"]);
+    const key = (lost?.post as PostRecord | undefined)?.rkey;
+    expect(key).toBeTruthy();
+    expect(JSON.parse(await progressOf(targetId))).toMatchObject({
+      parts: [],
+      state: { rkey: key },
+    });
+
+    // Another post goes to the account meanwhile, all the way: it does
+    // not wait for the failed one. On Mastodon that is the end of what
+    // the failed one recorded, because a later attempt would look through
+    // what the account has posted since. Bluesky's adapter looks under
+    // the key and nowhere else, so the key has to stay.
+    network.state = "up";
+    const other = await writeDraft(client, workspace, "Other");
+    await publishTo(client, other.postId, channel);
+    expect(await ended(client, other.postId)).toMatchObject({ status: "sent" });
+    expect(JSON.parse(await progressOf(targetId))).toMatchObject({
+      state: { rkey: key },
+    });
+
+    await retry(client, targetId);
+    expect(await ended(client, draft.postId)).toMatchObject({ status: "sent" });
+
+    // The second attempt found the part under its key and wrote only the
+    // reply: "Lost" is on the network once. Had it begun anew, it would
+    // have chosen another key, found nothing there, and written it again.
+    expect(texts()).toEqual(["Its reply", "Lost", "Other"]);
+    expect(network.writes).toBe(3);
+    expect(publishedOf(client, targetId, draft)[0]).toBe(lost?.post.id);
   });
 });

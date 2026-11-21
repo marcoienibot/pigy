@@ -58,7 +58,10 @@ import { retryWaitSeconds } from "./retry.ts";
  *    checks and will ask the network to publish. From then on the other
  *    deliveries to the channel that have published nothing begin anew when
  *    they are tried again: see `aboutToSend` in src/workspace/store.ts. A
- *    delivery that has nothing left to send skips this step.
+ *    delivery that has nothing left to send skips this step, and so does
+ *    one to a network whose adapter tells the deliveries to an account
+ *    apart, `tellsDeliveriesApart` of the contract: what the others have
+ *    recorded stays good there.
  * 3. `publish` of @pigy/providers drives the adapter of the network: each
  *    of its steps is a step here, `publish-1`, `publish-2` and so on, with
  *    at most one request that changes something on the network. After
@@ -620,7 +623,15 @@ export async function deliver(
     // Nor does a delivery that has nothing left to send: an attempt before
     // this one recorded every part and only its end was lost. `publish`
     // asks nothing of the network then.
-    if (!prepared.progress?.done) {
+    //
+    // Nor does a delivery whose adapter tells the deliveries to an account
+    // apart, as Bluesky's does: it finds a part under a key of the
+    // delivery's own, so what this one posts is nothing that another
+    // could take for its own. What the others recorded is then the only
+    // way to a first part of theirs that landed unseen, and has to stay.
+    // That this delivery is still under way, which the step also says, is
+    // found out all the same, by the first step that records something.
+    if (!prepared.progress?.done && !provider.tellsDeliveriesApart) {
       const underWay = await step.do("about-to-send", bookkeepingStep, () =>
         aboutToSend(env.WORKSPACE, workspace, run),
       );
