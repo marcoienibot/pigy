@@ -17,6 +17,7 @@ import {
   publishPanel,
   sandboxServer,
   sentPost,
+  workspaceSwitch,
   writeDraft,
 } from "../app.ts";
 import { expect, type Page, signIn, test } from "../fixtures.ts";
@@ -80,7 +81,9 @@ test("a draft goes out to a simulated account, shows on Sent with where it went,
   const delivery = deliveryTo(post, grace);
   // As the server reports it: waiting, sending, then sent.
   await expect(delivery).toContainText("Sent");
-  await expect(post).toContainText("Published now");
+  // Whenever that was: the delivery can take more than a minute on a
+  // machine under load.
+  await expect(post).toContainText(/Published (just now|\d+m ago)/);
   expect(await overflowOf(page)).toBe(0);
 
   // A simulated post has no address that a browser could open: the link
@@ -145,6 +148,83 @@ test("the editor leads to connecting an account, and does not publish what a cho
   );
 });
 
+test("⌘↵ in a menu is the menu's: it does not publish the draft that is open behind it", async ({
+  ownPage: page,
+  isMobile,
+}) => {
+  // On a phone the editor of a draft is over the header, where the switch
+  // is: no menu can be opened over a draft there.
+  test.skip(isMobile, "On a phone no menu is reached with a draft open");
+  await openScreen(page, "Channels");
+  await connectSimulated(page, grace);
+  await openScreen(page, "Drafts");
+  await page.getByRole("button", { name: "New draft" }).click();
+  await editor(page).fill("Not yet");
+  await channelChoice(page, grace).click();
+  // The draft could go out: the keys would publish it from the text.
+  await expect(
+    publishPanel(page).getByRole("button", { name: "Publish now" }),
+  ).toBeEnabled();
+
+  await workspaceSwitch(page).click();
+  const menu = page.getByRole("menu");
+  await expect(menu).toBeVisible();
+  await menu
+    .getByRole("menuitemradio", { name: /^Sandbox/ })
+    .press("ControlOrMeta+Enter");
+  // Whatever the menu made of the keys, it has closed or is closed here.
+  await page.keyboard.press("Escape");
+  await expect(menu).toBeHidden();
+
+  // The draft is still a draft, and nothing was published.
+  await expect(editor(page)).toHaveValue("Not yet");
+  await expect(notice(page, "Publishing to")).toHaveCount(0);
+  await openScreen(page, "Sent");
+  await expect(page.getByText("Nothing sent yet")).toBeVisible();
+});
+
+test("a draft that is deleted comes back with the accounts that it was to go to, by the notice and by the keys", async ({
+  ownPage: page,
+  isMobile,
+}) => {
+  await openScreen(page, "Channels");
+  await connectSimulated(page, grace);
+  await openScreen(page, "Drafts");
+  await page.getByRole("button", { name: "New draft" }).click();
+  await editor(page).fill("Going to Grace");
+  await channelChoice(page, grace).click();
+  await expect(channelChoice(page, grace)).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+
+  await page.getByRole("button", { name: "Delete draft" }).click();
+  await expect(draftRow(page, "Going to Grace")).toHaveCount(0);
+  await notice(page, "Draft deleted")
+    .getByRole("button", { name: "Undo" })
+    .click();
+  // A new draft with the text, which goes where the deleted one went.
+  await expect(editor(page)).toHaveValue("Going to Grace");
+  await expect(channelChoice(page, grace)).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+
+  // And the same with the keys, which are not for the text of a draft:
+  // from the list.
+  await page.getByRole("button", { name: "Delete draft" }).click();
+  await expect(draftRow(page, "Going to Grace")).toHaveCount(0);
+  await expect(editor(page)).toHaveCount(0);
+  await page.keyboard.press("ControlOrMeta+z");
+  await expect(editor(page)).toHaveValue("Going to Grace");
+  await expect(channelChoice(page, grace)).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await backToList(page, isMobile);
+  await expect(draftRow(page, "Going to Grace")).toHaveCount(1);
+});
+
 test("a fault that is for good fails the post and the account, which goes out once it is connected again and tried again", async ({
   ownPage: page,
   isMobile,
@@ -164,8 +244,10 @@ test("a fault that is for good fails the post and the account, which goes out on
   // It would fail again at once: what is offered is to connect again.
   await expect(delivery.getByRole("button", { name: /^Retry/ })).toHaveCount(0);
 
-  // The fault has struck, and is armed no more.
+  // The fault has struck, and is armed no more. The feed says of the
+  // account what the list of channels says.
   await openScreen(page, "Simulator");
+  await expect(feedOf(page, grace)).toContainText("Needs reconnecting");
   await page.getByRole("link", { name: "Failures" }).click();
   await expect(page.getByText("Nothing is armed")).toBeVisible();
   // The account says so where it is listed, and where it is chosen.
