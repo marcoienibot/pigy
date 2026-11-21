@@ -210,6 +210,26 @@ export type Provider = {
   readonly network: Network;
 
   /**
+   * Whether the provider tells what a delivery has published from what
+   * another delivery to the same account has, by what the delivery
+   * recorded before it published anything.
+   *
+   * True where a step finds its post by something that is the delivery's
+   * alone, such as a key of the provider's own making that the network
+   * keeps the post under. The recorded progress of such a delivery stays
+   * good whatever goes to the account meanwhile, and it is the only way
+   * to a part that landed unseen: a caller keeps it.
+   *
+   * False where a step looks through what the account has posted since
+   * the delivery began, or cannot look at all. To such a provider a post
+   * of a later delivery that reads the same is its own. A caller that
+   * lets a delivery pass one that has failed and published no part drops
+   * what the failed one recorded, so that it begins anew when it is tried
+   * again: `publishStep` has the rule.
+   */
+  readonly tellsDeliveriesApart: boolean;
+
+  /**
    * Starts connecting an account: works out where to send the person. The
    * caller redirects the browser to `url` and keeps `pending` until the
    * network sends the browser back.
@@ -333,13 +353,19 @@ export type Provider = {
    *   began before it has ended: it is done, or it has failed and will
    *   not be taken up again from its recorded progress. A provider tells
    *   what a delivery has published from everything else on the account
-   *   by what its first step recorded, such as where the account's posts
-   *   stood. Two deliveries that begin together with the same first part
-   *   record the same, and one takes the other's post for its own: it
-   *   replies to it, and the post goes when either delivery is deleted.
-   *   No provider can tell the two apart. pigy keeps to this per channel.
-   *   An account that is connected as two channels, in two workspaces, is
-   *   not covered: PLAN.md section 8 says what can happen then.
+   *   by what its first step recorded. Where that is where the account's
+   *   posts stood, two deliveries that begin together with the same first
+   *   part record the same, and one takes the other's post for its own:
+   *   it replies to it, and the post goes when either delivery is
+   *   deleted. Such a provider cannot tell the two apart, and says so
+   *   with `tellsDeliveriesApart`. Only a delivery of a provider that
+   *   can, and one that has published a part, may be taken up from its
+   *   recorded progress after another has gone to the account. The
+   *   deliveries run one after the other for every provider all the
+   *   same: a refresh is one at a time per account, and deliveries are
+   *   what refreshes. pigy keeps to this per channel. An account that is
+   *   connected as two channels, in two workspaces, is not covered:
+   *   PLAN.md section 8 says what can happen then.
    * - What a person has deleted or changed on the network since is no
    *   longer what a step looks for, and may be published again.
    */

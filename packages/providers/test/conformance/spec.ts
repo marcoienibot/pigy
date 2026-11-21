@@ -673,6 +673,71 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
         }
       });
 
+      // What `tellsDeliveriesApart` promises, both ways: a delivery that
+      // another has passed finds its own first part where it landed
+      // unseen, and does not take the part of the other for its own where
+      // it never arrived.
+      it.each([
+        ["finds its own first part, whose answer was lost,", "lost-response"],
+        ["posts a first part that never arrived", "server-error"],
+      ] as const)(
+        "%s after another delivery has posted the same, where it says that it tells deliveries apart",
+        async (_name, fault) => {
+          const harness = await setup();
+          const { simulation, provider } = harness;
+          // Arming a fault takes a simulation. And a provider that does not
+          // tell deliveries apart is not asked to: a caller has such a
+          // delivery begin anew, as the contract says.
+          if (!simulation || !provider.tellsDeliveriesApart) return;
+          const text = `${harness.tag} A first part that two deliveries share`;
+          // The first delivery stops where a workflow gives up on a network
+          // that asks to be tried again. What it recorded up to then is all
+          // that is left of it.
+          let kept: PublishProgress | null = null;
+          const stopped = new Error("The workflow gave up");
+          simulation.arm(fault);
+          const first = publishParts(harness, [text], {
+            key: `${harness.tag}-passed`,
+            runner: {
+              sleep: (_name, seconds) => harness.sleep(seconds),
+              run: async (_name, step) => {
+                try {
+                  kept = recorded(await step());
+                  return kept;
+                } catch (error) {
+                  if (!(error instanceof ProviderError)) throw error;
+                  // The fault is what failed the step, and nothing else.
+                  expect(error.kind).toBe("retry");
+                  throw stopped;
+                }
+              },
+            },
+          });
+          await expect(first).rejects.toBe(stopped);
+          // The part is there if only the answer was lost.
+          const landed = fault === "lost-response" ? [text] : [];
+          expect(simulation.published()).toEqual(landed);
+
+          // Another delivery to the account goes out whole meanwhile, with
+          // the same text.
+          const other = await publishParts(harness, [text]);
+          expect(simulation.published()).toEqual([...landed, text]);
+
+          // Hours later the first is taken up from what it recorded.
+          simulation.advance(2 * 60 * 60 * 1000);
+          const { progress } = await publishParts(harness, [text], {
+            key: `${harness.tag}-passed`,
+            from: kept,
+          });
+          expect(progress.done).toBe(true);
+          // Each delivery has a post of its own, and there is no third: the
+          // first did not take the post of the other for its part, and it
+          // did not post again what its first run had posted.
+          expect(progress.parts[0]?.id).not.toBe(other.progress.parts[0]?.id);
+          expect(simulation.published()).toEqual([text, text]);
+        },
+      );
+
       it("publishes once what never arrived, also when an older post reads the same", async ({
         skip,
       }) => {

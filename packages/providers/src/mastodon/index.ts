@@ -681,6 +681,10 @@ export function createMastodonProvider({
 
   return {
     network: "mastodon",
+    // A step looks for its status among what the account has posted since
+    // the delivery began: `publishStep`. A status of another delivery
+    // that reads the same is among them.
+    tellsDeliveriesApart: false,
 
     async beginConnect({ redirectUri, identifier }) {
       const domain = parseInstanceDomain(identifier ?? "");

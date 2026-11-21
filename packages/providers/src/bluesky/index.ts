@@ -949,6 +949,10 @@ export function createBlueskyProvider({
 
   return {
     network: "bluesky",
+    // A step looks for its record under the key that the delivery chose
+    // and recorded, and nowhere else: `publishStep`. No other delivery
+    // writes under that key.
+    tellsDeliveriesApart: true,
 
     async beginConnect({ redirectUri, identifier }) {
       const handle = parseHandle(identifier ?? "");
