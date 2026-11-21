@@ -35,9 +35,16 @@ import {
   withMod,
 } from "@/lib/keyboard";
 import { connectableNetworks } from "@/lib/networks";
+import { selectDraftTargets, targetsOf } from "@/lib/publish";
 import { timeAgo, useNow } from "@/lib/time";
 import { cn } from "@/lib/utils";
-import { useHasSynced, useMutate, useSynced, useSyncState } from "@/sync/react";
+import {
+  useHasSynced,
+  useMutate,
+  useSynced,
+  useSyncedNow,
+  useSyncState,
+} from "@/sync/react";
 
 type DraftsSearch = {
   /** The ID of the draft that is open. */
@@ -81,11 +88,14 @@ function Drafts() {
   const editor = useRef<HTMLTextAreaElement>(null);
   /**
    * The drafts that were deleted and can still be brought back, each with
-   * the notice that offers it. The one that was deleted last is at the
+   * the channels that it was to go to and the notice that offers it. The one that was deleted last is at the
    * end. They are those of this workspace: the screen is made anew for
    * the other one, and so are the notices.
    */
-  const deleted = useRef<{ draft: Draft; notice: string | number }[]>([]);
+  const deleted = useRef<
+    { draft: Draft; channels: readonly string[]; notice: string | number }[]
+  >([]);
+  const tablesNow = useSyncedNow();
 
   const rowOf = (id: string) =>
     list.current?.querySelector<HTMLElement>(`[data-draft="${id}"]`);
@@ -114,13 +124,25 @@ function Drafts() {
     );
   };
 
-  const restore = (draft: Draft, notice: string | number) => {
+  const restore = (
+    draft: Draft,
+    channels: readonly string[],
+    notice: string | number,
+  ) => {
     forget(notice);
     toast.dismiss(notice);
     // A post that is deleted is gone for every device, so what comes back
-    // is a new draft with the same text.
+    // is a new draft with the same text, which is to go where the deleted
+    // one was.
     const id = uuidv7(new Date());
     mutate("post.create", { id, partId: uuidv7(new Date()), text: draft.text });
+    const connected = tablesNow().channel;
+    for (const channelId of channels) {
+      // An account that was disconnected since is left out: the server
+      // would refuse the choice, and take it back with a notice.
+      if (!connected.has(channelId)) continue;
+      mutate("target.add", { id: uuidv7(new Date()), postId: id, channelId });
+    }
     show(id);
   };
 
@@ -140,6 +162,8 @@ function Drafts() {
       // about the open draft. It stays in the list.
       rowOf(neighbour.id)?.focus();
     }
+    // Where the draft was to go, which goes with it: read before it does.
+    const channels = [...targetsOf(selectDraftTargets(tablesNow()), draft.id)];
     mutate("post.delete", { id: draft.id });
     // Nothing to bring back of a draft without text.
     if (draft.text === "") return;
@@ -147,14 +171,17 @@ function Drafts() {
       duration: undoMs,
       // Its own draft, also when others were deleted after it and their
       // notices are on screen next to this one.
-      action: { label: "Undo", onClick: () => restore(draft, notice) },
+      action: {
+        label: "Undo",
+        onClick: () => restore(draft, channels, notice),
+      },
       onDismiss: () => forget(notice),
       onAutoClose: () => forget(notice),
     });
     // The notice outlives this screen. It does not outlive the workspace,
     // where there would be nothing to bring the draft back into: the shell
     // sees to that.
-    deleted.current.push({ draft, notice });
+    deleted.current.push({ draft, channels, notice });
   };
 
   /**
@@ -245,7 +272,7 @@ function Drafts() {
       !isBusy(event)
     ) {
       event.preventDefault();
-      restore(last.draft, last.notice);
+      restore(last.draft, last.channels, last.notice);
     }
   });
 
