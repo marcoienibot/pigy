@@ -17,6 +17,7 @@ import type {
   DisconnectChannelOutcome,
   MutationOutcome,
   RenewedChannelAccess,
+  StepBegun,
   StoredChannelAccess,
   WorkspaceIdentity,
 } from "./store.ts";
@@ -26,8 +27,8 @@ import type {
  * only ways into their Durable Objects: `connectWorkspace` for a client,
  * and for the Worker's own code `mutateWorkspace`, `connectChannel`,
  * `disconnectChannel` and `channelAccess`, and what the publishing
- * workflow asks and reports: `deliveryOf`, `aboutToSend`, `recordProgress`
- * and `renewChannelAccess`.
+ * workflow asks and reports: `deliveryOf`, `aboutToSend`, `stepBegins`,
+ * `recordProgress` and `renewChannelAccess`.
  */
 
 /**
@@ -237,6 +238,28 @@ export async function aboutToSend(
     .aboutToSend(workspace, run);
   if (underWay === undefined) throw foreign(workspace);
   return underWay;
+}
+
+/**
+ * Tells `workspace` that a step of the delivery `run` is about to be run,
+ * for an adapter whose steps cannot be run again safely. `key` names the
+ * step and `mark` this run of it. The answer has the mark of the run that
+ * was noted first under the key: a run that is handed another than its
+ * own must not send. It is refused with `not_current` if the delivery is
+ * not under way any more. See `stepBegins` of the store.
+ */
+export async function stepBegins(
+  namespace: Bindings["WORKSPACE"],
+  workspace: WorkspaceIdentity,
+  run: DeliveryRun,
+  mark: string,
+  key: string,
+): Promise<StepBegun> {
+  const begun = await namespace
+    .getByName(workspace.id)
+    .stepBegins(workspace, run, mark, key);
+  if (!begun) throw foreign(workspace);
+  return begun;
 }
 
 /**

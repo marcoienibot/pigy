@@ -36,8 +36,10 @@ import {
   mutateWorkspace,
   recordProgress,
   renewChannelAccess,
+  stepBegins,
 } from "../workspace/workspaces.ts";
 import {
+  cutOffMessage,
   type DeliveryParams,
   deliveryParamsSchema,
   lostTrackMessage,
@@ -67,7 +69,11 @@ import { retryWaitSeconds } from "./retry.ts";
  *    at most one request that changes something on the network. After
  *    each, `record-publish-N` tells the workspace how far the post has
  *    come, so that clients see a thread go out part by part, and so that a
- *    later attempt goes on from there.
+ *    later attempt goes on from there. Where the adapter cannot run a
+ *    step again safely, `repeatsSafely` of the contract, as LinkedIn's,
+ *    each of these steps first tells the workspace that it begins, and
+ *    does not call the adapter if a run of the same step began before:
+ *    see `sendingOnce` below.
  * 4. `end` tells the workspace how the delivery ended.
  *
  * What the platform stores of a run is to be taken for readable: what the
@@ -365,6 +371,13 @@ export async function deliver(
    */
   let connection: number | null = null;
 
+  /**
+   * The step that is running, by its name, and a mark that this run of it
+   * has made up for itself: what `sendingOnce` tells a second run of a
+   * step by.
+   */
+  let running = { name: "", mark: "" };
+
   /** Asks the workspace for what a step needs before it does anything. */
   const asked = async <Answer>(call: () => Promise<Answer>) => {
     try {
@@ -524,10 +537,12 @@ export async function deliver(
     body: () => Promise<Value>,
   ): Promise<Value> => {
     for (let tries = 1; ; tries++) {
+      const stepName = tries === 1 ? name : `${name}-try-${tries}`;
       const attemptStep = async (): Promise<Tried<Value>> => {
         // Of this try alone: what a step before it asked for is not what
         // this one was refused with.
         connection = null;
+        running = { name: stepName, mark: crypto.randomUUID() };
         try {
           return { value: await body() };
         } catch (error) {
@@ -539,7 +554,7 @@ export async function deliver(
       // an adapter. The type of `step.do` cannot follow a result whose
       // type is a parameter, so it is not asked to.
       const outcome = (await step.do(
-        tries === 1 ? name : `${name}-try-${tries}`,
+        stepName,
         networkStep,
         attemptStep as () => Promise<never>,
       )) as Tried<Value>;
@@ -553,6 +568,58 @@ export async function deliver(
       await step.sleep(`${name}-wait-${tries}`, wait * 1000);
     }
   };
+
+  /**
+   * `provider`, with a `publishStep` that is not called a second time for
+   * the same step of a run, where the adapter cannot run a step again
+   * safely: `repeatsSafely` of the contract, as LinkedIn's.
+   *
+   * A step of such an adapter that fails says so, with `uncertain` where
+   * it cannot tell what became of its request. A step that is cut off
+   * after its request went out says nothing: its time was up, or the
+   * Worker went away under it. The platform then runs the step again, or
+   * somebody restarts the run, and the adapter would send a second time
+   * without ever having failed. So before the adapter is called, the
+   * workspace notes that the step begins, with the mark of this run of
+   * it. A run that finds the mark of another is the second, and ends the
+   * delivery as `uncertain`: a person looks, and if they ask for another
+   * try, that is a new run with notes of its own.
+   *
+   * The note is taken last, when the credentials are read and opened and
+   * nothing but the adapter is left to call. It is keyed by the run and
+   * the name of the step, and by nothing of what the step says, unlike
+   * the other calls of a run: a run that is restarted must find what the
+   * run before it noted.
+   *
+   * The price is a delivery that ends as `uncertain` without need, where
+   * a step was cut off between the note and its request, or the answer of
+   * the workspace was lost and the step is run again for that. Nothing
+   * was posted then, and the person who looks finds that.
+   */
+  const sendingOnce = (provider: Provider): Provider =>
+    provider.repeatsSafely
+      ? provider
+      : {
+          ...provider,
+          async publishStep(request) {
+            const { name, mark } = running;
+            const begun = await asked(() =>
+              stepBegins(
+                env.WORKSPACE,
+                workspace,
+                run,
+                mark,
+                `${runId}/begins/${name}`,
+              ),
+            );
+            // Not under way any more: ended otherwise.
+            if (!begun.ok) throw superseded();
+            if (begun.by !== mark) {
+              throw new Ended({ kind: "uncertain", message: cutOffMessage });
+            }
+            return provider.publishStep(request);
+          },
+        };
 
   /** Asks the workspace what to publish, and checks that it can be. */
   const prepare = async (): Promise<Prepared | null> => {
@@ -651,7 +718,7 @@ export async function deliver(
       if (!underWay) throw superseded();
     }
     await publish(
-      provider,
+      sendingOnce(provider),
       {
         ...accessOf(prepared.channel, provider, channelVault),
         content: prepared.content,

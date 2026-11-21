@@ -37,6 +37,7 @@ import {
   type Patch,
   type RenewedChannelAccess,
   type StartedDelivery,
+  type StepBegun,
   type StoredChannelAccess,
   type WorkspaceIdentity,
   WorkspaceStore,
@@ -303,6 +304,29 @@ export function workspaceObject({ now }: { now: Clock }) {
         return undefined;
       }
       return this.#store.aboutToSend(run);
+    }
+
+    /**
+     * Takes note that a step of the delivery `run` is about to be run,
+     * under `key`, and returns the mark of the run of that step that was
+     * noted first: `stepBegins` of the store. Returns nothing if
+     * `workspace` is not the one that the object holds.
+     */
+    stepBegins(
+      workspace: WorkspaceIdentity,
+      run: DeliveryRun,
+      mark: string,
+      key: string,
+    ): StepBegun | undefined {
+      if (!this.#store.bind(workspaceIdentitySchema.parse(workspace))) {
+        return undefined;
+      }
+      return this.#store.stepBegins(
+        run,
+        callKeySchema.parse(mark),
+        now().getTime(),
+        callKeySchema.parse(key),
+      );
     }
 
     /**

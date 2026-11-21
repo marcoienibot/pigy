@@ -65,6 +65,15 @@ export const lostTrackMessage =
   "Something went wrong in pigy while this was being sent, and it cannot tell how far it got. Look at the account before you try again.";
 
 /**
+ * What a target says when a step that asked a network to publish was cut
+ * off, on a network where pigy can neither look for the post nor ask a
+ * second time without posting twice: nobody knows whether the request
+ * went out.
+ */
+export const cutOffMessage =
+  "pigy was interrupted while it sent this, and this network gives it no way to find out whether the post arrived. Look at the account before you try again.";
+
+/**
  * Lets go of what the platform handed out for a run of the workflow. Such
  * a handle keeps a connection to the run until it is let go, or until the
  * runtime gets round to collecting it, which it warns about.

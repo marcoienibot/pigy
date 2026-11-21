@@ -75,6 +75,13 @@ export type Refusal = { code: RejectionCode; message: string };
 /** The result of a mutation that did not come from a client. */
 export type MutationOutcome = { ok: true } | ({ ok: false } & Refusal);
 
+/**
+ * What `stepBegins` answers: `by` is the mark of the run of the step that
+ * was noted first, which is the caller's own unless a run of the same
+ * step came before it. Refused if the delivery is not under way.
+ */
+export type StepBegun = { ok: true; by: string } | ({ ok: false } & Refusal);
+
 /** What names a call of the Worker that is carried out once. */
 export const callKeySchema = z.string().min(1).max(200);
 
@@ -725,6 +732,53 @@ export class WorkspaceStore {
         )
         .run();
       return true;
+    });
+  }
+
+  /**
+   * Takes note that a step of the delivery `run` is about to be run, and
+   * returns the mark of the run of that step that was noted first.
+   *
+   * Only for a channel of a network whose adapter cannot run a step again
+   * safely, which is one that has `repeatsSafely` of the contract as
+   * false, as LinkedIn's: it can neither look for what it has sent nor
+   * send a request that is carried out once. A step of such an adapter
+   * that was cut off after its request went out must not be run again,
+   * and nothing but a note that outlasts the step can tell: what a step
+   * returns is recorded only when it has returned.
+   *
+   * `key` names the step, the same for every run of it, and `mark` is a
+   * value that the run of the step has made up for itself. The first run
+   * to get here has its mark kept under the key, and every run is
+   * answered with the mark that is kept: a run that is handed another
+   * mark than its own is a second run of a step that began before, and
+   * does not send. A run whose call is repeated, because its answer was
+   * lost, is handed its own mark again: that is what `once` does for a
+   * key.
+   *
+   * It is refused if the delivery is not under way, and a step that was
+   * noted for a delivery which has ended since is nobody's concern.
+   */
+  stepBegins(
+    { targetId, attempt }: DeliveryRun,
+    mark: string,
+    now: number,
+    key: string,
+  ): StepBegun {
+    return this.once(key, now, (): StepBegun => {
+      const target = this.db
+        .select({ status: postTargets.status, attempt: postTargets.attempt })
+        .from(postTargets)
+        .where(eq(postTargets.id, targetId))
+        .get();
+      if (target?.status !== "sending" || target.attempt !== attempt) {
+        return {
+          ok: false,
+          code: "not_current",
+          message: "This delivery is not under way",
+        };
+      }
+      return { ok: true, by: mark };
     });
   }
 
