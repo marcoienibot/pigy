@@ -2,8 +2,8 @@ import { defineConfig, devices } from "@playwright/test";
 import { loopback, portFromEnvironment } from "./server.ts";
 
 // The port of the server that the run starts: `PIGY_E2E_PORT`, or, when it
-// is unset or 0, one that the server has the system choose when it starts
-// to listen. Several checkouts on a machine run these tests, and a port of
+// is unset or 0, one that the server chooses as it starts, after its
+// build. Several checkouts on a machine run these tests, and a port of
 // their own keeps the runs apart without anybody choosing one.
 //
 // Playwright loads this file in its runner, before the server has started,

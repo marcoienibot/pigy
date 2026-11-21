@@ -27,9 +27,12 @@ function workerFirst(): string[] {
 
 /**
  * Where `pnpm preview:e2e` serves the e2e build: at 127.0.0.1, on the port
- * of `PIGY_E2E_PORT`, or 4173 when it is unset. Port 0 has the system choose
- * a port, and Vite says in its output which one: that is how `pnpm e2e`
- * learns its port when it is given none, see e2e/playwright.config.ts.
+ * of `PIGY_E2E_PORT`, or 4173 when it is unset. Port 0 has Vite choose a
+ * port as the server starts, and say in its output which one: that is how
+ * `pnpm e2e` learns its port when it is given none, see
+ * e2e/playwright.config.ts. Vite has the system name a free port, lets go
+ * of it and then listens on it, so the port can be taken in between, and
+ * the server then fails to start.
  *
  * One address and not `localhost`, which can be 127.0.0.1 or ::1: the
  * browser of the tests is made to go to 127.0.0.1 alone, so the server has
