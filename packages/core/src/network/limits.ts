@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { countBlueskyCharacters, utf8Length } from "./bluesky.ts";
 import type { PostContent } from "./content.ts";
+import { countLinkedInCharacters, joinLinkedInParts } from "./linkedin.ts";
 import { countMastodonCharacters } from "./mastodon.ts";
 
 /**
@@ -42,8 +43,23 @@ export const blueskyLimitsSchema = z.strictObject({
   maxBytes: z.number().int().positive(),
 });
 
+/**
+ * The limits of an account on LinkedIn. They are the same for every
+ * account, `linkedInMaxCharacters`, and data all the same, as those of
+ * Bluesky are.
+ */
+export const linkedInLimitsSchema = z.strictObject({
+  network: z.literal("linkedin"),
+  /**
+   * The most characters in one post, counted the way LinkedIn counts. A
+   * thread is one post there, so its parts have to fit together.
+   */
+  maxCharacters: z.number().int().positive(),
+});
+
 export const limitsSchema = z.discriminatedUnion("network", [
   blueskyLimitsSchema,
+  linkedInLimitsSchema,
   mastodonLimitsSchema,
 ]);
 
@@ -54,6 +70,8 @@ export function countCharacters(limits: Limits, text: string): number {
   switch (limits.network) {
     case "bluesky":
       return countBlueskyCharacters(text);
+    case "linkedin":
+      return countLinkedInCharacters(text);
     case "mastodon":
       return countMastodonCharacters(text, limits.charactersPerUrl);
   }
@@ -62,6 +80,7 @@ export function countCharacters(limits: Limits, text: string): number {
 // What a message calls a network.
 const networkNames: { readonly [Name in Limits["network"]]: string } = {
   bluesky: "Bluesky",
+  linkedin: "LinkedIn",
   mastodon: "Mastodon",
 };
 
@@ -74,6 +93,12 @@ export type ContentIssue = {
 } & (
   | { code: "empty" }
   | { code: "too_long"; characters: number; maxCharacters: number }
+  /**
+   * Every part fits, and the parts together do not, on a network that
+   * makes one post of a thread. `part` is the first part that no longer
+   * fits, and `characters` the length of the whole post.
+   */
+  | { code: "too_long_together"; characters: number; maxCharacters: number }
   /**
    * The text is within the characters that the network allows and takes
    * more bytes than it allows: on a network that limits both.
@@ -92,6 +117,8 @@ export function validateContent(
   content: PostContent,
 ): ContentIssue[] {
   const issues: ContentIssue[] = [];
+  // Whether a part is over the limit by itself, which is said of the part.
+  let fits = true;
   content.parts.forEach(({ text }, part) => {
     const subject =
       content.parts.length === 1 ? "The post" : `Part ${part + 1}`;
@@ -102,6 +129,7 @@ export function validateContent(
     const characters = countCharacters(limits, text);
     const { maxCharacters } = limits;
     if (characters > maxCharacters) {
+      fits = false;
       issues.push({
         part,
         code: "too_long",
@@ -126,5 +154,29 @@ export function validateContent(
       });
     }
   });
+  // LinkedIn has no threads of an author's own: the parts are one post
+  // there, and the limit is that of the post. Said only where each part
+  // fits by itself: a part that does not is the one to shorten first.
+  if (limits.network === "linkedin" && content.parts.length > 1 && fits) {
+    const { maxCharacters } = limits;
+    const characters = countCharacters(limits, joinLinkedInParts(content));
+    if (characters > maxCharacters) {
+      // The first part with which the post is over the limit.
+      const part = content.parts.findIndex(
+        (_, index) =>
+          countCharacters(
+            limits,
+            joinLinkedInParts({ parts: content.parts.slice(0, index + 1) }),
+          ) > maxCharacters,
+      );
+      issues.push({
+        part,
+        code: "too_long_together",
+        characters,
+        maxCharacters,
+        message: `The parts are ${characters} characters long together. ${networkNames.linkedin} takes them as one post, with an empty line between them, and its limit is ${maxCharacters}.`,
+      });
+    }
+  }
   return issues;
 }

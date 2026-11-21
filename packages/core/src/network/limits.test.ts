@@ -90,3 +90,64 @@ describe("limitsSchema", () => {
     ).toBe(false);
   });
 });
+
+describe("LinkedIn", () => {
+  const linkedin: Limits = { network: "linkedin", maxCharacters: 20 };
+
+  it("accepts its limits", () => {
+    expect(limitsSchema.parse(linkedin)).toEqual(linkedin);
+  });
+
+  it("counts UTF-16 code units: an emoji outside the basic plane is two", () => {
+    // 10 emoji are 20 code units, which is the limit, and 10 to Mastodon.
+    expect(
+      validateContent(linkedin, { parts: [{ text: "😀".repeat(10) }] }),
+    ).toEqual([]);
+    expect(
+      validateContent(linkedin, { parts: [{ text: `${"😀".repeat(10)}a` }] }),
+    ).toMatchObject([{ code: "too_long", characters: 21 }]);
+    // A link counts as it is written, where Mastodon counts 23 for any.
+    expect(
+      validateContent(linkedin, {
+        parts: [{ text: "https://example.com/0123456789" }],
+      }),
+    ).toMatchObject([{ code: "too_long", characters: 30 }]);
+  });
+
+  it("takes the parts of a thread as one post, with an empty line between them", () => {
+    // 9 + 2 + 9 is the limit.
+    expect(
+      validateContent(linkedin, {
+        parts: [{ text: "a".repeat(9) }, { text: "b".repeat(9) }],
+      }),
+    ).toEqual([]);
+    // Each part fits by itself. The third is the one with which the post
+    // no longer does: 5 + 2 + 5 + 2 + 7.
+    expect(
+      validateContent(linkedin, {
+        parts: [
+          { text: "a".repeat(5) },
+          { text: "b".repeat(5) },
+          { text: "c".repeat(7) },
+        ],
+      }),
+    ).toEqual([
+      {
+        part: 2,
+        code: "too_long_together",
+        characters: 21,
+        maxCharacters: 20,
+        message:
+          "The parts are 21 characters long together. LinkedIn takes them as one post, with an empty line between them, and its limit is 20.",
+      },
+    ]);
+  });
+
+  it("says of a part that is too long by itself that it is, and not that the parts together are", () => {
+    expect(
+      validateContent(linkedin, {
+        parts: [{ text: "fine" }, { text: "a".repeat(21) }],
+      }).map(({ part, code }) => [part, code]),
+    ).toEqual([[1, "too_long"]]);
+  });
+});

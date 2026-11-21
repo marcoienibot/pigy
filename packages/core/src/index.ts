@@ -8,6 +8,7 @@ export * from "./id.ts";
 export * from "./network/bluesky.ts";
 export * from "./network/content.ts";
 export * from "./network/limits.ts";
+export * from "./network/linkedin.ts";
 export * from "./network/mastodon.ts";
 export * from "./network/network.ts";
 export * from "./return-to.ts";
