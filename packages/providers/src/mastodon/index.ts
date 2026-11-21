@@ -689,6 +689,9 @@ export function createMastodonProvider({
     // registration and scopes already, to every connection: `disconnect`
     // revokes that one token, under all of them.
     accessPerConnection: false,
+    // A step that is run again looks for what the run before it has
+    // published, and takes that: `publishStep`.
+    repeatsSafely: true,
 
     async beginConnect({ redirectUri, identifier }) {
       const domain = parseInstanceDomain(identifier ?? "");

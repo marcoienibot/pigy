@@ -246,6 +246,20 @@ export type Provider = {
   readonly accessPerConnection: boolean;
 
   /**
+   * Whether a step of `publishStep` that is run again, with the same
+   * request, publishes nothing twice: what rules 1 and 2 there promise.
+   *
+   * False where the network lets the provider neither look for what it
+   * has sent nor send a request that is carried out once however late it
+   * comes: rule 3. Such a provider fails with `uncertain` where it cannot
+   * tell what became of a request, which covers every step that got to
+   * fail. A step that was cut off after its request went out did not, and
+   * run again it would send a second time. The caller of such a provider
+   * sees to that: `publishStep` says how.
+   */
+  readonly repeatsSafely: boolean;
+
+  /**
    * Starts connecting an account: works out where to send the person. The
    * caller redirects the browser to `url` and keeps `pending` until the
    * network sends the browser back.
@@ -363,9 +377,13 @@ export type Provider = {
    *    a person to look. If they find nothing and ask for another try, the
    *    step is run again from the recorded progress, and sends. This does
    *    not cover a step that was cut off after its request went out: it
-   *    never got to fail. The caller of such a provider has to keep a step
-   *    that began and left no outcome from being run again by itself. No
-   *    provider of this kind exists yet. The first settles how.
+   *    never got to fail. Such a provider says `repeatsSafely` is false,
+   *    as LinkedIn's does, and its caller keeps a step that began and
+   *    left no outcome from being run again by itself: before it runs a
+   *    step, it notes that it is about to, where the note outlasts the
+   *    step, and a step that it finds such a note for is not run. The
+   *    delivery ends as it does for `uncertain`. When a person asks for
+   *    another try, that is a new attempt, with notes of its own.
    *
    * Three things no provider can see to, so the caller does:
    *

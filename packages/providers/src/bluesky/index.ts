@@ -990,6 +990,9 @@ export function createBlueskyProvider({
     // Every connection is a session of its own, with its own tokens and
     // its own key: `disconnect` ends that session.
     accessPerConnection: true,
+    // A step that is run again looks for what the run before it has
+    // published, and takes that: `publishStep`.
+    repeatsSafely: true,
 
     async beginConnect({ redirectUri, identifier }) {
       const handle = parseHandle(identifier ?? "");
