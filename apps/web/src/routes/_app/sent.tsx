@@ -383,6 +383,30 @@ function TargetRow({
             </Link>
           </p>
         )}
+        {target.ownText && (
+          <div className="text-xs">
+            <p className="text-muted-foreground">
+              {target.status === "sent" ? "Got" : "Gets"} a text of its own
+              {target.ownText.length > 1
+                ? `, a thread of ${target.ownText.length} parts`
+                : ""}
+              :
+            </p>
+            <ol
+              aria-label={`Text for ${handle}`}
+              className="mt-0.5 flex flex-col gap-1 border-l-2 pl-2"
+            >
+              {target.ownText.map(({ id, text }) => (
+                <li
+                  key={id}
+                  className="line-clamp-4 break-words whitespace-pre-wrap"
+                >
+                  {text}
+                </li>
+              ))}
+            </ol>
+          </div>
+        )}
         {published.length > 0 && (
           <PartLinks
             target={target}

@@ -9,6 +9,13 @@ import type { Network, Row } from "@pigy/core";
 type NetworkInfo = {
   label: string;
   /**
+   * What the network makes of a post of several parts: a chain of
+   * `replies`, each part a post of its own, or one post that the parts
+   * are `joined` into, on a network that has no threads. PLAN.md section 6
+   * has it for each network.
+   */
+  thread: "replies" | "joined";
+  /**
    * How an account is connected. Left out for a network whose accounts
    * pigy cannot connect yet: it is listed as coming.
    */
@@ -56,6 +63,7 @@ type NetworkInfo = {
 export const networkInfo: Record<Network, NetworkInfo> = {
   mastodon: {
     label: "Mastodon",
+    thread: "replies",
     connect: {
       identifier: {
         label: "Server",
@@ -69,6 +77,7 @@ export const networkInfo: Record<Network, NetworkInfo> = {
   },
   bluesky: {
     label: "Bluesky",
+    thread: "replies",
     connect: {
       identifier: {
         label: "Handle",
@@ -85,6 +94,7 @@ export const networkInfo: Record<Network, NetworkInfo> = {
   },
   linkedin: {
     label: "LinkedIn",
+    thread: "joined",
     // One place to sign in: nothing to type.
     connect: {
       note: "LinkedIn gives its access for 60 days. After that the account has to be connected again, which takes a moment.",
@@ -97,7 +107,7 @@ export const networkInfo: Record<Network, NetworkInfo> = {
     ownPosts: "https://www.linkedin.com/in/me/recent-activity/all/",
     cannotLook: true,
   },
-  threads: { label: "Threads" },
+  threads: { label: "Threads", thread: "replies" },
 };
 
 /** The networks in the order in which they are listed. */

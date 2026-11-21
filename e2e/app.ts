@@ -144,6 +144,29 @@ export async function connectSimulatedLinkedIn(
   ).toBeVisible();
 }
 
+/** A simulated Bluesky account that every sandbox starts with. */
+export const graceOnBluesky = "@grace.bsky.test";
+
+/**
+ * Connects the simulated Bluesky account `handle` from the Channels screen
+ * of a sandbox, through the consent page of the simulated entryway.
+ */
+export async function connectSimulatedBluesky(
+  page: Page,
+  handle: string,
+): Promise<void> {
+  await page.getByRole("button", { name: "Connect account" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: "Bluesky" }).click();
+  await dialog.getByLabel("Handle").fill(handle);
+  await dialog.getByRole("button", { name: "Continue to Bluesky" }).click();
+  await page.waitForURL(
+    ({ pathname }) => pathname === "/sim/network/bsky.social/oauth/authorize",
+  );
+  await page.locator('button[name="account"]').getByText(handle).click();
+  await expect(channelRows(page).filter({ hasText: handle })).toBeVisible();
+}
+
 /** The rows of the list of drafts. */
 export function draftRows(page: Page): Locator {
   return page.getByRole("list", { name: "Drafts" }).getByRole("link");
@@ -157,6 +180,36 @@ export function draftRow(page: Page, text: string): Locator {
 /** The text field of the draft that is open. */
 export function editor(page: Page): Locator {
   return page.getByRole("textbox", { name: "Draft text" });
+}
+
+/**
+ * The field of the part `number` of the text that the editor shows, counted
+ * from 1: of a thread, which a text is once it has a second part. The one
+ * part of a post is `editor`.
+ */
+export function partField(page: Page, number: number): Locator {
+  return page.getByRole("textbox", { name: `Part ${number}`, exact: true });
+}
+
+/** The texts of the parts that the editor shows, in their order. */
+export function partTexts(page: Page): Promise<string[]> {
+  return page
+    .getByRole("region", { name: "Draft" })
+    .getByRole("textbox")
+    .evaluateAll((fields) =>
+      fields.map((field) => (field as HTMLTextAreaElement).value),
+    );
+}
+
+/**
+ * The counter of a network under the field `field`: how long its text is
+ * the way that network counts, against what the account takes.
+ */
+export function counterOf(field: Locator, network: string): Locator {
+  return field
+    .locator("xpath=..")
+    .locator("[data-tone]")
+    .filter({ hasText: new RegExp(`^${literally(network)} `) });
 }
 
 /** Where the caret is in the text of the open draft, or the selection. */

@@ -1,15 +1,22 @@
-import { type Row, type Tables, uuidv7 } from "@pigy/core";
+import { inReadingOrder, type Row, type Tables, uuidv7 } from "@pigy/core";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback } from "react";
 import { useMutate, useSyncedNow } from "@/sync/react";
+
+/** One part of a text, as the editor shows it: its row. */
+export type Part = Row<"post_part">;
 
 /** A draft as the drafts screen shows it. */
 export type Draft = {
   /** The ID of the post. */
   id: string;
-  /** The ID of its first part, which holds the text. */
-  partId: string;
-  text: string;
+  /**
+   * The parts of the post's own text, in the order they are read in. There
+   * is at least one. More than one is a thread.
+   */
+  parts: readonly Part[];
+  /** No part has anything in it. */
+  empty: boolean;
   /** The first line that has something in it. Empty for an empty draft. */
   title: string;
   /** What follows the title, on one line. */
@@ -27,59 +34,65 @@ const snippetLength = 160;
  * handed out as the same object: typing in one draft makes that draft new
  * and leaves the others alone, for the list to see which rows to render
  * again. It also saves going through the text of every draft with every
- * keystroke.
+ * keystroke. The parts of a draft are their rows, so a part that has not
+ * changed is the same object too, for the editor of a thread to see which
+ * of its fields to render again.
  */
-const made = new WeakMap<
-  Row<"post">,
-  { part: Row<"post_part">; draft: Draft }
->();
+const made = new WeakMap<Row<"post">, Draft>();
 
-function draftOf(post: Row<"post">, part: Row<"post_part">): Draft {
+function draftOf(post: Row<"post">, parts: readonly Part[]): Draft {
   const before = made.get(post);
-  if (before?.part === part) return before.draft;
-  const lines = part.text
-    .split("\n")
+  if (
+    before &&
+    before.parts.length === parts.length &&
+    before.parts.every((part, index) => part === parts[index])
+  ) {
+    return before;
+  }
+  const lines = parts
+    .flatMap((part) => part.text.split("\n"))
     .map((line) => line.trim())
     .filter((line) => line !== "");
   const draft = {
     id: post.id,
-    partId: part.id,
-    text: part.text,
+    parts,
+    empty: parts.every((part) => part.text === ""),
     title: lines[0] ?? "",
     snippet: lines.slice(1).join(" ").slice(0, snippetLength),
     updatedAt: post.updatedAt,
   };
-  made.set(post, { part, draft });
+  made.set(post, draft);
   return draft;
 }
 
 /** The drafts of a workspace, the one that was edited last first. */
 export function selectDrafts(tables: Tables): Draft[] {
-  // A draft has one part until threads arrive in phase 4. Its text is that
-  // of the first part: the lowest position, then the lowest ID.
-  const firstParts = new Map<string, Row<"post_part">>();
+  // The text of a draft is its own: the parts that are written for one
+  // account in its place are the editor's to show, with that account.
+  const texts = new Map<string, Part[]>();
   for (const part of tables.post_part.values()) {
-    const first = firstParts.get(part.postId);
-    if (
-      !first ||
-      part.position < first.position ||
-      (part.position === first.position && part.id < first.id)
-    ) {
-      firstParts.set(part.postId, part);
-    }
+    if (part.targetId !== null) continue;
+    const text = texts.get(part.postId);
+    if (text) text.push(part);
+    else texts.set(part.postId, [part]);
   }
 
   const drafts: Draft[] = [];
   for (const post of tables.post.values()) {
-    const part = firstParts.get(post.id);
-    if (post.status !== "draft" || !part) continue;
-    drafts.push(draftOf(post, part));
+    const text = texts.get(post.id);
+    if (post.status !== "draft" || !text) continue;
+    drafts.push(draftOf(post, inReadingOrder(text)));
   }
   // By ID among drafts of the same moment, so that the order is the same
   // every time.
   return drafts.sort(
     (a, b) => b.updatedAt - a.updatedAt || (a.id < b.id ? 1 : -1),
   );
+}
+
+/** What the list says of the length of a thread, or null for one part. */
+export function threadLabel({ parts }: Pick<Draft, "parts">): string | null {
+  return parts.length > 1 ? `${parts.length} parts` : null;
 }
 
 /**
@@ -109,7 +122,7 @@ export function useNewDraft() {
     (text = "") => {
       let id =
         text === ""
-          ? selectDrafts(read()).find((draft) => draft.text === "")?.id
+          ? selectDrafts(read()).find((draft) => draft.empty)?.id
           : undefined;
       if (!id) {
         id = uuidv7(new Date());

@@ -1,12 +1,11 @@
 import { uuidv7 } from "@pigy/core";
 import { Link, useNavigate, useRouteContext } from "@tanstack/react-router";
-import { Check, Send, TriangleAlert } from "lucide-react";
-import { type RefObject, useId } from "react";
+import { Check, Info, PenLine, Send, TriangleAlert } from "lucide-react";
+import { useId } from "react";
 import { toast } from "sonner";
 import { Avatar } from "@/components/avatar";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
-import { selectChannels } from "@/lib/channels";
 import type { Draft } from "@/lib/drafts";
 import {
   dialogIsOpen,
@@ -18,22 +17,24 @@ import {
 import { connectableNetworks, networkInfo } from "@/lib/networks";
 import {
   audienceOf,
-  blockedReasons,
+  blockedReason,
   type Choice,
-  compose,
-  selectDraftTargets,
-  targetsOf,
+  type Composer,
+  ownTextsOf,
+  selectOwnTexts,
 } from "@/lib/publish";
 import { cn } from "@/lib/utils";
-import { useMutate, useSynced, useSyncState } from "@/sync/react";
+import { useMutate, useSyncedNow, useSyncState } from "@/sync/react";
 
 /**
  * Where a draft goes, and "Publish now": under the text of the editor.
  *
  * The channels are chosen with mutators, like every change of a draft, so
  * the choice is saved at once and syncs. What a chosen account would
- * refuse is said next to the choice, and the post cannot be published
- * while there is any: `validateContent`, which the server checks with too.
+ * refuse in the text that it gets, the post's or its own, is said next to
+ * the choice, part by part, and the post cannot be published while there
+ * is any: `validateContent`, which the server checks with too. `composer`
+ * has it, from the editor, which counts by the same.
  *
  * Publishing is a mutation like the others: it is made on this device at
  * once, and reaches the server when the device does. Offline, the panel
@@ -41,41 +42,71 @@ import { useMutate, useSynced, useSyncState } from "@/sync/react";
  */
 export function PublishPanel({
   draft,
-  editor,
+  composer,
   onPublished,
 }: {
   draft: Draft;
-  /** The field that the text of the draft is typed into. */
-  editor: RefObject<HTMLTextAreaElement | null>;
+  /** What `compose` makes of the draft and the channels of the workspace. */
+  composer: Composer;
   /** The draft has been published, and is a draft no more. */
   onPublished: () => void;
 }) {
   const { workspace } = useRouteContext({ from: "/_app" });
   const sandbox = workspace.environment === "sandbox";
-  const channels = useSynced(selectChannels);
-  const targets = useSynced(selectDraftTargets);
   const mutate = useMutate();
+  const tablesNow = useSyncedNow();
   const navigate = useNavigate();
   const offline = useSyncState().connection === "offline";
-  const { choices, blocked } = compose(
-    draft.text,
-    channels,
-    targetsOf(targets, draft.id),
-  );
+  const { choices, blocked } = composer;
+  const reason = blockedReason(composer, draft.parts.length);
   const id = useId();
   const noteId = (channelId: string) => `${id}-${channelId}`;
   const [network] = connectableNetworks;
 
   const toggle = ({ channel, chosen }: Choice) => {
-    if (chosen) {
-      mutate("target.remove", { postId: draft.id, channelId: channel.id });
-    } else {
+    if (!chosen) {
       mutate("target.add", {
         id: uuidv7(new Date()),
         postId: draft.id,
         channelId: channel.id,
       });
+      return;
     }
+    // The text that was written for the account goes with the choice:
+    // read before it does.
+    const own = ownTextsOf(selectOwnTexts(tablesNow()), draft.id).get(
+      channel.id,
+    );
+    mutate("target.remove", { postId: draft.id, channelId: channel.id });
+    if (!own) return;
+    // One press must not cost a text that somebody wrote. The notice is
+    // of this workspace, and leaves with it.
+    toast(`${channel.handle} left out, and its own text with it`, {
+      action: {
+        label: "Undo",
+        onClick: () => {
+          const tables = tablesNow();
+          // Only into the draft, if it still is one, and for an account
+          // that is still connected: the server would refuse the rest.
+          if (
+            tables.post.get(draft.id)?.status !== "draft" ||
+            !tables.channel.has(channel.id)
+          ) {
+            return;
+          }
+          mutate("target.add", {
+            id: uuidv7(new Date()),
+            postId: draft.id,
+            channelId: channel.id,
+          });
+          mutate("target.customize", {
+            postId: draft.id,
+            channelId: channel.id,
+            parts: own.map(({ text }) => ({ id: uuidv7(new Date()), text })),
+          });
+        },
+      },
+    });
   };
 
   const publish = () => {
@@ -108,10 +139,15 @@ export function PublishPanel({
     // Not a key that somebody else has taken, one that is held down, or
     // one that ends the composition of a character.
     if (event.defaultPrevented || event.repeat || event.isComposing) return;
+    // With Shift it adds a part to the text.
+    if (event.shiftKey) return;
     // From the text of the draft, where the person is when they are done
     // with it, and from the page. Not from what a key press is meant for
     // otherwise: a menu, which Enter chooses in, a dialog, another field.
-    const fromText = event.target === editor.current && !dialogIsOpen();
+    const fromText =
+      event.target instanceof HTMLTextAreaElement &&
+      event.target.dataset.part !== undefined &&
+      !dialogIsOpen();
     if (!fromText && isBusy(event)) return;
     event.preventDefault();
     publish();
@@ -120,6 +156,8 @@ export function PublishPanel({
   // The notes that go with the choice: what keeps an account from taking
   // the post.
   const notes = choices.filter((choice) => choice.troubled);
+  // What a network without threads makes of one, said in advance.
+  const joined = choices.filter((choice) => choice.joined);
 
   return (
     <section
@@ -198,13 +236,28 @@ export function PublishPanel({
         </ul>
       )}
 
+      {joined.length > 0 && (
+        <ul className="flex flex-col gap-1 text-xs text-muted-foreground">
+          {joined.map(({ channel }) => (
+            <li key={channel.id} className="flex items-start gap-1.5">
+              <Info aria-hidden="true" className="mt-px size-3.5 shrink-0" />
+              <span className="min-w-0">
+                {networkInfo[channel.network].label} has no threads:{" "}
+                {channel.handle} gets the parts as one post, with an empty line
+                between them.
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+
       <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
         <p
           role="status"
           className="min-w-0 flex-1 basis-48 text-xs text-muted-foreground"
         >
           {blocked && blocked !== "no-channels"
-            ? blockedReasons[blocked]
+            ? reason
             : offline
               ? "You are offline. What you publish now goes out when this device is back online."
               : null}
@@ -237,7 +290,7 @@ function ChannelChip({
   describedBy: string | undefined;
   onToggle: () => void;
 }) {
-  const { channel, chosen, needsReconnect, troubled } = choice;
+  const { channel, chosen, own, needsReconnect, troubled } = choice;
   return (
     <button
       type="button"
@@ -262,6 +315,12 @@ function ChannelChip({
       />
       <span className="truncate">{channel.handle}</span>
       <span className="sr-only"> on {networkInfo[channel.network].label}</span>
+      {own && (
+        <>
+          <PenLine aria-hidden="true" className="size-3.5 shrink-0" />
+          <span className="sr-only">, with a text of its own</span>
+        </>
+      )}
       {troubled ? (
         <TriangleAlert
           aria-hidden="true"

@@ -169,6 +169,58 @@ describe("selectSent", () => {
       ["1", "2"],
     );
   });
+
+  it("shows for an account with a text of its own what went there, and its results in the order of that text", () => {
+    const published = post({ status: "sent" });
+    const own = part(published.id, { text: "The post" });
+    const customized = target(published.id, ada.id, {
+      status: "sent",
+      queuedAt: 1,
+    });
+    const other = channel({ handle: "@grace@mastodon.example" });
+    const follows = target(published.id, other.id, {
+      status: "sent",
+      queuedAt: 1,
+    });
+    // A thread of its own for one account, of another length than the
+    // post.
+    const first = part(published.id, {
+      targetId: customized.id,
+      position: 0,
+      text: "For Ada, one",
+    });
+    const second = part(published.id, {
+      targetId: customized.id,
+      position: 1,
+      text: "For Ada, two",
+    });
+    const [item] = selectSent(
+      tablesOf({
+        post: [published],
+        post_part: [second, own, first],
+        channel: [ada, other],
+        post_target: [customized, follows],
+        target_part_result: [
+          result(customized.id, second.id, { remoteId: "2" }),
+          result(customized.id, first.id, { remoteId: "1" }),
+          result(follows.id, own.id, { remoteId: "3" }),
+        ],
+      }),
+    );
+    // The text of the post is its own, without what was written for Ada.
+    expect(item?.parts.map(({ text }) => text)).toEqual(["The post"]);
+    const [toAda, toGrace] = item?.targets ?? [];
+    expect(toAda?.ownText?.map(({ text }) => text)).toEqual([
+      "For Ada, one",
+      "For Ada, two",
+    ]);
+    expect(toAda?.published.map(({ remoteId }) => remoteId)).toEqual([
+      "1",
+      "2",
+    ]);
+    expect(toGrace?.ownText).toBeNull();
+    expect(toGrace?.published.map(({ remoteId }) => remoteId)).toEqual(["3"]);
+  });
 });
 
 describe("postStatusWords", () => {

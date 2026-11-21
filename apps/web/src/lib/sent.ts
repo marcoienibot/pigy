@@ -1,6 +1,7 @@
 import {
-  inReadingOrder,
+  ownParts,
   type PostStatus,
+  partsFor,
   type Row,
   type Tables,
   type TargetStatus,
@@ -41,7 +42,15 @@ export type SentTarget = {
    * stays, with an ID that names no channel.
    */
   channel: Channel | null;
-  /** The parts that are published, in the order of the post. */
+  /**
+   * The text that was written for this account and went there in place of
+   * the post's, part after part. Null for an account that got the post's.
+   */
+  ownText: { id: string; text: string }[] | null;
+  /**
+   * The parts that are published, in the order of the text that the
+   * account got: the post's, or its own.
+   */
   published: PublishedPart[];
   /**
    * The delivery has failed, and can be tried again: its channel is still
@@ -59,7 +68,10 @@ export type SentTarget = {
 export type SentPost = {
   id: string;
   status: SentStatus;
-  /** The text of the post, part after part. */
+  /**
+   * The text of the post, part after part: its own, which went to every
+   * account that no other text was written for.
+   */
   parts: { id: string; text: string }[];
   /**
    * When the post was published: when the first of its targets was asked
@@ -103,8 +115,8 @@ export function selectSent(tables: Tables): SentPost[] {
   const posts: SentPost[] = [];
   for (const post of tables.post.values()) {
     if (!isSent(post.status)) continue;
-    const ordered = inReadingOrder(parts.get(post.id) ?? []);
-    const position = new Map(ordered.map((part, index) => [part.id, index]));
+    const all = parts.get(post.id) ?? [];
+    const ordered = ownParts(all);
     const ofPost = targets.get(post.id) ?? [];
     const asked = ofPost.flatMap(({ queuedAt }) =>
       queuedAt === null ? [] : [queuedAt],
@@ -119,15 +131,21 @@ export function selectSent(tables: Tables): SentPost[] {
           const channel = tables.channel.get(target.channelId) ?? null;
           const failed =
             target.status === "error" || target.status === "uncertain";
+          // What this account got, which its results are in the order of.
+          const got = partsFor(all, target.id);
+          const position = new Map(got.map((part, index) => [part.id, index]));
           return {
             id: target.id,
             status: target.status,
             error: target.error,
             sentAt: target.sentAt,
             channel,
+            ownText: got.some((part) => part.targetId === target.id)
+              ? got.map(({ id, text }) => ({ id, text }))
+              : null,
             published: (results.get(target.id) ?? [])
-              // A result of a part that is no longer in the post has no
-              // place to be shown in.
+              // A result of a part that is not in the text has no place
+              // to be shown in.
               .filter((result) => position.has(result.partId))
               .sort(
                 (a, b) =>

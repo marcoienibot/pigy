@@ -1,13 +1,20 @@
-import { maxPartTextLength, uuidv7 } from "@pigy/core";
+import {
+  maxOwnTextLength,
+  maxParts,
+  maxPartTextLength,
+  uuidv7,
+} from "@pigy/core";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { ArrowLeft, Plus, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowLeft, ArrowUp, Plus, Trash2, X } from "lucide-react";
 import {
   memo,
   type ReactNode,
   type RefObject,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
+  useState,
 } from "react";
 import { toast } from "sonner";
 import { EmptyState, Page } from "@/components/page";
@@ -20,11 +27,13 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { selectNoChannels } from "@/lib/channels";
+import { type Channel, selectChannels, selectNoChannels } from "@/lib/channels";
 import {
   type Draft,
+  type Part,
   selectDrafts,
   takeFocusOnOpen,
+  threadLabel,
   useNewDraft,
 } from "@/lib/drafts";
 import {
@@ -35,7 +44,18 @@ import {
   withMod,
 } from "@/lib/keyboard";
 import { connectableNetworks } from "@/lib/networks";
-import { selectDraftTargets, targetsOf } from "@/lib/publish";
+import {
+  compose,
+  type Gauge,
+  gaugesOf,
+  type Meter,
+  meterOf,
+  ownTextsOf,
+  readersOf,
+  selectDraftTargets,
+  selectOwnTexts,
+  targetsOf,
+} from "@/lib/publish";
 import { timeAgo, useNow } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import {
@@ -65,6 +85,40 @@ export const Route = createFileRoute("/_app/")({
  */
 const undoMs = 10_000;
 
+/**
+ * What went with a draft that was deleted: the channels that it was to go
+ * to, each with the text that was written for it, if one was.
+ */
+type Went = { channelId: string; own: readonly Part[] | null }[];
+
+/**
+ * Gives the account `channelId` of the draft `postId` a text of its own
+ * that begins as `parts`. Returns false, and does nothing, for a text
+ * that is longer than one such step carries.
+ */
+function giveOwnText(
+  mutate: ReturnType<typeof useMutate>,
+  postId: string,
+  channelId: string,
+  parts: readonly { text: string }[],
+): boolean {
+  if (!fitsOwnText(parts)) return false;
+  mutate("target.customize", {
+    postId,
+    channelId,
+    parts: parts.map(({ text }) => ({ id: uuidv7(new Date()), text })),
+  });
+  return true;
+}
+
+/** Whether `parts` can become the text of one account in one step. */
+function fitsOwnText(parts: readonly { text: string }[]): boolean {
+  return (
+    parts.reduce((length, { text }) => length + text.length, 0) <=
+    maxOwnTextLength
+  );
+}
+
 /** Whether the list and the editor are side by side: `md` in Tailwind. */
 function isWide(): boolean {
   return window.matchMedia("(min-width: 48rem)").matches;
@@ -88,12 +142,12 @@ function Drafts() {
   const editor = useRef<HTMLTextAreaElement>(null);
   /**
    * The drafts that were deleted and can still be brought back, each with
-   * the channels that it was to go to and the notice that offers it. The one that was deleted last is at the
-   * end. They are those of this workspace: the screen is made anew for
-   * the other one, and so are the notices.
+   * what went with it and the notice that offers it. The one that was
+   * deleted last is at the end. They are those of this workspace: the
+   * screen is made anew for the other one, and so are the notices.
    */
   const deleted = useRef<
-    { draft: Draft; channels: readonly string[]; notice: string | number }[]
+    { draft: Draft; went: Went; notice: string | number }[]
   >([]);
   const tablesNow = useSyncedNow();
 
@@ -124,24 +178,35 @@ function Drafts() {
     );
   };
 
-  const restore = (
-    draft: Draft,
-    channels: readonly string[],
-    notice: string | number,
-  ) => {
+  const restore = (draft: Draft, went: Went, notice: string | number) => {
     forget(notice);
     toast.dismiss(notice);
     // A post that is deleted is gone for every device, so what comes back
-    // is a new draft with the same text, which is to go where the deleted
-    // one was.
+    // is a new draft with the same text, part after part in their order,
+    // which is to go where the deleted one was.
     const id = uuidv7(new Date());
-    mutate("post.create", { id, partId: uuidv7(new Date()), text: draft.text });
+    const [first, ...more] = draft.parts;
+    let last = uuidv7(new Date());
+    mutate("post.create", { id, partId: last, text: first?.text ?? "" });
+    for (const { text } of more) {
+      const partId = uuidv7(new Date());
+      mutate("part.add", {
+        id: partId,
+        postId: id,
+        channelId: null,
+        afterId: last,
+        text,
+      });
+      last = partId;
+    }
     const connected = tablesNow().channel;
-    for (const channelId of channels) {
+    for (const { channelId, own } of went) {
       // An account that was disconnected since is left out: the server
       // would refuse the choice, and take it back with a notice.
       if (!connected.has(channelId)) continue;
       mutate("target.add", { id: uuidv7(new Date()), postId: id, channelId });
+      // With the text that was written for it, if it had one.
+      if (own) giveOwnText(mutate, id, channelId, own);
     }
     show(id);
   };
@@ -162,18 +227,23 @@ function Drafts() {
       // about the open draft. It stays in the list.
       rowOf(neighbour.id)?.focus();
     }
-    // Where the draft was to go, which goes with it: read before it does.
-    const channels = [...targetsOf(selectDraftTargets(tablesNow()), draft.id)];
+    // Where the draft was to go, and what was written for single accounts,
+    // which go with it: read before they do.
+    const tables = tablesNow();
+    const own = ownTextsOf(selectOwnTexts(tables), draft.id);
+    const went: Went = [...targetsOf(selectDraftTargets(tables), draft.id)].map(
+      (channelId) => ({ channelId, own: own.get(channelId) ?? null }),
+    );
     mutate("post.delete", { id: draft.id });
     // Nothing to bring back of a draft without text.
-    if (draft.text === "") return;
+    if (draft.empty && own.size === 0) return;
     const notice: string | number = toast("Draft deleted", {
       duration: undoMs,
       // Its own draft, also when others were deleted after it and their
       // notices are on screen next to this one.
       action: {
         label: "Undo",
-        onClick: () => restore(draft, channels, notice),
+        onClick: () => restore(draft, went, notice),
       },
       onDismiss: () => forget(notice),
       onAutoClose: () => forget(notice),
@@ -181,7 +251,7 @@ function Drafts() {
     // The notice outlives this screen. It does not outlive the workspace,
     // where there would be nothing to bring the draft back into: the shell
     // sees to that.
-    deleted.current.push({ draft, channels, notice });
+    deleted.current.push({ draft, went, notice });
   };
 
   /**
@@ -237,9 +307,10 @@ function Drafts() {
         const target = event.target as HTMLElement;
         if (!open) return;
         if (target.closest("a, button") && focused(event) !== open) return;
-        // At the end of the text, to go on writing.
-        editor.current?.focus();
-        editor.current?.setSelectionRange(open.text.length, open.text.length);
+        // At the end of the text of the first part, to go on writing.
+        const field = editor.current;
+        field?.focus();
+        field?.setSelectionRange(field.value.length, field.value.length);
         break;
       }
       case "escape":
@@ -272,7 +343,7 @@ function Drafts() {
       !isBusy(event)
     ) {
       event.preventDefault();
-      restore(last.draft, last.channels, last.notice);
+      restore(last.draft, last.went, last.notice);
     }
   });
 
@@ -446,6 +517,7 @@ const DraftRow = memo(function DraftRow({
   /** How long ago the draft was edited, as the row words it. */
   ago: string;
 }) {
+  const thread = threadLabel(draft);
   return (
     <li>
       <Link
@@ -477,8 +549,9 @@ const DraftRow = memo(function DraftRow({
             {ago}
           </span>
         </span>
-        <span className="block h-5 truncate text-muted-foreground">
-          {draft.snippet}
+        <span className="flex h-5 items-baseline gap-2 text-muted-foreground">
+          <span className="min-w-0 flex-1 truncate">{draft.snippet}</span>
+          {thread && <span className="shrink-0 text-xs">· {thread}</span>}
         </span>
       </Link>
     </li>
@@ -495,8 +568,45 @@ function countCharacters(text: string): number {
 }
 
 /**
- * The text of a draft, which is saved as it is typed: every change is a
- * mutation, and the field shows what the local copy holds.
+ * Whether the browser sizes a field by what is in it. Where it does not,
+ * the field of a part is sized by hand: `PartField`.
+ */
+const sizesFields =
+  typeof CSS !== "undefined" && CSS.supports("field-sizing", "content");
+
+/**
+ * What the field of a part asks of the editor. The object is the same for
+ * as long as the editor is, so that a field renders again only when its
+ * part has changed: `PartField` is kept by `memo`.
+ */
+type PartActions = {
+  /** The field of the part `id` is on the page, or with null gone. */
+  register(id: string, field: HTMLTextAreaElement | null): void;
+  setText(part: Part, text: string): void;
+  /** Adds an empty part after `part` and takes the keyboard to it. */
+  addAfter(part: Part): void;
+  /** Removes `part`, and takes the keyboard to a part next to it. */
+  remove(part: Part): void;
+  /** Moves `part` one place up or down in its text. */
+  move(part: Part, step: 1 | -1): void;
+  /**
+   * Takes the keyboard to the part before or after `part`. Returns false
+   * if there is none.
+   */
+  go(part: Part, step: 1 | -1): boolean;
+  /** The person wants out of the text. */
+  leave(): void;
+};
+
+/**
+ * The editor of a draft: its text, part after part, each saved as it is
+ * typed, with how long it is for the accounts that get it, and under it
+ * where the draft goes. Every change is a mutation, and the fields show
+ * what the local copy holds.
+ *
+ * A draft has a text of its own, and an account can be given another in
+ * its place. The editor shows one of them at a time: the post's, or the
+ * one of the account that `shown` names.
  */
 function Editor({
   draft,
@@ -506,6 +616,7 @@ function Editor({
   onPublished,
 }: {
   draft: Draft;
+  /** The field of the first part of the text that is shown. */
   ref: RefObject<HTMLTextAreaElement | null>;
   /** The person wants out of the field. */
   onLeave: () => void;
@@ -513,33 +624,189 @@ function Editor({
   onPublished: () => void;
 }) {
   const mutate = useMutate();
-  const { text } = draft;
-  const count = countCharacters(text);
+  const tablesNow = useSyncedNow();
+  const channels = useSynced(selectChannels);
+  const chosen = targetsOf(useSynced(selectDraftTargets), draft.id);
+  const own = ownTextsOf(useSynced(selectOwnTexts), draft.id);
+  const composer = compose(draft.parts, channels, chosen, own);
+
+  // The account whose own text is shown. One that has none, or no longer,
+  // because the text was dropped or the account left out, here or on
+  // another device, shows the post's text.
+  const [asked, setShown] = useState<string | null>(null);
+  const written = asked === null ? undefined : own.get(asked);
+  const shown = written ? asked : null;
+  const parts = written ?? draft.parts;
+  const reader = composer.choices.find(({ channel }) => channel.id === shown);
+
+  // What the text that is shown has to keep to: the limits of the accounts
+  // that get it. Made anew only when those change, and not with every key:
+  // they are handed to every field.
+  const readers = JSON.stringify(
+    readersOf(composer.choices, shown).map(({ handle, limits }) => ({
+      handle,
+      limits,
+    })),
+  );
+  const gauges = useMemo(
+    () => gaugesOf(JSON.parse(readers) as Pick<Channel, "handle" | "limits">[]),
+    [readers],
+  );
+
+  const fields = useRef(new Map<string, HTMLTextAreaElement>());
+  /** The part that is to get the keyboard once its field is on the page. */
+  const awaited = useRef<{ id: string; at: "start" | "end" }>(null);
+
+  const focus = (id: string, at: "start" | "end") => {
+    const field = fields.current.get(id);
+    if (!field) {
+      awaited.current = { id, at };
+      return;
+    }
+    awaited.current = null;
+    field.focus();
+    const caret = at === "start" ? 0 : field.value.length;
+    field.setSelectionRange(caret, caret);
+  };
+
+  useLayoutEffect(() => {
+    const [first] = parts;
+    ref.current = (first && fields.current.get(first.id)) ?? null;
+    if (awaited.current) focus(awaited.current.id, awaited.current.at);
+  });
 
   // The person has asked for this draft to write in it.
   useEffect(() => {
     if (takeFocusOnOpen(draft.id)) ref.current?.focus();
   }, [draft.id, ref]);
 
-  // When the text changes from elsewhere, another device or another tab,
-  // the browser puts the cursor at the end of the field. It is put back
-  // where the person had it. What they type is never lost to such a
-  // change: an edit that the server has not confirmed stays on top of
-  // whatever arrives.
-  const typed = useRef(text);
-  const selection = useRef<[number, number]>(null);
-  useLayoutEffect(() => {
-    const field = ref.current;
-    if (text === typed.current || !field) return;
-    typed.current = text;
-    if (document.activeElement === field && selection.current) {
-      const [start, end] = selection.current;
-      field.setSelectionRange(
-        Math.min(start, text.length),
-        Math.min(end, text.length),
-      );
+  /** Shows the post's text, or the one of the account `channelId`. */
+  const show = (channelId: string | null) => {
+    setShown(channelId);
+    const [first] = (channelId && own.get(channelId)) || draft.parts;
+    if (first) awaited.current = { id: first.id, at: "end" };
+  };
+
+  /** The parts of the text that `part` is of, as they are now. */
+  const textOf = (part: Part) => {
+    const tables = tablesNow();
+    if (tables.post.get(draft.id)?.status !== "draft") return undefined;
+    if (part.targetId === null) {
+      return selectDrafts(tables).find(({ id }) => id === draft.id)?.parts;
     }
-  }, [text, ref]);
+    const channelId = tables.post_target.get(part.targetId)?.channelId;
+    return channelId
+      ? ownTextsOf(selectOwnTexts(tables), draft.id).get(channelId)
+      : undefined;
+  };
+
+  const actions: PartActions = {
+    register: () => {},
+    setText: (part, text) => mutate("part.setText", { id: part.id, text }),
+    addAfter: (part) => {
+      if (parts.length >= maxParts) return;
+      const id = uuidv7(new Date());
+      mutate("part.add", {
+        id,
+        postId: draft.id,
+        channelId: shown,
+        afterId: part.id,
+        text: "",
+      });
+      focus(id, "start");
+    },
+    remove: (part) => {
+      const index = parts.indexOf(part);
+      const before = parts[index - 1];
+      const neighbour = before ?? parts[index + 1];
+      if (index < 0 || !neighbour) return;
+      mutate("part.remove", { id: part.id });
+      focus(neighbour.id, before ? "end" : "start");
+      // Nothing to bring back of a part without text.
+      if (part.text === "") return;
+      const channelId = shown;
+      toast("Part removed", {
+        duration: undoMs,
+        action: {
+          label: "Undo",
+          onClick: () => {
+            // Into the text that it was removed from, if that is still
+            // there to be edited: after the part that it followed, or at
+            // the end if that one is gone too.
+            const text = textOf(part);
+            if (!text || text.length >= maxParts) return;
+            mutate("part.add", {
+              id: uuidv7(new Date()),
+              postId: draft.id,
+              channelId,
+              afterId: before?.id ?? null,
+              text: part.text,
+            });
+          },
+        },
+      });
+    },
+    move: (part, step) => {
+      const index = parts.indexOf(part);
+      const to = index + step;
+      if (index < 0 || to < 0 || to >= parts.length) return;
+      mutate("part.move", {
+        id: part.id,
+        // Down: after the part that follows. Up: after the part before
+        // the one before, or to the beginning.
+        afterId:
+          step === 1 ? (parts[to]?.id ?? null) : (parts[to - 1]?.id ?? null),
+      });
+      // The button that was pressed moves with its part. At the end of
+      // the text it has nothing left to do and is disabled, which would
+      // lose the keyboard: it goes to the text of the part.
+      if (to === 0 || to === parts.length - 1) focus(part.id, "end");
+    },
+    go: (part, step) => {
+      const next = parts[parts.indexOf(part) + step];
+      if (!next) return false;
+      focus(next.id, step === 1 ? "start" : "end");
+      return true;
+    },
+    leave: onLeave,
+  };
+  const latest = useRef(actions);
+  useLayoutEffect(() => {
+    latest.current = actions;
+  });
+  const [stable] = useState(
+    (): PartActions => ({
+      // Not through `latest`: a field is on the page before the effect
+      // above has run for the first time.
+      register: (id, field) => {
+        if (field) fields.current.set(id, field);
+        else fields.current.delete(id);
+      },
+      setText: (...args) => latest.current.setText(...args),
+      addAfter: (...args) => latest.current.addAfter(...args),
+      remove: (...args) => latest.current.remove(...args),
+      move: (...args) => latest.current.move(...args),
+      go: (...args) => latest.current.go(...args),
+      leave: () => latest.current.leave(),
+    }),
+  );
+
+  const customize = (channel: Channel) => {
+    if (!giveOwnText(mutate, draft.id, channel.id, draft.parts)) return;
+    // The text is there with the next render, and shown then.
+    setShown(channel.id);
+  };
+
+  const followPost = (channel: Channel) => {
+    mutate("target.followPost", { postId: draft.id, channelId: channel.id });
+    show(null);
+  };
+
+  const customized = composer.choices.filter((choice) => choice.own);
+  const customizable = composer.choices.filter(
+    (choice) => choice.chosen && !choice.own,
+  );
+  const alone = parts.length === 1;
 
   return (
     <>
@@ -553,9 +820,12 @@ function Editor({
         >
           <ArrowLeft aria-hidden="true" />
         </Button>
-        <span className="ml-auto text-xs text-muted-foreground tabular-nums">
-          {count === 1 ? "1 character" : `${count} characters`}
-        </span>
+        {!alone && (
+          <span className="pl-2 text-xs text-muted-foreground md:pl-1">
+            Thread of {parts.length} parts
+          </span>
+        )}
+        <span className="ml-auto" />
         {/* The header of the screen, which has it, is under the editor. */}
         <div className="md:hidden">
           <SyncIndicator placement="header" />
@@ -571,35 +841,381 @@ function Editor({
           </Button>
         </Hint>
       </header>
+
+      {(customized.length > 0 || customizable.length > 0) && (
+        <div className="flex shrink-0 flex-col gap-1.5 border-b px-4 py-2 text-xs md:px-6">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {customized.length > 0 && (
+              // biome-ignore lint/a11y/useSemanticElements: a fieldset would put a second frame around the buttons.
+              <div
+                role="group"
+                aria-label="Text to edit"
+                className="flex max-w-full flex-wrap items-center gap-1.5"
+              >
+                <TextChoice pressed={shown === null} onClick={() => show(null)}>
+                  Post text
+                </TextChoice>
+                {customized.map(({ channel }) => (
+                  <TextChoice
+                    key={channel.id}
+                    pressed={shown === channel.id}
+                    onClick={() => show(channel.id)}
+                  >
+                    <span className="sr-only">Text for </span>
+                    {channel.handle}
+                  </TextChoice>
+                ))}
+              </div>
+            )}
+            {customizable.map(({ channel }) => (
+              <button
+                key={channel.id}
+                type="button"
+                disabled={!fitsOwnText(draft.parts)}
+                title={
+                  fitsOwnText(draft.parts)
+                    ? `Write another text for ${channel.handle}, beginning with this one`
+                    : "This text is too long to begin another from"
+                }
+                className="inline-flex h-7 max-w-full items-center rounded-full border border-dashed px-2.5 text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={() => customize(channel)}
+              >
+                <span className="truncate">Customize for {channel.handle}</span>
+              </button>
+            ))}
+          </div>
+          {reader && (
+            <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-muted-foreground">
+              <span>
+                Only {reader.channel.handle} gets this text. The post's own text
+                goes to the other accounts.
+              </span>
+              <button
+                type="button"
+                className="font-medium text-foreground underline underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onClick={() => followPost(reader.channel)}
+              >
+                Use the post's text
+              </button>
+            </p>
+          )}
+        </div>
+      )}
+
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+        <ol
+          aria-label={
+            reader ? `Text for ${reader.channel.handle}` : "Text of the post"
+          }
+          className="flex flex-1 flex-col"
+        >
+          {parts.map((part, index) => (
+            <PartField
+              key={part.id}
+              part={part}
+              index={index}
+              count={parts.length}
+              handle={reader?.channel.handle ?? null}
+              gauges={gauges}
+              actions={stable}
+            />
+          ))}
+        </ol>
+        {!alone && (
+          <p className="hidden shrink-0 flex-wrap items-center gap-1 px-6 pb-3 text-xs text-muted-foreground md:flex">
+            <Kbd>↑</Kbd>
+            <Kbd>↓</Kbd>
+            at the edge of a part move to the part next to it.
+            <Kbd>⌫</Kbd>
+            in an empty part removes it.
+          </p>
+        )}
+      </div>
+      <PublishPanel
+        draft={draft}
+        composer={composer}
+        onPublished={onPublished}
+      />
+    </>
+  );
+}
+
+/** A button that chooses which text of a draft the editor shows. */
+function TextChoice({
+  pressed,
+  onClick,
+  children,
+}: {
+  pressed: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={pressed}
+      onClick={onClick}
+      className={cn(
+        "inline-flex h-7 max-w-full items-center rounded-full border px-2.5 outline-none",
+        "hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring",
+        pressed
+          ? "border-primary bg-primary/10 font-medium text-foreground"
+          : "text-muted-foreground",
+      )}
+    >
+      <span className="truncate">{children}</span>
+    </button>
+  );
+}
+
+/**
+ * One part of a text: the field that it is typed into, how long it is,
+ * and what can be done with it. It renders again when its part has
+ * changed, or its place in the text, and not when another part is typed
+ * into.
+ */
+const PartField = memo(function PartField({
+  part,
+  index,
+  count,
+  handle,
+  gauges,
+  actions,
+}: {
+  part: Part;
+  /** Its place in the text, counted from 0. */
+  index: number;
+  /** How many parts the text has. */
+  count: number;
+  /** The account that the text is written for, or null for the post's. */
+  handle: string | null;
+  /** The limits of the accounts that get the text. */
+  gauges: readonly Gauge[];
+  actions: PartActions;
+}) {
+  const { text } = part;
+  const field = useRef<HTMLTextAreaElement>(null);
+  const alone = count === 1;
+  const number = index + 1;
+  const label = alone
+    ? handle
+      ? `Text for ${handle}`
+      : "Draft text"
+    : handle
+      ? `Part ${number} for ${handle}`
+      : `Part ${number}`;
+
+  useLayoutEffect(() => {
+    actions.register(part.id, field.current);
+    return () => actions.register(part.id, null);
+  }, [actions, part.id]);
+
+  // When the text changes from elsewhere, another device or another tab,
+  // the browser puts the cursor at the end of the field. It is put back
+  // where the person had it. What they type is never lost to such a
+  // change: an edit that the server has not confirmed stays on top of
+  // whatever arrives.
+  const typed = useRef(text);
+  const selection = useRef<[number, number]>(null);
+  useLayoutEffect(() => {
+    const element = field.current;
+    if (!element) return;
+    // Where the browser does not size a field by its text, as high as
+    // the text is.
+    if (!sizesFields) {
+      element.style.height = "auto";
+      element.style.height = `${element.scrollHeight}px`;
+    }
+    if (text === typed.current) return;
+    typed.current = text;
+    if (document.activeElement === element && selection.current) {
+      const [start, end] = selection.current;
+      element.setSelectionRange(
+        Math.min(start, text.length),
+        Math.min(end, text.length),
+      );
+    }
+  }, [text]);
+
+  const meters = gauges.map((gauge) => meterOf(gauge, text));
+  const characters = countCharacters(text);
+
+  return (
+    <li
+      className={cn(
+        "flex flex-col",
+        // The one part of a post takes the room that there is, to click
+        // into. The parts of a thread are as high as their text.
+        alone ? "flex-1" : "border-b",
+      )}
+    >
       <textarea
-        ref={ref}
-        aria-label="Draft text"
-        placeholder="Write something…"
+        ref={field}
+        data-part={part.id}
+        aria-label={label}
+        placeholder={index === 0 ? "Write something…" : "Go on…"}
         value={text}
         maxLength={maxPartTextLength}
+        rows={alone ? undefined : 2}
         // 16px on a phone, below which iOS zooms into a field.
-        className="min-h-0 w-full flex-1 resize-none bg-transparent p-4 text-base leading-relaxed outline-none placeholder:text-muted-foreground md:px-6 md:py-5 md:text-[0.9375rem]"
+        className={cn(
+          "field-sizing-content w-full resize-none bg-transparent px-4 pt-4 pb-2 text-base leading-relaxed outline-none placeholder:text-muted-foreground md:px-6 md:pt-5 md:text-[0.9375rem]",
+          alone ? "min-h-24 flex-1" : "min-h-16",
+        )}
         onChange={(event) => {
           typed.current = event.target.value;
-          mutate("part.setText", {
-            id: draft.partId,
-            text: event.target.value,
-          });
+          actions.setText(part, event.target.value);
         }}
         onSelect={(event) => {
           const { selectionStart, selectionEnd } = event.currentTarget;
           selection.current = [selectionStart, selectionEnd];
         }}
         onKeyDown={(event) => {
+          const { selectionStart, selectionEnd, value } = event.currentTarget;
+          const plain =
+            !event.shiftKey &&
+            !event.altKey &&
+            !event.metaKey &&
+            !event.ctrlKey;
           if (event.key === "Escape") {
             // The one key that is not for the text.
             event.preventDefault();
-            onLeave();
+            actions.leave();
+          } else if (
+            event.key === "Enter" &&
+            withMod(event.nativeEvent) &&
+            event.shiftKey &&
+            !event.repeat
+          ) {
+            event.preventDefault();
+            actions.addAfter(part);
+          } else if (
+            event.key === "ArrowUp" &&
+            plain &&
+            selectionStart === 0 &&
+            selectionEnd === 0
+          ) {
+            // At the very beginning of a part, up is the part before.
+            if (actions.go(part, -1)) event.preventDefault();
+          } else if (
+            event.key === "ArrowDown" &&
+            plain &&
+            selectionStart === value.length &&
+            selectionEnd === value.length
+          ) {
+            if (actions.go(part, 1)) event.preventDefault();
+          } else if (
+            event.key === "Backspace" &&
+            plain &&
+            value === "" &&
+            !alone &&
+            !event.repeat
+          ) {
+            // Nothing left to delete in it: the part itself goes.
+            event.preventDefault();
+            actions.remove(part);
           }
         }}
       />
-      <PublishPanel draft={draft} editor={ref} onPublished={onPublished} />
-    </>
+      <div className="flex min-h-9 flex-wrap items-center gap-x-3 gap-y-1 px-4 pb-2 text-xs text-muted-foreground md:px-6">
+        {!alone && (
+          <span className="tabular-nums">
+            {number}/{count}
+          </span>
+        )}
+        {meters.length === 0 ? (
+          <span className="tabular-nums">
+            {characters === 1 ? "1 character" : `${characters} characters`}
+          </span>
+        ) : (
+          meters.map((meter) => <Counter key={meter.key} meter={meter} />)
+        )}
+        <span className="ml-auto flex items-center gap-0.5">
+          {!alone && (
+            <>
+              <Hint label="Move up" keys={[]}>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={`Move part ${number} up`}
+                  disabled={index === 0}
+                  onClick={() => actions.move(part, -1)}
+                >
+                  <ArrowUp aria-hidden="true" />
+                </Button>
+              </Hint>
+              <Hint label="Move down" keys={[]}>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={`Move part ${number} down`}
+                  disabled={index === count - 1}
+                  onClick={() => actions.move(part, 1)}
+                >
+                  <ArrowDown aria-hidden="true" />
+                </Button>
+              </Hint>
+              <Hint label="Remove part" keys={[]}>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={`Remove part ${number}`}
+                  onClick={() => actions.remove(part)}
+                >
+                  <X aria-hidden="true" />
+                </Button>
+              </Hint>
+            </>
+          )}
+          <Hint label="Add a part below" keys={[modKey, "⇧", "↵"]}>
+            <Button
+              variant="ghost"
+              size={alone ? "sm" : "icon-sm"}
+              aria-label={
+                alone ? "Add a part" : `Add a part after part ${number}`
+              }
+              disabled={count >= maxParts}
+              onClick={() => actions.addAfter(part)}
+            >
+              <Plus aria-hidden="true" />
+              {alone && "Add part"}
+            </Button>
+          </Hint>
+        </span>
+      </div>
+    </li>
+  );
+});
+
+/**
+ * How long a part is for the accounts of one network, against what they
+ * take: plain while it fits, a warning near the limit and an error over
+ * it.
+ */
+function Counter({ meter }: { meter: Meter }) {
+  const { label, count, max, tone, description } = meter;
+  return (
+    <span
+      title={description}
+      data-tone={tone}
+      className={cn(
+        "tabular-nums",
+        tone === "near" && "text-amber-700 dark:text-amber-400",
+        tone === "over" && "font-medium text-destructive",
+      )}
+    >
+      <span aria-hidden="true">
+        {label} {count}/{max}
+      </span>
+      <span className="sr-only">
+        {description}
+        {tone === "over"
+          ? ", over the limit"
+          : tone === "near"
+            ? ", near the limit"
+            : ""}
+      </span>
+    </span>
   );
 }
 
@@ -648,6 +1264,12 @@ function Shortcuts() {
         <Shortcut keys={["C"]}>New draft</Shortcut>
         <Shortcut keys={["↑", "↓"]}>Move through the drafts</Shortcut>
         <Shortcut keys={["↵"]}>Write in the open draft</Shortcut>
+        <Shortcut keys={[modKey, "⇧", "↵"]}>
+          Add a part below, for a thread
+        </Shortcut>
+        <Shortcut keys={["↑", "↓"]}>
+          At the edge of a part: to the part next to it
+        </Shortcut>
         <Shortcut keys={["Esc"]}>Leave the text, then close the draft</Shortcut>
         <Shortcut keys={["⌫"]}>Delete the open draft</Shortcut>
         <Shortcut keys={[modKey, "↵"]}>Publish the open draft</Shortcut>
