@@ -842,67 +842,73 @@ function Editor({
         </Hint>
       </header>
 
-      {(customized.length > 0 || customizable.length > 0) && (
-        <div className="flex shrink-0 flex-col gap-1.5 border-b px-4 py-2 text-xs md:px-6">
-          <div className="flex flex-wrap items-center gap-1.5">
-            {customized.length > 0 && (
-              // biome-ignore lint/a11y/useSemanticElements: a fieldset would put a second frame around the buttons.
-              <div
-                role="group"
-                aria-label="Text to edit"
-                className="flex max-w-full flex-wrap items-center gap-1.5"
-              >
-                <TextChoice pressed={shown === null} onClick={() => show(null)}>
-                  Post text
-                </TextChoice>
-                {customized.map(({ channel }) => (
-                  <TextChoice
-                    key={channel.id}
-                    pressed={shown === channel.id}
-                    onClick={() => show(channel.id)}
-                  >
-                    <span className="sr-only">Text for </span>
-                    {channel.handle}
-                  </TextChoice>
-                ))}
-              </div>
-            )}
-            {customizable.map(({ channel }) => (
-              <button
-                key={channel.id}
-                type="button"
-                disabled={!fitsOwnText(draft.parts)}
-                title={
-                  fitsOwnText(draft.parts)
-                    ? `Write another text for ${channel.handle}, beginning with this one`
-                    : "This text is too long to begin another from"
-                }
-                className="inline-flex h-7 max-w-full items-center rounded-full border border-dashed px-2.5 text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-                onClick={() => customize(channel)}
-              >
-                <span className="truncate">Customize for {channel.handle}</span>
-              </button>
-            ))}
-          </div>
-          {reader && (
-            <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-muted-foreground">
-              <span>
-                Only {reader.channel.handle} gets this text. The post's own text
-                goes to the other accounts.
-              </span>
-              <button
-                type="button"
-                className="font-medium text-foreground underline underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                onClick={() => followPost(reader.channel)}
-              >
-                Use the post's text
-              </button>
-            </p>
-          )}
-        </div>
-      )}
-
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+        {/* Above the text and scrolled with it: a phone has little room. */}
+        {(customized.length > 0 || customizable.length > 0) && (
+          <div className="flex shrink-0 flex-col gap-1.5 border-b px-4 py-2 text-xs md:px-6">
+            <div className="flex flex-wrap items-center gap-1.5">
+              {customized.length > 0 && (
+                // biome-ignore lint/a11y/useSemanticElements: a fieldset would put a second frame around the buttons.
+                <div
+                  role="group"
+                  aria-label="Text to edit"
+                  className="flex max-w-full flex-wrap items-center gap-1.5"
+                >
+                  <TextChoice
+                    pressed={shown === null}
+                    onClick={() => show(null)}
+                  >
+                    Post text
+                  </TextChoice>
+                  {customized.map(({ channel }) => (
+                    <TextChoice
+                      key={channel.id}
+                      pressed={shown === channel.id}
+                      onClick={() => show(channel.id)}
+                    >
+                      <span className="sr-only">Text for </span>
+                      {channel.handle}
+                    </TextChoice>
+                  ))}
+                </div>
+              )}
+              {customizable.map(({ channel }) => (
+                <button
+                  key={channel.id}
+                  type="button"
+                  disabled={!fitsOwnText(draft.parts)}
+                  title={
+                    fitsOwnText(draft.parts)
+                      ? `Write another text for ${channel.handle}, beginning with this one`
+                      : "This text is too long to begin another from"
+                  }
+                  className="inline-flex h-7 max-w-full items-center rounded-full border border-dashed px-2.5 text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={() => customize(channel)}
+                >
+                  <span className="truncate">
+                    Customize for {channel.handle}
+                  </span>
+                </button>
+              ))}
+            </div>
+            {reader && (
+              <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-muted-foreground">
+                <span>
+                  Only {reader.channel.handle} gets this text. The post's own
+                  text goes to the other accounts.
+                </span>
+                <button
+                  type="button"
+                  className="font-medium text-foreground underline underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  onClick={() => followPost(reader.channel)}
+                >
+                  Use the post's text
+                </button>
+              </p>
+            )}
+          </div>
+        )}
+
         <ol
           aria-label={
             reader ? `Text for ${reader.channel.handle}` : "Text of the post"
