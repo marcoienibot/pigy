@@ -1326,6 +1326,47 @@ it("keeps nothing of an account whose channel is disconnected right after it was
   expect(await database()).not.toContain("sealed-credentials");
 });
 
+it("never sends the access that a connection replaced, which the workspace keeps for a repeat", async () => {
+  const {
+    browser,
+    workspace,
+    client: early,
+    reconnect,
+    answer,
+    database,
+  } = await reconnected();
+  // The secret is there to be sent: the call was handed it, and the
+  // workspace keeps it.
+  expect(answer).toMatchObject({ replaced: handedBack });
+  expect(await database()).toContain("sealed-credentials-one");
+
+  // The ways out of the object, as for the access of a channel: the
+  // changes as they happen, here the two connections, and a snapshot,
+  // taken after a repeat of the call was answered from what is kept.
+  await early.patch();
+  await early.patch();
+  expect(await reconnect()).toEqual(answer);
+  const fresh = new SyncClient();
+  await fresh.connect(browser, workspace);
+
+  const messages = [...early.received, ...fresh.received];
+  // They carried the channel of the second connection.
+  expect(fresh.table("channel")).toMatchObject([{ name: "Ada" }]);
+  expect(early.table("channel")).toMatchObject([{ name: "Ada" }]);
+  const sent = messages.join("\n");
+  // And nothing of either access, of the table that keeps the call, or of
+  // what the call was answered with.
+  for (const secret of [
+    "sealed-credentials",
+    "credentials",
+    "replaced",
+    "keyed_call",
+    "reconnect",
+  ]) {
+    expect(sent).not.toContain(secret);
+  }
+});
+
 it("refuses the mutations of a client that only the server runs", async () => {
   const { test, workspace, client } = await connected();
   const identity = await identityOf(test, workspace);
