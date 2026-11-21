@@ -289,12 +289,12 @@ test("a server that never answers is taken for one that cannot be reached, on th
   // for is what the test is about.
   await page.goto("/sign-in", { waitUntil: "commit" });
   await expect.poll(() => server.asked).toBe(1);
-  // Not yet: a server that is slow is given its time.
-  await page.clock.runFor(9_000);
-  await expect(page.getByRole("status")).toHaveCount(0);
   // The time is up. The page says what it says without a connection, and
-  // offers no way to Google, which would wait as long.
-  await page.clock.runFor(1_000);
+  // offers no way to Google, which would wait as long. That the time is
+  // ten seconds and no less is what the unit tests of `answeredInTime`
+  // show: a page that has nothing on screen yet cannot be seen not to
+  // have given up.
+  await page.clock.runFor(10_000);
   await expect(page.getByRole("status")).toHaveText(
     "pigy cannot reach its server. Signing in takes a connection.",
   );
@@ -320,6 +320,64 @@ test("a server that never answers is taken for one that cannot be reached, on th
   ).toBeVisible();
 });
 
+test("a device whose session has ended waits once for a server that never answers", async ({
+  ownPage: page,
+  ownEmail,
+  context,
+  isMobile,
+  baseURL,
+}) => {
+  // A session that ended with changes that were not synced: the device
+  // keeps them, and knows that the session is over.
+  const connection = await connectionOf(page);
+  await page.reload();
+  await expectSync(page, "Synced");
+  await connection.cut();
+  await writeDraft(page, isMobile, "Kept on the device");
+  await expectSync(page, "Offline · 2 changes");
+  // Closed before the session ends: left open, the window would leave for
+  // the sign-in page by itself at a moment that the test does not choose.
+  await page.close();
+  const signOut = await context.request.post("/api/auth/sign-out", {
+    headers: { Origin: new URL(baseURL ?? "").origin },
+  });
+  expect(signOut.status()).toBe(204);
+  const later = await context.newPage();
+  await later.goto("/sign-in");
+  await expect(later.getByRole("main")).toContainText("could be synced");
+
+  // The app is opened on a network that leads nowhere. It has to ask the
+  // server, because somebody may be signed in again, and shows nothing
+  // until then.
+  const server = await serverSilent(later);
+  const now = Date.now();
+  await later.clock.install({ time: now });
+  await later.clock.pauseAt(now + 1_000);
+  await later.goto("/", { waitUntil: "commit" });
+  await expect.poll(() => server.asked).toBe(1);
+
+  // The time of that question is up, and the sign-in page is there, with
+  // what it says without a connection and what the device has kept. It
+  // has not put the same question again, to wait as long once more with
+  // nothing on screen.
+  await later.clock.runFor(10_000);
+  await expect(later.getByRole("status")).toHaveText(
+    "pigy cannot reach its server. Signing in takes a connection.",
+  );
+  await expect(later.getByRole("main")).toContainText(
+    `2 changes made on this device as ${ownEmail} could be synced`,
+  );
+  expect(server.asked).toBe(1);
+
+  // Whoever tries again does ask.
+  server.answer();
+  await later.getByRole("button", { name: "Try again" }).click();
+  await expect(
+    later.getByRole("link", { name: "Sign in with Google" }),
+  ).toBeVisible();
+  expect(server.asked).toBe(2);
+});
+
 test("a question about the session that is never answered does not keep the app from asking again", async ({
   signedInPage: page,
 }) => {
@@ -333,7 +391,8 @@ test("a question about the session that is never answered does not keep the app 
   // question is open.
   await page.goto("/");
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Drafts");
-  expect(server.asked).toBe(1);
+  // The route counts a question a moment after the page has asked it.
+  await expect.poll(() => server.asked).toBe(1);
 
   // While the question is open, another navigation asks no second one,
   // also not after the pause that the app keeps between two questions.

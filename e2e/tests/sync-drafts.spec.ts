@@ -8,11 +8,12 @@ import {
   expectSync,
   holdStorage,
   localData,
+  openScreen,
   selectionOf,
   syncSockets,
   writeDraft,
 } from "../app.ts";
-import { expect, signIn, test } from "../fixtures.ts";
+import { adminEmail, expect, type Page, signIn, test } from "../fixtures.ts";
 
 // The drafts of one person on several devices and in several tabs, with
 // and without a connection. What the server and the client say to each
@@ -460,6 +461,27 @@ test("signing out with changes that are not synced asks first", async ({
   expect(await localData(page)).toEqual({ copies: [], session: null });
 });
 
+/**
+ * Ends the session of `page` without the app having a say, as when it runs
+ * out: the request is not the app's, and does not pass through what a test
+ * has cut.
+ */
+async function endSessionOf(page: Page, baseURL: string | undefined) {
+  const signOut = await page.request.post("/api/auth/sign-out", {
+    headers: { Origin: new URL(baseURL ?? "").origin },
+  });
+  expect(signOut.status()).toBe(204);
+}
+
+/**
+ * How long a test waits for what a window does after its session has
+ * ended, in milliseconds: the window connects again, asks the server,
+ * waits two seconds before it says that it is waiting, and its store tries
+ * every five seconds to save what it could not. Each is a few seconds, and
+ * together they are more than the five that an assertion has by default.
+ */
+const timeout = 20_000;
+
 test("changes that were not synced survive the end of a session", async ({
   ownPage: page,
   ownEmail,
@@ -532,20 +554,24 @@ test("a session that ends waits for a change that is still being written, and ke
   await draftRow(page, "Written while signed in").click();
   await editor(page).fill("Finished as the session ended");
 
-  const signOut = await page.request.post("/api/auth/sign-out", {
-    headers: { Origin: new URL(baseURL ?? "").origin },
-  });
-  expect(signOut.status()).toBe(204);
+  await endSessionOf(page, baseURL);
   // The server refuses the socket, the app asks why and hears that the
   // session is over.
   await connection.restore();
 
   // It does not leave: the change would be lost with the page. After the
-  // moment that a write usually takes, it says so, over the app.
+  // moment that a write usually takes, it says so, over the app. That is
+  // two seconds after the app has connected again and asked the server.
   const dialog = page.getByRole("alertdialog");
-  await expect(dialog).toContainText("You have been signed out");
+  await expect(dialog).toContainText("You have been signed out", { timeout });
   await expect(dialog).toContainText("has not finished saving");
   expect(new URL(page.url()).pathname).not.toBe("/sign-in");
+  // For the whole of its wait the window says to the others that it
+  // needs the copies, with the Web Lock that a sign-in page looks for
+  // before it deletes them: also now, when no write has failed and the
+  // window counts no change as not saved.
+  const { held = [] } = await page.evaluate(() => navigator.locks.query());
+  expect(held.map(({ name }) => name)).toContain("pigy/unsaved");
 
   // The write goes through, and the window leaves by itself. The change
   // is in the copy, which is kept for it: one change, the text.
@@ -577,20 +603,21 @@ test("a session that ends does not go without a change that could not be saved u
   await draftRow(page, "Written while there was room").click();
   await editor(page).fill("Written with no room left");
   await expectSync(page, "Not saved · 1 change");
+  // The clock of the page is the test's from here on. It goes on running,
+  // and the test can move it far.
+  await page.clock.install();
 
-  const signOut = await page.request.post("/api/auth/sign-out", {
-    headers: { Origin: new URL(baseURL ?? "").origin },
-  });
-  expect(signOut.status()).toBe(204);
+  await endSessionOf(page, baseURL);
   await connection.restore();
 
   // The window stays, and says what is at stake.
   const dialog = page.getByRole("alertdialog");
-  await expect(dialog).toContainText("You have been signed out");
+  await expect(dialog).toContainText("You have been signed out", { timeout });
   await expect(dialog).toContainText("could not save 1 change on this device");
-  // Well after the app has begun to wait, it is still there: no time
-  // that runs out decides for the person.
-  await page.waitForTimeout(3_000);
+  // An hour on it is still there: no time that runs out decides for the
+  // person. The store has tried to save the change again all the while.
+  await page.clock.runFor("01:00:00");
+  await expect(dialog).toContainText("could not save 1 change on this device");
   expect(new URL(page.url()).pathname).not.toBe("/sign-in");
 
   // The person lets the change go. The app has asked, so the browser does
@@ -608,59 +635,482 @@ test("a session that ends does not go without a change that could not be saved u
   // Nothing was kept, and the page does not say that anything was.
   await expect(page.getByText("could be synced")).toHaveCount(0);
   expect(asked).toBe(false);
+  // The copies were kept for this window while it waited, with nothing in
+  // them that the server has not got. Nothing needs them now, and they
+  // are gone, with who was signed in.
+  await expect
+    .poll(() => localData(page))
+    .toEqual({ copies: [], session: null });
 });
 
-test("another tab of a session that has ended saves its change before it starts again", async ({
-  ownPage: first,
-  ownEmail,
-  context,
+test("the way out of a window whose session has ended works again when the page did not leave", async ({
+  ownPage: page,
   isMobile,
   baseURL,
 }) => {
+  const connection = await connectionOf(page);
+  await page.reload();
+  await writeDraft(page, isMobile, "Written while there was room");
+  await expectSync(page, "Synced");
+  await connection.cut();
+  await breakStorage(page);
+  await draftRow(page, "Written while there was room").click();
+  await editor(page).fill("Written with no room left");
+  await expectSync(page, "Not saved · 1 change");
+  await endSessionOf(page, baseURL);
+  await connection.restore();
+  const dialog = page.getByRole("alertdialog");
+  await expect(dialog).toContainText("You have been signed out", { timeout });
+
+  // Something keeps the page from leaving: here a question of the browser
+  // that the test has it ask, in the place of whatever does that on a
+  // device in trouble, and that the person answers with "stay".
+  await page.evaluate(() =>
+    window.addEventListener("beforeunload", (event) => event.preventDefault()),
+  );
+  const answers = ["dismiss", "accept"] as const;
+  let questions = 0;
+  page.on("dialog", (question) => {
+    void question[answers[questions] ?? "accept"]();
+    questions += 1;
+  });
+  const leave = dialog.getByRole("button", { name: "Lose them and sign in" });
+  await leave.click();
+  await expect.poll(() => questions).toBe(1);
+
+  // The page is still there, under a dialog that cannot be closed, so its
+  // one button has to work again, a few seconds later. Pressed again, it
+  // leaves.
+  await expect(leave).toBeEnabled({ timeout });
+  expect(new URL(page.url()).pathname).not.toBe("/sign-in");
+  await leave.click();
+  await expect(page).toHaveURL(/^[^?]*\/sign-in/);
+  expect(questions).toBe(2);
+});
+
+/**
+ * Two tabs of `ownPage`'s person, for the tests of a session that ends
+ * while one of them holds a change that it could not store. `first` holds
+ * the socket and nothing else. `second` holds a change to the one draft,
+ * which its device has no room for. `connection` is that of `first`.
+ */
+async function twoTabs(first: Page, isMobile: boolean) {
   const connection = await connectionOf(first);
   await first.reload();
   await writeDraft(first, isMobile, "Written while there was room");
   await expectSync(first, "Synced");
-  // The second tab asks the server who is signed in as it starts, while
-  // the session is good, and is not navigated after that: it hears that
-  // the session is over from the first tab and not from the server.
-  const second = await context.newPage();
+  const second = await first.context().newPage();
   await second.goto("/");
   const storage = await breakStorage(second);
   await draftRow(second, "Written while there was room").click();
   await editor(second).fill("Written in the second tab");
   await expectSync(second, "Not saved · 1 change");
+  return { connection, second, storage };
+}
+
+test("another tab of a session that has ended saves its change before it starts again", async ({
+  ownPage: first,
+  ownEmail,
+  isMobile,
+  baseURL,
+}) => {
+  const { connection, second, storage } = await twoTabs(first, isMobile);
+  // The second tab cannot ask the server from here on. It asked who is
+  // signed in as it started, while the session was good. Left to itself
+  // it would ask again now: the first tab says on the channel between the
+  // tabs that the socket was refused, and each tab asks why. So what
+  // moves the second tab in this test is what the first one stores on the
+  // device, the session that is over, and nothing else.
+  await second.route("**/api/**", (route) => route.abort());
 
   await connection.cut();
-  const signOut = await first.request.post("/api/auth/sign-out", {
-    headers: { Origin: new URL(baseURL ?? "").origin },
-  });
-  expect(signOut.status()).toBe(204);
+  await endSessionOf(first, baseURL);
   await connection.restore();
 
   // The first tab holds nothing, and leaves. The copy on the device holds
   // nothing that the server has not got either, and is kept all the same,
-  // for the second tab, without a word about changes that are not in it.
+  // for the second tab. The page says nothing of changes in the copy, and
+  // says what the other window holds.
   await expect(first).toHaveURL(/^[^?]*\/sign-in/);
   await expect(
     first.getByRole("link", { name: "Sign in with Google" }),
   ).toBeVisible();
   await expect(first.getByText("could be synced")).toHaveCount(0);
+  await expect(first.getByRole("main")).toContainText(
+    "Another window of pigy holds 1 change",
+  );
   expect((await localData(first)).copies).not.toEqual([]);
 
   // The second tab has heard, and stays for its change.
   const dialog = second.getByRole("alertdialog");
-  await expect(dialog).toContainText("You have been signed out");
+  await expect(dialog).toContainText("You have been signed out", { timeout });
   await expect(dialog).toContainText("could not save 1 change on this device");
 
-  // There is room again. The store tries every few seconds, the change is
-  // in the copy, and the tab starts again: on the sign-in page, which
-  // says what is kept.
+  // There is room again, and the server can be asked again, which the
+  // page that the tab starts again as does. The store tries every few
+  // seconds, the change is in the copy, and the tab starts again: on the
+  // sign-in page, which says what is kept.
+  await second.unroute("**/api/**");
   await storage.repair();
-  await expect(second).toHaveURL(/^[^?]*\/sign-in/, { timeout: 15_000 });
+  await expect(second).toHaveURL(/^[^?]*\/sign-in/, { timeout });
   await expect(second.getByRole("main")).toContainText(
     `1 change made on this device as ${ownEmail} could be synced`,
   );
+});
+
+test("two tabs that find out at once that the session has ended: the one that waits can still be told to go", async ({
+  ownPage: first,
+  isMobile,
+  baseURL,
+}) => {
+  const { connection, second } = await twoTabs(first, isMobile);
+  await connection.cut();
+  await endSessionOf(first, baseURL);
+  // The first tab's socket is refused, it says so to the second, and both
+  // ask the server at the same moment and hear the same.
+  await connection.restore();
+
+  // The first has nothing to wait for and ends the session on the device.
+  await expect(first).toHaveURL(/^[^?]*\/sign-in/);
+  await expect(
+    first.getByRole("link", { name: "Sign in with Google" }),
+  ).toBeVisible();
+  const dialog = second.getByRole("alertdialog");
+  await expect(dialog).toContainText("You have been signed out", { timeout });
+
+  // The person lets the change of the second go. That holds whatever the
+  // first tab has done to the session meanwhile: the browser asks nothing,
+  // and if it did, and the person stayed, the tab would be stuck under a
+  // dialog whose only button is spent.
+  let asked = false;
+  second.on("dialog", (question) => {
+    asked = true;
+    void question.dismiss();
+  });
+  await dialog.getByRole("button", { name: "Lose them and sign in" }).click();
+  await expect(second).toHaveURL(/^[^?]*\/sign-in/);
+  await expect(
+    second.getByRole("link", { name: "Sign in with Google" }),
+  ).toBeVisible();
+  expect(asked).toBe(false);
+  // No window needs the copies any more, and they hold nothing that the
+  // server has not got.
+  await expect
+    .poll(() => localData(second))
+    .toEqual({ copies: [], session: null });
+});
+
+test("copies that were kept for a window go when that window is closed", async ({
+  ownPage: first,
+  isMobile,
+  baseURL,
+}) => {
+  const { connection, second } = await twoTabs(first, isMobile);
+  await connection.cut();
+  await endSessionOf(first, baseURL);
+  await connection.restore();
+  await expect(first).toHaveURL(/^[^?]*\/sign-in/);
+  await expect(first.getByRole("main")).toContainText(
+    "Another window of pigy holds 1 change",
+  );
+  expect((await localData(first)).copies).not.toEqual([]);
+
+  // The person closes the window that was waiting, and its change is
+  // gone with it. Playwright closes a page without the browser's question.
+  await second.close();
+
+  // The copies hold only what the server has, and nothing waits for them.
+  // The next time somebody is at the sign-in page, they go.
+  await first.reload();
+  await expect(
+    first.getByRole("link", { name: "Sign in with Google" }),
+  ).toBeVisible();
+  await expect(first.getByText("Another window")).toHaveCount(0);
+  await expect
+    .poll(() => localData(first))
+    .toEqual({ copies: [], session: null });
+});
+
+test("deleting what was kept counts what another window could not save, which goes too", async ({
+  ownPage: first,
+  ownEmail,
+  isMobile,
+  baseURL,
+}) => {
+  const { connection, second } = await twoTabs(first, isMobile);
+  await connection.cut();
+  // Two changes that the first tab stores and cannot send: a draft and
+  // its text. With the one that the second tab could not store, three
+  // are on this device and nowhere else.
+  await writeDraft(first, isMobile, "Stored and not sent");
+  await expectSync(first, "Offline · 2 changes");
+  await endSessionOf(first, baseURL);
+  await connection.restore();
+
+  await expect(first).toHaveURL(/^[^?]*\/sign-in/);
+  const main = first.getByRole("main");
+  await expect(main).toContainText(
+    `2 changes made on this device as ${ownEmail} could be synced`,
+  );
+  await expect(main).toContainText("Another window of pigy holds 1 change");
+  const waiting = second.getByRole("alertdialog");
+  await expect(waiting).toContainText("You have been signed out", { timeout });
+
+  // The question names all of them: deleting starts the other window
+  // again, and what it holds is lost with that.
+  await first.getByRole("button", { name: "Delete these changes" }).click();
+  const dialog = first.getByRole("alertdialog");
+  await expect(dialog).toContainText("Delete 3 changes?");
+  await dialog.getByRole("button", { name: "Delete" }).click();
+
+  await expect(first.getByText("could be synced")).toHaveCount(0);
+  await expect(first.getByText("Another window")).toHaveCount(0);
+  await expect(second).toHaveURL(/^[^?]*\/sign-in/);
+  await expect
+    .poll(() => localData(first))
+    .toEqual({ copies: [], session: null });
+});
+
+test("a window that waits after its session has ended follows the same person signing in again", async ({
+  ownPage: page,
+  ownEmail,
+  context,
+  otherDevice,
+  isMobile,
+  baseURL,
+}) => {
+  // Three sign-ins and the waits of a session that ends.
+  test.slow();
+  const connection = await connectionOf(page);
+  await page.reload();
+  await writeDraft(page, isMobile, "Written while there was room");
+  await expectSync(page, "Synced");
+  await connection.cut();
+  const storage = await breakStorage(page);
+  await draftRow(page, "Written while there was room").click();
+  await editor(page).fill("Kept through a second sign-in");
+  await expectSync(page, "Not saved · 1 change");
+  await endSessionOf(page, baseURL);
+  await connection.restore();
+  const dialog = page.getByRole("alertdialog");
+  await expect(dialog).toContainText("You have been signed out", { timeout });
+
+  // The person signs in again, in another tab, while this one waits.
+  const again = await context.newPage();
+  await signIn(again, ownEmail);
+  await expect(again.getByRole("heading", { level: 1 })).toHaveText("Drafts");
+  // To tell whether that tab is ever started again from here on.
+  await again.evaluate(() => Object.assign(window, { sameLoad: true }));
+  // The waiting tab is not moved by that: its change is still not saved.
+  await expect(dialog).toContainText("could not save 1 change on this device");
+  const visited: string[] = [];
+  page.on("framenavigated", (frame) => {
+    if (frame === page.mainFrame()) visited.push(new URL(frame.url()).pathname);
+  });
+
+  // There is room again. The change is stored, and the wait is over. What
+  // the tab found out before it is no longer true: a session is good. It
+  // starts again as that session and ends nothing.
+  await storage.repair();
+  await expect(dialog).toHaveCount(0, { timeout });
+  await expectSync(page, "Synced");
+  await expect(editor(page)).toHaveValue("Kept through a second sign-in");
+  // It has not been to the sign-in page, which is where a tab goes that
+  // takes the session for over.
+  expect(visited).not.toContain("/sign-in");
+  // And the tab in which the person signed in was left alone: it would
+  // have started again if the session on the device had been ended under
+  // it, or taken away.
+  expect(
+    await again.evaluate(() => "sameLoad" in window),
+    "the other tab was not started again",
+  ).toBe(true);
+  expect(JSON.parse((await localData(again)).session ?? "{}").ended).toBe(
+    false,
+  );
+  // The change has reached the server.
+  const other = await otherDevice();
+  await expect(draftRow(other, "Kept through a second sign-in")).toBeVisible();
+});
+
+test("a window that waits after its session has ended makes way for somebody else, and ends nothing of theirs", async ({
+  ownPage: page,
+  context,
+  isMobile,
+  baseURL,
+}) => {
+  // Three sign-ins and the waits of a session that ends.
+  test.slow();
+  const connection = await connectionOf(page);
+  await page.reload();
+  await writeDraft(page, isMobile, "Written while there was room");
+  await expectSync(page, "Synced");
+  await connection.cut();
+  await breakStorage(page);
+  await draftRow(page, "Written while there was room").click();
+  await editor(page).fill("Nobody else is to see this");
+  await expectSync(page, "Not saved · 1 change");
+  await endSessionOf(page, baseURL);
+  await connection.restore();
+  const dialog = page.getByRole("alertdialog");
+  await expect(dialog).toContainText("You have been signed out", { timeout });
+  const visited: string[] = [];
+  page.on("framenavigated", (frame) => {
+    if (frame === page.mainFrame()) visited.push(new URL(frame.url()).pathname);
+  });
+  // The tab would have the browser ask before it goes with such a
+  // change. Nobody is asked for somebody else's sake.
+  let asked = false;
+  page.on("dialog", (question) => {
+    asked = true;
+    void question.accept();
+  });
+
+  // Somebody else signs in on the device, in another tab. The admin, who
+  // is invited in every run, and of whom this test changes nothing.
+  const theirs = await context.newPage();
+  await signIn(theirs, adminEmail);
+  await expect(theirs.getByRole("heading", { level: 1 })).toHaveText("Drafts");
+  await theirs.evaluate(() => Object.assign(window, { sameLoad: true }));
+
+  // The waiting tab starts again at once, as them, without its change.
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Drafts");
+  await expect(draftRow(page, "Nobody else is to see this")).toHaveCount(0);
+  await expect(draftRow(page, "Written while there was room")).toHaveCount(0);
+  expect(asked).toBe(false);
+  // It left once, by loading itself again, and not a second time for the
+  // sign-in page, as a tab does that goes on to end the session it had
+  // found over: that session is no longer the one on the device.
+  expect(visited).not.toContain("/sign-in");
+  // Their session and their copies were not touched: the tab in which
+  // they signed in was never started again, and the device still holds
+  // them as signed in, with copies of theirs and nobody else's.
+  expect(
+    await theirs.evaluate(() => "sameLoad" in window),
+    "the tab of the other person was not started again",
+  ).toBe(true);
+  const held = await localData(theirs);
+  const session = JSON.parse(held.session ?? "{}");
+  expect(session.me.user.email).toBe(adminEmail);
+  expect(session.ended).toBe(false);
+  expect(held.copies).not.toEqual([]);
+  for (const copy of held.copies) {
+    expect(copy.startsWith(`pigy/${session.me.user.id}/`)).toBe(true);
+  }
+});
+
+test("a window that learns over HTTP that its session has ended closes its socket, and sends nothing of what it then stores", async ({
+  ownPage: page,
+  ownEmail,
+  isMobile,
+  baseURL,
+}) => {
+  // Every sync socket of the page, with what the page sends on it and
+  // whether the page has closed it. The server goes on serving a socket
+  // that was open when a session ended, for minutes: SYNC.md section 2.
+  const sockets: { sent: string[]; closed: boolean }[] = [];
+  await page.routeWebSocket(/\/sync\//, (socket) => {
+    const record = { sent: [] as string[], closed: false };
+    sockets.push(record);
+    const server = socket.connectToServer();
+    socket.onMessage((message) => {
+      record.sent.push(String(message));
+      server.send(message);
+    });
+    socket.onClose(() => {
+      record.closed = true;
+      void server.close();
+    });
+  });
+  await page.reload();
+  await writeDraft(page, isMobile, "Written while signed in");
+  await expectSync(page, "Synced");
+  expect(sockets).toHaveLength(1);
+
+  // The device is slow: the next change is in this window and on its way
+  // to the disk, and nothing has failed.
+  const storage = await holdStorage(page);
+  await draftRow(page, "Written while signed in").click();
+  await editor(page).fill("Stored after the session ended");
+  await backToList(page, isMobile);
+
+  // The session ends, and the socket of the page is as open as before:
+  // nothing was cut. The page finds out with the question that a
+  // navigation asks, over HTTP.
+  await endSessionOf(page, baseURL);
+  await openScreen(page, "Queue");
+  const dialog = page.getByRole("alertdialog");
+  await expect(dialog).toContainText("You have been signed out", { timeout });
+  await expect(dialog).toContainText("has not finished saving");
+
+  // It has closed the socket, and opened no other.
+  await expect.poll(() => sockets.map(({ closed }) => closed)).toEqual([true]);
+
+  // The write goes through. The change is in the copy and the window
+  // leaves. Nothing of it was sent on the way: it waits on the device for
+  // the person to sign in again.
+  await storage.release();
+  await expect(page).toHaveURL(/^[^?]*\/sign-in\?returnTo=/);
+  await expect(page.getByRole("main")).toContainText(
+    `1 change made on this device as ${ownEmail} could be synced`,
+  );
+  expect(sockets).toHaveLength(1);
+  expect(
+    sockets[0]?.sent.filter((message) =>
+      message.includes("Stored after the session ended"),
+    ),
+  ).toEqual([]);
+});
+
+test("a tab that is opened while another waits after the session has ended does not show the workspace, and leaves the copies to the one that waits", async ({
+  ownPage: page,
+  context,
+  isMobile,
+  baseURL,
+}) => {
+  const connection = await connectionOf(page);
+  await page.reload();
+  await writeDraft(page, isMobile, "Written while there was room");
+  await expectSync(page, "Synced");
+  await connection.cut();
+  await breakStorage(page);
+  await draftRow(page, "Written while there was room").click();
+  await editor(page).fill("Written with no room left");
+  await expectSync(page, "Not saved · 1 change");
+  await endSessionOf(page, baseURL);
+  await connection.restore();
+  const dialog = page.getByRole("alertdialog");
+  await expect(dialog).toContainText("You have been signed out", { timeout });
+
+  // A new tab, on a device that cannot reach the server just now. The
+  // device knows that the session is over, although the window that
+  // found out is still there. So the tab does not start from the copy, as
+  // it would for a session that the device takes to be good: it would
+  // show the workspace, and take changes, for as long as the server is
+  // out of reach.
+  const opened = await context.newPage();
+  await opened.route("**/api/**", (route) => route.abort());
+  await opened.goto("/");
+  await expect(opened).toHaveURL("/sign-in");
+  await expect(opened.getByRole("status")).toHaveText(
+    "pigy cannot reach its server. Signing in takes a connection.",
+  );
+
+  // The server can be reached again. The sign-in page hears that nobody
+  // is signed in and decides what becomes of the copies. They hold
+  // nothing that the server has not got, and they stay, for the window
+  // that waits.
+  await opened.unroute("**/api/**");
+  await opened.getByRole("button", { name: "Try again" }).click();
+  await expect(
+    opened.getByRole("link", { name: "Sign in with Google" }),
+  ).toBeVisible();
+  await expect(opened.getByRole("main")).toContainText(
+    "Another window of pigy holds 1 change",
+  );
+  expect((await localData(opened)).copies).not.toEqual([]);
+  await expect(dialog).toContainText("could not save 1 change on this device");
 });
 
 test("changes that were kept after a session ended can be deleted", async ({
