@@ -6,6 +6,7 @@ import {
   type TargetStatus,
 } from "@pigy/core";
 import { type Channel, selectChannels } from "@/lib/channels";
+import { networkInfo } from "@/lib/networks";
 
 /**
  * What the Sent screen shows: the posts that were published, or are on
@@ -179,7 +180,9 @@ export function targetExplanation(target: SentTarget): string | null {
     case "queued":
       return "Waits its turn: posts to one account go out one after the other.";
     case "uncertain":
-      return "pigy cannot tell whether this post reached the account. Look at the account first: if the post is there, do not try again, or it is posted twice.";
+      return target.channel && networkInfo[target.channel.network].cannotLook
+        ? `pigy cannot tell whether this post reached the account, and ${networkInfo[target.channel.network].label} gives it no way to look. Look at the account first: if the post is there, do not try again, or it may be posted twice.`
+        : "pigy cannot tell whether this post reached the account. Look at the account first: if the post is there, do not try again, or it is posted twice.";
     default:
       return null;
   }

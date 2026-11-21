@@ -22,8 +22,8 @@ import {
   faultKind,
   faultOperation,
   firstNetwork,
+  makesWait,
   offeredOperations,
-  waitingKinds,
   waitNote,
 } from "@/lib/simulator";
 import { useSynced } from "@/sync/react";
@@ -184,7 +184,7 @@ function ArmForm({
       if (!armed) return;
       setSaid({
         tone: "good",
-        text: `Armed: ${faultKind(kind).label}, on ${networkInfo[network].label}, for ${faultOperation(operation === "" ? null : operation).toLowerCase()}.`,
+        text: `Armed: ${faultKind(kind, network).label}, on ${networkInfo[network].label}, for ${faultOperation(operation === "" ? null : operation).toLowerCase()}.`,
       });
     } catch (error) {
       checkSignedOut(error);
@@ -231,7 +231,7 @@ function ArmForm({
       <fieldset className="flex flex-col gap-2">
         <legend className="mb-1.5 font-medium">What goes wrong</legend>
         {kinds.map((name) => {
-          const words = faultKind(name);
+          const words = faultKind(name, network);
           return (
             <div key={name} className="flex items-start gap-2">
               <input
@@ -289,7 +289,7 @@ function ArmForm({
         </p>
       </div>
 
-      {kind && waitingKinds.has(kind) && (
+      {kind && network && makesWait(kind, network) && (
         <p className="flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-800 dark:text-amber-300">
           <TriangleAlert
             aria-hidden="true"

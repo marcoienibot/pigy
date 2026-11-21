@@ -7,7 +7,12 @@ import {
   tablesOf,
   target,
 } from "@/lib/rows.test-support";
-import { canDelete, postStatusWords, selectSent } from "@/lib/sent";
+import {
+  canDelete,
+  postStatusWords,
+  selectSent,
+  targetExplanation,
+} from "@/lib/sent";
 
 const ada = channel({ handle: "@ada@mastodon.example" });
 const grace = channel({ handle: "@grace@mastodon.example" });
@@ -197,5 +202,37 @@ describe("postStatusWords", () => {
     expect(canDelete(of("sending", ["sending"]))).toBe(false);
     expect(canDelete(of("error", ["error"]))).toBe(true);
     expect(canDelete(of("sent", ["sent"]))).toBe(true);
+  });
+});
+
+describe("targetExplanation", () => {
+  /** What the screen says under an unknown delivery to `to`. */
+  const unknownTo = (to: ReturnType<typeof channel>) => {
+    const published = post({ status: "error" });
+    const [item] = selectSent(
+      tablesOf({
+        post: [published],
+        post_part: [part(published.id)],
+        channel: [to],
+        post_target: [
+          target(published.id, to.id, { status: "uncertain", queuedAt: 1 }),
+        ],
+      }),
+    );
+    const [unknown] = item?.targets ?? [];
+    return unknown ? targetExplanation(unknown) : null;
+  };
+
+  it("says of an unknown delivery to LinkedIn that LinkedIn gives pigy no way to look, which the other networks do", () => {
+    const linkedin = channel({
+      network: "linkedin",
+      handle: "Ada Lovelace",
+      limits: { network: "linkedin", maxCharacters: 3000 },
+    });
+    expect(unknownTo(linkedin)).toContain("LinkedIn gives it no way to look");
+    // On Mastodon pigy looks itself when it can: a delivery is unknown
+    // there only when something went wrong in pigy.
+    expect(unknownTo(channel())).not.toContain("no way to look");
+    expect(unknownTo(channel())).toContain("Look at the account first");
   });
 });

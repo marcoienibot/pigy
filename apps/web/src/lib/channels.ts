@@ -1,5 +1,6 @@
 import type { ConnectOutcome, Row, Tables } from "@pigy/core";
 import { listedNetworks, networkInfo } from "@/lib/networks";
+import { dayOf } from "@/lib/time";
 
 /** A connected account, as the Channels screen shows it: its row. */
 export type Channel = Row<"channel">;
@@ -15,6 +16,23 @@ export function selectChannels(tables: Tables): Channel[] {
       a.handle.localeCompare(b.handle) ||
       (a.id < b.id ? -1 : 1),
   );
+}
+
+/**
+ * What the Channels screen says of a channel whose access ends by itself,
+ * as LinkedIn's does after 60 days, or null for one whose access lasts or
+ * is renewed. An access that has ended is said to have: the network
+ * refuses the next post, and only then does the channel say that it needs
+ * connecting again.
+ */
+export function accessEnds(
+  { expiresAt }: Pick<Channel, "expiresAt">,
+  now: number,
+): string | null {
+  if (expiresAt === null) return null;
+  return expiresAt <= now
+    ? "Its access has ended: connect the account again."
+    : `Its access ends on ${dayOf(expiresAt, now)}: connect the account again before then.`;
 }
 
 /** Whether a workspace has no channel. */
@@ -93,7 +111,11 @@ export function connectNotice(
       return {
         tone: "good",
         text: channel
-          ? `${channel.name} (${channel.handle}) is connected.`
+          ? // A network that addresses an account by its name has it said
+            // once.
+            channel.handle === channel.name
+            ? `${channel.name} is connected.`
+            : `${channel.name} (${channel.handle}) is connected.`
           : "The account is connected. It appears here as soon as this device has synced.",
       };
     case "cancelled":

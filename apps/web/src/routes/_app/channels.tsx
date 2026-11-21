@@ -42,6 +42,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { ApiError, beginConnect, disconnectChannel } from "@/lib/api";
 import {
+  accessEnds,
   type Channel,
   connectNotice,
   disconnectNotice,
@@ -59,6 +60,7 @@ import {
 } from "@/lib/networks";
 import { keepOverSwitch } from "@/lib/notices";
 import { checkSession } from "@/lib/session";
+import { useNow } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { environmentLabels, showWorkspace } from "@/lib/workspace";
 import { useSynced, useSyncState } from "@/sync/react";
@@ -256,7 +258,8 @@ function Channels() {
               ))}
               {comingNetworks.length > 0 && (
                 <p className="text-xs text-muted-foreground">
-                  {new Intl.ListFormat("en").format(comingNetworks)} are coming.
+                  {new Intl.ListFormat("en").format(comingNetworks)}{" "}
+                  {comingNetworks.length === 1 ? "is" : "are"} coming.
                 </p>
               )}
             </div>
@@ -361,6 +364,9 @@ function ChannelRow({
 }) {
   const { label } = networkInfo[channel.network];
   const broken = channel.status === "needs_reconnect";
+  const now = useNow();
+  // Not for a channel that says already that it needs connecting again.
+  const ends = broken ? null : accessEnds(channel, now);
 
   return (
     <li
@@ -389,8 +395,13 @@ function ChannelRow({
           </span>
         </div>
         <div className="truncate text-muted-foreground">
-          {label} ·{" "}
-          {channel.profileUrl ? (
+          {label}
+          {
+            // A network that addresses an account by its name has it said
+            // once, above.
+            channel.handle !== channel.name && " · "
+          }
+          {channel.handle === channel.name ? null : channel.profileUrl ? (
             <a
               href={channel.profileUrl}
               target="_blank"
@@ -403,6 +414,7 @@ function ChannelRow({
             channel.handle
           )}
         </div>
+        {ends && <div className="text-xs text-muted-foreground">{ends}</div>}
       </div>
       {broken && (
         <Button
@@ -622,6 +634,7 @@ function ConnectForm({
 }) {
   const { label, connect } = networkInfo[network];
   const asked = connect?.identifier;
+  const note = connect?.note;
   // In a sandbox there is nothing to guess: its simulated world has what
   // it has.
   const simulated =
@@ -636,10 +649,12 @@ function ConnectForm({
   const [busy, setBusy] = useState(false);
   const id = useId();
   const field = useRef<HTMLInputElement>(null);
+  const proceed = useRef<HTMLButtonElement>(null);
   // The keyboard goes where the person has something to say, so that
   // Enter goes on: also when the form takes the place of the choice of a
   // network, whose button had the focus.
-  useEffect(() => field.current?.focus(), []);
+  // A network that asks for nothing has no field: its button goes on.
+  useEffect(() => (field.current ?? proceed.current)?.focus(), []);
   // A form that goes takes its request with it: another form has taken
   // its place, the dialog is done closing, or the screen is gone.
   useEffect(() => () => attempt.current?.abort(), [attempt]);
@@ -733,6 +748,7 @@ function ConnectForm({
           </p>
         </div>
       )}
+      {note && <p className="text-muted-foreground">{note}</p>}
       {refusal && !refusal.atField && (
         <p
           role="alert"
@@ -760,7 +776,7 @@ function ConnectForm({
           <Button type="button" variant="outline" onClick={onCancel}>
             Cancel
           </Button>
-          <Button type="submit" disabled={busy || offline}>
+          <Button ref={proceed} type="submit" disabled={busy || offline}>
             {busy ? "Connecting…" : `Continue to ${label}`}
           </Button>
         </div>

@@ -1,4 +1,5 @@
 import type { Network, SandboxPost, Tables } from "@pigy/core";
+import { networkInfo } from "@/lib/networks";
 
 /**
  * What the screens of the simulator say about the simulated networks of a
@@ -39,14 +40,45 @@ const kinds: Record<string, Words> = {
 };
 
 /**
- * The kinds of fault that make the publishing workflow wait before it tries
- * again: as long as it would for real, which is a minute at least.
+ * What the same kinds do on a network where pigy can neither look for a
+ * post nor ask a second time without posting twice, `cannotLook` of
+ * lib/networks.ts: nothing is tried again that could post twice.
  */
-export const waitingKinds: ReadonlySet<string> = new Set([
+const kindsWithoutLooking: Record<string, Words> = {
+  "rate-limit": {
+    label: "Too many requests",
+    description:
+      "The network says that it has been asked too often for the day. The post fails: pigy does not wait for the next day.",
+  },
+  "server-error": {
+    label: "Server error",
+    description:
+      "The network fails with an error of its own. When it was asked to post, pigy cannot tell whether the post arrived: it does not try again, and asks you to look.",
+  },
+  "lost-response": {
+    label: "Lost answer",
+    description:
+      "The network does what it is asked, and its answer never arrives. When it was asked to post, the post is there and pigy cannot know: it does not try again, and asks you to look.",
+  },
+};
+
+// The kinds of fault that make the publishing workflow wait before it
+// tries again, on a network where pigy can look.
+const waitingKinds: ReadonlySet<string> = new Set([
   "rate-limit",
   "server-error",
   "lost-response",
 ]);
+
+/**
+ * Whether a fault of `kind` on `network` makes the publishing workflow
+ * wait before it tries again: as long as it would for real, which is a
+ * minute at least. Not on a network where pigy cannot look: there a
+ * delivery ends at once.
+ */
+export function makesWait(kind: string, network: Network): boolean {
+  return waitingKinds.has(kind) && !networkInfo[network].cannotLook;
+}
 
 /** What the panel says of a fault of a kind that makes pigy wait. */
 export const waitNote =
@@ -66,9 +98,13 @@ const operations: Record<string, string> = {
   profile: "Reading the profile",
 };
 
-/** What the fault `kind` is called and does. */
-export function faultKind(kind: string): Words {
-  return kinds[kind] ?? { label: kind, description: "" };
+/** What the fault `kind` is called, and what it does on `network`. */
+export function faultKind(kind: string, network?: Network): Words {
+  const words =
+    network && networkInfo[network].cannotLook
+      ? (kindsWithoutLooking[kind] ?? kinds[kind])
+      : kinds[kind];
+  return words ?? { label: kind, description: "" };
 }
 
 /** What the request `operation` is called, or any request for null. */

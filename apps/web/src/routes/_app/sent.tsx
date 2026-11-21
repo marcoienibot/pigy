@@ -423,6 +423,17 @@ function AccountLink({
       </Link>
     );
   }
+  // A network that gives pigy no address of the account has one where
+  // everybody finds their own posts.
+  const { label, ownPosts } = networkInfo[network];
+  if (!profileUrl && ownPosts) {
+    return (
+      <a href={ownPosts} target="_blank" rel="noreferrer" className={linkStyle}>
+        Look at your posts on {label}
+        <ExternalLink aria-hidden="true" className="size-3" />
+      </a>
+    );
+  }
   if (!profileUrl) return null;
   return (
     <a href={profileUrl} target="_blank" rel="noreferrer" className={linkStyle}>

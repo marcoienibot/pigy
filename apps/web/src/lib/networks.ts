@@ -28,11 +28,29 @@ type NetworkInfo = {
       of(channel: Row<"channel">): string;
     };
     /**
+     * What a person should know before they connect, said in the form:
+     * something of the network's own that is not about what they type.
+     */
+    note?: string;
+    /**
      * Where in the settings of an account its owner ends the access of an
      * app, for when pigy could not give its access back.
      */
     revoke: string;
   };
+  /**
+   * Where a person finds what their own account has posted, on a network
+   * that gives pigy no address of the account: where to look when pigy
+   * cannot tell whether a post arrived.
+   */
+  ownPosts?: string;
+  /**
+   * pigy can neither look for a post on this network nor ask it a second
+   * time without posting twice, so a request to post that ends without a
+   * clear answer is not tried again: the delivery is unknown at once, and
+   * a person looks. PLAN.md section 8.
+   */
+  cannotLook?: true;
 };
 
 export const networkInfo: Record<Network, NetworkInfo> = {
@@ -65,7 +83,20 @@ export const networkInfo: Record<Network, NetworkInfo> = {
         "the apps of the account at bsky.social/account, for an account on Bluesky's own servers",
     },
   },
-  linkedin: { label: "LinkedIn" },
+  linkedin: {
+    label: "LinkedIn",
+    // One place to sign in: nothing to type.
+    connect: {
+      note: "LinkedIn gives its access for 60 days. After that the account has to be connected again, which takes a moment.",
+      // GUESS: where LinkedIn lists the apps that a member has let in. A
+      // live run has to confirm it, PLAN.md section 19.
+      revoke: "Settings & Privacy → Data privacy → Permitted services",
+    },
+    // GUESS: the address at which LinkedIn shows the member who is signed
+    // in what they have posted. PLAN.md section 19.
+    ownPosts: "https://www.linkedin.com/in/me/recent-activity/all/",
+    cannotLook: true,
+  },
   threads: { label: "Threads" },
 };
 

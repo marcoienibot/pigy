@@ -11,6 +11,7 @@ import {
   chainOf,
   faultKind,
   firstNetwork,
+  makesWait,
   offeredOperations,
   selectDeliveries,
   selectSending,
@@ -50,6 +51,30 @@ describe("the failure panel", () => {
   it("starts with a network that the sandbox has an account of", () => {
     expect(firstNetwork(["mastodon", "bluesky"], ["bluesky"])).toBe("bluesky");
     expect(firstNetwork(["mastodon", "bluesky"], [])).toBe("mastodon");
+  });
+
+  it("says of a fault on LinkedIn what pigy does there, where it cannot look for a post", () => {
+    // On Mastodon pigy waits and tries again, and finds a post whose
+    // answer was lost. On LinkedIn it does neither.
+    expect(faultKind("lost-response", "mastodon").description).toContain(
+      "finds the post there",
+    );
+    for (const kind of ["lost-response", "server-error"]) {
+      expect(faultKind(kind, "linkedin").description).toContain(
+        "does not try again, and asks you to look",
+      );
+      expect(makesWait(kind, "linkedin")).toBe(false);
+      expect(makesWait(kind, "mastodon")).toBe(true);
+    }
+    // The same kind under the same name on both.
+    expect(faultKind("lost-response", "linkedin").label).toBe(
+      faultKind("lost-response", "mastodon").label,
+    );
+    // A fault that ends a delivery at once makes nobody wait anywhere.
+    expect(makesWait("token-revoked", "mastodon")).toBe(false);
+    expect(faultKind("token-revoked", "linkedin")).toEqual(
+      faultKind("token-revoked", "mastodon"),
+    );
   });
 
   it("shows a kind of fault that it has no words for by its name", () => {

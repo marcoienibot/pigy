@@ -161,7 +161,13 @@ function Feeds() {
                 return (
                   <li key={account.id}>
                     <section
-                      aria-label={`${account.name} ${account.handle}`}
+                      aria-label={
+                        // A network that addresses an account by its name
+                        // has it said once.
+                        account.handle === account.name
+                          ? account.name
+                          : `${account.name} ${account.handle}`
+                      }
                       aria-current={isWanted || undefined}
                       tabIndex={-1}
                       className={cn(
@@ -175,9 +181,11 @@ function Feeds() {
                           <div className="truncate font-medium">
                             {account.name}
                           </div>
-                          <div className="truncate text-xs text-muted-foreground">
-                            {account.handle}
-                          </div>
+                          {account.handle !== account.name && (
+                            <div className="truncate text-xs text-muted-foreground">
+                              {account.handle}
+                            </div>
+                          )}
                         </div>
                         {connected.has(`${name} ${account.handle}`) && (
                           <span className="shrink-0 text-xs text-muted-foreground">

@@ -22,10 +22,7 @@ export function timeAgo(time: number, now: number): string {
   if (ago < hour) return `${Math.floor(ago / minute)}m`;
   if (ago < day) return `${Math.floor(ago / hour)}h`;
   if (ago < 7 * day) return `${Math.floor(ago / day)}d`;
-  const date = new Date(time);
-  return date.getFullYear() === new Date(now).getFullYear()
-    ? dayAndMonth.format(date)
-    : dayMonthAndYear.format(date);
+  return dayOf(time, now);
 }
 
 /**
@@ -38,6 +35,17 @@ export function whenAgo(time: number, now: number): string {
   if (ago < minute) return "just now";
   if (ago < 7 * day) return `${timeAgo(time, now)} ago`;
   return `on ${timeAgo(time, now)}`;
+}
+
+/**
+ * The day of `time`, in the words of the device, with its year where
+ * that is not the year of `now`: "14 Jan", "14 Jan 2027".
+ */
+export function dayOf(time: number, now: number): string {
+  const date = new Date(time);
+  return date.getFullYear() === new Date(now).getFullYear()
+    ? dayAndMonth.format(date)
+    : dayMonthAndYear.format(date);
 }
 
 /** The time, to the minute: the component renders again when it changes. */
