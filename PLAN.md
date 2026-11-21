@@ -40,7 +40,7 @@ pigy is an invite-only web app for writing a post once and publishing it to Link
 - **Channel**: a connected social account. This is Buffer's term.
 - **Post**: one piece of content, made of one or more parts.
 - **Part**: one item of a thread. An ordinary post has a single part.
-- **Target**: the delivery of a post to one channel. It has its own status, optional text override, result links and stats.
+- **Target**: the delivery of a post to one channel. It has its own status, optional text override, result links and stats. The override is a text of its own, with its own parts.
 
 ## 3. Architecture
 
@@ -153,9 +153,9 @@ Alternatives considered:
 | --- | --- |
 | `channel` | Network, account ID, handle, name, avatar, profile link, status, when it was connected, when to refresh the access and when it ends, sealed credentials, and the limits of the account with the time at which its network was asked for them |
 | `post` | Status, mode, due time, source (UI or API), tags, timestamps |
-| `post_part` | Ordered text of each part |
+| `post_part` | Ordered text of each part: of the post's own text, and of the text that is written for one target in its place, which names the target. Section 8 has it |
 | `part_media` | Media attached to a part, with alt text |
-| `post_target` | Post and channel, status, how often the delivery was begun, error, when it was asked for and when it was sent. Not synced: the progress that the next attempt goes on from, the attempt that has a workflow, the time of the workspace at which the delivery that is under way began, which is part of the ID of its workflow, and whether an attempt of the delivery has ended without anybody knowing what became of what it sent (section 8, at the end). The override of the parts joins them in phase 4 |
+| `post_target` | Post and channel, status, how often the delivery was begun, error, when it was asked for and when it was sent. Not synced: the progress that the next attempt goes on from, the attempt that has a workflow, the time of the workspace at which the delivery that is under way began, which is part of the ID of its workflow, and whether an attempt of the delivery has ended without anybody knowing what became of what it sent (section 8, at the end). The text that a target gets in place of the post's is not here but in `post_part`, since phase 4a |
 | `target_part_result` | Remote ID and URL of each published part |
 | `media` | Kind, type, size, dimensions, duration, R2 key, processing status |
 | `schedule_slot`, `settings` | Weekly queue slots, timezone, queue paused flag |
@@ -229,6 +229,14 @@ How the four networks map onto it. Mastodon, Bluesky and LinkedIn are built. The
 | What asks for `uncertain` | Nothing | Nothing | A request to post that ends without a clear answer: none came, LinkedIn failed with a 5xx, or it took the post and did not name it | A container that is published and whose post cannot be found (to verify) |
 
 The handle of a LinkedIn account is its name: LinkedIn gives pigy no other. The time of a refresh for Threads is for its adapter to settle. How Bluesky tells a token that has expired from one that was revoked is settled: it does not tell, in a way that is documented, and does not have to. Both ask for a refresh, which renews the one and is refused for the other.
+
+What a network makes of a thread, decided in phase 4a:
+
+- **Mastodon, Bluesky and Threads post a thread as a chain of replies**, each part a post of its own that replies to the part before. Each part is counted against the limit of the network by itself.
+- **LinkedIn has no threads, and gets the parts as one post**: joined in their order, with an empty line between two parts, and nothing added, no numbers and no "continued". That one text is what LinkedIn's 3000 characters are counted against, and every part gets the same result, the one post. `validateContent` gets that rule with LinkedIn's limits, when its adapter is built: it then says of a thread that is too long as one post that it is, and by how much, and not of a part.
+- **Nothing is shortened or split by pigy.** A text that a network would refuse is said before publishing and keeps the post back. Whoever wants a network to get something else than the others writes it: the text of one account, section 8. That is also the answer for a thread that reads badly as one post.
+- **The editor says in advance what becomes of a thread.** For a chosen account of a network that joins, it says that the account gets the parts as one post. `networkInfo` in `apps/web/src/lib/networks.ts` has for each network which of the two it does.
+- **No network limits how long a chain may be**, as far as their documentation says. pigy does: a text has at most 100 parts, which keeps a row of the list and a message of the sync protocol small.
 
 What was decided along the way, and why:
 
@@ -511,7 +519,7 @@ What is left open on LinkedIn is what the network leaves open:
 The app's side of publishing, built in phase 3b-3b: the editor of a draft chooses where it goes and publishes it, and the Sent screen follows each delivery.
 
 - **Where a draft goes is chosen in its editor, and kept like its text.** Under the text, every channel of the workspace is a button. Choosing one is `target.add`, leaving it out `target.remove`: the choice is saved at once, syncs to the other devices, and stays with the draft.
-- **What a chosen account would refuse is said before publishing, and keeps the post back.** The editor checks the text with `validateContent` against the limits of each chosen channel, from its row, and so counts the way each network does: a link as 23 characters on Mastodon, graphemes and bytes on Bluesky. It says next to the choice which account refuses what. An empty text is said once, for the draft. A channel whose limits are not known yet is not checked: the server checks before it sends. Counters per network while typing, and text per network, are phase 4: the editor still counts characters as a person does.
+- **What a chosen account would refuse is said before publishing, and keeps the post back.** The editor checks the text with `validateContent` against the limits of each chosen channel, from its row, and so counts the way each network does: a link as 23 characters on Mastodon, graphemes and bytes on Bluesky. It says next to the choice which account refuses what. An empty text is said once, for the draft. A channel whose limits are not known yet is not checked: the server checks before it sends. Phase 4a added the counters while typing and the text per account, below.
 - **A channel that needs connecting again cannot be chosen**, and says so with a way to connect it again. One that was chosen before it broke stays chosen and keeps the post back until it is connected again or left out: publishing would only fail it at once.
 - **Publishing offline is publishing.** `post.publish` is a mutation like every other: the draft leaves the list at once, and the post is on the Sent screen as waiting. The editor, the notice after publishing and the Sent screen say that it goes out when the device is back online. The device cannot tell whether the server has heard of a post before it went offline, so the Sent screen says that what it shows is what the device knows.
 - **After publishing, the editor closes** and a notice leads to the post on the Sent screen. The notice is of the workspace, and leaves with it.
@@ -521,6 +529,20 @@ The app's side of publishing, built in phase 3b-3b: the editor of a draft choose
 - **"Retry" is offered where it can work**: on a delivery that failed or is unknown, whose channel is there and connected. A channel that needs connecting again offers that instead, and a delivery to a channel that is gone offers nothing, because the mutator would refuse. A delivery that is unknown asks the person to look at the account first, with a link to it: its page at the network, or its feed in the sandbox. LinkedIn gives pigy no address of an account, so there the link is to where LinkedIn shows everybody their own posts, and the text says that LinkedIn gives pigy no way to look. "Retry" stays next to it: the person decides.
 - **A post can be deleted once it has ended, and not while it is sending.** The server refuses that, so the screen does not offer it. Deleting asks first and says that the networks keep what was published. There is no undo, unlike for a draft: a post that went out cannot be made again.
 - **A published part links to where it is**: to its address at the network in a live workspace, and to its place in the feeds in the sandbox, whose posts have no address that a browser can open.
+
+Threads and text per account, built in phase 4a. `packages/core/src/sync/mutators.ts` has the mutators, SYNC.md section 4 what a client sends, and `apps/web/src/routes/_app/index.tsx` the editor:
+
+- **A draft is a list of parts, and the editor shows them one under the other.** Each part is a field that grows with its text. Under it are its counters and what can be done with it: add a part below, move it up or down, remove it. ⌘⇧↵ adds a part below from the text, ↑ and ↓ at the very edge of a part go to the part next to it, and ⌫ in an empty part removes it. A part that had text and is removed with its button can be brought back by its notice. Moving is by buttons: dragging is not built.
+- **The order of the parts is kept by the server.** A mutation says which part a part goes after, and no position. The mutator puts it there on the rows as they are when it runs and numbers the parts anew. The alternative, positions that a client computes between two neighbours, needs fractions that run out or strings to compare, and a rule for two devices that compute the same one. Here the mutations are run one after the other anyway, by the `WorkspaceDO` and by a client on its own copy, so naming the neighbour is enough: two devices that add a part at the same place both get theirs in, and no two parts ever share a place. What it costs is that a part which is added in the middle rewrites the `position` of the parts behind it, which for a thread is a handful of small rows.
+- **Counters are per part and per network, for the accounts that get the text.** With no account chosen, a part says how many characters a person would count. With accounts chosen, it says for each network among them how long the part is the way that network counts, against what the account takes: a warning from nine tenths of the limit, an error over it. Accounts with the same limits share a counter. Two Mastodon servers that take different lengths get one each, named by their accounts. An account whose limits are not known yet has no counter. What `validateContent` refuses is said next to the choice of the account, as before, and now names the part.
+- **An account can get a text of its own, as a whole.** A target either gets the post's parts or has a list of parts of its own, a thread with its own number of parts. Not an override per part: a text for Bluesky is often three parts where Mastodon has one, and an override that had to keep to the parts of the post could not say so. The parts are rows of `post_part` that name their target, so the same mutators edit both, and a result of a delivery names a part either way. "Customize for" an account begins its text as a copy of the post's, in one mutation, so that an account never has half a text and of two devices that begin one, one wins as a whole. The copy does not follow the post afterwards: what is changed in the post's text later is not changed in the copy, which is what a text of one's own means. "Use the post's text" drops it.
+- **The editor shows one text at a time**: the post's, or the one of an account, chosen above the text where the accounts with a text of their own are listed. The counters and the checks of an account go by what that account will get. An empty part of the post's own text is said once, for the draft, and only if a chosen account still gets that text. An empty part of the text of one account is said for that account.
+- **Leaving an account out drops the text that was written for it**, and a notice offers to take that back, with the text. So does disconnecting the account, without the offer.
+- **Nothing changes under a delivery.** Every mutator that edits a text refuses a post that is past being a draft, as `part.setText` did: adding, removing and moving a part, and giving an account a text or taking it away. So a delivery reads the same text in every step and in every attempt, which is what an adapter that looks for what an earlier step published compares with. The `WorkspaceDO` hands a delivery the parts of its target, the post's or its own, where it handed it the post's: nothing else in the pipeline changed.
+- **The Sent screen shows the text that went to an account with its own**, under that account. The post is listed by its own text.
+- **A deleted draft comes back whole.** Undo makes a new post with the parts of the deleted one in their order, chooses its accounts again and gives each the text that it had, with the mutators that made them. Section 19 had asked whether that would need a mutator of its own, and it does not yet.
+
+Left for phase 4b: link cards, and mentions and hashtags marked up for each network. They are in the adapters, which 4a did not touch.
 
 ## 9. Scheduling and queue
 
@@ -679,6 +701,8 @@ Phase 3 is built in steps too. 3a is in the packages only: the provider interfac
 
 Then Bluesky, LinkedIn and Threads follow, each the way Mastodon was built. 3c is Bluesky, in the packages and the Worker, and offered on the Channels screen: section 6 has what was decided. Its live run is still to be made, section 19. 3d is LinkedIn, for members and for text, the same way, and with it what the pipeline needed for a network on which a step must not be run twice: sections 6 and 8. Its live run is still to be made too.
 
+Phase 4 is built in two steps. 4a is the editor and the data: the mutators that make a thread, the counters per network under each part, and the text that one account gets in place of the post's, which the pipeline publishes. Sections 6 and 8 have what was decided. 4b is what the adapters do with a text: link cards, and mentions and hashtags marked up for each network.
+
 Until deployment is set up in phase 11, every phase is built and verified locally against the simulated networks. Connecting real networks and installing on a phone need the deployed address.
 
 Usable milestones:
@@ -709,7 +733,7 @@ Mastodon and Bluesky need no developer registration. VAPID keys, the Bluesky cli
 | Risk | Mitigation |
 | --- | --- |
 | The client store is our own code, where a library would have had other users to find its bugs | It is small, and its rules are those of SYNC.md, which are tested one by one in `packages/core` and against the real workspace object. Section 4 says why it is not TanStack DB |
-| A deleted post is brought back by making a new one with the same text, which is to go to the accounts that the deleted one was to go to, where they are still connected | Enough while a draft is its text and its targets, which the client puts back with the mutators that made them. From phase 4 a post has more than a client can put back by hand, such as several parts, media and a place in the queue: undo then needs a mutator of its own, or deletion that waits |
+| A deleted post is brought back by making a new one with the same text, which is to go to the accounts that the deleted one was to go to, where they are still connected | Enough while a draft is its parts, its targets and the texts of single accounts, which the client puts back with the mutators that made them: phase 4a does so for a thread. The new post has other IDs, and a text of one account that is longer than 40,000 characters, which one mutation does not carry, comes back as the post's. Media and a place in the queue are more than a client can put back by hand: undo then needs a mutator of its own, or deletion that waits |
 | atproto OAuth libraries are written for Node and may not run on Workers | Settled in phase 3c: pigy's client of atproto OAuth is written on the Web Crypto API, section 6. What it gets wrong only a live run shows, and none has been made: see below |
 | Threads is limited to testers | Fine for friends. Opening it up needs Meta's app review |
 | LinkedIn tokens die after 60 days | The Channels screen says the day. Reminder a week before, one-tap reconnect: phase 9 |
