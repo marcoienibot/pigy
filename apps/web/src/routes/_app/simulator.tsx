@@ -2,7 +2,7 @@ import { createFileRoute, Link, Outlet } from "@tanstack/react-router";
 import { EmptyState, Page } from "@/components/page";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { useSwitchWorkspace } from "@/lib/workspace";
+import { hasScreen, useSwitchWorkspace } from "@/lib/workspace";
 
 export const Route = createFileRoute("/_app/simulator")({
   component: Simulator,
@@ -19,13 +19,15 @@ const sectionLink = cn(
  * way to make them fail. Neither is synced data: it is the world of the
  * sandbox, which the server holds and the screens ask for.
  *
- * It is the sandbox's alone. In the live workspace there is no such
- * screen: not in the navigation, not in the command palette, and not at
- * its address, which says so.
+ * It is the sandbox's alone: `hasScreen`. In the live workspace there is
+ * no such screen: not in the navigation, not in the command palette, and
+ * not at its address, which says so. The switch to live leaves it for the
+ * drafts, so the address is one that was typed, kept or opened in a tab
+ * that shows live.
  */
 function Simulator() {
   const { workspace } = Route.useRouteContext();
-  if (workspace.environment !== "sandbox") return <NotInLive />;
+  if (!hasScreen(workspace.environment, "/simulator")) return <NotInLive />;
 
   return (
     <Page title="Simulator">

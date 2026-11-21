@@ -1,4 +1,3 @@
-import type { Environment } from "@pigy/core";
 import { Link, linkOptions, useRouteContext } from "@tanstack/react-router";
 import {
   CalendarClock,
@@ -22,7 +21,9 @@ import { SandboxBanner, WorkspaceSwitch } from "@/components/workspace-switch";
 import { modKey } from "@/lib/keyboard";
 import { dismissWorkspaceNotices } from "@/lib/notices";
 import { cn } from "@/lib/utils";
+import { hasScreen } from "@/lib/workspace";
 
+/** The screens of the navigation. A workspace shows those that it has. */
 const allNavItems = linkOptions([
   { to: "/", label: "Drafts", icon: PenLine },
   { to: "/queue", label: "Queue", icon: CalendarClock },
@@ -31,16 +32,6 @@ const allNavItems = linkOptions([
   { to: "/simulator", label: "Simulator", icon: Globe },
   { to: "/settings", label: "Settings", icon: Settings },
 ]);
-
-/**
- * The screens of the navigation in `environment`. The simulator is the
- * sandbox's: the live workspace has no simulated networks to show.
- */
-export function navItemsOf(environment: Environment) {
-  return allNavItems.filter(
-    ({ to }) => environment === "sandbox" || to !== "/simulator",
-  );
-}
 
 /** Opens the command palette, and says which keys do the same. */
 function CommandsButton() {
@@ -114,7 +105,9 @@ function Shell({ children }: { children: ReactNode }) {
   // From the same place as the screens, so that the navigation changes
   // with them and with the name of the workspace.
   const { workspace } = useRouteContext({ from: "/_app" });
-  const navItems = navItemsOf(workspace.environment);
+  const navItems = allNavItems.filter(({ to }) =>
+    hasScreen(workspace.environment, to),
+  );
   return (
     // The bottom of a phone's screen is the tab bar's, below.
     <div className="flex h-dvh flex-col px-safe pt-safe md:pb-safe">

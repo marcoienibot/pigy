@@ -44,6 +44,19 @@ export const environmentLabels: Record<Environment, string> = {
 };
 
 /**
+ * Whether the workspace of `environment` has the screen at `path`. The
+ * simulator is the sandbox's: the live workspace has no simulated networks
+ * to show or to make fail. The one place that says so, for the navigation,
+ * the command palette, the screen itself and the switch between the two.
+ */
+export function hasScreen(environment: Environment, path: string): boolean {
+  return (
+    environment === "sandbox" ||
+    !(path === "/simulator" || path.startsWith("/simulator/"))
+  );
+}
+
+/**
  * The workspace that this tab shows, of `workspaces`, those of whoever is
  * signed in. Somebody who has never chosen starts in the sandbox.
  */
@@ -89,7 +102,10 @@ export function forgetWorkspaceChoice(): void {
 /**
  * Returns the function behind the switch between live and sandbox: it
  * makes this tab show the workspace of `environment`, on the screen that
- * it is on, and has the device remember that.
+ * it is on, and has the device remember that. A screen that the other
+ * workspace does not have, as live has no simulator, is left for the
+ * drafts: the person asked for the workspace, and not to be told that
+ * there is nothing at an address.
  *
  * The screens are given the other workspace and its data in one step, so
  * nothing of one is ever shown under the name of the other. What the
@@ -121,7 +137,11 @@ export function useSwitchWorkspace(): (environment: Environment) => void {
       }
       showWorkspace(next);
       localStorage.setItem(storageKey, next.id);
-      await router.navigate({ to: ".", search: {}, replace: true });
+      await router.navigate({
+        to: hasScreen(environment, router.state.location.pathname) ? "." : "/",
+        search: {},
+        replace: true,
+      });
     },
     [router, me, workspace, workspaces],
   );

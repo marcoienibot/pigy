@@ -45,7 +45,11 @@ import {
   withMod,
 } from "@/lib/keyboard";
 import { useReloadToUpdate, useUpdateOffer } from "@/lib/reload-to-update";
-import { environmentLabels, useSwitchWorkspace } from "@/lib/workspace";
+import {
+  environmentLabels,
+  hasScreen,
+  useSwitchWorkspace,
+} from "@/lib/workspace";
 
 const screens = [
   { to: "/", label: "Drafts", icon: PenLine },
@@ -91,7 +95,6 @@ export function CommandPalette({ children }: { children: ReactNode }) {
   const newDraft = useNewDraft();
   const { theme: current, setTheme } = useTheme();
   const { workspace } = useRouteContext({ from: "/_app" });
-  const sandbox = workspace.environment === "sandbox";
   const switchWorkspace = useSwitchWorkspace();
   // What is offered only when there is something to do: see the same two
   // in Settings.
@@ -166,7 +169,7 @@ export function CommandPalette({ children }: { children: ReactNode }) {
               </CommandItem>
             </CommandGroup>
             {/* The simulator is the sandbox's: live has none. */}
-            {sandbox && (
+            {hasScreen(workspace.environment, "/simulator") && (
               <CommandGroup heading="Simulator">
                 <CommandItem
                   keywords={["sandbox", "feed", "published"]}
@@ -205,7 +208,7 @@ export function CommandPalette({ children }: { children: ReactNode }) {
             </CommandGroup>
             <CommandGroup heading="Go to">
               {screens
-                .filter(({ to }) => sandbox || to !== "/simulator")
+                .filter(({ to }) => hasScreen(workspace.environment, to))
                 .map(({ to, label, icon: Icon }) => (
                   <CommandItem
                     key={to}
