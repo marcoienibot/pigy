@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { type Theme, themes, useTheme } from "@/components/theme-provider";
 import { Button } from "@/components/ui/button";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { type Kept, keepOnDevice, useKept } from "@/lib/device-storage";
 import { isInstalled, isIos, useInstall } from "@/lib/install";
 import { useReloadToUpdate, useUpdateOffer } from "@/lib/reload-to-update";
 
@@ -26,7 +27,8 @@ function App() {
   // Safari offers nothing that a button could start, so on an iPhone or
   // iPad the person is told where the browser has it.
   const explain = isIos && !isInstalled();
-  if (!install && !explain && !update) return null;
+  const kept = useKept();
+  if (!install && !explain && !update && !kept) return null;
 
   return (
     <section className="mt-8">
@@ -72,8 +74,39 @@ function App() {
             </Button>
           </div>
         )}
+        {kept && <DeviceData kept={kept} />}
       </div>
     </section>
+  );
+}
+
+/**
+ * Says whether the browser has promised to keep what pigy stores on this
+ * device, and offers to ask it where it has not. The app asks by itself
+ * with the first change after it is opened: the button is for a browser
+ * that asks the person, who has not answered, and for one that decides by
+ * itself and may decide otherwise by now.
+ */
+function DeviceData({ kept }: { kept: Kept }) {
+  return (
+    <div className="flex items-center justify-between gap-4 px-3 py-2">
+      <p>
+        Data on this device
+        <span className="block text-muted-foreground">
+          {kept === "kept" &&
+            "The browser has promised to keep what pigy stores here, changes that are not synced yet included."}
+          {kept === "not-kept" &&
+            "The browser may delete what pigy stores here when the device runs low on space. Changes that are not synced yet would be lost."}
+          {kept === "unknown" &&
+            "This browser does not say whether it keeps what pigy stores here. It may delete it when the device runs low on space."}
+        </span>
+      </p>
+      {kept === "not-kept" && (
+        <Button variant="outline" size="sm" onClick={keepOnDevice}>
+          Ask to keep it
+        </Button>
+      )}
+    </div>
   );
 }
 

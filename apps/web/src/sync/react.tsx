@@ -14,6 +14,7 @@ import {
   useMemo,
   useSyncExternalStore,
 } from "react";
+import { keepOnDeviceOnce } from "@/lib/device-storage";
 
 const StoreContext = createContext<SyncStore | null>(null);
 
@@ -65,8 +66,13 @@ export function useSyncedNow(): () => Tables {
 export function useMutate() {
   const store = useStore();
   return useCallback(
-    <Name extends MutatorName>(name: Name, args: MutatorArgs<Name>) =>
-      store.mutate(name, args),
+    <Name extends MutatorName>(name: Name, args: MutatorArgs<Name>) => {
+      store.mutate(name, args);
+      // The device now holds a change that may be nowhere else, so the
+      // browser is asked to keep what pigy stores: after the change, and
+      // without waiting for the answer.
+      keepOnDeviceOnce();
+    },
     [store],
   );
 }
