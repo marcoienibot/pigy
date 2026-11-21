@@ -8,7 +8,6 @@ import {
   expectSync,
   holdStorage,
   localData,
-  openScreen,
   selectionOf,
   syncSockets,
   writeDraft,
@@ -1039,7 +1038,12 @@ test("a window that learns over HTTP that its session has ended closes its socke
   // nothing was cut. The page finds out with the question that a
   // navigation asks, over HTTP.
   await endSessionOf(page, baseURL);
-  await openScreen(page, "Queue");
+  // Only the click: the screen that it leads to is behind the dialog two
+  // seconds later, where a test cannot see it.
+  await page
+    .getByRole("navigation", { name: "Main" })
+    .getByRole("link", { name: "Queue" })
+    .click();
   const dialog = page.getByRole("alertdialog");
   await expect(dialog).toContainText("You have been signed out", { timeout });
   await expect(dialog).toContainText("has not finished saving");

@@ -153,6 +153,12 @@ export async function loadSession(
     if (check) checkSessionSoon();
     return stored;
   }
+  // This tab has learned that the session is over and stays for what it
+  // has not stored: see `sessionOver`. A navigation in it meanwhile, in
+  // the moment before the tab says that it waits, stays in the app. Sent
+  // to the sign-in page, the tab would end the session there and close
+  // its stores under the changes that it waits for. It leaves by itself.
+  if (stored && over) return stored;
   let fresh: Session | null;
   try {
     fresh = await fetchSession(signal);
