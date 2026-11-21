@@ -114,6 +114,36 @@ export async function connectSimulated(
   await expect(channelRows(page).filter({ hasText: handle })).toBeVisible();
 }
 
+/**
+ * A member of the simulated LinkedIn that every sandbox starts with: the
+ * accounts in apps/worker/src/sim/object.ts. LinkedIn addresses a member by
+ * their name, which is the handle of their channel.
+ */
+export const graceOnLinkedIn = "Grace Hopper";
+
+/**
+ * Connects a member of the simulated LinkedIn from the Channels screen of
+ * a sandbox, through the consent page, and ends on the Channels screen
+ * with the channel listed. LinkedIn asks for nothing to be typed.
+ */
+export async function connectSimulatedLinkedIn(
+  page: Page,
+  name: string,
+): Promise<void> {
+  await page.getByRole("button", { name: "Connect account" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: "LinkedIn" }).click();
+  await dialog.getByRole("button", { name: "Continue to LinkedIn" }).click();
+  await page.waitForURL(
+    ({ pathname }) =>
+      pathname === "/sim/network/www.linkedin.com/oauth/v2/authorization",
+  );
+  await page.getByRole("button", { name }).click();
+  await expect(
+    channelRows(page).filter({ hasText: "LinkedIn" }).filter({ hasText: name }),
+  ).toBeVisible();
+}
+
 /** The rows of the list of drafts. */
 export function draftRows(page: Page): Locator {
   return page.getByRole("list", { name: "Drafts" }).getByRole("link");
@@ -623,7 +653,9 @@ export function deliveryTo(post: Locator, handle: string): Locator {
 /** The feed of the simulated account `handle`, on the simulator's screen. */
 export function feedOf(page: Page, handle: string): Locator {
   return page.getByRole("region", {
-    name: new RegExp(` ${literally(handle)}$`),
+    // After the name of the account, or by itself where the network
+    // addresses an account by its name, as LinkedIn does.
+    name: new RegExp(`(^| )${literally(handle)}$`),
   });
 }
 
@@ -633,7 +665,7 @@ export function feedOf(page: Page, handle: string): Locator {
  */
 export async function armFault(
   page: Page,
-  network: "Mastodon" | "Bluesky",
+  network: "Mastodon" | "Bluesky" | "LinkedIn",
   kind: string,
 ): Promise<void> {
   await openScreen(page, "Simulator");

@@ -10,6 +10,7 @@ import {
   expectSync,
   expectWorkspace,
   grace,
+  graceOnLinkedIn,
   openConsentPage,
   openScreen,
   overflowOf,
@@ -143,7 +144,7 @@ test("the empty Channels screen says what a channel is, and the choice of a netw
   await expect(main).toContainText(
     "A channel is an account on a network that pigy posts to for you",
   );
-  await expect(main).toContainText("LinkedIn and Threads are coming");
+  await expect(main).toContainText("Threads is coming");
   // One click to the form from here.
   await main
     .getByRole("button", { name: "Connect a simulated Mastodon account" })
@@ -158,12 +159,13 @@ test("the empty Channels screen says what a channel is, and the choice of a netw
   await expect(networks.getByRole("listitem")).toHaveText([
     "Mastodon",
     "Bluesky",
-    "LinkedInComing soon",
+    "LinkedIn",
     "ThreadsComing soon",
   ]);
   await expect(networks.getByRole("button")).toHaveText([
     "Mastodon",
     "Bluesky",
+    "LinkedIn",
   ]);
 
   // Closing leaves the screen as it was, with the address of the screen.
@@ -220,6 +222,48 @@ test("connects a simulated Bluesky account through the consent page of its serve
   await expect(channelRows(page)).toHaveCount(1);
   await expect(channelRows(page)).toContainText("Bluesky · @grace.bsky.test");
   await expect(channelRows(page)).toContainText("Connected");
+});
+
+test("connects a simulated LinkedIn account through the consent page of LinkedIn, with nothing to type", async ({
+  ownPage: page,
+}) => {
+  await openScreen(page, "Channels");
+  await page
+    .getByRole("main")
+    .getByRole("button", { name: "Connect a simulated LinkedIn account" })
+    .click();
+
+  // LinkedIn has one place to sign in: the form asks for nothing, says
+  // what LinkedIn's access is like, and its button has the keyboard.
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("textbox")).toHaveCount(0);
+  await expect(dialog).toContainText("LinkedIn gives its access for 60 days");
+  const proceed = dialog.getByRole("button", { name: "Continue to LinkedIn" });
+  await expect(proceed).toBeFocused();
+  await page.keyboard.press("Enter");
+
+  // The consent page of the simulated LinkedIn, which the app serves at
+  // LinkedIn's own path. It offers the members of the sandbox.
+  await page.waitForURL(
+    ({ pathname }) =>
+      pathname === "/sim/network/www.linkedin.com/oauth/v2/authorization",
+  );
+  await expect(page.getByText("Simulation", { exact: true })).toBeVisible();
+  await expect(page.locator('button[name="account"]')).toHaveCount(3);
+  expect(await overflowOf(page)).toBe(0);
+  await page.getByRole("button", { name: graceOnLinkedIn }).click();
+
+  // LinkedIn addresses a member by their name, which is said once.
+  await expect(notice(page)).toHaveText("Grace Hopper is connected.");
+  await expect(channelRows(page)).toHaveCount(1);
+  const row = channelRows(page);
+  await expect(row).toContainText("Grace Hopper");
+  await expect(row).toContainText("LinkedIn");
+  await expect(row).toContainText("Connected");
+  // The one network whose access ends by itself: the row says when.
+  await expect(row).toContainText(
+    /Its access ends on .+: connect the account again before then\./,
+  );
 });
 
 test("the dialog that connects an account is one step back in the browser, and closing it leaves the history as it was", async ({

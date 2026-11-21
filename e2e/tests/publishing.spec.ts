@@ -5,6 +5,7 @@ import {
   channelRows,
   connectionOf,
   connectSimulated,
+  connectSimulatedLinkedIn,
   deliveryTo,
   draftRow,
   editor,
@@ -12,6 +13,7 @@ import {
   expectWorkspace,
   feedOf,
   grace,
+  graceOnLinkedIn,
   openScreen,
   overflowOf,
   publishDraft,
@@ -444,4 +446,74 @@ test("a delivery whose end nobody knows asks the person to look at the account b
   await expect(feedOf(page, grace)).toHaveAttribute("aria-current", "true");
   await expect(feedOf(page, grace)).toBeFocused();
   await expect(feedOf(page, grace)).toContainText("Maybe there");
+});
+
+test("a post goes out to a simulated LinkedIn account, and one whose answer is lost is unknown at once: pigy cannot look there, and takes the post that LinkedIn names when it is tried again", async ({
+  ownPage: page,
+}) => {
+  await openScreen(page, "Channels");
+  await connectSimulatedLinkedIn(page, graceOnLinkedIn);
+  await openScreen(page, "Drafts");
+  await publishDraft(page, "Hello LinkedIn (from pigy)", graceOnLinkedIn);
+
+  await openScreen(page, "Sent");
+  const sent = deliveryTo(
+    sentPost(page, "Hello LinkedIn (from pigy)"),
+    graceOnLinkedIn,
+  );
+  await expect(sent).toContainText("Sent");
+  await sent
+    .getByRole("link", { name: "See it in the simulated feed" })
+    .click();
+  // As it was written, with the characters that LinkedIn reserves.
+  await expect(feedOf(page, graceOnLinkedIn)).toContainText(
+    "Hello LinkedIn (from pigy)",
+  );
+
+  // The panel says what this fault does on LinkedIn, which is not what it
+  // does on a network where pigy can look, and that nothing waits.
+  await page.getByRole("link", { name: "Failures" }).click();
+  await page.getByRole("radio", { name: "LinkedIn" }).check();
+  await expect(
+    page.getByRole("radio", { name: "Lost answer", exact: true }),
+  ).toHaveAccessibleDescription(
+    /the post is there and pigy cannot know: it does not try again, and asks you to look/,
+  );
+  await armFault(page, "LinkedIn", "Lost answer");
+  await expect(page.getByText("pigy waits as long as it would")).toHaveCount(0);
+
+  await openScreen(page, "Drafts");
+  await publishDraft(page, "Did it arrive", graceOnLinkedIn);
+  await openScreen(page, "Sent");
+  const unknown = deliveryTo(sentPost(page, "Did it arrive"), graceOnLinkedIn);
+  // At once: no wait of a minute, as for a network that is tried again.
+  await expect(unknown).toContainText("Unknown");
+  await expect(unknown).toContainText(
+    "LinkedIn did not answer, so pigy cannot tell whether the post is on LinkedIn",
+  );
+  await expect(unknown).toContainText("LinkedIn gives it no way to look");
+
+  // The person looks: the post is there.
+  await unknown
+    .getByRole("link", {
+      name: `Look at ${graceOnLinkedIn} in the simulated feed`,
+    })
+    .click();
+  const arrived = feedOf(page, graceOnLinkedIn)
+    .getByRole("article")
+    .filter({ hasText: "Did it arrive" });
+  await expect(arrived).toHaveCount(1);
+
+  // They try again all the same, within the minutes in which LinkedIn
+  // refuses the same text and names the post that it has. That post is
+  // the delivery's then, and there is no second one.
+  await openScreen(page, "Sent");
+  await unknown
+    .getByRole("button", { name: `Retry ${graceOnLinkedIn}` })
+    .click();
+  await expect(unknown).toContainText("Sent");
+  await unknown
+    .getByRole("link", { name: "See it in the simulated feed" })
+    .click();
+  await expect(arrived).toHaveCount(1);
 });
