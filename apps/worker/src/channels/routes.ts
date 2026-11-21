@@ -173,7 +173,7 @@ export function channelRoutes(dependencies: AppDependencies): Hono<AppEnv> {
     }
     // A network that needs a secret of this pigy's, which it has not
     // been given.
-    const missing = cannotConnect(network, context);
+    const missing = cannotConnect(network, connection.reach, context);
     if (missing) throw new HTTPException(503, { message: missing });
 
     const start = await connection.provider

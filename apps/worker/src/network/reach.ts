@@ -5,6 +5,13 @@ import type { WorkspaceIdentity } from "../workspace/store.ts";
 
 /** How the adapters of a workspace reach the networks. */
 export type Reach = {
+  /**
+   * Whether the networks are those of a simulated world, and not the real
+   * ones. What an adapter is made with besides its `fetch` goes by it,
+   * where a network knows pigy by something that the operator has
+   * registered: that is never taken into a simulated world.
+   */
+  simulated: boolean;
   /** Carries every request of an adapter. */
   fetch: Fetch;
   /**
@@ -43,6 +50,7 @@ export function reachOf(
   switch (workspace.environment) {
     case "live":
       return {
+        simulated: false,
         fetch,
         browserUrl: (url) => url,
         publicUrl: (url) => url,
@@ -50,6 +58,7 @@ export function reachOf(
       };
     case "sandbox":
       return {
+        simulated: true,
         fetch: worldFetch(env.SIM_WORLD, workspace),
         browserUrl: worldPageUrl,
         // The hosts of a simulated world exist nowhere else. Its pages for

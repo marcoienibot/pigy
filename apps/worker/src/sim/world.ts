@@ -5,6 +5,10 @@ import type {
   SandboxFeed,
   SandboxPost,
 } from "@pigy/core";
+import {
+  linkedInAuthorizationHost,
+  linkedInAuthorizationPath,
+} from "@pigy/simulators/linkedin";
 import type { Bindings } from "../env.ts";
 import type { WorkspaceIdentity } from "../workspace/store.ts";
 import type { ArmOutcome, WorldContents, WorldRequest } from "./object.ts";
@@ -225,7 +229,8 @@ export function worldPageUrl(url: string, origin: string): string {
  *
  * A browser may open the pages that are there for a person, which are the
  * ones where they consent to a connection: `/oauth/authorize`, on Mastodon
- * and on the authorization servers of Bluesky alike.
+ * and on the authorization servers of Bluesky alike, and LinkedIn's own
+ * path on LinkedIn's own host.
  * The rest of a simulated network is its API, which is for the adapters.
  */
 export function worldPage(path: string, search: string): URL | undefined {
@@ -233,7 +238,10 @@ export function worldPage(path: string, search: string): URL | undefined {
   // A host name and nothing that could make an address read as another.
   const [, host, page] =
     /^([a-z0-9.-]+)(\/.*)$/.exec(path.slice(worldPagesPath.length + 1)) ?? [];
-  if (!host || page !== "/oauth/authorize") return undefined;
+  const consents =
+    page === "/oauth/authorize" ||
+    (host === linkedInAuthorizationHost && page === linkedInAuthorizationPath);
+  if (!host || !consents) return undefined;
   try {
     return new URL(`https://${host}${page}${search}`);
   } catch {

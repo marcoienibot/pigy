@@ -41,3 +41,13 @@ ADMIN_EMAILS=admin@example.com
 # key that it began with: keep a key for as long as such a connection is to
 # last, or connect those accounts again.
 #BLUESKY_CLIENT_KEYS=1:
+
+# The application that you have made for this pigy in LinkedIn's developer
+# portal, https://www.linkedin.com/developers/apps, with the products "Share
+# on LinkedIn" and "Sign In with LinkedIn using OpenID Connect", and with
+# the redirect address <address>/connect/linkedin/callback: for `pnpm dev`
+# http://localhost:5173/connect/linkedin/callback. Without these two lines,
+# no LinkedIn account can be connected in a live workspace. The sandbox
+# needs neither: its simulated LinkedIn has an application of its own.
+#LINKEDIN_CLIENT_ID=
+#LINKEDIN_CLIENT_SECRET=

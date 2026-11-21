@@ -34,6 +34,14 @@ type Secrets = {
    * Without this variable no Bluesky account can be connected.
    */
   BLUESKY_CLIENT_KEYS?: string;
+  /**
+   * The application that whoever runs this pigy has made at LinkedIn, see
+   * src/network/linkedin-client.ts: its client ID and its client secret,
+   * from LinkedIn's developer portal. Without both, no LinkedIn account
+   * can be connected in a live workspace. A sandbox needs neither.
+   */
+  LINKEDIN_CLIENT_ID?: string;
+  LINKEDIN_CLIENT_SECRET?: string;
 };
 
 export type Bindings = Omit<Env, keyof Secrets> & Secrets;

@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import {
   type Clock,
+  connectCallbackPath,
   type Network,
   type SandboxFault,
   type SandboxFaults,
@@ -12,6 +13,11 @@ import {
   blueskyOperations,
   createBlueskySimulator,
 } from "@pigy/simulators/bluesky";
+import {
+  createLinkedInSimulator,
+  linkedInFaultKinds,
+  linkedInOperations,
+} from "@pigy/simulators/linkedin";
 import {
   createMastodonSimulator,
   mastodonFaultKinds,
@@ -30,6 +36,7 @@ import {
   blueskyKeysWithoutRequest,
   pigyClientMetadata,
 } from "../network/bluesky-client.ts";
+import { sandboxLinkedInClient } from "../network/linkedin-client.ts";
 import {
   type WorkspaceIdentity,
   workspaceIdentitySchema,
@@ -79,6 +86,7 @@ const simulated: {
   };
 } = {
   bluesky: { kinds: blueskyFaultKinds, operations: blueskyOperations },
+  linkedin: { kinds: linkedInFaultKinds, operations: linkedInOperations },
   mastodon: { kinds: mastodonFaultKinds, operations: mastodonOperations },
 };
 
@@ -103,6 +111,7 @@ const seededKey = "object/seeded";
 // Each network that came later has its own, so that a world from before it
 // gets its accounts the first time it is used.
 const seededBlueskyKey = "object/seeded/bluesky";
+const seededLinkedInKey = "object/seeded/linkedin";
 
 /**
  * The Durable Object of a simulated world: the networks as one person's
@@ -140,13 +149,13 @@ export function simWorldObject({
       if (!this.#bind(workspaceIdentitySchema.parse(workspace))) {
         return undefined;
       }
-      const { mastodon, bluesky } = this.#world();
+      const { mastodon, bluesky, linkedin } = this.#world();
       // The simulators of the networks. Each says which hosts are its own,
       // and the one that owns the host of the request answers it. They are
       // not tried in turn: a simulator fails for a host that is not its own
       // the same way as for an answer that a fault loses, so going on to
       // the next would take a fault of one network for a host of another.
-      const simulators = [mastodon, bluesky];
+      const simulators = [mastodon, bluesky, linkedin];
       const { host } = new URL(url);
       const simulator = simulators.find((candidate) => candidate.owns(host));
       if (!simulator) return { noSuchHost: host };
@@ -310,7 +319,23 @@ export function simWorldObject({
         }
         kv.put(seededBlueskyKey, true);
       }
-      return { world, mastodon, bluesky };
+      const linkedin = createLinkedInSimulator(world);
+      if (!kv.get(seededLinkedInKey)) {
+        // LinkedIn knows an application only as somebody has made it in
+        // its developer portal. In the world of a sandbox pigy is this
+        // one, which is made with the world, and never the application of
+        // the operator's. The world cannot know at which address its pigy
+        // is reached, so the application takes pigy's callback path at
+        // any.
+        linkedin.addClient({
+          name: "pigy",
+          ...sandboxLinkedInClient,
+          redirectPaths: [connectCallbackPath("linkedin")],
+        });
+        for (const [, name] of seedAccounts) linkedin.addMember(name);
+        kv.put(seededLinkedInKey, true);
+      }
+      return { world, mastodon, bluesky, linkedin };
     }
 
     /**
