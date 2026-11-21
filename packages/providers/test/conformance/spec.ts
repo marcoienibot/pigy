@@ -677,18 +677,23 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
       // another has passed finds its own first part where it landed
       // unseen, and does not take the part of the other for its own where
       // it never arrived.
-      it.each([
+      // `it.for` and not `it.each`: it hands the test its context, which
+      // has `skip`.
+      it.for([
         ["finds its own first part, whose answer was lost,", "lost-response"],
         ["posts a first part that never arrived", "server-error"],
       ] as const)(
         "%s after another delivery has posted the same, where it says that it tells deliveries apart",
-        async (_name, fault) => {
+        async ([_name, fault], { skip }) => {
           const harness = await setup();
           const { simulation, provider } = harness;
-          // Arming a fault takes a simulation. And a provider that does not
-          // tell deliveries apart is not asked to: a caller has such a
-          // delivery begin anew, as the contract says.
-          if (!simulation || !provider.tellsDeliveriesApart) return;
+          if (!simulation) return skip("Arming a fault takes a simulation");
+          // A provider that does not tell deliveries apart is not asked
+          // to: a caller has such a delivery begin anew, as the contract
+          // says.
+          if (!provider.tellsDeliveriesApart) {
+            return skip("The provider does not tell deliveries apart");
+          }
           const text = `${harness.tag} A first part that two deliveries share`;
           // The first delivery stops where a workflow gives up on a network
           // that asks to be tried again. What it recorded up to then is all
@@ -719,7 +724,12 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
           expect(simulation.published()).toEqual(landed);
 
           // Another delivery to the account goes out whole meanwhile, with
-          // the same text.
+          // the same text. Later, if only by a moment, as one delivery
+          // after another is: a provider may name what it posts by the
+          // time, as Bluesky's does with its record keys, and with the
+          // clock stopped two deliveries can come by the same name, once
+          // in a thousand runs.
+          simulation.advance(1);
           const other = await publishParts(harness, [text]);
           expect(simulation.published()).toEqual([...landed, text]);
 

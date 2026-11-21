@@ -795,6 +795,12 @@ describe("a first part that landed on Bluesky unseen", () => {
     // what the account has posted since. Bluesky's adapter looks under
     // the key and nowhere else, so the key has to stay.
     network.state = "up";
+    // The other delivery begins later than the first, if only by a
+    // moment. The clock of the test stands still otherwise, and a record
+    // key is the time with ten random bits: once in a thousand runs the
+    // two deliveries would choose the same, and the second would find the
+    // record of the first under its own key.
+    test.advance(1);
     const other = await writeDraft(client, workspace, "Other");
     await publishTo(client, other.postId, channel);
     expect(await ended(client, other.postId)).toMatchObject({ status: "sent" });
