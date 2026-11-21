@@ -1,4 +1,4 @@
-import { useEffect, useSyncExternalStore } from "react";
+import { useSyncExternalStore } from "react";
 
 /**
  * Whether the browser has promised to keep what pigy stores on this
@@ -87,14 +87,32 @@ export function keepOnDeviceOnce(): void {
 }
 
 /**
+ * How long a screen waits for the browser to say whether it keeps the
+ * data, in milliseconds: see `readKept`. A browser answers at once.
+ */
+const readKeptMs = 500;
+
+/**
+ * Reads what the browser says now, without asking it for anything, for
+ * `useKept`. For the loader of a screen that shows it: the answer is
+ * there when the screen is first drawn, so nothing appears a moment
+ * later and moves what is on screen. A browser that takes longer than
+ * `readKeptMs` is not waited for, and its answer is shown when it comes.
+ */
+export async function readKept(): Promise<void> {
+  const read = keptBy(deviceStorage()).then(say);
+  await Promise.race([
+    read,
+    new Promise((resolve) => setTimeout(resolve, readKeptMs)),
+  ]);
+}
+
+/**
  * What the browser says about keeping what pigy stores on this device, for
- * a screen. Undefined until the browser has answered. Reading asks the
- * browser for nothing.
+ * a screen whose loader has called `readKept`. Undefined if the browser
+ * has not answered yet.
  */
 export function useKept(): Kept | undefined {
-  useEffect(() => {
-    void keptBy(deviceStorage()).then(say);
-  }, []);
   return useSyncExternalStore(
     (listener) => {
       listeners.add(listener);

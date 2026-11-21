@@ -2,11 +2,20 @@ import { createFileRoute } from "@tanstack/react-router";
 import { type Theme, themes, useTheme } from "@/components/theme-provider";
 import { Button } from "@/components/ui/button";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { type Kept, keepOnDevice, useKept } from "@/lib/device-storage";
+import {
+  type Kept,
+  keepOnDevice,
+  readKept,
+  useKept,
+} from "@/lib/device-storage";
 import { isInstalled, isIos, useInstall } from "@/lib/install";
 import { useReloadToUpdate, useUpdateOffer } from "@/lib/reload-to-update";
 
 export const Route = createFileRoute("/_app/settings/")({
+  // What the browser says about the data on this device is read before the
+  // screen is drawn, so that its row is there from the first moment. That
+  // asks the browser and not the server, and is over at once.
+  loader: () => readKept(),
   component: General,
 });
 
@@ -17,8 +26,11 @@ const themeLabels: Record<Theme, string> = {
 };
 
 /**
- * pigy as an app on this device: installing it, and loading a new version
- * of it. Nothing where there is nothing to do.
+ * pigy as an app on this device: installing it, loading a new version of
+ * it, and whether the browser keeps its data. The last is always there to
+ * say, and the screen has it when it is first drawn: see the loader. So
+ * the section does not come and go. It is left out only where a browser
+ * has not answered in time and nothing else is to be said.
  */
 function App() {
   const install = useInstall();
