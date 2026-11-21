@@ -322,10 +322,9 @@ test("a lost answer makes pigy wait as long as it would for real, and then find 
   const posted = feedOf(page, grace)
     .getByRole("article")
     .filter({ hasText: "Answer lost" });
-  await expect(async () => {
-    await page.getByRole("button", { name: "Refresh" }).click();
-    await expect(posted).toHaveCount(1, { timeout: 1_000 });
-  }).toPass();
+  // Nobody refreshes: nothing of the workspace changes when the answer is
+  // lost, so the feeds look by themselves while a delivery is under way.
+  await expect(posted).toHaveCount(1, { timeout: 15_000 });
 
   await openScreen(page, "Sent");
   await expect(delivery).toContainText("Sending");

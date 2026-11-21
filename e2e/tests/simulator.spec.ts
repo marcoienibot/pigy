@@ -221,6 +221,142 @@ test("the failure panel takes a fault off its list when a post from another wind
   await expect(armed).toHaveCount(0);
 });
 
+/** How many faults the server has armed in the sandbox of `page`. */
+async function armedAtServer(page: Page): Promise<number> {
+  const { body } = await api(page, "GET", "/api/sandbox/faults");
+  return (body as { networks: { armed: unknown[] }[] }).networks.flatMap(
+    ({ armed }) => armed,
+  ).length;
+}
+
+test("the failure panel takes a fault off its list while the delivery that it struck waits to be tried again", async ({
+  ownPage: page,
+  context,
+}) => {
+  await openScreen(page, "Channels");
+  await connectSimulated(page, grace);
+  // A fault that the network asks to have tried again: the workflow waits
+  // a minute after it, and nothing of the workspace changes meanwhile.
+  await armFault(page, "Mastodon", "Server error");
+  const armed = page.getByRole("list", { name: "Armed faults" });
+
+  // The panel also reads its list when the delivery begins, which can be
+  // before the fault strikes or after it. The test makes it before: until
+  // it has seen that the fault is used up, the panel is answered with the
+  // list as it is now. What the panel shows after that, it has asked for
+  // without a change of the workspace to tell it to.
+  const { body: before } = await api(page, "GET", "/api/sandbox/faults");
+  let struck = false;
+  await page.route(faultsRoute, (route) =>
+    struck || route.request().method() !== "GET"
+      ? route.fallback()
+      : route.fulfill({ json: before }),
+  );
+
+  const other = await context.newPage();
+  await other.goto("/");
+  await publishDraft(other, "Kept waiting", grace);
+  await openScreen(other, "Sent");
+  const delivery = deliveryTo(sentPost(other, "Kept waiting"), grace);
+  await expect(delivery).toContainText("Sending");
+  // Asked from the other tab, whose requests the route does not answer.
+  await expect.poll(() => armedAtServer(other)).toBe(0);
+  await expect(armed).toContainText("Server error");
+  struck = true;
+
+  await expect(page.getByText("Nothing is armed")).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(armed).toHaveCount(0);
+  // The delivery has not moved on since: the wait is a minute, which is
+  // longer than this test may take.
+  await expect(delivery).toContainText("Sending");
+});
+
+test("the failure panel does not bring a fault back that was used up while the answer to arming it was on its way", async ({
+  ownPage: page,
+  context,
+}) => {
+  await openScreen(page, "Channels");
+  await connectSimulated(page, grace);
+  await openFailures(page);
+  const form = page.getByRole("form", { name: "Make the next request fail" });
+  await page.getByRole("radio", { name: "Mastodon" }).check();
+  await page.getByRole("radio", { name: "Access taken back" }).check();
+
+  // The server arms the fault, and its answer is held back.
+  let release = () => {};
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let reached = () => {};
+  const armedAt = new Promise<void>((resolve) => {
+    reached = resolve;
+  });
+  await page.route(faultsRoute, async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    const response = await route.fetch();
+    reached();
+    await released;
+    await route.fulfill({ response });
+  });
+  await form.getByRole("button", { name: "Arm", exact: true }).click();
+  await armedAt;
+
+  // Another tab publishes meanwhile, and the fault strikes. The panel
+  // hears that the delivery has moved on, which is when it reads its list.
+  const other = await context.newPage();
+  await other.goto("/");
+  await publishDraft(other, "Struck meanwhile", grace);
+  await openScreen(other, "Sent");
+  await expect(
+    deliveryTo(sentPost(other, "Struck meanwhile"), grace),
+  ).toContainText("Failed");
+  expect(await armedAtServer(other)).toBe(0);
+
+  // The answer arrives now, and says that the fault is armed, which was
+  // true when it was made. The form says that the answer is there: before
+  // that, nothing was listed either.
+  release();
+  await expect(form.getByRole("status")).toContainText("Armed: ");
+  await expect(page.getByText("Nothing is armed")).toBeVisible();
+  await expect(page.getByRole("list", { name: "Armed faults" })).toHaveCount(0);
+});
+
+test("the failure panel says so when its list could not be read again, and reads it when asked to", async ({
+  ownPage: page,
+}) => {
+  await armFault(page, "Mastodon", "Server error");
+  const armed = page.getByRole("list", { name: "Armed faults" });
+
+  // The server cannot be reached for the list.
+  let down = true;
+  await page.route(faultsRoute, (route) =>
+    down && route.request().method() === "GET"
+      ? route.abort()
+      : route.fallback(),
+  );
+  // The panel reads its list again when the browser says that the
+  // connection is back: that is the read that fails here.
+  await page.evaluate(() => window.dispatchEvent(new Event("online")));
+  const alert = page
+    .getByRole("alert")
+    .filter({ hasText: "could not be refreshed" });
+  await expect(alert).toContainText(
+    "The list of armed faults could not be refreshed: pigy cannot reach its server. Check your connection and try again. What is shown is from before.",
+  );
+  await expect(armed).toContainText("Server error");
+
+  // The list changes meanwhile, so that the next read shows that it was
+  // made: disarming is not a read, and passes.
+  await api(page, "DELETE", "/api/sandbox/faults");
+  await expect(armed).toContainText("Server error");
+  down = false;
+  await alert.getByRole("button", { name: "Try again" }).click();
+  await expect(page.getByText("Nothing is armed")).toBeVisible();
+  await expect(alert).toHaveCount(0);
+});
+
 test("the failure panel says what the server answered when it refuses a fault, and arms nothing", async ({
   ownPage: page,
 }) => {
