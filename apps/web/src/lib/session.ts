@@ -6,6 +6,7 @@ import {
 } from "@pigy/core";
 import {
   ApiError,
+  answeredInTime,
   fetchMe,
   fetchWorkspaces,
   signOut,
@@ -61,18 +62,21 @@ function write({ me, workspaces }: Session, ended = false): void {
 
 /**
  * Asks the server. Null if nobody is signed in, and an error if it is
- * silent or says that something went wrong.
+ * silent or says that something went wrong. It is silent too when it has
+ * not answered both questions in the time that `answeredInTime` gives.
  */
-async function fetchSession(signal?: AbortSignal): Promise<Session | null> {
-  const me = await fetchMe(signal);
-  if (!me) return null;
-  try {
-    return { me, workspaces: await fetchWorkspaces(signal) };
-  } catch (error) {
-    // Signed out between the two requests.
-    if (error instanceof ApiError && error.status === 401) return null;
-    throw error;
-  }
+function fetchSession(signal?: AbortSignal): Promise<Session | null> {
+  return answeredInTime(async (signal) => {
+    const me = await fetchMe(signal);
+    if (!me) return null;
+    try {
+      return { me, workspaces: await fetchWorkspaces(signal) };
+    } catch (error) {
+      // Signed out between the two requests.
+      if (error instanceof ApiError && error.status === 401) return null;
+      throw error;
+    }
+  }, signal);
 }
 
 /**

@@ -13,7 +13,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button, buttonVariants } from "@/components/ui/button";
-import { fetchMe, unanswered } from "@/lib/api";
+import { answeredInTime, fetchMe, unanswered } from "@/lib/api";
 import { useOnline } from "@/lib/online";
 import {
   endSession,
@@ -43,11 +43,13 @@ export const Route = createFileRoute("/sign-in")({
   // sign in: that leaves the app for the server, and would end on an
   // error page of the browser. A server that answers with an error can
   // still be asked to sign somebody in. `signIn` says whether the page
-  // offers to.
+  // offers to. The page shows nothing before this is decided, so the
+  // server is given a time to answer in: a request that is never answered
+  // is one without an answer when that is up.
   beforeLoad: async ({ search, abortController }) => {
     let me: Awaited<ReturnType<typeof fetchMe>>;
     try {
-      me = await fetchMe(abortController.signal);
+      me = await answeredInTime(fetchMe, abortController.signal);
     } catch (error) {
       // The router has given this navigation up, and wants no answer.
       if (abortController.signal.aborted) throw error;

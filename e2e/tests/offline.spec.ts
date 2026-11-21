@@ -4,6 +4,7 @@ import {
   draftRow,
   draftRows,
   expectSync,
+  openScreen,
   serviceWorkerAnswersFor,
   writeDraft,
 } from "../app.ts";
@@ -250,6 +251,103 @@ test("an error of the server is not taken for a missing connection", async ({
     page.getByRole("link", { name: "Sign in with Google" }),
   ).toBeVisible();
   await expect(page.getByRole("status")).toHaveCount(0);
+});
+
+/**
+ * Has the server take the question of `page` who is signed in and never
+ * answer it, as a network that leads nowhere does, until `answer()` is
+ * called. `asked` counts the questions.
+ */
+async function serverSilent(page: Page) {
+  let silent = true;
+  const count = { asked: 0, answer: () => {} };
+  await page.route("**/api/me", (route) => {
+    count.asked += 1;
+    // A route that is neither answered nor passed on leaves the request
+    // open, which is the point.
+    if (!silent) return route.fallback();
+  });
+  count.answer = () => {
+    silent = false;
+  };
+  return count;
+}
+
+test("a server that never answers is taken for one that cannot be reached, on the sign-in page and where the app starts", async ({
+  page,
+}) => {
+  const server = await serverSilent(page);
+  // The clock of the page stands still, so that the time which the app
+  // gives the server is over when the test says, and not ten seconds
+  // later.
+  const now = Date.now();
+  await page.clock.install({ time: now });
+  await page.clock.pauseAt(now + 1_000);
+
+  // The sign-in page has nothing to show before it knows whether somebody
+  // is signed in. `commit`: the page itself is there, and what it waits
+  // for is what the test is about.
+  await page.goto("/sign-in", { waitUntil: "commit" });
+  await expect.poll(() => server.asked).toBe(1);
+  // Not yet: a server that is slow is given its time.
+  await page.clock.runFor(9_000);
+  await expect(page.getByRole("status")).toHaveCount(0);
+  // The time is up. The page says what it says without a connection, and
+  // offers no way to Google, which would wait as long.
+  await page.clock.runFor(1_000);
+  await expect(page.getByRole("status")).toHaveText(
+    "pigy cannot reach its server. Signing in takes a connection.",
+  );
+  await expect(
+    page.getByRole("link", { name: "Sign in with Google" }),
+  ).toHaveCount(0);
+
+  // The same where the app starts, on a device that knows nobody.
+  await page.goto("/", { waitUntil: "commit" });
+  await expect.poll(() => server.asked).toBe(2);
+  await page.clock.runFor(10_000);
+  await expect(
+    page.getByRole("heading", { name: "pigy cannot reach its server" }),
+  ).toBeVisible();
+
+  // The server answers again, and the person tries again: nobody is
+  // signed in, so on to the sign-in page.
+  server.answer();
+  await page.getByRole("button", { name: "Try again" }).click();
+  await expect(page).toHaveURL("/sign-in");
+  await expect(
+    page.getByRole("link", { name: "Sign in with Google" }),
+  ).toBeVisible();
+});
+
+test("a question about the session that is never answered does not keep the app from asking again", async ({
+  signedInPage: page,
+}) => {
+  const server = await serverSilent(page);
+  const now = Date.now();
+  await page.clock.install({ time: now });
+  await page.clock.pauseAt(now + 1_000);
+
+  // The device knows who is signed in, so the app starts from that and
+  // asks the server in the background: the screen is there although the
+  // question is open.
+  await page.goto("/");
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Drafts");
+  expect(server.asked).toBe(1);
+
+  // While the question is open, another navigation asks no second one,
+  // also not after the pause that the app keeps between two questions.
+  await openScreen(page, "Queue");
+  await page.clock.runFor(5_000);
+  expect(server.asked).toBe(1);
+
+  // The time of the first question is up. It is given up like one that
+  // got no answer, and the next navigation asks again: a session that
+  // has ended meanwhile is found out then. Left open for ever, the first
+  // question would have been the last of this window.
+  await page.clock.runFor(5_000);
+  await openScreen(page, "Sent");
+  await expect.poll(() => server.asked).toBe(2);
 });
 
 test("the sign-in page offers no way to Google over a session that the device still holds", async ({

@@ -15,6 +15,7 @@ import {
   type SandboxFault,
   type SandboxFaults,
   type SandboxFeed,
+  type Schedule,
   sandboxFaultsSchema,
   sandboxFeedSchema,
   type Workspace,
@@ -41,8 +42,8 @@ export class ApiError extends Error {
  * `unanswered`. The message is the browser's.
  */
 class Unanswered extends Error {
-  constructor(cause: TypeError) {
-    super(cause.message, { cause });
+  constructor(message: string, cause: unknown) {
+    super(message, { cause });
   }
 }
 
@@ -55,6 +56,58 @@ class Unanswered extends Error {
  */
 export function unanswered(error: unknown): boolean {
   return error instanceof Unanswered;
+}
+
+/**
+ * How long the server is given to say who is signed in, in milliseconds.
+ * A network that leads nowhere, as behind the sign-in page of a hotel,
+ * takes a request and never answers it. The browser would wait for
+ * minutes, and with it the sign-in page and the start of the app on a
+ * device that knows nobody, which show nothing before they have the
+ * answer. A server that is there answers in a fraction of this.
+ */
+export const answerWithinMs = 10_000;
+
+const timer: Schedule = (callback, delayMs) => {
+  const timeout = setTimeout(callback, delayMs);
+  return () => clearTimeout(timeout);
+};
+
+/**
+ * Has `ask` call the API, and gives it up when it has not finished after
+ * `answerWithinMs`: it then fails as a call that got no answer, see
+ * `unanswered`. The time is for all that `ask` does with the signal it is
+ * handed, the reading of an answer included, and not for each request.
+ * `signal` gives it up before that, and it then fails with what the
+ * request fails with, as without this.
+ */
+export async function answeredInTime<Answer>(
+  ask: (signal: AbortSignal) => Promise<Answer>,
+  signal?: AbortSignal,
+  schedule: Schedule = timer,
+): Promise<Answer> {
+  const request = new AbortController();
+  const giveUp = () => request.abort(signal?.reason);
+  if (signal?.aborted) giveUp();
+  signal?.addEventListener("abort", giveUp);
+  let late = false;
+  const cancel = schedule(() => {
+    late = true;
+    request.abort();
+  }, answerWithinMs);
+  try {
+    return await ask(request.signal);
+  } catch (error) {
+    throw late
+      ? new Unanswered(
+          `No answer within ${answerWithinMs / 1000} seconds`,
+          error,
+        )
+      : error;
+  } finally {
+    cancel();
+    signal?.removeEventListener("abort", giveUp);
+  }
 }
 
 /**
@@ -86,7 +139,9 @@ async function request(
     // for a mistake in its code, which is why it is told apart here, where
     // it can only be the first. What else `fetch` throws, such as the
     // `AbortError` of a request that was given up, is passed on as it is.
-    throw error instanceof TypeError ? new Unanswered(error) : error;
+    throw error instanceof TypeError
+      ? new Unanswered(error.message, error)
+      : error;
   }
   if (response.ok) return response;
 
