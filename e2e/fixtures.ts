@@ -11,11 +11,9 @@ import {
   type WebSocketRoute,
 } from "@playwright/test";
 import {
-  expectOwnServer,
+  expectOwnServerInTest,
   loopback,
-  OtherServer,
   portFromEnvironment,
-  recordOtherServer,
 } from "./server.ts";
 
 /**
@@ -270,14 +268,14 @@ export const test = pinned.extend<{
       }
       const check = async () => {
         try {
-          await expectOwnServer(port, build, "testing");
+          // Another server is noted for the run there: a retry that
+          // passes must not make the run pass.
+          await expectOwnServerInTest(port, build);
         } catch (error) {
           // A test that expects to fail, as those of network-guard.spec.ts
           // do, would take this failure for the one that it expects, and
           // pass.
           testInfo.expectedStatus = "passed";
-          // A retry that passes must not make the run pass.
-          if (error instanceof OtherServer) recordOtherServer(error);
           throw error;
         }
       };

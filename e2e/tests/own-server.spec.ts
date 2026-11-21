@@ -5,7 +5,14 @@ import {
   type ServerResponse,
 } from "node:http";
 import { expect, test } from "../fixtures.ts";
-import { expectOwnServer, loopback, OtherServer, serverOn } from "../server.ts";
+import {
+  expectNoOtherServer,
+  expectOwnServer,
+  expectOwnServerInTest,
+  loopback,
+  OtherServer,
+  serverOn,
+} from "../server.ts";
 
 // The check that a run tests its own server, which fixtures.ts makes before
 // and after every test, against servers of these tests' own. Each listens
@@ -34,6 +41,17 @@ async function serve(
 
 /** A made-up ID of an e2e build, as apps/web/vite.config.ts makes them. */
 const buildId = () => `pigy-e2e-build ${randomUUID()}`;
+
+/**
+ * The ID of the build of the run. `expectOwnServer` compares it with the
+ * build of this checkout before it asks a server, so a test of that
+ * function has its servers serve this one.
+ */
+function buildOfRun(): string {
+  const build = process.env.PIGY_E2E_BUILD;
+  if (build === undefined) throw new Error("PIGY_E2E_BUILD is not set");
+  return build;
+}
 
 test("a server of the build of the run is the run's own", async () => {
   const build = buildId();
@@ -131,13 +149,174 @@ test("a server whose first answer breaks off is asked again", async () => {
   }
 });
 
-test("another server fails the run, a server that does not answer only the test", async () => {
-  // The fixture records an `OtherServer` for the run, which then fails even
-  // if the test passes when it is tried again. A server that does not
-  // answer fails the test alone: it is the run's own, which can be slow.
-  // The build of this checkout is the one that the run checks against.
-  const build = process.env.PIGY_E2E_BUILD;
-  if (build === undefined) throw new Error("PIGY_E2E_BUILD is not set");
+test("a server that answers with an error of its own is asked again", async () => {
+  const build = buildId();
+  let asked = 0;
+  // As the server of the run answers while its Workers runtime is not
+  // there, and then as it answers when the runtime is.
+  const server = await serve((_, response) => {
+    asked += 1;
+    if (asked === 1) {
+      response.statusCode = 503;
+      response.end("Service Unavailable");
+    } else response.end(build);
+  });
+  try {
+    expect(await serverOn(server.port, build, { pause: 10 })).toEqual({
+      kind: "ours",
+    });
+    expect(asked).toBe(2);
+  } finally {
+    await server.close();
+  }
+});
+
+test("a server that keeps answering with an error of its own is not taken for a stranger", async () => {
+  const build = buildOfRun();
+  let asked = 0;
+  // The server of the run whose Workers runtime has died: the port is
+  // still its own, and it has no ID to answer with.
+  const server = await serve((_, response) => {
+    asked += 1;
+    response.statusCode = 500;
+    response.end("Internal Server Error");
+  });
+  try {
+    expect(await serverOn(server.port, build, { pause: 10 })).toEqual({
+      kind: "failing",
+      status: 500,
+    });
+    expect(asked).toBe(2);
+
+    const failure = await expectOwnServer(server.port, build, "testing", {
+      pause: 10,
+    }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    // Not the error that is recorded as another server on the port.
+    expect(failure).not.toBeInstanceOf(OtherServer);
+    expect((failure as Error).message).toContain("answered with 500");
+  } finally {
+    await server.close();
+  }
+});
+
+test("a server that starts is waited for until it answers, a server of a test is asked twice", async () => {
+  const build = buildOfRun();
+  let asked = 0;
+  // The server of a run that has said where it listens: it takes requests
+  // and leaves them without an answer until its Workers runtime is ready,
+  // here from the fifth request on. Two requests are one check, so that is
+  // later than a single check waits.
+  const server = await serve((_, response) => {
+    asked += 1;
+    if (asked >= 5) response.end(build);
+  });
+  const asking = { timeout: 100, pause: 10 };
+  try {
+    await expectOwnServer(server.port, build, "starting", asking);
+    expect(asked).toBe(5);
+
+    // During the run, the same server is given up after two requests.
+    asked = 0;
+    await expect(
+      expectOwnServer(server.port, build, "testing", asking),
+    ).rejects.toThrow("did not answer which build it serves, when asked twice");
+    expect(asked).toBe(2);
+  } finally {
+    await server.close();
+  }
+});
+
+test("a server that starts and never answers fails the run when its time is over", async () => {
+  let asked = 0;
+  const server = await serve(() => {
+    asked += 1;
+  });
+  try {
+    const failure = await expectOwnServer(
+      server.port,
+      buildOfRun(),
+      "starting",
+      { patience: 500, timeout: 100, pause: 10 },
+    ).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).not.toBeInstanceOf(OtherServer);
+    expect((failure as Error).message).toContain(
+      "within 0.5 seconds of saying where it listens",
+    );
+    // More than the two requests of one check, and it did end.
+    expect(asked).toBeGreaterThan(2);
+  } finally {
+    await server.close();
+  }
+});
+
+test("another server on the port fails the run at its end, a server that does not answer does not", async () => {
+  const build = buildOfRun();
+  // What the tests of the run write to, and its end reads. This test has
+  // a file of its own for as long as it runs: what it finds must not fail
+  // the run that it is part of. A worker runs one test at a time, so no
+  // other test writes there.
+  const ofRun = process.env.PIGY_E2E_OTHER_SERVERS;
+  process.env.PIGY_E2E_OTHER_SERVERS = test.info().outputPath("other-servers");
+  try {
+    // Nothing found: the file is not there, and the run does not fail.
+    expectNoOtherServer();
+
+    // The server of the run that is stuck fails the test that asked it,
+    // and is not held against the run.
+    const stuck = await serve(() => {});
+    try {
+      await expect(
+        expectOwnServerInTest(stuck.port, build, { timeout: 100, pause: 10 }),
+      ).rejects.toThrow("did not answer");
+    } finally {
+      await stuck.close();
+    }
+    expectNoOtherServer();
+
+    const other = buildId();
+    const stranger = await serve((_, response) => response.end(other));
+    let found: Error;
+    try {
+      found = await expectOwnServerInTest(stranger.port, build).then(
+        () => {
+          throw new Error(
+            "The check took a stranger for the server of the run",
+          );
+        },
+        (error: Error) => error,
+      );
+      expect(found).toBeInstanceOf(OtherServer);
+      // The check after the test finds the same, which the end of the run
+      // says once.
+      await expect(expectOwnServerInTest(stranger.port, build)).rejects.toThrow(
+        OtherServer,
+      );
+    } finally {
+      await stranger.close();
+    }
+    let end: unknown;
+    try {
+      expectNoOtherServer();
+    } catch (error) {
+      end = error;
+    }
+    expect(end).toBeInstanceOf(Error);
+    expect((end as Error).message).toBe(
+      `2 tests found that the run was not testing its own server or its own build, so the run fails, also where the test passed when it was tried again:\n- ${found.message}`,
+    );
+  } finally {
+    if (ofRun === undefined) delete process.env.PIGY_E2E_OTHER_SERVERS;
+    else process.env.PIGY_E2E_OTHER_SERVERS = ofRun;
+  }
+});
+
+test("the check tells the server of the run from another and from one that breaks off", async () => {
+  // Another server is an `OtherServer`, which is what fails the run. A
+  // server that does not answer is a plain error: it is the run's own,
+  // which can be slow.
+  const build = buildOfRun();
 
   const ours = await serve((_, response) => response.end(build));
   try {
