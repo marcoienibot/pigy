@@ -43,7 +43,8 @@ export function startConnect(
 export async function consentUrl(
   browser: Browser,
   workspaceId: string,
-  identifier: string,
+  /** Undefined on a network that asks for nothing, as LinkedIn. */
+  identifier: string | undefined,
   network: Network = "mastodon",
 ): Promise<string> {
   const response = await startConnect(browser, workspaceId, {
@@ -260,6 +261,40 @@ export async function connectBlueskyLive(
   );
   const callback = await answerConsent(network.bluesky.fetch, url, {
     account: network.blueskyAccount.id,
+  });
+  return outcomeOf(await browser.fetch(pathOf(callback)));
+}
+
+/** The name of the member of the simulated LinkedIn that a sandbox offers first. */
+export const sandboxLinkedInMember = "Ada Lovelace";
+
+/**
+ * Connects the member `name` of the simulated LinkedIn to a sandbox
+ * workspace, all the way, and returns how the app says it ended.
+ */
+export async function connectLinkedInInSandbox(
+  browser: Browser,
+  workspaceId: string,
+  name = sandboxLinkedInMember,
+): Promise<ConnectOutcome> {
+  const url = await consentUrl(browser, workspaceId, undefined, "linkedin");
+  // LinkedIn addresses a member by their name: that is their handle.
+  const callback = await consentInSandbox(browser, url, { handle: name });
+  return outcomeOf(await browser.fetch(pathOf(callback)));
+}
+
+/**
+ * Connects the LinkedIn member that stands for a real one to a live
+ * workspace, all the way, and returns how the app says it ended.
+ */
+export async function connectLinkedInLive(
+  { network }: Pick<TestSetup, "network">,
+  browser: Browser,
+  workspaceId: string,
+): Promise<ConnectOutcome> {
+  const url = await consentUrl(browser, workspaceId, undefined, "linkedin");
+  const callback = await answerConsent(network.linkedin.fetch, url, {
+    account: network.linkedinMember.id,
   });
   return outcomeOf(await browser.fetch(pathOf(callback)));
 }

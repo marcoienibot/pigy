@@ -88,6 +88,30 @@ it("lists the accounts of a new sandbox, which have posted nothing", async () =>
         posts: [],
       },
       {
+        network: "linkedin",
+        id: expect.any(String),
+        // LinkedIn addresses a member by their name.
+        handle: "Ada Lovelace",
+        name: "Ada Lovelace",
+        posts: [],
+      },
+      {
+        network: "linkedin",
+        id: expect.any(String),
+        // LinkedIn addresses a member by their name.
+        handle: "Alan Turing",
+        name: "Alan Turing",
+        posts: [],
+      },
+      {
+        network: "linkedin",
+        id: expect.any(String),
+        // LinkedIn addresses a member by their name.
+        handle: "Grace Hopper",
+        name: "Grace Hopper",
+        posts: [],
+      },
+      {
         network: "mastodon",
         id: expect.any(String),
         handle: `@ada@${sandboxMastodonDomain}`,
@@ -275,6 +299,12 @@ it("says how each simulated network can be made to fail", async () => {
         armed: [],
       },
       {
+        network: "linkedin",
+        kinds: ["rate-limit", "server-error", "lost-response", "token-revoked"],
+        operations: ["publish", "account", "token", "delete", "revoke"],
+        armed: [],
+      },
+      {
         network: "mastodon",
         kinds: ["rate-limit", "server-error", "lost-response", "token-revoked"],
         operations: ["instance", "account", "publish", "read", "delete"],
@@ -371,7 +401,7 @@ it.each([
   // refused with the field that it is about, and arms nothing.
   [
     "a network that the sandbox does not simulate",
-    { network: "linkedin", kind: "rate-limit" },
+    { network: "threads", kind: "rate-limit" },
     "network",
   ],
   [

@@ -313,7 +313,7 @@ describe("starting a connection", () => {
     const { test, browser, workspaces } = await start();
 
     const refusal = await refused(test, browser, workspaces.live, {
-      network: "linkedin",
+      network: "threads",
     });
 
     // Not about what was typed: a form shows it where the network is
@@ -321,7 +321,7 @@ describe("starting a connection", () => {
     expect(refusal).toEqual({
       status: 400,
       error: "InvalidInputError",
-      message: "pigy cannot connect accounts of linkedin yet.",
+      message: "pigy cannot connect accounts of threads yet.",
       field: "network",
     });
   });

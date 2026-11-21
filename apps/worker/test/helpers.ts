@@ -3,6 +3,7 @@ import { env } from "cloudflare:workers";
 import { type Fetch, type MeResponse, meResponseSchema } from "@pigy/core";
 import { createBlueskySimulator } from "@pigy/simulators/bluesky";
 import { createGoogleSimulator } from "@pigy/simulators/google";
+import { createLinkedInSimulator } from "@pigy/simulators/linkedin";
 import { createMastodonSimulator } from "@pigy/simulators/mastodon";
 import { createWorld } from "@pigy/simulators/world";
 import { drizzle } from "drizzle-orm/d1";
@@ -31,7 +32,9 @@ type Secrets =
   | "GOOGLE_CLIENT_ID"
   | "GOOGLE_CLIENT_SECRET"
   | "CREDENTIAL_KEYS"
-  | "BLUESKY_CLIENT_KEYS";
+  | "BLUESKY_CLIENT_KEYS"
+  | "LINKEDIN_CLIENT_ID"
+  | "LINKEDIN_CLIENT_SECRET";
 
 /**
  * A key for `CREDENTIAL_KEYS`, as a deployment has one: 32 bytes in
@@ -126,6 +129,13 @@ export function setup(
     },
   });
   bluesky.addPds(realBlueskyPds);
+  const linkedin = createLinkedInSimulator(world);
+  // The application that whoever runs this pigy has made at LinkedIn, with
+  // the callback address of the app of the tests.
+  const linkedinClient = linkedin.addClient({
+    name: "pigy",
+    redirectUris: [`${origin}/connect/linkedin/callback`],
+  });
   const network = {
     world,
     mastodon,
@@ -140,14 +150,18 @@ export function setup(
       pds: realBlueskyPds,
       name: "Rosalind Franklin",
     }),
+    linkedin,
+    linkedinClient,
+    linkedinMember: linkedin.addMember("Rosalind Franklin"),
     /** The requests that left the app for a network, as "METHOD address". */
     requests: [] as string[],
   };
   // Each network answers on its own hosts, as on the internet.
-  const networks: Fetch = (input, init) =>
-    bluesky.owns(new URL(urlOf(input)).host)
-      ? bluesky.fetch(input, init)
-      : mastodon.fetch(input, init);
+  const networks: Fetch = (input, init) => {
+    const { host } = new URL(urlOf(input));
+    const owner = [bluesky, linkedin].find((simulator) => simulator.owns(host));
+    return (owner ?? mastodon).fetch(input, init);
+  };
   const networkFetch = options.interceptNetwork?.(networks) ?? networks;
 
   const appFetch: Fetch = async (input, init) => {
@@ -179,6 +193,8 @@ export function setup(
     GOOGLE_CLIENT_SECRET: googleClient.clientSecret,
     CREDENTIAL_KEYS: credentialKeys,
     BLUESKY_CLIENT_KEYS: blueskyClientKeys,
+    LINKEDIN_CLIENT_ID: linkedinClient.clientId,
+    LINKEDIN_CLIENT_SECRET: linkedinClient.clientSecret,
     ...options.env,
   };
   const bindings: Bindings = {
