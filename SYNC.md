@@ -1,6 +1,6 @@
 # pigy sync protocol
 
-How a client keeps a copy of a workspace and changes it. Protocol version 2, schema version 4.
+How a client keeps a copy of a workspace and changes it. Protocol version 2, schema version 5.
 
 This document is the contract between the server and any client: the browser store of the app, or anything else. It is meant to be enough to write a client from. The message schemas, the row schemas, the mutators, the limits and the versions are code in `packages/core/src/sync`, and a client should use them rather than copy them. The server is `apps/worker/src/workspace`. `apps/worker/test/sync-client.ts` is a small client written from this document, which the tests of the server use. The client of the app is `packages/core/src/sync/client`, and what it takes from a browser is in `apps/web/src/sync`.
 
@@ -38,7 +38,7 @@ Every message is one text frame with one JSON object, which has a `type`. A fiel
 **`hello`** is the first message on every socket, and is sent once.
 
 ```json
-{ "type": "hello", "protocolVersion": 2, "schemaVersion": 4, "clientId": "0192…", "cursor": 42, "lastMutationId": 7 }
+{ "type": "hello", "protocolVersion": 2, "schemaVersion": 5, "clientId": "0192…", "cursor": 42, "lastMutationId": 7 }
 ```
 
 `cursor` is the `to` of the last patch that the client has applied, or `null` if it has applied no patch. `lastMutationId` is the `lastMutationId` of the last patch that the client has applied, or 0 if it has applied no patch. It says that the client knows what became of its mutations up to that one, and the server forgets what it kept to tell the client: see section 4.
@@ -95,7 +95,7 @@ Steps 1 to 4 belong in one transaction of the local store: the rows, the cursor,
 **`error`** says what the client did wrong. The server then closes the socket with the code 4400.
 
 ```json
-{ "type": "error", "code": "version_mismatch", "message": "…", "protocolVersion": 2, "schemaVersion": 4 }
+{ "type": "error", "code": "version_mismatch", "message": "…", "protocolVersion": 2, "schemaVersion": 5 }
 ```
 
 `protocolVersion` and `schemaVersion` are what the server speaks. The codes:
@@ -156,7 +156,7 @@ A row of `channel` is a connected account: its network, the network's ID of the 
 
 - `status` is `connected`, or `needs_reconnect` once the network has refused the access of the channel. Connecting the account again brings the channel back to `connected`, under the same ID.
 - `avatarUrl` and `profileUrl` are HTTPS addresses that a browser can open, or null. They are null for every account of a simulated network, which has no addresses.
-- `expiresAt` is null on the networks whose access does not end, such as Mastodon, and on those that do not say when it ends, such as Bluesky.
+- `expiresAt` is null on the networks whose access does not end, such as Mastodon, and on those that do not say when it ends, such as Bluesky. On LinkedIn it is 60 days after the account was connected, and nothing renews the access: the account is connected again.
 - `limits` is what the account may post, as its network said at `limitsCheckedAt`: the object that `validateContent` in `packages/core` checks content against, which names its network. Each network has limits of its own form: Mastodon's are read from the instance and count a link as a fixed number of characters, Bluesky's are the same for every account and limit the bytes of a text as well as its characters. LinkedIn's are the same for every account too, and are those of a whole post: a thread is one post there, so `validateContent` also checks that its parts fit together. A client that does not know the form of a network does not count for it. The server asks when the account is connected, and again before it publishes to the channel if the answer is more than a day old. Both are null for a channel whose network has not answered yet. A client that counts characters while somebody types goes by `limits`, and does not refuse what it cannot check: the server checks before it sends.
 
 ### Publishing

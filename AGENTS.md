@@ -93,7 +93,7 @@ A post is published by the publishing workflow, `PublishWorkflow`, which `pnpm d
   const [postId, partId] = [id(), id()];
   const socket = new WebSocket(`${location.origin.replace(/^http/, "ws")}/sync/${sandbox.id}`);
   socket.onopen = () =>
-    socket.send(JSON.stringify({ type: "hello", protocolVersion: 2, schemaVersion: 4, clientId: id(), cursor: null, lastMutationId: 0 }));
+    socket.send(JSON.stringify({ type: "hello", protocolVersion: 2, schemaVersion: 5, clientId: id(), cursor: null, lastMutationId: 0 }));
   let asked = false;
   socket.onmessage = ({ data }) => {
     const patch = JSON.parse(data);
