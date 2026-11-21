@@ -357,7 +357,8 @@ it("asks a person to look when a network leaves open whether it has published", 
     "The network did not say whether the post is there. Look at the account before you try again.";
   let asked = 0;
   // An adapter of a network on which pigy can neither look nor repeat a
-  // request safely, as LinkedIn will be. Mastodon's never says this.
+  // request safely, as LinkedIn is: test/linkedin.test.ts has the real
+  // one. Mastodon's never says this.
   withAdapter((provider) => ({
     ...provider,
     async publishStep(request) {
