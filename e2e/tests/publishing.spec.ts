@@ -9,6 +9,7 @@ import {
   draftRow,
   editor,
   expectSync,
+  expectWorkspace,
   feedOf,
   grace,
   openScreen,
@@ -169,16 +170,23 @@ test("⌘↵ in a menu is the menu's: it does not publish the draft that is open
   await workspaceSwitch(page).click();
   const menu = page.getByRole("menu");
   await expect(menu).toBeVisible();
+  // The option of the workspace that is shown: choosing it changes nothing.
   await menu
     .getByRole("menuitemradio", { name: /^Sandbox/ })
     .press("ControlOrMeta+Enter");
-  // Whatever the menu made of the keys, it has closed or is closed here.
-  await page.keyboard.press("Escape");
+  // The menu takes the keys for a click on its option, and closes. No key
+  // is pressed to close it: the focus goes back to the page a moment
+  // after, and a key would then be the page's, where Escape closes the
+  // draft.
   await expect(menu).toBeHidden();
+  await expectWorkspace(page, "Sandbox");
 
-  // The draft is still a draft, and nothing was published.
-  await expect(editor(page)).toHaveValue("Not yet");
+  // The draft is still a draft, and nothing was published. That is read
+  // from the list and from Sent, not from the editor: whether the draft
+  // is still open is the menu's business, and would not be if the option
+  // were the other workspace's.
   await expect(notice(page, "Publishing to")).toHaveCount(0);
+  await expect(draftRow(page, "Not yet")).toBeVisible();
   await openScreen(page, "Sent");
   await expect(page.getByText("Nothing sent yet")).toBeVisible();
 });
