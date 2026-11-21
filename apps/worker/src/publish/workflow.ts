@@ -629,8 +629,21 @@ export async function deliver(
     // delivery's own, so what this one posts is nothing that another
     // could take for its own. What the others recorded is then the only
     // way to a first part of theirs that landed unseen, and has to stay.
-    // That this delivery is still under way, which the step also says, is
-    // found out all the same, by the first step that records something.
+    //
+    // The step also says whether this delivery is still under way, and
+    // without it nothing asks before the first request: a delivery that
+    // is taken up with a key chosen sends its part in its first step,
+    // before anything is recorded. It does not send for a delivery that
+    // has been ended all the same. While its run is running, a delivery
+    // that passed `prepare` can be ended by one thing only, which is the
+    // disconnect of its channel: the alarm of the workspace ends a
+    // delivery only once its run is over, and no client can end or delete
+    // what is `sending`. Disconnecting removes the channel with its
+    // credentials, and every step that talks to the network asks the
+    // workspace for them first: `accessOf` gets nothing then and stops
+    // the step before it sends. What is left is a disconnect that comes
+    // while a request is on its way, which the step before does not
+    // close either.
     if (!prepared.progress?.done && !provider.tellsDeliveriesApart) {
       const underWay = await step.do("about-to-send", bookkeepingStep, () =>
         aboutToSend(env.WORKSPACE, workspace, run),

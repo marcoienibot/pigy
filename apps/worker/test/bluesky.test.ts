@@ -36,6 +36,7 @@ import {
 } from "./helpers.ts";
 import {
   ended,
+  eventsOf,
   patience,
   postOf,
   publishedOf,
@@ -817,5 +818,108 @@ describe("a first part that landed on Bluesky unseen", () => {
     expect(texts()).toEqual(["Its reply", "Lost", "Other"]);
     expect(network.writes).toBe(3);
     expect(publishedOf(client, targetId, draft)[0]).toBe(lost?.post.id);
+  });
+});
+
+describe("a delivery to Bluesky that is taken up again", () => {
+  const createRecord = `https://${realBlueskyPds}/xrpc/com.atproto.repo.createRecord`;
+
+  // The workflow does not tell the workspace that a delivery to Bluesky is
+  // about to send, which is where a delivery to Mastodon finds out that it
+  // has been ended. What keeps one to Bluesky from sending for a channel
+  // that is gone is the step itself, which asks the workspace for the
+  // access of the channel before it asks the network for anything.
+  it("sends nothing when its channel is disconnected before its first request", async () => {
+    // A Bluesky that is out of reach until the test brings it back, and
+    // that counts the records that it is asked to write.
+    const network = { down: true, writes: 0 };
+    const context = await started({
+      interceptNetwork:
+        (reach: Fetch): Fetch =>
+        async (input, init) => {
+          const request = new Request(input, init);
+          if (request.method === "POST" && request.url === createRecord) {
+            network.writes++;
+          }
+          if (network.down) throw new TypeError("The network is down");
+          return reach(request);
+        },
+    });
+    const { test, browser, workspaces } = context;
+    const workspace = workspaces.live;
+    network.down = false;
+    const { channel = "" } = await connectBlueskyLive(test, browser, workspace);
+    const client = new SyncClient();
+    await client.connect(browser, workspace);
+
+    // The first attempt chooses the key of its record, records it, and
+    // gives up on a server that it cannot reach.
+    network.down = true;
+    const draft = await writeDraft(client, workspace, "Never sent");
+    const [targetId = ""] = await publishTo(client, draft.postId, channel);
+    await ended(client, draft.postId);
+    expect(targetOf(client, targetId).status).toBe("error");
+    const progress = (await storedProgress(workspace)).find(
+      ({ id }) => id === targetId,
+    )?.progress;
+    expect(JSON.parse(progress ?? "null")).toMatchObject({
+      parts: [],
+      state: { rkey: expect.any(String) },
+    });
+    expect(feed(test.network.world, ["bluesky"])).toEqual([]);
+    network.down = false;
+    network.writes = 0;
+
+    // The channel is disconnected in the moment after the second attempt
+    // has been told what to publish, which is the end of its checks: the
+    // workspace answers the workflow and removes the channel in one go.
+    // A test cannot be sure to get in between otherwise: nothing is asked
+    // of the network there, so nothing can be held.
+    const delivery = WorkspaceStore.prototype.delivery;
+    let disconnectedAt: number | undefined;
+    const asked = vi
+      .spyOn(WorkspaceStore.prototype, "delivery")
+      .mockImplementation(function (this: WorkspaceStore, run) {
+        const told = delivery.call(this, run);
+        if (told && run.targetId === targetId && run.attempt === 2) {
+          disconnectedAt = test.clock.time.getTime();
+          expect(this.disconnectChannel(channel, disconnectedAt)).toMatchObject(
+            { ok: true },
+          );
+        }
+        return told;
+      });
+    onTestFinished(() => asked.mockRestore());
+    await retry(client, targetId);
+    await vi.waitFor(() => expect(disconnectedAt).toBeDefined(), patience);
+    // To the end of the run: it has nothing more to do after that.
+    const events = await eventsOf(workspace, targetId);
+
+    // The attempt had a key to write under and a text to write, and its
+    // first step would have written it. It asked for the access of the
+    // channel first, and stopped there, without a word: the disconnect has
+    // ended the delivery already.
+    expect(network.writes).toBe(0);
+    expect(feed(test.network.world, ["bluesky"])).toEqual([]);
+    expect(events.at(-1)?.type).toBe("workflow_completed");
+    // Its steps: the checks and the step that would have sent, and no
+    // end of its own. The step did not fail for want of credentials,
+    // which would have been a failure to report: it found the channel
+    // gone, and that is the check that the guarantee rests on.
+    expect(
+      events.flatMap((event) =>
+        event.type === "step_started" && "stepName" in event
+          ? [event.stepName]
+          : [],
+      ),
+    ).toEqual(["prepare-1", "publish-1-1"]);
+    const after = new SyncClient();
+    await after.connect(browser, workspace);
+    after.disconnect();
+    expect(targetOf(after, targetId)).toMatchObject({
+      status: "error",
+      attempt: 2,
+    });
+    expect(after.table("channel")).toEqual([]);
   });
 });
