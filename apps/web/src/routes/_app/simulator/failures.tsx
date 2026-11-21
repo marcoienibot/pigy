@@ -1,7 +1,7 @@
 import type { Network, SandboxFaults } from "@pigy/core";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { TriangleAlert } from "lucide-react";
-import { type FormEvent, useId, useState } from "react";
+import { type FormEvent, useCallback, useId, useRef, useState } from "react";
 import { EmptyState } from "@/components/page";
 import { Button } from "@/components/ui/button";
 import {
@@ -9,7 +9,6 @@ import {
   NativeSelectOption,
 } from "@/components/ui/native-select";
 import {
-  ApiError,
   armSandboxFault,
   disarmSandboxFaults,
   fetchSandboxFaults,
@@ -17,7 +16,7 @@ import {
 import { selectChannels } from "@/lib/channels";
 import { checkSignedOut, failureMessage, useFetched } from "@/lib/fetched";
 import { listedNetworks, networkInfo } from "@/lib/networks";
-import { useOnline } from "@/lib/online";
+import { useWorldChanges } from "@/lib/sandbox-world";
 import {
   faultKind,
   faultOperation,
@@ -37,6 +36,10 @@ export const Route = createFileRoute("/_app/simulator/failures")({
  * so that the person sees what pigy does about it, and lists what is
  * armed. The faults are the world's and not synced: the panel asks the
  * server for them, and changes them with a request.
+ *
+ * A fault is used up by the request that it strikes, which a post from
+ * any window makes, so the list is asked for again whenever a delivery
+ * moves on: `useWorldChanges`.
  */
 function Failures() {
   const {
@@ -46,10 +49,30 @@ function Failures() {
     refresh,
     replace,
   } = useFetched(fetchSandboxFaults);
-  // The connection is back: a panel that could not be loaded tries again.
-  useOnline(() => {
-    if (!faults) refresh();
-  });
+  useWorldChanges(refresh);
+
+  // The one request that changes the faults, if one is on its way. Each
+  // answers with the list as it left it, and the answers of two could
+  // arrive the other way round: the list would then be the one from
+  // before the later change. So there is one at a time, and what starts
+  // one is disabled meanwhile.
+  const [changing, setChanging] = useState<Change | null>(null);
+  const underWay = useRef(false);
+  const change = useCallback(
+    async (which: Change, request: () => Promise<SandboxFaults>) => {
+      if (underWay.current) return false;
+      underWay.current = true;
+      setChanging(which);
+      try {
+        replace(await request());
+        return true;
+      } finally {
+        underWay.current = false;
+        setChanging(null);
+      }
+    },
+    [replace],
+  );
 
   if (!faults) {
     return failure && !loading ? (
@@ -70,22 +93,37 @@ function Failures() {
 
   return (
     <div className="flex flex-col gap-6">
-      <ArmForm faults={faults} onArmed={replace} />
-      <Armed faults={faults} onDisarmed={replace} />
+      <ArmForm faults={faults} changing={changing} change={change} />
+      <Armed faults={faults} changing={changing} change={change} />
     </div>
   );
 }
 
+/** A request that changes the faults of the world. */
+type Change = "arm" | "disarm";
+
+type Changes = {
+  /** The change that is on its way, if one is. */
+  changing: Change | null;
+  /**
+   * Makes `request`, which answers with the faults as it left them, and
+   * shows those. Resolves to false, without asking, while another change
+   * is on its way, and fails as the request does.
+   */
+  change: (
+    which: Change,
+    request: () => Promise<SandboxFaults>,
+  ) => Promise<boolean>;
+};
+
 /** What the form says after the person has done something. */
-type Said = { tone: "good" | "bad"; text: string; field?: string };
+type Said = { tone: "good" | "bad"; text: string };
 
 function ArmForm({
   faults,
-  onArmed,
-}: {
-  faults: SandboxFaults;
-  onArmed: (faults: SandboxFaults) => void;
-}) {
+  changing,
+  change,
+}: { faults: SandboxFaults } & Changes) {
   const id = useId();
   const channels = useSynced(selectChannels);
   // In the order in which the app lists the networks everywhere else.
@@ -107,7 +145,6 @@ function ArmForm({
   // "" for any request. Posting where the network has it: the panel is
   // there to make the next publish fail.
   const [operation, setOperation] = useState(operations[0] ?? "");
-  const [busy, setBusy] = useState(false);
   const [said, setSaid] = useState<Said | null>(null);
 
   const choose = (next: Network) => {
@@ -124,30 +161,23 @@ function ArmForm({
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (!network || !kind) return;
-    setBusy(true);
     setSaid(null);
     try {
-      onArmed(
-        await armSandboxFault({
+      const armed = await change("arm", () =>
+        armSandboxFault({
           network,
           kind,
           ...(operation !== "" && { operation }),
         }),
       );
+      if (!armed) return;
       setSaid({
         tone: "good",
         text: `Armed: ${faultKind(kind).label}, on ${networkInfo[network].label}, for ${faultOperation(operation === "" ? null : operation).toLowerCase()}.`,
       });
     } catch (error) {
       checkSignedOut(error);
-      setSaid({
-        tone: "bad",
-        text: failureMessage(error),
-        ...(error instanceof ApiError &&
-          error.field !== undefined && { field: error.field }),
-      });
-    } finally {
-      setBusy(false);
+      setSaid({ tone: "bad", text: failureMessage(error) });
     }
   };
 
@@ -281,8 +311,8 @@ function ArmForm({
       )}
 
       <div className="flex justify-end">
-        <Button type="submit" disabled={busy || !network || !kind}>
-          {busy ? "Arming…" : "Arm"}
+        <Button type="submit" disabled={changing !== null || !network || !kind}>
+          {changing === "arm" ? "Arming…" : "Arm"}
         </Button>
       </div>
     </form>
@@ -291,28 +321,22 @@ function ArmForm({
 
 function Armed({
   faults,
-  onDisarmed,
-}: {
-  faults: SandboxFaults;
-  onDisarmed: (faults: SandboxFaults) => void;
-}) {
+  changing,
+  change,
+}: { faults: SandboxFaults } & Changes) {
   const id = useId();
-  const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const armed = faults.networks.flatMap(({ network, armed }) =>
     armed.map((fault, index) => ({ network, index, ...fault })),
   );
 
   const disarm = async () => {
-    setBusy(true);
     setFailure(null);
     try {
-      onDisarmed(await disarmSandboxFaults());
+      await change("disarm", disarmSandboxFaults);
     } catch (error) {
       checkSignedOut(error);
       setFailure(failureMessage(error));
-    } finally {
-      setBusy(false);
     }
   };
 
@@ -325,7 +349,7 @@ function Armed({
         <Button
           variant="outline"
           size="sm"
-          disabled={busy || armed.length === 0}
+          disabled={changing !== null || armed.length === 0}
           onClick={disarm}
         >
           Disarm all
@@ -341,6 +365,9 @@ function Armed({
           Nothing is armed: the simulated networks work as they should.
         </p>
       ) : (
+        // In the order in which they were armed. Which of them strikes a
+        // request is not said: the first that fits the request, which is
+        // not always the first of the list.
         <ol aria-label="Armed faults" className="divide-y rounded-lg border">
           {armed.map(({ network, index, kind, operation }) => (
             <li
@@ -354,11 +381,6 @@ function Armed({
                   ? "any request"
                   : faultOperation(operation).toLowerCase()}
               </span>
-              {index === 0 && (
-                <span className="ml-auto text-xs text-muted-foreground">
-                  Strikes next
-                </span>
-              )}
             </li>
           ))}
         </ol>

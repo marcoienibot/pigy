@@ -11,8 +11,8 @@ import { selectChannels } from "@/lib/channels";
 import { failureMessage, useFetched } from "@/lib/fetched";
 import { useShortcuts } from "@/lib/keyboard";
 import { listedNetworks, networkInfo } from "@/lib/networks";
-import { useOnline } from "@/lib/online";
-import { chainOf, type FeedChain, selectDeliveries } from "@/lib/simulator";
+import { useWorldChanges } from "@/lib/sandbox-world";
+import { chainOf, type FeedChain } from "@/lib/simulator";
 import { timeAgo, useNow } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { useSynced } from "@/sync/react";
@@ -60,25 +60,9 @@ function Feeds() {
     refresh,
   } = useFetched(fetchSandboxFeed);
 
-  // A delivery that moves on has done something in the world: the feeds
-  // are asked for again.
-  const deliveries = useSynced(selectDeliveries);
-  const before = useRef(deliveries);
-  useEffect(() => {
-    if (before.current === deliveries) return;
-    before.current = deliveries;
-    refresh();
-  }, [deliveries, refresh]);
-
-  // The connection is back, or the person is: what was missed is fetched.
-  useOnline(refresh);
-  useEffect(() => {
-    const onVisible = () => {
-      if (document.visibilityState === "visible") refresh();
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => document.removeEventListener("visibilitychange", onVisible);
-  }, [refresh]);
+  // A delivery that moves on has done something in the world, and so may
+  // what was missed while the connection or the person was away.
+  useWorldChanges(refresh);
 
   useShortcuts((event) => {
     if (event.key.toLowerCase() !== "r") return;
@@ -101,8 +85,13 @@ function Feeds() {
     target.focus({ preventScroll: true });
   }, [feed, wanted]);
 
-  const connected = new Set(
-    channels.map((channel) => `${channel.network} ${channel.handle}`),
+  // What the sandbox has of each account: a channel, and whether the
+  // network still takes its access.
+  const connected = new Map(
+    channels.map((channel) => [
+      `${channel.network} ${channel.handle}`,
+      channel.status,
+    ]),
   );
 
   if (!feed) {
@@ -190,7 +179,10 @@ function Feeds() {
                         </div>
                         {connected.has(`${name} ${account.handle}`) && (
                           <span className="shrink-0 text-xs text-muted-foreground">
-                            Connected
+                            {connected.get(`${name} ${account.handle}`) ===
+                            "needs_reconnect"
+                              ? "Needs reconnecting"
+                              : "Connected"}
                           </span>
                         )}
                       </header>

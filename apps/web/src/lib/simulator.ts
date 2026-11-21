@@ -25,7 +25,7 @@ const kinds: Record<string, Words> = {
   "lost-response": {
     label: "Lost answer",
     description:
-      "The network does what it is asked, and its answer never arrives. pigy waits, looks at the account, and finds the post there instead of posting it twice.",
+      "The network does what it is asked, and its answer never arrives. When it was asked to post, pigy waits, looks at the account, and finds the post there instead of posting it twice.",
   },
   "token-revoked": {
     label: "Access taken back",
