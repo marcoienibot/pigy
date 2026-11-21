@@ -165,15 +165,17 @@ function expectInOrder(whole: string, parts: string[]) {
 /**
  * What a provider does that cannot look for what it has sent, when it
  * cannot tell whether a post was published: it fails with `uncertain`, and
- * does not ask to try again.
+ * does not ask to try again. Only a provider that says so with
+ * `repeatsSafely` may: one that can look has to.
  *
- * This has never run: Mastodon can look. The pull request for LinkedIn is
- * the first to get here, and has to show that the tests which call this
- * fail for an adapter that sends a second time.
+ * LinkedIn's is the first that gets here. The tests that call this fail
+ * for an adapter of its kind that asks to try again instead, and so sends
+ * a second time: its pull request has shown that.
  */
-function expectUncertain(error: unknown) {
+function expectUncertain(provider: Provider, error: unknown) {
   if (!(error instanceof ProviderError)) throw error;
   expect(error.kind).toBe("uncertain");
+  expect(provider.repeatsSafely).toBe(false);
 }
 
 /**
@@ -339,9 +341,8 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
         expect(recorded(access.credentials)).toEqual(access.credentials);
         // Only a provider that can refresh says when to.
         expect(access.refreshAt !== null).toBe(provider.refresh !== undefined);
-        // This has never run: an access to Mastodon has no end. The pull
-        // request for LinkedIn is the first with one, and has to show that
-        // this fails for an end that has passed already.
+        // An end that is named is still to come: LinkedIn's is the first
+        // access with one.
         if (access.expiresAt) {
           expect(access.expiresAt.getTime()).toBeGreaterThan(
             simulation.now().getTime(),
@@ -528,11 +529,9 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
             });
           }
         } else {
-          // One post holds all the parts. This has never run: every network
-          // so far publishes a chain. The pull request for LinkedIn is the
-          // first to get here, and has to show that it fails for an adapter
-          // that publishes the first part alone and returns its ID for
-          // every part.
+          // One post holds all the parts, as on LinkedIn. An adapter that
+          // publishes the first part alone and returns its ID for every
+          // part fails below, where the text is looked at.
           expect(new Set(ids).size).toBe(1);
           if (harness.simulation) {
             // The text is taken from the network's side, because a provider
@@ -656,7 +655,7 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
             }),
           }));
         } catch (error) {
-          expectUncertain(error);
+          expectUncertain(harness.provider, error);
           expect(simulation.published()).toHaveLength(1);
           return;
         }
@@ -771,7 +770,7 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
             }),
           }));
         } catch (error) {
-          expectUncertain(error);
+          expectUncertain(harness.provider, error);
           expect(simulation.published()).toEqual([text]);
           return;
         }
@@ -854,17 +853,21 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
         expect(simulation.published()).toEqual([]);
       });
 
-      it("asks to try again when the network fails", async ({ skip }) => {
+      it("asks to try again when the network fails, or says that it cannot tell where it cannot look", async ({
+        skip,
+      }) => {
         const harness = await setup();
         const { simulation } = harness;
         if (!simulation) return skip("Arming a fault takes a simulation");
         simulation.arm("server-error");
         const error = await failure(() => publishParts(harness, ["Down"]));
-        // Every provider so far can find out later whether the network
-        // published before it failed. One that cannot has to answer
-        // `uncertain` here, which the pull request for the first such
-        // network, LinkedIn, adds to this test.
-        expect(error.kind).toBe("retry");
+        // A provider that can find out later whether the network published
+        // before it failed asks to try again. One that cannot, as
+        // LinkedIn's, must not: a network that fails says nothing of how
+        // far it got, and a second request could be a second post.
+        expect(error.kind).toBe(
+          harness.provider.repeatsSafely ? "retry" : "uncertain",
+        );
         expect(simulation.published()).toEqual([]);
       });
 
@@ -924,13 +927,12 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
           publishParts({ ...harness, credentials }, [text]);
         const day = 24 * 60 * 60 * 1000;
 
-        // The second of the three cases has never run: an access to
-        // Mastodon has no end, and one to Bluesky is refreshed. The pull
-        // request for LinkedIn is the first with an end, and has to show
-        // that this fails for an adapter that names an end which the
-        // network does not keep. The first case fails for an adapter whose
-        // refresh returns credentials that do not work, which the pull
-        // request for Bluesky has shown.
+        // Three cases, for three kinds of access: Bluesky's is renewed,
+        // LinkedIn's ends, Mastodon's lasts. The first fails for an
+        // adapter whose refresh returns credentials that do not work,
+        // which the pull request for Bluesky has shown, and the second for
+        // an adapter that names an end which the network does not keep,
+        // which the one for LinkedIn has.
         if (provider.refresh && access.refreshAt) {
           // Refreshed when it is due, the access goes on.
           simulation.advance(
@@ -941,10 +943,19 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
             true,
           );
         } else if (access.expiresAt) {
-          // Past its end, the person has to connect again.
+          // Up to its end the access is good: an end that the network
+          // reaches sooner is not the end.
           simulation.advance(
-            access.expiresAt.getTime() - simulation.now().getTime() + day,
+            access.expiresAt.getTime() - simulation.now().getTime() - 60_000,
           );
+          expect((await publishWith(access.credentials)).progress.done).toBe(
+            true,
+          );
+          // Deleted while the access is good: past its end nothing can,
+          // the cleanup after the test included.
+          await removeAll(cleanup.splice(0));
+          // Past its end, the person has to connect again.
+          simulation.advance(day);
           expect(
             (await failure(() => publishWith(access.credentials))).kind,
           ).toBe("reconnect");
