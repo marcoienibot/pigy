@@ -233,6 +233,8 @@ export const rejections = sqliteTable(
  * How a call of the Worker that came with a key ended: done, with what the
  * call hands back besides, or refused. What it hands back is plain data,
  * and a secret among it is sealed: the access that a connection replaced.
+ * The store takes that one out again after some minutes, and leaves the
+ * rest: `forgetHandedBack`.
  */
 export type KeyedOutcome =
   | { ok: true; [handedBack: string]: unknown }

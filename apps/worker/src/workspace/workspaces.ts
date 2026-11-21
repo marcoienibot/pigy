@@ -149,7 +149,9 @@ export async function mutateWorkspace<Name extends MutatorName>(
  * the same key and is answered as the first time. With `call.handBack`,
  * the answer has the access that the channel held before, sealed, if the
  * account had a channel already: this connection has replaced it, and the
- * workspace keeps it only for the repeats of this call.
+ * workspace keeps it only for the repeats of this call, and for those only
+ * for some minutes: `handBackLifetimeMs`. A repeat that comes later is
+ * answered without it.
  */
 export async function connectChannel(
   namespace: Bindings["WORKSPACE"],

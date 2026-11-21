@@ -19,6 +19,7 @@ import {
 } from "../src/workspace/object.ts";
 import {
   changeLogWindow,
+  handBackLifetimeMs,
   isDatabaseFailure,
   keyLifetimeMs,
   maxRefusalMessageLength,
@@ -27,6 +28,7 @@ import {
 import {
   channelAccess,
   connectChannel,
+  disconnectChannel,
   mutateWorkspace,
 } from "../src/workspace/workspaces.ts";
 import { adminEmail, expectErrors, setup, signedIn } from "./helpers.ts";
@@ -1192,6 +1194,136 @@ it("never sends what a workspace keeps of a channel besides its row", async () =
     state.storage.sql.exec("select * from channel").toArray(),
   );
   expect(left).toEqual([]);
+});
+
+/**
+ * A workspace whose account was connected a second time, by a call with a
+ * key that asked for the access that it replaced, as the callback of a
+ * network asks where every connection has an access of its own.
+ */
+async function reconnected() {
+  const context = await connected();
+  const identity = await identityOf(context.test, context.workspace);
+  // The sealed credentials of the two connections. Texts that nothing else
+  // in a workspace has.
+  const first = { credentials: "sealed-credentials-one", refreshAt: null };
+  const second = { credentials: "sealed-credentials-two", refreshAt: null };
+  const stored = await connectChannel(
+    env.WORKSPACE,
+    identity,
+    connectedAccount(),
+    first,
+  );
+  if (!stored.ok) throw new Error(stored.message);
+  const account = connectedAccount({ name: "Ada" });
+  /** The second connection, and every repeat of it. */
+  const reconnect = () =>
+    connectChannel(env.WORKSPACE, identity, account, second, {
+      key: "reconnect",
+      handBack: true,
+    });
+  const answer = await reconnect();
+  /** Every row of every table of the workspace, as one text. */
+  const database = () =>
+    runInDurableObject(objectOf(context.workspace), (_, state) => {
+      const { sql } = state.storage;
+      const tables = sql
+        .exec<{ name: string }>(
+          // Without the tables of the runtime, which nobody may read.
+          "select name from sqlite_master where type = 'table' and name not like '\\_cf\\_%' escape '\\'",
+        )
+        .toArray();
+      return JSON.stringify(
+        tables.map(({ name }) => sql.exec(`select * from "${name}"`).toArray()),
+      );
+    });
+  return {
+    ...context,
+    identity,
+    channelId: stored.channelId,
+    first,
+    reconnect,
+    answer,
+    database,
+  };
+}
+
+/** What a call that replaced the access of `reconnected()` is handed. */
+const handedBack = {
+  network: "mastodon",
+  accountId: "1@mastodon.example",
+  credentials: "sealed-credentials-one",
+};
+
+it("hands a repeat the access that the call replaced, and keeps it for minutes only", async () => {
+  const { test, identity, channelId, reconnect, answer, database } =
+    await reconnected();
+  expect(answer).toMatchObject({ ok: true, channelId, replaced: handedBack });
+
+  // The caller lost the answer and asks again, a moment before the time
+  // is up. The channel holds the second access by now, so only what the
+  // workspace kept of the call can answer with the first.
+  test.advance(handBackLifetimeMs - 1000);
+  expect(await reconnect()).toEqual(answer);
+  // So it is in the database, and the search below can find it.
+  expect(await database()).toContain("sealed-credentials-one");
+
+  // The time is up, and the workspace is used in a way that has nothing
+  // to do with the call: another account is connected, without a key.
+  test.advance(2000);
+  await connectChannel(
+    env.WORKSPACE,
+    identity,
+    { ...connectedAccount(), accountId: "2@mastodon.example" },
+    { credentials: "sealed-credentials-other", refreshAt: null },
+  );
+  const left = await database();
+  expect(left).not.toContain("sealed-credentials-one");
+  // Only that went: the channel has its access.
+  expect(left).toContain("sealed-credentials-two");
+
+  // The call is still one that has happened. A repeat is answered, without
+  // the access, and does not store the channel again: run a second time,
+  // the call would find the second access in the channel and hand that
+  // back as replaced, to be ended at the network.
+  expect(await reconnect()).toEqual({ ok: true, channelId, replaced: null });
+  expect(await database()).toContain("sealed-credentials-two");
+});
+
+it("forgets the access that a call replaced with the first change of a client after its time", async () => {
+  const { test, browser, workspace, client, reconnect, database } =
+    await reconnected();
+  client.disconnect();
+
+  // Nobody connects or disconnects anything, and no call comes with a
+  // key: the person writes a draft, some minutes later. On a socket of
+  // its own: one does not last that long.
+  test.advance(handBackLifetimeMs + 1000);
+  const later = new SyncClient();
+  await later.connect(browser, workspace);
+  // Reading the workspace is not what does it.
+  expect(await database()).toContain("sealed-credentials-one");
+  await createPost(later, "Hello");
+
+  expect(await database()).not.toContain("sealed-credentials-one");
+  expect(await reconnect()).toMatchObject({ ok: true, replaced: null });
+});
+
+it("keeps nothing of an account whose channel is disconnected right after it was connected again", async () => {
+  const { identity, channelId, answer, database } = await reconnected();
+  expect(answer).toMatchObject({ replaced: handedBack });
+
+  // No time has passed: the access that was replaced is within its time.
+  // The disconnect hands out the second access, to be given back, and that
+  // has to be all that the workspace held: whoever is told that a network
+  // kept an access is also told that pigy holds nothing of it.
+  expect(
+    await disconnectChannel(env.WORKSPACE, identity, channelId),
+  ).toMatchObject({
+    ok: true,
+    access: { credentials: "sealed-credentials-two" },
+  });
+  expect(await database()).not.toContain("sealed-credentials");
 });
 
 it("refuses the mutations of a client that only the server runs", async () => {

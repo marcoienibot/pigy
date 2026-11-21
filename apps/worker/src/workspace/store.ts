@@ -23,11 +23,13 @@ import {
   count,
   eq,
   gt,
+  gte,
   inArray,
   lt,
   lte,
   ne,
   notExists,
+  sql,
 } from "drizzle-orm";
 import {
   type DrizzleSqliteDODatabase,
@@ -82,6 +84,23 @@ export const callKeySchema = z.string().min(1).max(200);
  * that it may run again.
  */
 export const keyLifetimeMs = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * How long the object keeps the access that a connection replaced under
+ * the key of the call that replaced it, in milliseconds: five minutes. The
+ * only caller that repeats such a call does so within its request, seconds
+ * later, and the access is a secret that nothing else has a use for.
+ */
+export const handBackLifetimeMs = 5 * 60 * 1000;
+
+/**
+ * What the key of a call that stores a channel begins with in
+ * `keyed_call`, before what its caller named it. It is what finds the
+ * outcomes that may hold an access, without reading every other one.
+ */
+const connectKeys = "connectChannel:";
+/** The first text that is after every key of that beginning. */
+const afterConnectKeys = "connectChannel;";
 
 /**
  * What the object keeps for a channel besides its row, and what clients
@@ -406,6 +425,9 @@ export class WorkspaceStore {
   ): Outcome {
     return this.storage.transactionSync(() => {
       if (key === undefined) return call();
+      // Before the key is looked up: a repeat that comes late is not
+      // handed an access that should be gone.
+      this.forgetHandedBack(now);
       const handled = this.db
         .select({ outcome: keyedCalls.outcome })
         .from(keyedCalls)
@@ -426,6 +448,43 @@ export class WorkspaceStore {
   }
 
   /**
+   * Takes the access that a connection replaced out of what is kept of the
+   * call that replaced it: where the call is older than
+   * `handBackLifetimeMs`, or, for an `account`, whatever its age. The key
+   * and the rest of the outcome stay, so a repeat of the call is still
+   * answered and not carried out, without `replaced`.
+   *
+   * It is run with every change of the workspace, so that the access does
+   * not wait for another call with a key, which may never come.
+   */
+  private forgetHandedBack(
+    now: number,
+    account?: { network: Network; accountId: string },
+  ): void {
+    const replaced = (path: string) =>
+      sql`json_extract(${keyedCalls.outcome}, ${`$.replaced${path}`})`;
+    this.db
+      .update(keyedCalls)
+      .set({
+        outcome: sql`json_set(${keyedCalls.outcome}, '$.replaced', json('null'))`,
+      })
+      .where(
+        and(
+          gte(keyedCalls.key, connectKeys),
+          lt(keyedCalls.key, afterConnectKeys),
+          sql`${replaced("")} is not null`,
+          account
+            ? and(
+                sql`${replaced(".network")} = ${account.network}`,
+                sql`${replaced(".accountId")} = ${account.accountId}`,
+              )
+            : lt(keyedCalls.handledAt, now - handBackLifetimeMs),
+        ),
+      )
+      .run();
+  }
+
+  /**
    * Stores an account that was connected as a channel, with the access to
    * it: the row through the mutator `channel.connect`, which clients hear
    * of, and the access next to it, which they do not. Both in one
@@ -439,9 +498,12 @@ export class WorkspaceStore {
    *
    * With a `key`, it is carried out once: see `once`. A repeat is answered
    * as the first call was, with what that one replaced. That is kept
-   * under the key for as long as the key, sealed as it was, so only a
-   * caller that says `handBack` is handed anything: one that has
-   * something to do with it.
+   * under the key, sealed as it was, so only a caller that says `handBack`
+   * is handed anything: one that has something to do with it. And it is
+   * kept for `handBackLifetimeMs` and not for as long as the key: it goes
+   * with the first change of the workspace after that, and with the
+   * channel of its account when that is disconnected. A repeat that comes
+   * later is answered without it.
    */
   connectChannel(
     channel: MutatorArgs<"channel.connect">,
@@ -449,7 +511,9 @@ export class WorkspaceStore {
     now: number,
     { key, handBack = false }: ConnectChannelCall = {},
   ): ConnectChannelOutcome {
-    return this.once(key, now, (): ConnectChannelOutcome => {
+    // Under a beginning of its own, by which `forgetHandedBack` finds it.
+    const under = key === undefined ? undefined : `${connectKeys}${key}`;
+    return this.once(under, now, (): ConnectChannelOutcome => {
       const account = and(
         eq(channels.network, channel.network),
         eq(channels.accountId, channel.accountId),
@@ -524,7 +588,12 @@ export class WorkspaceStore {
         now,
         "server",
       );
-      return refusal ? { ok: false, ...refusal } : { ok: true, access };
+      if (refusal) return { ok: false, ...refusal };
+      // What a connection of this account replaced goes with the channel,
+      // however lately: the access that is returned here is then all that
+      // the workspace held of the account.
+      this.forgetHandedBack(now, access);
+      return { ok: true, access };
     });
   }
 
@@ -874,6 +943,7 @@ export class WorkspaceStore {
     now: number,
     source: MutationSource,
   ): (Refusal | null)[] {
+    this.forgetHandedBack(now);
     const before = this.record();
     let { seq, time } = before;
     const outcomes = mutations.map((mutation) => {
