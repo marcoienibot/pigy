@@ -120,7 +120,11 @@ it("serves an image of a sandbox to nobody but its owner", async () => {
   await ended(client, draft.postId);
   const [post] = await sandboxPosts(browser);
   const path = sandboxImagePath(post?.images?.[0]?.id ?? "");
-  expect((await browser.fetch(path)).status).toBe(200);
+  const served = await browser.fetch(path);
+  expect(served.status).toBe(200);
+  // Kept by no cache, as nothing under /api is: the middleware of app.ts
+  // says so of every answer there.
+  expect(served.headers.get("Cache-Control")).toBe("no-store");
 
   expect((await test.browser().fetch(path)).status).toBe(401);
   // Somebody else has a sandbox of their own, whose world has no such
