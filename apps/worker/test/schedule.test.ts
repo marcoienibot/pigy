@@ -1,5 +1,13 @@
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
-import { lateMs, type Row, trashMs } from "@pigy/core";
+import {
+  lateMs,
+  type Row,
+  type SandboxFeed,
+  sandboxBlueskyHandles,
+  sandboxFeedSchema,
+  sandboxLink,
+  trashMs,
+} from "@pigy/core";
 import { feed, type SimToken } from "@pigy/simulators/world";
 import { expect, it, onTestFinished, vi } from "vitest";
 import { deliveryWatchMs } from "../src/workspace/object.ts";
@@ -9,7 +17,9 @@ import {
 } from "../src/workspace/store.ts";
 import { device } from "./app-client.ts";
 import {
+  connectBlueskyInSandbox,
   connectBlueskyLive,
+  connectLinkedInInSandbox,
   connectLinkedInLive,
   connectThreadsLive,
 } from "./channels.ts";
@@ -274,6 +284,102 @@ it("publishes a scheduled thread to LinkedIn as the one post that it is there, a
     feed(test.network.world, [network]).map(({ post }) => post.text);
   expect(texts("linkedin")).toEqual(["One\n\nTwo"]);
   expect(texts("threads")).toEqual(["One", "Two"]);
+});
+
+/**
+ * The sandbox of the admin, with nothing connected, and what its simulated
+ * networks show of their posts: the text, what in it is more than text,
+ * and the title of the card.
+ */
+async function readyInSandbox() {
+  const context = await started();
+  const { browser, workspaces } = context;
+  const workspace = workspaces.sandbox;
+  const shown = async () => {
+    const response = await browser.fetch("/api/sandbox/feed?marks=1");
+    expect(response.status).toBe(200);
+    const { accounts }: SandboxFeed = sandboxFeedSchema.parse(
+      await response.json(),
+    );
+    return accounts
+      .flatMap(({ posts }) => posts)
+      .map(({ text, entities, card }) => ({
+        text,
+        entities: entities.map(({ kind, start, end }) => [
+          kind,
+          text.slice(start, end),
+        ]),
+        card: card?.title ?? null,
+      }));
+  };
+  return { ...context, workspace, shown };
+}
+
+it("reads the card of a link for a scheduled post when it goes out at its time, and not before", async () => {
+  const { test, browser, workspace, shown } = await readyInSandbox();
+  // LinkedIn reads no page for a post of an application: a card on a post
+  // there is one that the step `cards` of the workflow read.
+  const linkedin = await connectLinkedInInSandbox(browser, workspace);
+  const client = await watching(browser, workspace);
+  const text = `Read this at eleven: ${sandboxLink}`;
+
+  const { postId } = await schedule(
+    client,
+    workspace,
+    text,
+    now() + hour,
+    linkedin.channel ?? "",
+  );
+  // Scheduling asks nothing of the page or of the network.
+  expect(await shown()).toEqual([]);
+
+  test.advance(hour);
+  await alarm(workspace);
+
+  const later = await watching(browser, workspace);
+  expect(await settled(later, postId)).toMatchObject({ status: "sent" });
+  expect(await shown()).toEqual([
+    { text, entities: [["link", sandboxLink]], card: "The example page" },
+  ]);
+  // The page is one of the simulated web of the sandbox, for a due post as
+  // for one that is published by hand: nothing left the Worker for it.
+  expect(test.network.requests).toEqual([]);
+});
+
+it("marks up the mention and the tag of a queued post when it goes out at its posting time", async () => {
+  const { test, browser, workspace, shown } = await readyInSandbox();
+  const bluesky = await connectBlueskyInSandbox(browser, workspace);
+  const client = await watching(browser, workspace);
+  // An account that the simulated Bluesky has, and not the one that posts:
+  // a mention is one there only when its handle is looked up and found.
+  const mention = `@${sandboxBlueskyHandles[1]}`;
+  const text = `Thanks ${mention} #pigyQueue`;
+  await slotsIn(client, 10);
+
+  const postId = await enqueue(client, workspace, text, bluesky.channel ?? "");
+  expect(postOf(client, postId)).toMatchObject({
+    status: "scheduled",
+    mode: "queue",
+  });
+  expect(await shown()).toEqual([]);
+
+  test.advance(10 * minute);
+  await alarm(workspace);
+
+  const later = await watching(browser, workspace);
+  expect(await settled(later, postId)).toMatchObject({ status: "sent" });
+  // The post reads as it was written, and the simulated PDS has the facets
+  // that pigy sent with it: it finds none in a text by itself.
+  expect(await shown()).toEqual([
+    {
+      text,
+      entities: [
+        ["mention", mention],
+        ["hashtag", "#pigyQueue"],
+      ],
+      card: null,
+    },
+  ]);
 });
 
 it("fails a due post as a publish fails when the access of its account has ended by its time", async () => {
