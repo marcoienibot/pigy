@@ -36,7 +36,12 @@ import { unsavedInSomeWindow, whenSaved } from "@/sync/workspace-sync";
  *   worker, so no page that starts lets a new version take over while a
  *   window holds changes which it could not store. Such a window says so
  *   with a Web Lock, see `unsavedInSomeWindow`, and a page that starts
- *   meanwhile starts as the version it is, whose files are all there. The
+ *   meanwhile starts as the version it is, whose files are all there. A
+ *   window that waits after its session has ended holds the same lock,
+ *   from the moment it hears of the end until it leaves, also while its
+ *   write is only under way and has not failed: it stays for what it has
+ *   not stored, as the other does, and no new version takes over under
+ *   it either. The
  *   new version goes on waiting: for the last window to go, or for a
  *   start after the changes are stored. A reload that somebody asks for
  *   would be such a start, and bring nothing new: `reloadToUpdate` says so
