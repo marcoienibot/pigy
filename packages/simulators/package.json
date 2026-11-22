@@ -8,6 +8,7 @@
     "./google": "./src/google/index.ts",
     "./linkedin": "./src/linkedin/index.ts",
     "./mastodon": "./src/mastodon/index.ts",
+    "./push": "./src/push/index.ts",
     "./threads": "./src/threads/index.ts",
     "./world": "./src/world/index.ts"
   },
