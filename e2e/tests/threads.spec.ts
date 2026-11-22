@@ -1,6 +1,7 @@
 import {
   backToList,
   channelChoice,
+  connectionOf,
   connectSimulated,
   connectSimulatedBluesky,
   connectSimulatedLinkedIn,
@@ -444,9 +445,22 @@ test("a thread that is deleted comes back with all its parts in their order, and
     "Third",
   ]);
 
-  // The server has taken all of it: nothing was refused, and the copy of
-  // this device is the server's.
+  // The server has taken all of it. Until it has answered, the screen
+  // shows what this device has asked for, refused or not, and the notice
+  // of a refusal comes a moment after it: so the text is read again once
+  // the copy of this device is the server's, when it is what the server
+  // took.
   await expectSync(page, "Synced");
+  expect(await partTexts(page)).toEqual([
+    "First",
+    "Second, for Grace",
+    "Third",
+  ]);
+  await draftEditor(page)
+    .getByRole("group", { name: "Text to edit" })
+    .getByRole("button", { name: "Post text" })
+    .click();
+  expect(await partTexts(page)).toEqual(["First", "Second", "Third"]);
   await expect(notice(page, "was not")).toHaveCount(0);
   await backToList(page, isMobile);
   await expect(draftRow(page, "First")).toHaveCount(1);
@@ -537,9 +551,12 @@ test("a text for an account that has grown longer than one step carries comes ba
   await texts.getByRole("button", { name: grace }).click();
   await expect(forGrace(5)).toHaveValue(long[4] ?? "");
   expect(await partTexts(page)).toEqual(long);
-  // And the server has taken it: nothing was refused, and nothing waits
-  // in front of what comes after.
+  // And the server has taken it, and nothing waits in front of what
+  // comes after. What the server refused is off the screen once the
+  // device has synced, so the text is read again then: before, the
+  // screen shows what the device asked for.
   await expectSync(page, "Synced");
+  expect(await partTexts(page)).toEqual(long);
   await expect(notice(page, "was not")).toHaveCount(0);
 
   // The same for the draft as a whole.
@@ -554,8 +571,172 @@ test("a text for an account that has grown longer than one step carries comes ba
     .click();
   await expect(forGrace(5)).toHaveValue(long[4] ?? "");
   expect(await partTexts(page)).toEqual(long);
+  // Read again once synced, as above.
   await expectSync(page, "Synced");
+  expect(await partTexts(page)).toEqual(long);
   await expect(notice(page, "was not")).toHaveCount(0);
+});
+
+test("the Undo of an account that was left out puts nothing into the text that the account was given since, and says so", async ({
+  ownPage: page,
+}) => {
+  await openScreen(page, "Channels");
+  await connectSimulated(page, grace);
+  await openScreen(page, "Drafts");
+  await writeThread(page, "One", "Two");
+  await channelChoice(page, grace).click();
+  const customize = draftEditor(page).getByRole("button", {
+    name: `Customize for ${grace}`,
+  });
+  const forGrace = (number: number) =>
+    page.getByRole("textbox", { name: `Part ${number} for ${grace}` });
+  await customize.click();
+  await forGrace(1).fill("Old one");
+  await forGrace(2).fill("Old two");
+
+  // The account is left out, with its text, which the notice offers to
+  // bring back.
+  await channelChoice(page, grace).click();
+  const leftOut = notice(page, `${grace} left out, and its own text with it`);
+  await expect(leftOut).toBeVisible();
+  // Before the notice is gone, the account is chosen again and given a
+  // text anew.
+  await channelChoice(page, grace).click();
+  await customize.click();
+  await forGrace(1).fill("New one");
+
+  await leftOut.getByRole("button", { name: "Undo" }).click();
+
+  // The text that the account has stays, and the person is told that the
+  // other one did not come back: not a press that does nothing.
+  await expect(
+    notice(page, `${grace} has a text of its own again`),
+  ).toContainText("The text that it had before was not brought back.");
+  expect(await partTexts(page)).toEqual(["New one", "Two"]);
+  // The keyboard is not left on the page, where its keys are shortcuts.
+  await expect(channelChoice(page, grace)).toBeFocused();
+  // Nothing of the old text was sent to the server either: once synced,
+  // the screen shows what the server has, and nothing was refused.
+  await expectSync(page, "Synced");
+  expect(await partTexts(page)).toEqual(["New one", "Two"]);
+  await expect(notice(page, "was not")).toHaveCount(0);
+});
+
+test("a part that is brought back is shown before it gets the keyboard, also when another text or another draft was opened since", async ({
+  ownPage: page,
+  isMobile,
+}) => {
+  await openScreen(page, "Channels");
+  await connectSimulated(page, grace);
+  await openScreen(page, "Drafts");
+  await writeDraft(page, isMobile, "A neighbour");
+  await writeThread(page, "First", "Second");
+  await channelChoice(page, grace).click();
+  await draftEditor(page)
+    .getByRole("button", { name: `Customize for ${grace}` })
+    .click();
+  const forGrace = (number: number) =>
+    page.getByRole("textbox", { name: `Part ${number} for ${grace}` });
+  const texts = draftEditor(page).getByRole("group", { name: "Text to edit" });
+  const undo = notice(page, "Part removed").getByRole("button", {
+    name: "Undo",
+  });
+  await forGrace(2).fill("Second, for Grace");
+
+  // A part of the text of the account is removed, and the editor is
+  // switched to the post's text before the notice is answered.
+  await draftEditor(page)
+    .getByRole("button", { name: "Remove part 2" })
+    .click();
+  await texts.getByRole("button", { name: "Post text" }).click();
+  await expect(partField(page, 2)).toHaveValue("Second");
+  await undo.click();
+  // The part is back in the text that it was removed from, which the
+  // editor shows again, and the keyboard is in it.
+  await expect(forGrace(2)).toBeFocused();
+  await expect(forGrace(2)).toHaveValue("Second, for Grace");
+  // The notice is gone before the next one is asked for by its name.
+  await expect(undo).toHaveCount(0);
+
+  // The same with another draft opened in between: the editor that
+  // removed the part is gone by then.
+  await draftEditor(page)
+    .getByRole("button", { name: "Remove part 2" })
+    .click();
+  await backToList(page, isMobile);
+  await draftRow(page, "A neighbour").click();
+  await expect(editor(page)).toHaveValue("A neighbour");
+  await undo.click();
+  // The draft of the part is open again, on the text of the account,
+  // with the keyboard in the part.
+  await expect(forGrace(2)).toBeFocused();
+  await expect(forGrace(2)).toHaveValue("Second, for Grace");
+  // ⌫ takes a character of the part, and deletes no draft, as it would
+  // from the page.
+  await page.keyboard.press("Backspace");
+  expect(await partTexts(page)).toEqual(["First", "Second, for Grac"]);
+  await backToList(page, isMobile);
+  await expect(draftRows(page)).toHaveCount(2);
+});
+
+test("a part that is brought back and refused, because the account was left out elsewhere meanwhile, can be kept as a new draft", async ({
+  ownPage: page,
+  otherDevice,
+  isMobile,
+}) => {
+  const connection = await connectionOf(page);
+  await page.reload();
+  await openScreen(page, "Channels");
+  await connectSimulated(page, grace);
+  await openScreen(page, "Drafts");
+  await writeThread(page, "First", "Second");
+  await channelChoice(page, grace).click();
+  await draftEditor(page)
+    .getByRole("button", { name: `Customize for ${grace}` })
+    .click();
+  await page
+    .getByRole("textbox", { name: `Part 2 for ${grace}` })
+    .fill("Written for Grace alone");
+  await expectSync(page, "Synced");
+  const other = await otherDevice();
+  await draftRow(other, "First").click();
+  await expect(channelChoice(other, grace)).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+
+  // Offline, a part of the text of the account is removed and brought
+  // back, which is a new part with the text of the old one.
+  await connection.cut();
+  await draftEditor(page)
+    .getByRole("button", { name: "Remove part 2" })
+    .click();
+  await notice(page, "Part removed")
+    .getByRole("button", { name: "Undo" })
+    .click();
+  expect(await partTexts(page)).toEqual(["First", "Written for Grace alone"]);
+  // Meanwhile the account is left out on another device, and its text
+  // goes with it.
+  await channelChoice(other, grace).click();
+  await expect(channelChoice(other, grace)).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+  await expectSync(other, "Synced");
+
+  await connection.restore();
+
+  // The part has no text to go into, and what was written in it is
+  // nowhere else: the notice of the refusal offers to keep it.
+  const refused = notice(page, "A part was not added to a draft");
+  await expect(refused).toContainText("Written for Grace alone");
+  await refused.getByRole("button", { name: "Keep as new draft" }).click();
+  await expect(editor(page)).toHaveValue("Written for Grace alone");
+  await expect(refused).toHaveCount(0);
+  await expectSync(page, "Synced");
+  // On a phone the list of the other device is behind its editor.
+  await backToList(other, isMobile);
+  await expect(draftRow(other, "Written for Grace alone")).toBeVisible();
 });
 
 test("the keys of a part are left to an input method while it composes a character", async ({
