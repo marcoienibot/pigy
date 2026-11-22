@@ -42,10 +42,20 @@ it("has the text of a refused text for an account, part after part", () => {
   ).toEqual(["One", "", "Three"]);
 });
 
+it("has the description of an image that was refused, which somebody wrote", () => {
+  // The image left its part, or the post went out from another device,
+  // while the person described it.
+  expect(
+    lostTexts({ name: "media.setAlt", args: { id, alt: "A dog on a beach" } }),
+  ).toEqual(["A dog on a beach"]);
+});
+
 it.each([
   // A part that is added with the keys is empty: nothing to keep.
   ["part.add", { id, postId: id, channelId: null, afterId: null, text: "" }],
   ["part.setText", { id, text: " \n " }],
+  ["media.setAlt", { id, alt: "" }],
+  ["media.setAlt", { id, alt: 5 }],
   [
     "target.customize",
     { postId: id, channelId: id, parts: [{ id, text: "" }] },

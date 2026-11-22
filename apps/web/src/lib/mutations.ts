@@ -63,8 +63,8 @@ export function refusedChange(name: string): string {
     : "A change was not saved";
 }
 
-const textOf = (value: unknown): string => {
-  const text = (value as { text?: unknown } | null)?.text;
+const textOf = (value: unknown, field = "text"): string => {
+  const text = (value as Record<string, unknown> | null)?.[field];
   return typeof text === "string" ? text : "";
 };
 
@@ -72,9 +72,10 @@ const textOf = (value: unknown): string => {
  * The text that a refused change carried and that is nowhere else by
  * now, part after part: empty if it carried none that has more in it
  * than space. That is an edit of a part, a part that came with its text,
- * as one that an Undo brings back does, and a text for an account, whose
- * parts are text too. The arguments are read as what they are, the word
- * of a copy that another version of the app may have written.
+ * as one that an Undo brings back does, a text for an account, whose
+ * parts are text too, and the description of an image. The arguments are
+ * read as what they are, the word of a copy that another version of the
+ * app may have written.
  */
 export function lostTexts({
   name,
@@ -83,9 +84,11 @@ export function lostTexts({
   let texts: string[] = [];
   if (name === "part.setText" || name === "part.add") {
     texts = [textOf(args)];
+  } else if (name === "media.setAlt") {
+    texts = [textOf(args, "alt")];
   } else if (name === "target.customize") {
     const parts = (args as { parts?: unknown } | null)?.parts;
-    texts = Array.isArray(parts) ? parts.map(textOf) : [];
+    texts = Array.isArray(parts) ? parts.map((part) => textOf(part)) : [];
   }
   return texts.some((text) => text.trim() !== "") ? texts : [];
 }
