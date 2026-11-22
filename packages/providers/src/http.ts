@@ -81,7 +81,7 @@ async function boundedText(
  * made the request in memory until it is up, which for the object of a
  * workspace is half a minute after every access that it renews.
  */
-function timeLimit(milliseconds: number) {
+export function timeLimit(milliseconds: number) {
   const controller = new AbortController();
   const timer = setTimeout(
     () => controller.abort(new DOMException("The time is up", "TimeoutError")),
@@ -91,7 +91,7 @@ function timeLimit(milliseconds: number) {
 }
 
 /** Whether `status` is that of a redirect. */
-const redirects = (status: number) =>
+export const redirects = (status: number) =>
   // 0 is what a redirect looks like where the runtime hides it.
   status === 0 || (status >= 300 && status < 400);
 

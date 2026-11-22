@@ -72,6 +72,13 @@ export const sandboxIdentifiers: {
 export const sandboxLink = "https://example.test/";
 
 /**
+ * An image of the simulated web of every sandbox, for a post of the
+ * public API to name by its address: a sandbox fetches from its simulated
+ * web and from nowhere else.
+ */
+export const sandboxImage = "https://example.test/images/sunset.png";
+
+/**
  * What a sandbox shows of its simulated world, and what a person can do to
  * it, for the pages that are there to try pigy out. The routes are under
  * `/api/sandbox` and name no workspace: they answer for the sandbox of

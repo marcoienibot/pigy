@@ -5,6 +5,7 @@
   "sideEffects": false,
   "exports": {
     ".": "./src/index.ts",
+    "./asset": "./src/asset.ts",
     "./bluesky": "./src/bluesky/index.ts",
     "./card": "./src/card.ts",
     "./linkedin": "./src/linkedin/index.ts",

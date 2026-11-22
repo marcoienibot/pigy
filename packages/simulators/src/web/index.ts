@@ -5,7 +5,8 @@ import { escapeHtml } from "../world/pages.ts";
  * A tiny simulated web: a handful of pages under names that cannot exist
  * on the internet, for the links of a post in a sandbox to lead to. pigy
  * reads such a page to make the card of a link, and so do the simulated
- * networks that make their cards themselves.
+ * networks that make their cards themselves. And a few images, for the
+ * public API of a sandbox to fetch where a post names one by its address.
  *
  * It answers `GET` over HTTPS on its own hosts, with what a page says of
  * itself in its head, the way pages do: Open Graph tags, a `<title>`, a
@@ -73,11 +74,48 @@ export const webPages: readonly WebPage[] = [
 // A page that sends whoever asks on to another, as a shortened link does.
 const moved: Readonly<Record<string, string>> = {
   "https://example.test/moved": "https://blog.example.test/first-post",
+  "https://example.test/images/moved": "https://example.test/images/sunset.png",
 };
 
 // What is no page: a file of another type.
 const files: Readonly<Record<string, string>> = {
   "https://example.test/file.pdf": "application/pdf",
+};
+
+/**
+ * A PNG of 120 by 80 pixels in one colour, which a decoder draws: what
+ * the images of the simulated web are.
+ */
+const sunset = Uint8Array.from(
+  atob(
+    "iVBORw0KGgoAAAANSUhEUgAAAHgAAABQCAIAAABd+SbeAAAAgUlEQVR42u3QQQ0AAAgEoItmYyNqC+eDjQRkujgQBaJFI1q0aAuiRSNatGgLokUjWrRoRItGtGjRiBaNaNGiES0a0aJFI1o0okWLRrRoRIsWjWjRiBYtGtGiES1aNKJFI1q0aESLRrRo0YgWjWjRohEtGtGiRSNaNKJFi0a0aET/sW0XYTmcnBBYAAAAAElFTkSuQmCC",
+  ),
+  (character) => character.charCodeAt(0),
+);
+
+/**
+ * The images of the simulated web, by what each is for: one that is
+ * there, one whose address sends the request on to it, one whose answer
+ * says that it is a picture and is a page, and one whose answer says
+ * that it is text and is the picture.
+ */
+export const webImages = {
+  image: "https://example.test/images/sunset.png",
+  moved: "https://example.test/images/moved",
+  notAnImage: "https://example.test/images/not-an-image.png",
+  mislabelled: "https://example.test/images/sunset.txt",
+} as const;
+
+// What answers at each of them, with the type that the answer names.
+const images: Readonly<
+  Record<string, { body: Uint8Array | string; type: string }>
+> = {
+  [webImages.image]: { body: sunset, type: "image/png" },
+  [webImages.notAnImage]: {
+    body: "<!doctype html><title>Not an image</title>",
+    type: "image/png",
+  },
+  [webImages.mislabelled]: { body: sunset, type: "text/plain" },
 };
 
 /** The address of `url` as the simulated web compares it. */
@@ -150,6 +188,12 @@ export function createWebSimulator(): WebSimulator {
         return new Response(null, {
           status: 301,
           headers: { Location: target },
+        });
+      }
+      const image = images[address];
+      if (image !== undefined) {
+        return new Response(image.body as Uint8Array<ArrayBuffer> | string, {
+          headers: { "Content-Type": image.type },
         });
       }
       const file = files[address];
