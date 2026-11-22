@@ -209,15 +209,76 @@ const knownTags = [
   "svg",
 ] as const;
 
+/**
+ * Whether the name of a tag ends before `character`: at whitespace, "/"
+ * or ">", as in the HTML standard, and at nothing else. "<metadata>" is
+ * no "<meta>", and "</scripture>" closes no script.
+ */
+const endsName = (character: string | undefined) =>
+  isSpace(character) || character === "/" || character === ">";
+
 /** The tag that begins at `open` of `html`, if it is one of `knownTags`. */
 function knownTagAt(html: string, open: number) {
   const begins = asciiLower(html.slice(open + 1, open + 9));
   return knownTags.find(
-    (name) =>
-      begins.startsWith(name) &&
-      // The name ends there: "<metadata>" is no "<meta>".
-      !/[a-z0-9]/.test(begins[name.length] ?? ""),
+    (name) => begins.startsWith(name) && endsName(begins[name.length]),
   );
+}
+
+/** Whether `character` is one of the letters that the name of a tag begins with. */
+function isLetter(character: string | undefined): boolean {
+  if (character === undefined) return false;
+  const code = character.charCodeAt(0) | 0x20;
+  return code >= 0x61 && code <= 0x7a;
+}
+
+/**
+ * Where the tag ends whose name begins at `from` of `page`: the place of
+ * its ">", or -1 if it has none before `limit`. The name and the
+ * attributes are passed over as the HTML standard reads them, so a ">"
+ * within the quotes of a value is none of the tag's. A quote opens a
+ * value only where a value begins, after "=": anywhere else it is a
+ * character of a name or of a value without quotes, as in `title=it's`.
+ * One pass, which looks at each character once.
+ */
+function tagEnd(page: string, from: number, limit: number): number {
+  // What the character at hand is part of: the name of the tag, the room
+  // before an attribute, the name of one, the room after that name, the
+  // room after a "=", a value without quotes, or a value within the
+  // quote that `state` is.
+  type State = "tag" | "before" | "name" | "after" | "equals" | "bare" | Quote;
+  type Quote = '"' | "'";
+  // Declared as any of them: the compiler would otherwise take the state
+  // at the top of the loop for the one that it begins with.
+  let state = "tag" as State;
+  for (let index = from; index < limit; index++) {
+    const character = page[index];
+    if (state === '"' || state === "'") {
+      if (character === state) state = "before";
+    } else if (character === ">") {
+      return index;
+    } else if (state === "equals") {
+      // Whitespace after a "=" is still before the value.
+      if (!isSpace(character)) {
+        state = character === '"' || character === "'" ? character : "bare";
+      }
+    } else if (state === "bare") {
+      // Goes on to whitespace or ">", whatever else it holds.
+      if (isSpace(character)) state = "before";
+    } else if (character === "/") {
+      state = "before";
+    } else if (isSpace(character)) {
+      state = state === "name" || state === "after" ? "after" : "before";
+    } else if (state === "tag") {
+      // The name of the tag goes on.
+    } else if (character === "=" && state !== "before") {
+      state = "equals";
+    } else {
+      // A "=" that begins a name is part of it, as in `attributesOf`.
+      state = "name";
+    }
+  }
+  return -1;
 }
 
 /** What `readPage` found in a page. */
@@ -240,12 +301,17 @@ export type PageHead = {
  *
  * - A comment, a script and a style are passed over whole, so that what
  *   is written in one is not taken for a tag of the page. One that is
- *   not closed takes the rest of the page with it.
+ *   not closed takes the rest of the page with it. A script ends at
+ *   `</script` where the name ends there, and not at `</scripture>`,
+ *   which a script may well have in a text of its own.
+ * - Every tag is passed over whole, the ones that mean nothing here
+ *   too, up to the first ">" outside of the quotes of its attributes:
+ *   `<a title="<title>No title</title>">` holds no title. A tag is
+ *   given up after `maxTagLength`, with what was looked through for
+ *   its end.
  * - The title is the first `<title>` before the head ends, which is at
  *   `</head>`, `<body>` or `<svg>`: a picture in the body has titles of
  *   its own, which are no title of the page.
- * - A `<meta>` tag ends at the first ">" outside of quotes, and is given
- *   up after `maxTagLength`, with what was looked through for its end.
  *
  * Every search goes forward from where the scan stands, and the scan
  * moves past what a search found. A search that finds nothing ends the
@@ -264,17 +330,29 @@ export function readPage(html: string): PageHead {
   };
   const budget = maxWork(page.length);
   // The patterns are of this call alone: each keeps where it searches
-  // from.
+  // from. Each takes the name with the character that ends it.
   const closes = {
-    script: /<\/script/gi,
-    style: /<\/style/gi,
-    title: /<\/title/gi,
+    script: /<\/script[\t\n\f\r />]/gi,
+    style: /<\/style[\t\n\f\r />]/gi,
+    title: /<\/title[\t\n\f\r />]/gi,
   };
   let inHead = true;
   let titleCloses = true;
   let metaTags = 0;
   let tags = 0;
   let position = 0;
+  /**
+   * Moves the scan past the tag whose name begins at `from`, and says
+   * where its ">" is, or -1 for a tag that is given up: the scan then
+   * stands behind what was looked through for its end.
+   */
+  const pass = (from: number): number => {
+    const limit = Math.min(page.length, from + maxTagLength);
+    const end = tagEnd(page, from, limit);
+    head.work += (end === -1 ? limit : end) - from;
+    position = end === -1 ? limit : end + 1;
+    return end;
+  };
   while (position < page.length) {
     const open = page.indexOf("<", position);
     if (open === -1) {
@@ -293,67 +371,47 @@ export function readPage(html: string): PageHead {
       position = end + 3;
       continue;
     }
+    // A tag begins with a letter, after the "/" of one that closes.
+    // Any other "<" is text, or a declaration, which has no quotes.
+    const from = page[position] === "/" ? position + 1 : position;
+    if (!isLetter(page[from])) continue;
     const tag = knownTagAt(page, open);
-    if (tag === undefined) continue;
+    const end = pass(from);
+    if (tag === undefined || end === -1) continue;
 
     if (tag === "/head" || tag === "body" || tag === "svg") {
       inHead = false;
     } else if (tag === "script" || tag === "style") {
       const pattern = closes[tag];
       pattern.lastIndex = position;
-      const end = pattern.exec(page);
-      if (end === null) break;
-      head.work += end.index - open;
-      position = end.index + end[0].length;
+      const closing = pattern.exec(page);
+      if (closing === null) break;
+      head.work += closing.index - position;
+      // Past the tag that closes it, which ends like every other.
+      pass(closing.index + 2);
     } else if (tag === "title") {
-      const begins = page.indexOf(">", position);
-      if (begins === -1) break;
-      head.work += begins - open;
-      position = begins + 1;
       // A title that is not closed is none, and neither is any after
       // it: the search for its end is not made again.
       if (!titleCloses) continue;
       closes.title.lastIndex = position;
-      const end = closes.title.exec(page);
-      if (end === null) {
+      const closing = closes.title.exec(page);
+      if (closing === null) {
         head.work += page.length - position;
         titleCloses = false;
         continue;
       }
-      head.work += end.index - position;
+      head.work += closing.index - position;
       if (head.title === undefined && inHead) {
-        head.title = page.slice(position, end.index);
+        head.title = page.slice(position, closing.index);
       }
-      position = end.index + end[0].length;
+      pass(closing.index + 2);
     } else if (metaTags < maxMetaTags) {
       metaTags++;
-      // The end of the tag: the first ">" that is not within quotes.
-      let end = -1;
-      let quote = "";
-      const from = open + "<meta".length;
-      const limit = Math.min(page.length, from + maxTagLength);
-      let index = from;
-      for (; index < limit; index++) {
-        const character = page[index];
-        if (quote) {
-          if (character === quote) quote = "";
-        } else if (character === '"' || character === "'") {
-          quote = character;
-        } else if (character === ">") {
-          end = index;
-          break;
-        }
-      }
-      // Looked at once here, and twice more to read the attributes.
-      head.work += (index - from) * (end === -1 ? 1 : 3);
-      if (end === -1) {
-        // A tag without an end, as one whose quote never closes: what
-        // was looked through for its end is not looked through again.
-        position = limit;
-        continue;
-      }
-      position = end + 1;
-      const attributes = attributesOf(page.slice(from, end));
+      // Looked at once for its end, and twice more here: to cut the
+      // attributes out and to read them.
+      const attributesFrom = from + "meta".length;
+      head.work += (end - attributesFrom) * 2;
+      const attributes = attributesOf(page.slice(attributesFrom, end));
       const content = attributes.get("content");
       const declared =
         attributes.get("charset") ??

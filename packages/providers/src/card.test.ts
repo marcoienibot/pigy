@@ -101,6 +101,73 @@ describe("cardOf", () => {
     ).toEqual({ url, title: "The real one", description: "" });
   });
 
+  it("ends a script where its tag closes, and not at a word that begins like it", () => {
+    // "</scripture>" closes no script: the name of a tag ends at
+    // whitespace, "/" or ">". What follows it is still the script's.
+    expect(
+      cardOf(
+        url,
+        page(
+          '<script>const x="</scripture><title>Example</title>";</script><title>Real page</title>',
+        ),
+      )?.title,
+    ).toBe("Real page");
+    // The same for a style and for the title itself.
+    expect(
+      cardOf(
+        url,
+        page(
+          "<style>/* </styles><title>From a style</title> */</style><title>Real </titles> page</title>",
+        ),
+      )?.title,
+    ).toBe("Real </titles> page");
+    // And a tag that closes a script may have whitespace in it.
+    expect(
+      cardOf(url, page("<script>1</script\n><title>After</title>"))?.title,
+    ).toBe("After");
+  });
+
+  it("takes nothing for a tag that stands within the quotes of another", () => {
+    expect(
+      cardOf(
+        url,
+        page(
+          '<link rel="x" title="<title>Fake</title>"><title>Real page</title>',
+        ),
+      )?.title,
+    ).toBe("Real page");
+    expect(
+      cardOf(
+        url,
+        page(
+          `<base data-x='<meta property="og:title" content="Fake">'><title>Real page</title>`,
+        ),
+      )?.title,
+    ).toBe("Real page");
+    // Also in the tag of the script itself, and in one that closes.
+    expect(
+      cardOf(
+        url,
+        page(
+          '<script data-x="</script><title>Fake</title>">1</script><title>Real page</title>',
+        ),
+      )?.title,
+    ).toBe("Real page");
+    // A quote opens a value only after "=": the apostrophe of a value
+    // without quotes takes nothing with it.
+    expect(
+      cardOf(url, page("<link title=it's><title>Real page</title>"))?.title,
+    ).toBe("Real page");
+    // And a tag whose name only begins like one that is known is passed
+    // over like any other.
+    expect(
+      cardOf(
+        url,
+        page('<metadata content="<title>Fake</title>"><title>Real</title>'),
+      )?.title,
+    ).toBe("Real");
+  });
+
   it("takes out what is no text: control characters, and what turns a text around", () => {
     // A null, a bell, an override of the direction and an isolate.
     const noText = [0x0, 0x7, 0x202e, 0x2066].map((code) =>
@@ -264,6 +331,9 @@ describe("readPage: the work that a page makes", () => {
     ["titles that never close", "<title>"],
     ["titles that close", "<title></title>"],
     ["brackets", "<"],
+    ["tags that mean nothing here", '<a href="x">'],
+    ["tags whose quote never closes, of any name", '<a b="'],
+    ["scripts that close at a longer word", "<script></scripture>"],
     ["tags that begin and never end", '<meta "<!--<script<title'],
     ["references that never end", "<title>&#1&#x&amp</title>"],
   ];
