@@ -51,3 +51,18 @@ ADMIN_EMAILS=admin@example.com
 # needs neither: its simulated LinkedIn has an application of its own.
 #LINKEDIN_CLIENT_ID=
 #LINKEDIN_CLIENT_SECRET=
+
+# The app that you have made for this pigy in Meta's dashboard for
+# developers, https://developers.facebook.com/apps, with the use case
+# "Access the Threads API", the permissions threads_basic,
+# threads_content_publish, threads_manage_replies, threads_read_replies and
+# threads_delete, and the redirect callback address
+# <address>/connect/threads/callback. Meta takes only HTTPS addresses, so a
+# pigy at http://localhost connects no real Threads account. The two values
+# are the Threads app ID and the Threads app secret of the use case, not
+# those of the Meta app. Until Meta has reviewed the app, only the accounts
+# that you add as Threads testers can be connected. Without these two
+# lines, no Threads account can be connected in a live workspace. The
+# sandbox needs neither: its simulated Threads has an app of its own.
+#THREADS_APP_ID=
+#THREADS_APP_SECRET=

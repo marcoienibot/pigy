@@ -42,6 +42,15 @@ type Secrets = {
    */
   LINKEDIN_CLIENT_ID?: string;
   LINKEDIN_CLIENT_SECRET?: string;
+  /**
+   * The app that whoever runs this pigy has made at Meta for Threads, see
+   * src/network/threads-app.ts: the Threads app ID and the Threads app
+   * secret of its use case. Without both, no Threads account can be
+   * connected in a live workspace, and none that is connected has its
+   * access renewed. A sandbox needs neither.
+   */
+  THREADS_APP_ID?: string;
+  THREADS_APP_SECRET?: string;
 };
 
 export type Bindings = Omit<Env, keyof Secrets> & Secrets;

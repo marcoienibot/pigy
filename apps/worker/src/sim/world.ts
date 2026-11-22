@@ -236,8 +236,8 @@ export function worldPageUrl(url: string, origin: string): string {
  *
  * A browser may open the pages that are there for a person, which are the
  * ones where they consent to a connection: `/oauth/authorize`, on Mastodon
- * and on the authorization servers of Bluesky alike, and LinkedIn's own
- * path on LinkedIn's own host.
+ * on the authorization servers of Bluesky and on Threads alike, and
+ * LinkedIn's own path on LinkedIn's own host.
  * The rest of a simulated network is its API, which is for the adapters.
  */
 export function worldPage(path: string, search: string): URL | undefined {

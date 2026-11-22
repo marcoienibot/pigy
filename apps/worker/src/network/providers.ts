@@ -3,6 +3,7 @@ import type { Provider } from "@pigy/providers";
 import { createBlueskyProvider } from "@pigy/providers/bluesky";
 import { createLinkedInProvider } from "@pigy/providers/linkedin";
 import { createMastodonProvider } from "@pigy/providers/mastodon";
+import { createThreadsProvider } from "@pigy/providers/threads";
 import { drizzle } from "drizzle-orm/d1";
 import type { Bindings } from "../env.ts";
 import type { Vault } from "../vault.ts";
@@ -14,6 +15,7 @@ import {
 import { linkedInClientFor } from "./linkedin-client.ts";
 import { mastodonAppStore } from "./mastodon-apps.ts";
 import { type Reach, reachOf } from "./reach.ts";
+import { threadsAppFor } from "./threads-app.ts";
 
 /** What the adapters are made with. */
 export type ProviderContext = {
@@ -69,6 +71,15 @@ const adapters: {
       apps: mastodonAppStore(drizzle(env.DB), vault, reach.registrations, now),
       clientName,
     }),
+  threads: (reach, { env, now }) =>
+    createThreadsProvider({
+      fetch: reach.fetch,
+      now,
+      // Without an app, nothing is connected: `cannotConnect`. A channel
+      // from before goes on posting and renewing its access, which take
+      // its token and no app.
+      ...(threadsAppFor(reach, env) ?? { appId: "", appSecret: "" }),
+    }),
 };
 
 /**
@@ -105,6 +116,9 @@ export function cannotConnect(
   // Only for real: a sandbox has an application of its own.
   if (network === "linkedin" && !linkedInClientFor(reach, env)) {
     return "This pigy is not set up to connect LinkedIn accounts: whoever runs it has not registered it with LinkedIn.";
+  }
+  if (network === "threads" && !threadsAppFor(reach, env)) {
+    return "This pigy is not set up to connect Threads accounts: whoever runs it has not registered it with Meta.";
   }
   return undefined;
 }

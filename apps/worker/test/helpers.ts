@@ -5,6 +5,7 @@ import { createBlueskySimulator } from "@pigy/simulators/bluesky";
 import { createGoogleSimulator } from "@pigy/simulators/google";
 import { createLinkedInSimulator } from "@pigy/simulators/linkedin";
 import { createMastodonSimulator } from "@pigy/simulators/mastodon";
+import { createThreadsSimulator } from "@pigy/simulators/threads";
 import { createWorld } from "@pigy/simulators/world";
 import { drizzle } from "drizzle-orm/d1";
 import { expect, onTestFinished, vi } from "vitest";
@@ -34,7 +35,9 @@ type Secrets =
   | "CREDENTIAL_KEYS"
   | "BLUESKY_CLIENT_KEYS"
   | "LINKEDIN_CLIENT_ID"
-  | "LINKEDIN_CLIENT_SECRET";
+  | "LINKEDIN_CLIENT_SECRET"
+  | "THREADS_APP_ID"
+  | "THREADS_APP_SECRET";
 
 /**
  * A key for `CREDENTIAL_KEYS`, as a deployment has one: 32 bytes in
@@ -136,6 +139,13 @@ export function setup(
     name: "pigy",
     redirectUris: [`${origin}/connect/linkedin/callback`],
   });
+  const threads = createThreadsSimulator(world);
+  // The same for Threads: the app that whoever runs this pigy has made at
+  // Meta.
+  const threadsApp = threads.addApp({
+    name: "pigy",
+    redirectUris: [`${origin}/connect/threads/callback`],
+  });
   const network = {
     world,
     mastodon,
@@ -153,13 +163,21 @@ export function setup(
     linkedin,
     linkedinClient,
     linkedinMember: linkedin.addMember("Rosalind Franklin"),
+    threads,
+    threadsApp,
+    threadsUser: threads.addUser({
+      username: "rosalind",
+      name: "Rosalind Franklin",
+    }),
     /** The requests that left the app for a network, as "METHOD address". */
     requests: [] as string[],
   };
   // Each network answers on its own hosts, as on the internet.
   const networks: Fetch = (input, init) => {
     const { host } = new URL(urlOf(input));
-    const owner = [bluesky, linkedin].find((simulator) => simulator.owns(host));
+    const owner = [bluesky, linkedin, threads].find((simulator) =>
+      simulator.owns(host),
+    );
     return (owner ?? mastodon).fetch(input, init);
   };
   const networkFetch = options.interceptNetwork?.(networks) ?? networks;
@@ -195,6 +213,8 @@ export function setup(
     BLUESKY_CLIENT_KEYS: blueskyClientKeys,
     LINKEDIN_CLIENT_ID: linkedinClient.clientId,
     LINKEDIN_CLIENT_SECRET: linkedinClient.clientSecret,
+    THREADS_APP_ID: threadsApp.appId,
+    THREADS_APP_SECRET: threadsApp.appSecret,
     ...options.env,
   };
   const bindings: Bindings = {

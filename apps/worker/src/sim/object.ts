@@ -24,6 +24,11 @@ import {
   mastodonOperations,
 } from "@pigy/simulators/mastodon";
 import {
+  createThreadsSimulator,
+  threadsFaultKinds,
+  threadsOperations,
+} from "@pigy/simulators/threads";
+import {
   createWorld,
   type FaultKind,
   feed,
@@ -37,6 +42,7 @@ import {
   pigyClientMetadata,
 } from "../network/bluesky-client.ts";
 import { sandboxLinkedInClient } from "../network/linkedin-client.ts";
+import { sandboxThreadsApp } from "../network/threads-app.ts";
 import {
   type WorkspaceIdentity,
   workspaceIdentitySchema,
@@ -95,6 +101,7 @@ const simulated: {
   bluesky: { kinds: blueskyFaultKinds, operations: blueskyOperations },
   linkedin: { kinds: linkedInFaultKinds, operations: linkedInOperations },
   mastodon: { kinds: mastodonFaultKinds, operations: mastodonOperations },
+  threads: { kinds: threadsFaultKinds, operations: threadsOperations },
 };
 
 const simulatedNetworks = Object.keys(simulated) as Network[];
@@ -119,6 +126,7 @@ const seededKey = "object/seeded";
 // gets its accounts the first time it is used.
 const seededBlueskyKey = "object/seeded/bluesky";
 const seededLinkedInKey = "object/seeded/linkedin";
+const seededThreadsKey = "object/seeded/threads";
 
 /**
  * The Durable Object of a simulated world: the networks as one person's
@@ -156,7 +164,7 @@ export function simWorldObject({
       if (!this.#bind(workspaceIdentitySchema.parse(workspace))) {
         return undefined;
       }
-      const { mastodon, bluesky, linkedin } = this.#world();
+      const { mastodon, bluesky, linkedin, threads } = this.#world();
       if (pigy !== undefined) {
         // LinkedIn sends a browser to an address that was entered for the
         // application, in full, and to no other. The application of a
@@ -166,13 +174,17 @@ export function simWorldObject({
         linkedin.setRedirectUris(sandboxLinkedInClient.clientId, [
           pigy + connectCallbackPath("linkedin"),
         ]);
+        // The same goes for Threads, and for the app that pigy is there.
+        threads.setRedirectUris(sandboxThreadsApp.appId, [
+          pigy + connectCallbackPath("threads"),
+        ]);
       }
       // The simulators of the networks. Each says which hosts are its own,
       // and the one that owns the host of the request answers it. They are
       // not tried in turn: a simulator fails for a host that is not its own
       // the same way as for an answer that a fault loses, so going on to
       // the next would take a fault of one network for a host of another.
-      const simulators = [mastodon, bluesky, linkedin];
+      const simulators = [mastodon, bluesky, linkedin, threads];
       const { host } = new URL(url);
       const simulator = simulators.find((candidate) => candidate.owns(host));
       if (!simulator) return { noSuchHost: host };
@@ -347,7 +359,17 @@ export function simWorldObject({
         for (const [, name] of seedAccounts) linkedin.addMember(name);
         kv.put(seededLinkedInKey, true);
       }
-      return { world, mastodon, bluesky, linkedin };
+      const threads = createThreadsSimulator(world);
+      if (!kv.get(seededThreadsKey)) {
+        // As for LinkedIn: pigy is an app of the world's own here, whose
+        // redirect address `request` enters.
+        threads.addApp({ name: "pigy", ...sandboxThreadsApp });
+        for (const [username, name] of seedAccounts) {
+          threads.addUser({ username: `${username}.sandbox`, name });
+        }
+        kv.put(seededThreadsKey, true);
+      }
+      return { world, mastodon, bluesky, linkedin, threads };
     }
 
     /**

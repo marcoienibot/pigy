@@ -298,3 +298,36 @@ export async function connectLinkedInLive(
   });
   return outcomeOf(await browser.fetch(pathOf(callback)));
 }
+
+/** The handle of the account of the simulated Threads that a sandbox offers first. */
+export const sandboxThreadsHandle = "@ada.sandbox";
+
+/**
+ * Connects the account `handle` of the simulated Threads to a sandbox
+ * workspace, all the way, and returns how the app says it ended.
+ */
+export async function connectThreadsInSandbox(
+  browser: Browser,
+  workspaceId: string,
+  handle = sandboxThreadsHandle,
+): Promise<ConnectOutcome> {
+  const url = await consentUrl(browser, workspaceId, undefined, "threads");
+  const callback = await consentInSandbox(browser, url, { handle });
+  return outcomeOf(await browser.fetch(pathOf(callback)));
+}
+
+/**
+ * Connects the Threads account that stands for a real one to a live
+ * workspace, all the way, and returns how the app says it ended.
+ */
+export async function connectThreadsLive(
+  { network }: Pick<TestSetup, "network">,
+  browser: Browser,
+  workspaceId: string,
+): Promise<ConnectOutcome> {
+  const url = await consentUrl(browser, workspaceId, undefined, "threads");
+  const callback = await answerConsent(network.threads.fetch, url, {
+    account: network.threadsUser.id,
+  });
+  return outcomeOf(await browser.fetch(pathOf(callback)));
+}
