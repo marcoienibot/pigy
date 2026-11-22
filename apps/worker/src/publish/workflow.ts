@@ -822,8 +822,9 @@ export async function deliver(
       // up on the step, which was cut off or took too long, twice. A
       // delivery does not end for a card, so it goes on without any. If
       // the platform is stopping the run instead, to pause it or to start
-      // it again, the run does not go on by going on here: the next step
-      // is not begun, and what the platform throws there is thrown on.
+      // it again, the run does not go on by going on here: the platform
+      // stops a run as a whole, and the next step is not begun. PLAN.md
+      // section 19 has that as something to confirm.
       console.error("The cards of a post were not read", loggable(error));
       return content;
     }
