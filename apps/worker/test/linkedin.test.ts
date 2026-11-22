@@ -484,14 +484,15 @@ describe("a delivery to LinkedIn that goes wrong", () => {
     // another delivery: its own first attempt has sent nothing before.
     const first = await delivered(context, "Said before");
     expect(first.target.status).toBe("sent");
-    const [there] = await context.posted();
+    // Read from the world itself, which has the address of the post.
+    const [there] = feed(context.test.network.world, ["linkedin"]);
 
     const second = await delivered(context, "Said before");
 
     expect(second.target).toMatchObject({
       status: "error",
       attempt: 1,
-      error: `LinkedIn already has a post with this text, and did not publish it a second time: ${there?.url}`,
+      error: `LinkedIn already has a post with this text, and did not publish it a second time: ${there?.post.url}`,
     });
     // Nothing of the post that is there is recorded as this delivery's.
     expect(publishedOf(context.client, second.targetId, second.draft)).toEqual(
