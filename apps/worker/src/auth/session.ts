@@ -1,4 +1,14 @@
-import { and, eq, inArray, isNull, lte, ne, type SQL } from "drizzle-orm";
+import {
+  and,
+  eq,
+  exists,
+  inArray,
+  isNotNull,
+  isNull,
+  lte,
+  ne,
+  type SQL,
+} from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import type { Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
@@ -11,6 +21,7 @@ import {
 } from "../db/schema.ts";
 import { randomHex, sha256Hex } from "../digest.ts";
 import type { AppEnv, Auth } from "../env.ts";
+import type { WorkspaceIdentity } from "../workspace/store.ts";
 
 /**
  * Sessions, built the way https://auth.pilcrowonpaper.com/sessions and the
@@ -111,7 +122,7 @@ const workspacesOf = (db: DrizzleD1Database, accounts: SQL | undefined) =>
  * for a batch: a key is revoked with what ends the access of its owner, or
  * a request with the key could find the one without the other.
  */
-export const revokeKeysOf = (
+const revokeKeysOf = (
   db: DrizzleD1Database,
   accounts: SQL | undefined,
   now: Date,
@@ -126,16 +137,118 @@ export const revokeKeysOf = (
       ),
     );
 
+/** The accounts that `accounts` selects, by their IDs. */
+const idsOf = (db: DrizzleD1Database, accounts: SQL | undefined) =>
+  db.select({ id: users.id }).from(users).where(accounts);
+
+/** What names a workspace for its object. */
+const identity = {
+  id: workspaces.id,
+  ownerId: workspaces.ownerId,
+  environment: workspaces.environment,
+};
+
+/**
+ * Freezes the workspaces of the accounts that `accounts` selects, at
+ * `now`, and returns the ones that were not frozen before, for their
+ * objects to be told: `reviewFreezeOf` of src/workspace/workspaces.ts. A
+ * statement for a batch, which goes with `revokeKeysOf` wherever that is:
+ * a workspace is frozen where the keys that reach it are revoked, for
+ * the same accounts, and thawed where new keys can be made, which is a
+ * sign-in. A key that still works reaches a workspace that is not frozen.
+ *
+ * A frozen workspace renews no access and takes up no scheduled post:
+ * nobody is let in to look after it, and the access of its channels runs
+ * out at their networks by itself. Its data stays, and so do the channels:
+ * an admin who removed somebody by mistake invites them again, and they
+ * find their workspaces as they were once they have signed in.
+ */
+const freezeWorkspacesOf = (
+  db: DrizzleD1Database,
+  accounts: SQL | undefined,
+  now: Date,
+) =>
+  db
+    .update(workspaces)
+    .set({ frozenAt: now })
+    .where(
+      and(
+        // Frozen since the first time: that is when the access was lost.
+        isNull(workspaces.frozenAt),
+        inArray(workspaces.ownerId, idsOf(db, accounts)),
+      ),
+    )
+    .returning(identity);
+
+/**
+ * Thaws the workspaces of the account `userId`, which signs in with
+ * `email`, and returns the ones that were frozen, for their objects to be
+ * told. For a sign-in that succeeds: Google has just said who the account
+ * is, and that is somebody who is invited. Not for an invitation, which
+ * says nothing about who has the address by now: the account that was
+ * stored with it may have lost it.
+ *
+ * The statement asks again for the access that the sign-in found, which
+ * is an address of `adminEmails` or one on the allowlist: an admin can
+ * remove the address while the sign-in is on its way, after it has
+ * looked. D1 runs one statement at a time, so either the removal comes
+ * first, and this finds no invitation and thaws nothing, or it comes
+ * after, and freezes the workspaces again. Asked in a statement before
+ * this one, the removal could fall in between, and the workspaces of
+ * somebody who is no longer invited would stay thawed for good.
+ */
+export async function thawWorkspacesOf(
+  db: DrizzleD1Database,
+  userId: string,
+  email: string,
+  adminEmails: ReadonlySet<string>,
+): Promise<WorkspaceIdentity[]> {
+  return db
+    .update(workspaces)
+    .set({ frozenAt: null })
+    .where(
+      and(
+        eq(workspaces.ownerId, userId),
+        isNotNull(workspaces.frozenAt),
+        // An admin of the configuration is no invitation, and no route
+        // takes it away: `roleOf` of access.ts.
+        adminEmails.has(email)
+          ? undefined
+          : exists(
+              db
+                .select({ email: allowedEmails.email })
+                .from(allowedEmails)
+                .where(eq(allowedEmails.email, email)),
+            ),
+      ),
+    )
+    .returning(identity);
+}
+
 /** Ends the sessions of the accounts that `accounts` selects. */
 const endSessionsOf = (db: DrizzleD1Database, accounts: SQL | undefined) =>
-  db
-    .delete(sessions)
-    .where(
-      inArray(
-        sessions.userId,
-        db.select({ id: users.id }).from(users).where(accounts),
-      ),
-    );
+  db.delete(sessions).where(inArray(sessions.userId, idsOf(db, accounts)));
+
+/**
+ * Ends the access of the accounts that `accounts` selects to pigy, at
+ * `now`: their sessions end, their API keys are revoked and their
+ * workspaces are frozen. Three statements for a batch, in that order,
+ * which the batch hands back in the same order: the third has the
+ * workspaces that it froze, for their objects to be told. Every way that
+ * an account loses its access goes through here, so that none of the
+ * three is left out of one: a key that works reaches a workspace that is
+ * not frozen, and one that is revoked never comes back.
+ */
+export const endAccessOf = (
+  db: DrizzleD1Database,
+  accounts: SQL | undefined,
+  now: Date,
+) =>
+  [
+    endSessionsOf(db, accounts),
+    revokeKeysOf(db, accounts, now),
+    freezeWorkspacesOf(db, accounts, now),
+  ] as const;
 
 /**
  * The accounts that are stored with `email` and are not the Google account
@@ -166,29 +279,31 @@ const othersWith = (email: string, googleSub: string) =>
  *   now, until that person first signs in.
  *
  * Keys that are revoked do not come back: the person makes new ones once
- * they have signed in again.
+ * they have signed in again. The workspaces of the accounts whose keys are
+ * revoked are frozen with them, `freezeWorkspacesOf`, until they sign in
+ * again. Returns the workspaces that this froze.
  */
 export async function revokeAccessAtRefusedSignIn(
   db: DrizzleD1Database,
   googleSub: string,
   verifiedEmail: string | undefined,
   now: Date,
-): Promise<void> {
+): Promise<WorkspaceIdentity[]> {
   const account = eq(users.googleSub, googleSub);
   if (verifiedEmail === undefined) {
-    await db.batch([
-      endSessionsOf(db, account),
-      revokeKeysOf(db, account, now),
-    ]);
-    return;
+    const [, , frozen] = await db.batch(endAccessOf(db, account, now));
+    return frozen;
   }
+  const lost = and(account, ne(users.email, verifiedEmail));
   const others = othersWith(verifiedEmail, googleSub);
-  await db.batch([
+  const [, , , ownFrozen, , , othersFrozen] = await db.batch([
+    // Every session of the account ends, and its access only where it is
+    // stored with an address that it has lost.
     endSessionsOf(db, account),
-    revokeKeysOf(db, and(account, ne(users.email, verifiedEmail)), now),
-    endSessionsOf(db, others),
-    revokeKeysOf(db, others, now),
+    ...endAccessOf(db, lost, now),
+    ...endAccessOf(db, others, now),
   ]);
+  return [...ownFrozen, ...othersFrozen];
 }
 
 /**
@@ -197,16 +312,19 @@ export async function revokeAccessAtRefusedSignIn(
  * batch. Google has just said that the address belongs to `googleSub`
  * today, so an account that was let in with it earlier has lost it since:
  * its sessions and its keys are matched against that address, and would
- * go on working with the role of the address.
+ * go on working with the role of the address. Their workspaces are
+ * frozen in the same batch, and returned.
  */
 export async function revokeAccessOfOtherAccountsWith(
   db: DrizzleD1Database,
   email: string,
   googleSub: string,
   now: Date,
-): Promise<void> {
-  const others = othersWith(email, googleSub);
-  await db.batch([endSessionsOf(db, others), revokeKeysOf(db, others, now)]);
+): Promise<WorkspaceIdentity[]> {
+  const [, , frozen] = await db.batch(
+    endAccessOf(db, othersWith(email, googleSub), now),
+  );
+  return frozen;
 }
 
 /**

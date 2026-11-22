@@ -442,6 +442,17 @@ export const workspaceRecord = sqliteTable("workspace", {
    * that its rows hold: the migration that adds the column sets it.
    */
   time: integer("time").notNull().default(0),
+  /**
+   * Since when the workspace is frozen, in milliseconds since the epoch, or
+   * null while it is not: its owner has lost their access to pigy. A copy
+   * of `frozen_at` of the `workspace` table of D1, which is what decides,
+   * and which the object reads anew whenever the Worker says that it has
+   * changed, and where a copy that is out of date would matter: see
+   * `#checkFreeze` of object.ts. While it is set, the workspace takes up
+   * no scheduled post, renews no access, begins no delivery and takes no
+   * change from a client: `WorkspaceStore`.
+   */
+  frozenAt: integer("frozen_at"),
 });
 
 /** Which rows each of the latest changes wrote or deleted. */

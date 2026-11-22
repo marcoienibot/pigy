@@ -104,6 +104,12 @@ type MutatorCall = { name: string; args: unknown };
 /** Why a mutation was refused. */
 export type Refusal = { code: RejectionCode; message: string };
 
+/** Why a client has its mutations refused while the workspace is frozen. */
+const frozenRefusal: Refusal = {
+  code: "frozen",
+  message: "Your access to pigy has ended",
+};
+
 /** The result of a mutation that did not come from a client. */
 export type MutationOutcome = { ok: true } | ({ ok: false } & Refusal);
 
@@ -887,6 +893,7 @@ export class WorkspaceStore {
    * the alarm, which runs when a time has come and nothing else happens.
    */
   publishDue(now: number): void {
+    if (this.frozenAt !== null) return;
     this.storage.transactionSync(() => {
       this.run([], now, "server", true);
     });
@@ -898,6 +905,8 @@ export class WorkspaceStore {
    * that `publishDue` did not get done.
    */
   get nextDueAt(): number | null {
+    // Nothing is taken up while the workspace is frozen.
+    if (this.frozenAt !== null) return null;
     const next = this.db
       .select({ dueAt: sql<number | null>`min(${posts.dueAt})` })
       .from(posts)
@@ -996,6 +1005,36 @@ export class WorkspaceStore {
   }
 
   /**
+   * Since when the workspace is frozen, or null if it is not: its owner
+   * has lost their access to pigy, and the workspace does nothing by
+   * itself until they have it again. It takes up no scheduled post, before
+   * a mutation, after one or by the alarm, renews no access and begins no
+   * delivery: what it would do for somebody who looks after it. The posts
+   * whose time comes meanwhile are taken up when it thaws, by the rule for
+   * a post that is found late, which holds the ones that are more than an
+   * hour late and tells the person of them in the inbox. The deliveries
+   * that wait their turn end as not sent, `haltDeliveries`, and a client
+   * has every mutation refused, `applyFrom`. A delivery that is under way
+   * goes to its end: one that is cut off halfway is a post that nobody
+   * knows the fate of.
+   */
+  get frozenAt(): number | null {
+    return this.record().frozenAt;
+  }
+
+  /**
+   * Freezes the workspace at `at`, or thaws it with null, and returns
+   * whether that changed anything. `frozen_at` of D1 is what decides, and
+   * the object hands on what it read there.
+   */
+  setFrozen(at: number | null): boolean {
+    const before = this.frozenAt;
+    if ((before === null) === (at === null)) return false;
+    this.db.update(workspaceRecord).set({ frozenAt: at }).run();
+    return true;
+  }
+
+  /**
    * Begins the deliveries whose turn has come: for every channel that has
    * none under way, the one that has waited longest. The deliveries to one
    * channel go out one after the other, because no adapter can tell two
@@ -1004,6 +1043,11 @@ export class WorkspaceStore {
    * and the delivery begins when it has had its turn.
    */
   startDeliveries(now: number): void {
+    // A frozen workspace begins none: the ones that wait end.
+    if (this.frozenAt !== null) {
+      this.haltDeliveries(now);
+      return;
+    }
     this.storage.transactionSync(() => {
       const busy = new Set([
         ...this.db
@@ -1038,6 +1082,41 @@ export class WorkspaceStore {
           .set({ startedAt: this.record().time })
           .where(eq(postTargets.id, id))
           .run();
+      }
+    });
+  }
+
+  /**
+   * Ends every delivery that waits its turn as not sent, through the
+   * mutator `target.halt`, which says why: for a workspace that is frozen.
+   * Nothing goes out for somebody who is no longer let in, also not what
+   * they asked for before, which can be hundreds of posts that would take
+   * hours where a network asks to be tried again. The deliveries that are
+   * under way are left to end. Once the owner is back, they try the ones
+   * that ended so again, from the Sent screen.
+   */
+  haltDeliveries(now: number): void {
+    this.storage.transactionSync(() => {
+      const waiting = this.db
+        .select({ id: postTargets.id })
+        .from(postTargets)
+        .where(eq(postTargets.status, "queued"))
+        .orderBy(asc(postTargets.queuedAt), asc(postTargets.id))
+        .all();
+      if (waiting.length === 0) return;
+      const refusals = this.run(
+        waiting.map(({ id }) => ({
+          name: "target.halt",
+          args: { id } satisfies MutatorArgs<"target.halt">,
+        })),
+        now,
+        "server",
+      );
+      for (const refusal of refusals) {
+        // Each of them waits its turn in this transaction: a bug.
+        if (refusal) {
+          throw new Error(`A delivery was not stopped: ${refusal.message}`);
+        }
       }
     });
   }
@@ -1920,6 +1999,8 @@ export class WorkspaceStore {
    * ones that are overdue come first: a delivery may be waiting for one.
    */
   renewalsDue(now: number): DueRenewal[] {
+    // An access that nobody can use is left to end at its network.
+    if (this.frozenAt !== null) return [];
     const busy = new Set(
       this.db
         .select({ channelId: postTargets.channelId })
@@ -1964,6 +2045,10 @@ export class WorkspaceStore {
    * with a later time to renew at or with none, whatever comes of it.
    */
   private renewalsOverdue(now: number): Set<string> {
+    // No renewal comes while the workspace is frozen, so no delivery waits
+    // for one: the deliveries that were asked for before go to their end,
+    // and one whose access the network refuses renews it in its step.
+    if (this.frozenAt !== null) return new Set();
     return new Set(
       this.db
         .select({ id: channels.id })
@@ -1985,6 +2070,7 @@ export class WorkspaceStore {
    * milliseconds since the epoch, or null if none ever is.
    */
   get nextRenewalAt(): number | null {
+    if (this.frozenAt !== null) return null;
     return (
       this.db
         .select({ at: min(channels.refreshAt) })
@@ -2130,7 +2216,14 @@ export class WorkspaceStore {
     const last = mutations.at(-1);
     if (!last) return [];
     return this.storage.transactionSync(() => {
-      const outcomes = this.run(mutations, now, "client");
+      // A frozen workspace takes no change from a client: its owner has
+      // lost their access, and the sessions with it. The object closes the
+      // sockets of a workspace that it finds frozen, and opens none, so
+      // this is for a socket that is open all the same.
+      const outcomes: (Refusal | null)[] =
+        this.frozenAt === null
+          ? this.run(mutations, now, "client")
+          : mutations.map(() => frozenRefusal);
       const rejected = mutations.flatMap(({ id }, index) => {
         const refusal = outcomes[index];
         return refusal ? [{ id, ...refusal }] : [];
@@ -2183,6 +2276,9 @@ export class WorkspaceStore {
     const before = this.record();
     let { seq, time } = before;
     const due = () => {
+      // A frozen workspace takes up nothing: `frozenAt`. No mutator
+      // freezes or thaws it, so this holds for the whole run.
+      if (before.frozenAt !== null) return;
       // One at a time, and looked for anew after each: taking up a post
       // of the queue can give the others that were due another time.
       const tried = new Set<string>();
@@ -2542,6 +2638,7 @@ export class WorkspaceStore {
         seq: workspaceRecord.seq,
         logFloor: workspaceRecord.logFloor,
         time: workspaceRecord.time,
+        frozenAt: workspaceRecord.frozenAt,
       })
       .from(workspaceRecord)
       .get();

@@ -698,6 +698,58 @@ export function breakDatabase(
   return mend;
 }
 
+/**
+ * Has `meanwhile` overtake a request: when the app is about to run the
+ * first statement of D1 that `at` picks out, `meanwhile` begins, and the
+ * statement runs once it is over. For a request that something else
+ * comes in the middle of, at a point of the test's choosing, such as an
+ * admin who removes an address while a sign-in is on its way. With
+ * `late`, the statement runs first, and only its answer waits for
+ * `meanwhile`: an answer that arrives after what `meanwhile` did, which
+ * it is older than. The statements of `meanwhile` are not picked out,
+ * and neither is a statement of a batch. Returns what `meanwhile`
+ * returned, once it has begun.
+ */
+export function overtake(
+  at: (sql: string) => boolean,
+  meanwhile: () => Promise<unknown>,
+  { late = false }: { late?: boolean } = {},
+): () => Promise<unknown> | undefined {
+  const prepare = env.DB.prepare.bind(env.DB);
+  let picked = false;
+  let over: Promise<unknown> | undefined;
+  const begin = () => {
+    over ??= meanwhile();
+    return over;
+  };
+  const spy = vi.spyOn(env.DB, "prepare").mockImplementation((sql) => {
+    const statement = prepare(sql);
+    if (picked || !at(sql)) return statement;
+    picked = true;
+    const bind = statement.bind.bind(statement);
+    statement.bind = (...values) => {
+      const bound = bind(...values) as unknown as Record<
+        string,
+        (...args: unknown[]) => Promise<unknown>
+      >;
+      for (const method of ["all", "raw", "run", "first"]) {
+        const run = bound[method]?.bind(bound);
+        if (!run) continue;
+        bound[method] = async (...args) => {
+          if (!late) await begin();
+          const answer = await run(...args);
+          if (late) await begin();
+          return answer;
+        };
+      }
+      return bound as unknown as D1PreparedStatement;
+    };
+    return statement;
+  });
+  onTestFinished(() => spy.mockRestore());
+  return () => over;
+}
+
 /** Puts `email` on the allowlist without going through the API. */
 export async function invite(
   { db, clock }: Pick<TestSetup, "db" | "clock">,

@@ -17,7 +17,9 @@ import {
   syncProtocolVersion,
   syncSchemaVersion,
 } from "@pigy/core";
+import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
+import { workspaces } from "../db/schema.ts";
 import type { Bindings } from "../env.ts";
 import { type LogKind, log } from "../log.ts";
 import { deleteUnder, mediaKeys, noSuchUpload } from "../media/keys.ts";
@@ -227,6 +229,13 @@ export function workspaceObject(
     #looking = false;
     /** How often the alarm has begun to run since the object was made. */
     #alarms = 0;
+    /**
+     * How many reads of whether the workspace is frozen have begun since
+     * the object was made, and the number of the one that the object went
+     * by last: `#checkFreeze`.
+     */
+    #freezeReads = 0;
+    #freezeWentBy = 0;
 
     constructor(ctx: DurableObjectState, env: Bindings) {
       super(ctx, env);
@@ -243,7 +252,8 @@ export function workspaceObject(
      * The Worker makes this request itself, after it has checked the
      * session and that the workspace is the caller's. Nothing in it comes
      * from the client. Answers 403 if the workspace is not the one that the
-     * object holds, and 429 if it has too many sockets open.
+     * object holds, 423 if it is frozen, and 429 if it has too many
+     * sockets open.
      */
     override async fetch(request: Request): Promise<Response> {
       const identity = workspaceIdentitySchema.parse(
@@ -252,6 +262,15 @@ export function workspaceObject(
       if (!this.#store.bind(identity)) {
         return new Response(null, { status: 403 });
       }
+      // Before any hello: a workspace that is frozen opens no socket. The
+      // Worker has found the session good on the way here, which the
+      // owner has only after a sign-in that thawed the workspace in D1,
+      // but its check and this one are apart: the access can have ended in
+      // between, and the freeze have been looked at before this socket was
+      // there to be closed. So the object reads D1 again, which is also how
+      // a workspace whose thaw it was not told of thaws when its owner
+      // opens the app.
+      if (await this.#frozen()) return new Response(null, { status: 423 });
       const time = now().getTime();
       // Sockets that are past their time are closed here and do not count.
       const open = this.ctx
@@ -292,15 +311,18 @@ export function workspaceObject(
      * is carried out once, and answered the same way every time it comes.
      * Returns nothing if `workspace` is not the one that the object holds.
      */
-    mutate(
+    async mutate(
       workspace: WorkspaceIdentity,
       name: string,
       args: unknown,
       key?: string,
-    ): MutationOutcome | undefined {
+    ): Promise<MutationOutcome | undefined> {
       if (!this.#store.bind(workspaceIdentitySchema.parse(workspace))) {
         return undefined;
       }
+      // Whether it is frozen, first: a mutation takes up the posts that
+      // are due, which a frozen workspace does not.
+      await this.#frozen();
       const from = this.#store.seq;
       const outcome = this.#store.mutate(
         { name, args },
@@ -319,15 +341,18 @@ export function workspaceObject(
      * access that the channel held before, sealed as it was stored. Returns
      * nothing if `workspace` is not the one that the object holds.
      */
-    connectChannel(
+    async connectChannel(
       workspace: WorkspaceIdentity,
       channel: MutatorArgs<"channel.connect">,
       access: ChannelAccess,
       call: ConnectChannelCall = {},
-    ): ConnectChannelOutcome | undefined {
+    ): Promise<ConnectChannelOutcome | undefined> {
       if (!this.#store.bind(workspaceIdentitySchema.parse(workspace))) {
         return undefined;
       }
+      // Whether it is frozen, first: a mutation takes up the posts that
+      // are due, which a frozen workspace does not.
+      await this.#frozen();
       const from = this.#store.seq;
       const outcome = this.#store.connectChannel(
         channel,
@@ -350,13 +375,16 @@ export function workspaceObject(
      * that are connected hear that the channel is gone. Returns nothing if
      * `workspace` is not the one that the object holds.
      */
-    disconnectChannel(
+    async disconnectChannel(
       workspace: WorkspaceIdentity,
       channelId: string,
-    ): DisconnectChannelOutcome | undefined {
+    ): Promise<DisconnectChannelOutcome | undefined> {
       if (!this.#store.bind(workspaceIdentitySchema.parse(workspace))) {
         return undefined;
       }
+      // Whether it is frozen, first: a mutation takes up the posts that
+      // are due, which a frozen workspace does not.
+      await this.#frozen();
       const from = this.#store.seq;
       const outcome = this.#store.disconnectChannel(channelId, now().getTime());
       this.#publish(from);
@@ -441,16 +469,19 @@ export function workspaceObject(
      * from. Carried out once for `key`. Returns nothing if `workspace` is
      * not the one that the object holds.
      */
-    recordProgress(
+    async recordProgress(
       workspace: WorkspaceIdentity,
       run: DeliveryRun,
       parts: MutatorArgs<"target.progress">["parts"],
       progress: unknown,
       key: string,
-    ): MutationOutcome | undefined {
+    ): Promise<MutationOutcome | undefined> {
       if (!this.#store.bind(workspaceIdentitySchema.parse(workspace))) {
         return undefined;
       }
+      // Whether it is frozen, first: a mutation takes up the posts that
+      // are due, which a frozen workspace does not.
+      await this.#frozen();
       const from = this.#store.seq;
       const outcome = this.#store.recordProgress(
         run,
@@ -470,14 +501,17 @@ export function workspaceObject(
      * With a `key` it is carried out once. Returns nothing if `workspace`
      * is not the one that the object holds.
      */
-    endDelivery(
+    async endDelivery(
       workspace: WorkspaceIdentity,
       end: MutatorArgs<"target.end">,
       key?: string,
-    ): MutationOutcome | undefined {
+    ): Promise<MutationOutcome | undefined> {
       if (!this.#store.bind(workspaceIdentitySchema.parse(workspace))) {
         return undefined;
       }
+      // Whether it is frozen, first: a mutation takes up the posts that
+      // are due, which a frozen workspace does not.
+      await this.#frozen();
       const from = this.#store.seq;
       const outcome = this.#store.endDelivery(
         end,
@@ -494,14 +528,17 @@ export function workspaceObject(
      * carried out once for its key. Returns nothing if `workspace` is not
      * the one that the object holds.
      */
-    api(
+    async api(
       workspace: WorkspaceIdentity,
       call: ApiCall,
       repeat?: { key: string; fingerprint: string },
-    ): ApiAnswer | undefined {
+    ): Promise<ApiAnswer | undefined> {
       if (!this.#store.bind(workspaceIdentitySchema.parse(workspace))) {
         return undefined;
       }
+      // Whether it is frozen, first: a mutation takes up the posts that
+      // are due, which a frozen workspace does not.
+      await this.#frozen();
       const from = this.#store.seq;
       try {
         return this.#store.api(
@@ -609,15 +646,18 @@ export function workspaceObject(
      * did: not if the channel holds others by now. Returns nothing if
      * `workspace` is not the one that the object holds.
      */
-    renewChannelAccess(
+    async renewChannelAccess(
       workspace: WorkspaceIdentity,
       channelId: string,
       expected: string,
       access: RenewedChannelAccess,
-    ): boolean | undefined {
+    ): Promise<boolean | undefined> {
       if (!this.#store.bind(workspaceIdentitySchema.parse(workspace))) {
         return undefined;
       }
+      // Whether it is frozen, first: a mutation takes up the posts that
+      // are due, which a frozen workspace does not.
+      await this.#frozen();
       const from = this.#store.seq;
       const renewed = this.#store.renewChannelAccess(
         channelId,
@@ -627,6 +667,120 @@ export function workspaceObject(
       );
       this.#publish(from);
       return renewed;
+    }
+
+    /**
+     * Reads anew whether the workspace is frozen, from `frozen_at` of D1,
+     * and goes by it: the Worker calls this when it has frozen or thawed
+     * the workspace there. It is not told which, so that calls that cross
+     * on their way cannot leave it with the older word: `#checkFreeze`.
+     * Returns whether the workspace is frozen, and nothing if `workspace`
+     * is not the one that the object holds. Throws if D1 cannot be read.
+     */
+    async reviewFreeze(
+      workspace: WorkspaceIdentity,
+    ): Promise<boolean | undefined> {
+      if (!this.#store.bind(workspaceIdentitySchema.parse(workspace))) {
+        return undefined;
+      }
+      return this.#checkFreeze();
+    }
+
+    /**
+     * Reads in D1 whether the workspace is frozen, and goes by it,
+     * `#goBy`: the one way that the object learns it. Returns whether the
+     * workspace is frozen, by the newest answer that the object has.
+     * Throws if D1 cannot be read, and the object goes on by what it had.
+     *
+     * Reads can be under way side by side, as the one that the Worker asks
+     * for when it has frozen the workspace and the one of a socket that is
+     * being opened, and their answers can come the other way round. An
+     * answer to a read that began before the one that the object went by
+     * last is older than that one, and is not gone by: the read that began
+     * last wins, whichever answers last.
+     *
+     * Where the object reads it, `#frozen`: before it opens a socket, at
+     * every mutation that the Worker asks for, which would take up the
+     * scheduled posts that are due, and in its alarm, before it takes up a
+     * post, before every renewal of an access, and before it begins a
+     * delivery. A word of the Worker that is lost costs no more than what
+     * a client does on a socket that was open before: its mutations take
+     * up a post that has come due, for up to `socketLifetimeMs`, and the
+     * delivery of that post never begins.
+     */
+    async #checkFreeze(): Promise<boolean> {
+      const read = ++this.#freezeReads;
+      const [row] = await drizzle(this.env.DB)
+        .select({ frozenAt: workspaces.frozenAt })
+        .from(workspaces)
+        .where(eq(workspaces.id, this.#store.identity.id));
+      if (read > this.#freezeWentBy) {
+        this.#freezeWentBy = read;
+        // A workspace that D1 does not have is not frozen: nothing has
+        // said that its owner lost their access.
+        this.#goBy(row?.frozenAt?.getTime() ?? null);
+      }
+      return this.#store.frozenAt !== null;
+    }
+
+    /**
+     * `#checkFreeze`, for what the object is about to do: when D1 cannot
+     * be read, that is logged, and the object goes on by what it had.
+     */
+    async #frozen(): Promise<boolean> {
+      try {
+        return await this.#checkFreeze();
+      } catch (error) {
+        log.warn(
+          "access",
+          "Whether a workspace is frozen could not be read: it goes on as it was",
+          this.#store.where,
+          error,
+        );
+        return this.#store.frozenAt !== null;
+      }
+    }
+
+    /**
+     * Goes by what D1 says of the workspace: frozen since `frozenAt`, or
+     * not, with null.
+     *
+     * A workspace that is frozen closes its sockets, and ends the
+     * deliveries that wait their turn, `haltDeliveries` of the store: each
+     * time that it is found frozen, and not only when that is new. A
+     * socket can have been opened on a check that came before the freeze,
+     * and a delivery queued by a mutation that did. The clients connect
+     * again, and their sessions, which ended with the access of the owner,
+     * keep them out. One that thaws has the alarm look after what it has
+     * left undone meanwhile.
+     */
+    #goBy(frozenAt: number | null): void {
+      const changed = this.#store.setFrozen(frozenAt);
+      if (frozenAt === null) {
+        if (changed) this.#wake();
+        return;
+      }
+      for (const socket of this.ctx.getWebSockets()) {
+        try {
+          socket.close(syncCloseCodes.reconnect, "Connect again");
+        } catch {
+          // It went away in the meantime.
+        }
+      }
+      const from = this.#store.seq;
+      try {
+        this.#store.haltDeliveries(now().getTime());
+      } catch (error) {
+        // The alarm ends them before it would begin one.
+        log.error(
+          "delivery",
+          "The deliveries of a frozen workspace were not ended",
+          this.#store.where,
+          error,
+        );
+      } finally {
+        this.#publish(from);
+      }
     }
 
     /**
@@ -687,6 +841,19 @@ export function workspaceObject(
         // The channels whose access this alarm turned to, or undefined
         // if it did not get to say: see `#nextLookIn`.
         let renewed: ReadonlySet<string> | undefined;
+        // Before it takes up a post, the alarm asks D1 whether the
+        // workspace is frozen. The Worker says so when it freezes the
+        // workspace, and what it says can be lost on its way: this is
+        // where that would cost something. A renewal and a delivery ask
+        // again where they begin. A workspace that is frozen asks whether
+        // it still is, which is how one whose thaw was lost thaws when its
+        // alarm runs for something else.
+        if (
+          this.#store.frozenAt !== null ||
+          (this.#store.nextDueAt ?? Number.POSITIVE_INFINITY) <= now().getTime()
+        ) {
+          await this.#frozen();
+        }
         for (const [look, kind, failed] of [
           [
             () => this.#publishDue(),
@@ -999,10 +1166,15 @@ export function workspaceObject(
       const from = this.#store.seq;
       const time = now().getTime();
       // Before it is tried: what fails here has been tried all the same,
-      // and is come back to in a while, not at once.
-      this.#store.dueLookedAt = Math.max(this.#store.dueLookedAt, time);
+      // and is come back to in a while, not at once. Not while the
+      // workspace is frozen, which takes nothing up: once it thaws, what
+      // is due is taken up at once.
+      if (this.#store.frozenAt === null) {
+        this.#store.dueLookedAt = Math.max(this.#store.dueLookedAt, time);
+      }
       try {
         this.#store.publishDue(time);
+        // The second step of a delete that the person made, frozen or not.
         this.#store.pruneTrashed(time);
       } finally {
         this.#publish(from);
@@ -1073,6 +1245,9 @@ export function workspaceObject(
      *   account was connected again or disconnected while its network was
      *   asked, which stays due, with the pass behind: it takes a change to
      *   get there, so that ends too.
+     *
+     * A workspace that is frozen has no scheduled post and no access in
+     * this list: the store says that none is due, `frozenAt` of the store.
      *
      * `after` says who asks: a change, or the alarm when it has looked.
      */
@@ -1212,6 +1387,10 @@ export function workspaceObject(
       const workspace = this.#store.identity;
       const due = this.#store.renewalsDue(now().getTime());
       for (const [index, channel] of due.entries()) {
+        // Before each: a renewal waits for its network, and the workspace
+        // can be frozen meanwhile, with a word that is lost. A frozen one
+        // renews nothing, and has nothing left that is due.
+        if (await this.#frozen()) return false;
         const { channelId, credentials } = channel;
         turnedTo.add(channelId);
         const renewal = await renewAccess(
@@ -1586,6 +1765,13 @@ export function workspaceObject(
      */
     async #startDeliveries(failed: Set<string>): Promise<void> {
       for (;;) {
+        // Before a delivery begins, whether the workspace is frozen: one
+        // that is ends the deliveries that wait, `startDeliveries` of the
+        // store. A word of the freeze that was lost would otherwise let a
+        // post go out for somebody who is no longer let in.
+        if (this.#store.deliveriesNeed(now().getTime()) === "begin") {
+          await this.#frozen();
+        }
         const from = this.#store.seq;
         this.#store.startDeliveries(now().getTime());
         this.#publish(from);

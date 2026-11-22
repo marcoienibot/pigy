@@ -8,6 +8,7 @@ import { and, eq } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { workspaces } from "../db/schema.ts";
 import type { Bindings } from "../env.ts";
+import { log } from "../log.ts";
 import type { ApiAnswer, ApiCall } from "./api.ts";
 import type {
   ChannelAccess,
@@ -30,7 +31,8 @@ import type {
  * The Worker's side of workspaces: which there are, whose they are, and the
  * only ways into their Durable Objects: `connectWorkspace` for a client,
  * and for the Worker's own code `mutateWorkspace`, `connectChannel`,
- * `disconnectChannel`, `channelAccess` and `callWorkspaceApi`, and what the publishing
+ * `disconnectChannel`, `channelAccess`, `callWorkspaceApi` and
+ * `reviewFreezeOf`, and what the publishing
  * workflow asks and reports: `deliveryOf`, `aboutToSend`, `stepBegins`,
  * `recordProgress`, `endDelivery` and `renewChannelAccess`.
  */
@@ -432,6 +434,43 @@ export async function finishUpload(
     .finishUpload(workspace, mediaId, outcome, key);
   if (!ended) throw foreign(workspace);
   return ended;
+}
+
+/**
+ * Tells the objects of `list` that D1 has frozen or thawed them, which
+ * each reads there for itself: `reviewFreeze` of the object. Never fails:
+ * a word that is lost is made up for by the object, which reads D1 again
+ * before it does anything for the owner, and before it opens a socket. So
+ * what goes wrong here is logged and goes no further: the change of D1
+ * that came before it stands, and a request that made it is answered.
+ */
+export async function reviewFreezeOf(
+  namespace: Bindings["WORKSPACE"],
+  list: readonly WorkspaceIdentity[],
+): Promise<void> {
+  await Promise.all(
+    list.map(async (workspace) => {
+      const review = async () => {
+        const frozen = await namespace
+          .getByName(workspace.id)
+          .reviewFreeze(workspace);
+        if (frozen === undefined) throw foreign(workspace);
+      };
+      try {
+        // Once more after a failure: the runtime can fail a call into an
+        // object for a reason of its own. Asking twice is harmless, since
+        // the object only reads.
+        await review().catch(review);
+      } catch (error) {
+        log.warn(
+          "access",
+          "A workspace was not told that it is frozen or thawed: it finds out by itself when that matters",
+          { workspaceId: workspace.id },
+          error,
+        );
+      }
+    }),
+  );
 }
 
 function foreign(workspace: WorkspaceIdentity): Error {

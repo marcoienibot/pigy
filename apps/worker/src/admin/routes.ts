@@ -5,16 +5,17 @@ import {
   normalizeEmail,
   updateAllowedEmailRequestSchema,
 } from "@pigy/core";
-import { eq, inArray } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { type Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { readAdminEmails } from "../auth/config.ts";
 import { requireAdmin, requireUser } from "../auth/guards.ts";
-import { revokeKeysOf } from "../auth/session.ts";
-import { allowedEmails, sessions, users } from "../db/schema.ts";
+import { endAccessOf } from "../auth/session.ts";
+import { allowedEmails, users } from "../db/schema.ts";
 import type { AppDependencies, AppEnv } from "../env.ts";
 import { parseJsonBody } from "../errors.ts";
+import { reviewFreezeOf } from "../workspace/workspaces.ts";
 
 /** The allowlist: who may sign in, and as what. Admins only. */
 export function adminRoutes(dependencies: AppDependencies): Hono<AppEnv> {
@@ -132,22 +133,19 @@ export function adminRoutes(dependencies: AppDependencies): Hono<AppEnv> {
     // stop with the invitation anyway. They are revoked so that they do
     // not work again when the address is invited again: by then it may be
     // somebody else's, and until that person has signed in nothing has
-    // told pigy so.
-    const [removed] = await db.batch([
+    // told pigy so. The workspaces of those accounts are frozen with
+    // them, for the same reason, and thaw when the account signs in.
+    const [removed, , , frozen] = await db.batch([
       db
         .delete(allowedEmails)
         .where(eq(allowedEmails.email, email))
         .returning({ email: allowedEmails.email }),
-      db
-        .delete(sessions)
-        .where(
-          inArray(
-            sessions.userId,
-            db.select({ id: users.id }).from(users).where(stored),
-          ),
-        ),
-      revokeKeysOf(db, stored, now()),
+      ...endAccessOf(db, stored, now()),
     ]);
+    // Through `waitUntil`: the objects are told also when the admin has
+    // left by then. What they are told is in D1, so the answer does not
+    // wait for it.
+    c.executionCtx.waitUntil(reviewFreezeOf(c.env.WORKSPACE, frozen));
     if (removed.length === 0) {
       throw new HTTPException(404, { message: `${email} is not on the list` });
     }

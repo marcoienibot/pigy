@@ -68,6 +68,13 @@ export function syncRoutes(dependencies: AppDependencies): Hono<AppEnv> {
           message: "This workspace has too many connections open",
         });
       }
+      // Frozen: the owner lost their access after the session was found
+      // good on the way here.
+      if (response.status === 423) {
+        throw new HTTPException(403, {
+          message: "The owner of this workspace has no access to pigy",
+        });
+      }
       if (!response.webSocket) {
         throw new Error(`The workspace answered with ${response.status}`);
       }

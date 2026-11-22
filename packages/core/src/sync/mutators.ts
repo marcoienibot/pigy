@@ -94,6 +94,11 @@ export const rejectionCodeSchema = z.enum([
   "not_current",
   /** The mutation is one that only the server runs. */
   "not_allowed",
+  /**
+   * The workspace is frozen: its owner has lost their access to pigy, and
+   * it takes no change from a client until they have signed in again.
+   */
+  "frozen",
   /** The server failed. The details are in its logs. */
   "internal_error",
 ]);
@@ -731,6 +736,14 @@ function seenNotification(
 // reach it, and need not.
 const disconnectedMessage =
   "The account was disconnected before the post was sent.";
+
+/**
+ * What a delivery says that waited its turn when the workspace was
+ * frozen, `target.halt`: it is for the owner, who reads it once they are
+ * back.
+ */
+export const haltedMessage =
+  "Your access to pigy ended before this post's turn came. Try it again now that you are back.";
 
 export const mutators = {
   /**
@@ -2097,6 +2110,37 @@ export const mutators = {
         countedAt: before?.countedAt ?? null,
         reason: reading.status === "unavailable" ? reading.reason : null,
       });
+    },
+    { serverOnly: true },
+  ),
+
+  /**
+   * Ends a delivery that waits its turn and has not begun, as failed:
+   * the server runs this for every such delivery when the workspace is
+   * frozen, because its owner has lost their access to pigy. Nothing goes
+   * out for somebody who is no longer let in, also not what they asked
+   * for before. A delivery that is under way is left to end, which a run
+   * that is stopped halfway would leave nobody knowing. The person tries
+   * the delivery again from the Sent screen, `target.retry`, once they
+   * are back, and the inbox tells them of the post as of every post that
+   * failed.
+   */
+  "target.halt": mutator(
+    z.strictObject({ id: idSchema }),
+    (tx, { id }) => {
+      const target = tx.get("post_target", id);
+      if (target?.status !== "queued") {
+        throw new MutationRejected(
+          "not_current",
+          "This delivery does not wait its turn",
+        );
+      }
+      tx.put("post_target", {
+        ...target,
+        status: "error",
+        error: haltedMessage,
+      });
+      settle(tx, target.postId);
     },
     { serverOnly: true },
   ),

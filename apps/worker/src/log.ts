@@ -24,6 +24,11 @@ export type LogKind =
   /** A secret of the Worker is missing or not valid. */
   | "configuration"
   | "sign-in"
+  /**
+   * Who may use pigy, beyond signing in: the workspaces of a person who
+   * has lost their access, which are frozen.
+   */
+  | "access"
   /** Connecting and disconnecting an account. */
   | "connection"
   /** Renewing the access of a channel by the timer. */

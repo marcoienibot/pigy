@@ -47,6 +47,7 @@ const refused: Record<MutatorName, string> = {
   "target.progress": "A published post was not recorded",
   "target.end": "The outcome of a post was not recorded",
   "metric.record": "The stats of a post were not recorded",
+  "target.halt": "A post that waited its turn was not stopped",
   "channel.warnOfExpiry": "A reminder was not added",
   "notification.prune": "Old notifications were not removed",
   "media.ready": "An uploaded image was not recorded",
