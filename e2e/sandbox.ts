@@ -96,9 +96,15 @@ export function publishNow(
   workspaceId: string,
   channelId: string,
   text: string,
+  /**
+   * Schedules the post for this many milliseconds from now, by the clock
+   * of the page, in place of publishing it at once: the server then
+   * publishes it by itself when the time has come.
+   */
+  dueIn?: number,
 ): Promise<Published> {
   return page.evaluate(
-    ({ workspaceId, channelId, text }) =>
+    ({ workspaceId, channelId, text, dueIn }) =>
       new Promise<Published>((resolve, reject) => {
         // A UUID version 7, which is what the ID of a row has to be.
         const id = () => {
@@ -158,7 +164,13 @@ export function publishNow(
                     name: "target.add",
                     args: { id: targetId, postId, channelId },
                   },
-                  { id: 3, name: "post.publish", args: { id: postId } },
+                  dueIn === undefined
+                    ? { id: 3, name: "post.publish", args: { id: postId } }
+                    : {
+                        id: 3,
+                        name: "post.schedule",
+                        args: { id: postId, dueAt: Date.now() + dueIn },
+                      },
                 ],
               }),
             );
@@ -166,6 +178,8 @@ export function publishNow(
           }
           const post = rows.post?.get(postId) as Published["post"] | undefined;
           if (!post || post.status === "sending") return;
+          // A scheduled post waits for its time, which the server keeps.
+          if (post.status === "scheduled") return;
           const ofPost = <Row>(table: string, own: (row: Row) => boolean) =>
             [...(rows[table]?.values() ?? [])].filter((row) =>
               own(row as unknown as Row),
@@ -186,6 +200,6 @@ export function publishNow(
         socket.onclose = ({ code }) =>
           reject(new Error(`The socket was closed with ${code}`));
       }),
-    { workspaceId, channelId, text },
+    { workspaceId, channelId, text, dueIn },
   );
 }
