@@ -13,7 +13,12 @@ import { imagePolicy } from "../src/security-headers.ts";
 import { mediaSweepList } from "../src/workspace/object.ts";
 import { WorkspaceStore } from "../src/workspace/store.ts";
 import { apiClient, makeKey, startedApi } from "./api.ts";
-import { connectBlueskyInSandbox, connectInSandbox } from "./channels.ts";
+import {
+  connectBlueskyInSandbox,
+  connectInSandbox,
+  connectLinkedInInSandbox,
+  connectThreadsInSandbox,
+} from "./channels.ts";
 import {
   type Browser,
   entriesOf,
@@ -680,6 +685,49 @@ it("holds a draft with images that the public API shares to what the editor hold
         images: [{ alt: "Boats at dusk", width: 320, height: 240 }],
       },
     },
+  ]);
+});
+
+it("shares a draft with images through the public API to LinkedIn and Threads, which take images as the editor does", async () => {
+  const { test, browser, workspaces } = await startedApi();
+  const workspaceId = workspaces.sandbox;
+  const { channel: linkedIn = "" } = await connectLinkedInInSandbox(
+    browser,
+    workspaceId,
+  );
+  const { channel: threads = "" } = await connectThreadsInSandbox(
+    browser,
+    workspaceId,
+  );
+  const client = new SyncClient();
+  await client.connect(browser, workspaceId);
+  // Written in the app, because the API takes no image.
+  const draft = await writeDraft(client, workspaceId, "A harbour");
+  const image = await upload(browser, client, workspaceId, await photo());
+  await attach(client, draft.partIds[0] ?? "", image.id, "Boats at dusk");
+  const { secret } = await makeKey(browser, workspaceId);
+  const api = apiClient(test, secret);
+
+  // Before, the API refused the image for either account, as the editor
+  // did: both judge a post by `validateContent`.
+  expect(
+    await api.ok(`/posts/${draft.postId}`, {
+      method: "PATCH",
+      json: { channelIds: [linkedIn, threads], mode: "shareNow" },
+    }),
+  ).toMatchObject({ status: "sending" });
+  expect(await api.ended(draft.postId)).toMatchObject({ status: "sent" });
+  expect(
+    (await sandboxPosts(browser))
+      .map(({ network, text, images }) => [
+        network,
+        text,
+        images?.map(({ alt }) => alt),
+      ])
+      .sort(),
+  ).toEqual([
+    ["linkedin", "A harbour", ["Boats at dusk"]],
+    ["threads", "A harbour", ["Boats at dusk"]],
   ]);
 });
 
