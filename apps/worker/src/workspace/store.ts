@@ -78,9 +78,13 @@ export type MutationOutcome = { ok: true } | ({ ok: false } & Refusal);
 /**
  * What `stepBegins` answers: `by` is the mark of the run of the step that
  * was noted first, which is the caller's own unless a run of the same
- * step came before it. Refused if the delivery is not under way.
+ * step came before it. It is null where nobody can tell any more whether
+ * one did: the delivery is so old that a note of it may have been cleared
+ * away. Refused if the delivery is not under way.
  */
-export type StepBegun = { ok: true; by: string } | ({ ok: false } & Refusal);
+export type StepBegun =
+  | { ok: true; by: string | null }
+  | ({ ok: false } & Refusal);
 
 /** What names a call of the Worker that is carried out once. */
 export const callKeySchema = z.string().min(1).max(200);
@@ -91,6 +95,15 @@ export const callKeySchema = z.string().min(1).max(200);
  * that it may run again.
  */
 export const keyLifetimeMs = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * For how long after a delivery began the note of a step of it is sure to
+ * be kept, in milliseconds: a day less than `keyLifetimeMs`. A note is
+ * kept like every call with a key, and it is made after its delivery
+ * began, so it is there for at least this long. The day is for the time of
+ * a mutation, which a workspace can put a little ahead of its clock.
+ */
+export const stepNoteLifetimeMs = keyLifetimeMs - 24 * 60 * 60 * 1000;
 
 /**
  * How long the object keeps the access that a connection replaced under
@@ -754,7 +767,16 @@ export class WorkspaceStore {
    * mark than its own is a second run of a step that began before, and
    * does not send. A run whose call is repeated, because its answer was
    * lost, is handed its own mark again: that is what `once` does for a
-   * key.
+   * key, and why the step of the workflow repeats a call that failed with
+   * the mark that it has.
+   *
+   * A note is kept for as long as every call with a key, `keyLifetimeMs`,
+   * and a delivery can go on for longer: a run that is paused stays, and
+   * can be taken up again whenever somebody says. So a step that finds no
+   * note for a delivery that began `stepNoteLifetimeMs` ago or longer is
+   * not handed its mark: a note may have been there and cleared away, and
+   * the step that made it may have sent. It is answered with no mark,
+   * which is kept in the place of one, and does not send.
    *
    * It is refused if the delivery is not under way, and a step that was
    * noted for a delivery which has ended since is nobody's concern.
@@ -767,7 +789,11 @@ export class WorkspaceStore {
   ): StepBegun {
     return this.once(key, now, (): StepBegun => {
       const target = this.db
-        .select({ status: postTargets.status, attempt: postTargets.attempt })
+        .select({
+          status: postTargets.status,
+          attempt: postTargets.attempt,
+          startedAt: postTargets.startedAt,
+        })
         .from(postTargets)
         .where(eq(postTargets.id, targetId))
         .get();
@@ -778,7 +804,8 @@ export class WorkspaceStore {
           message: "This delivery is not under way",
         };
       }
-      return { ok: true, by: mark };
+      const noteMayBeGone = now - target.startedAt >= stepNoteLifetimeMs;
+      return { ok: true, by: noteMayBeGone ? null : mark };
     });
   }
 

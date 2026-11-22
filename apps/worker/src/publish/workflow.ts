@@ -111,6 +111,15 @@ export const limitsLifetimeMs = 24 * 60 * 60 * 1000;
 export const renewalWaitsMs = [1000, 5000, 15_000];
 
 /**
+ * How long a step waits before it tells a workspace again that it begins,
+ * after a call that failed, in milliseconds: once per entry. The call may
+ * have noted the step with only its answer lost, and a step that gave up
+ * here would be run again by the platform as another run, which the note
+ * then keeps from sending anything.
+ */
+export const beginsWaitsMs = [1000, 5000, 15_000];
+
+/**
  * A try of a step that talks to a network. What goes wrong in it is its
  * result, so the platform runs it again only when it was cut off: its time
  * was up, the Worker went away under it, or the workspace could not be
@@ -592,9 +601,11 @@ export async function deliver(
    * run before it noted.
    *
    * The price is a delivery that ends as `uncertain` without need, where
-   * a step was cut off between the note and its request, or the answer of
-   * the workspace was lost and the step is run again for that. Nothing
-   * was posted then, and the person who looks finds that.
+   * a step was cut off between the note and its request, where the
+   * workspace could not be told for longer than the step tries, and where
+   * the delivery is so old that the workspace no longer vouches for its
+   * notes: `stepNoteLifetimeMs` of the store. Nothing was posted then, and
+   * the person who looks finds that.
    */
   const sendingOnce = (provider: Provider): Provider =>
     provider.repeatsSafely
@@ -603,17 +614,34 @@ export async function deliver(
           ...provider,
           async publishStep(request) {
             const { name, mark } = running;
-            const begun = await asked(() =>
-              stepBegins(
-                env.WORKSPACE,
-                workspace,
-                run,
-                mark,
-                `${runId}/begins/${name}`,
-              ),
-            );
+            const begun = await asked(async () => {
+              // A call that fails may have noted the step all the same,
+              // with only its answer lost, as when a deploy takes the
+              // workspace away under it. So it is repeated with the same
+              // mark, which the workspace then hands back as this run's
+              // own. Only a step that gives up is run again by the
+              // platform, with a mark of its own.
+              for (let tries = 0; ; tries++) {
+                try {
+                  return await stepBegins(
+                    env.WORKSPACE,
+                    workspace,
+                    run,
+                    mark,
+                    `${runId}/begins/${name}`,
+                  );
+                } catch (error) {
+                  const wait = beginsWaitsMs[tries];
+                  if (wait === undefined) throw error;
+                  await pause(wait);
+                }
+              }
+            });
             // Not under way any more: ended otherwise.
             if (!begun.ok) throw superseded();
+            // The mark of another run of the step, or none: the delivery
+            // is so old that the note of a run before this one may be
+            // gone. Either way a request of this step may have gone out.
             if (begun.by !== mark) {
               throw new Ended({ kind: "uncertain", message: cutOffMessage });
             }

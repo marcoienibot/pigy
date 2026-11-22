@@ -1,9 +1,13 @@
+import { runInDurableObject } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { connectErrorSchema, type Fetch, sandboxFeedSchema } from "@pigy/core";
 import { feed, type SimToken } from "@pigy/simulators/world";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { sandboxLinkedInClient } from "../src/network/linkedin-client.ts";
 import { cutOffMessage } from "../src/publish/delivery.ts";
-import { WorkspaceStore } from "../src/workspace/store.ts";
+import { beginsWaitsMs } from "../src/publish/workflow.ts";
+import { keyLifetimeMs, WorkspaceStore } from "../src/workspace/store.ts";
+import { mutateWorkspace } from "../src/workspace/workspaces.ts";
 import {
   channelsOf,
   connectLinkedInInSandbox,
@@ -33,7 +37,13 @@ import {
   waitsOf,
   writeDraft,
 } from "./publishing.ts";
-import { SyncClient, workspaceIds } from "./sync-client.ts";
+import {
+  identityOf,
+  newId,
+  objectOf,
+  SyncClient,
+  workspaceIds,
+} from "./sync-client.ts";
 
 /**
  * LinkedIn in the Worker: connecting a member in a sandbox and for real,
@@ -568,10 +578,10 @@ describe("a step that asks LinkedIn to publish and is cut off", () => {
       "Cut off",
     ]);
 
-    // The run is taken up again from its first step, as the platform does
-    // with a step whose time has run out, and as somebody does who
-    // restarts a run. Nothing of the step was recorded: to the run, it
-    // never happened.
+    // The run is taken up again from its first step, as when somebody
+    // restarts it. Nothing of the step was recorded: to the run, it never
+    // happened. The platform itself runs only the step again when its
+    // time has run out, which the test after the next is about.
     using run = await runOf(context.workspace, targetId);
     await run.restart();
 
@@ -610,12 +620,75 @@ describe("a step that asks LinkedIn to publish and is cut off", () => {
     expect(await context.posted()).toHaveLength(1);
   });
 
-  it("is not run a second time by the platform either, which runs a step again that failed as a step", async () => {
+  it("is not run again either when the run is taken up after so long that the workspace has cleared its note away", async () => {
+    const { held, intercept } = answersHeld();
+    const context = await withChannel("live", { interceptNetwork: intercept });
+    onTestFinished(() => {
+      held.closed = false;
+    });
+    const { targetId } = await publish(context, "Cut off for long");
+    // LinkedIn has published the post, and the step waits for the answer.
+    await vi.waitFor(() => expect(held.arrived).toBe(1), patience);
+    const notes = () =>
+      runInDurableObject(objectOf(context.workspace), (_, state) =>
+        state.storage.sql
+          .exec<{ key: string }>(
+            "select key from keyed_call where key like '%/begins/%'",
+          )
+          .toArray(),
+      );
+    expect(await notes()).toHaveLength(1);
+
+    // The run stays as it is for longer than a workspace keeps a call
+    // with a key, as a run does that somebody has paused: the platform
+    // keeps such a run for as long as it is paused. Meanwhile another call
+    // with a key comes, which is when the workspace clears the old ones
+    // away, the note of the step among them.
+    context.test.advance(keyLifetimeMs + day);
+    const identity = await identityOf(context.test, context.workspace);
+    expect(
+      await mutateWorkspace(
+        env.WORKSPACE,
+        identity,
+        "post.create",
+        { id: newId(), partId: newId(), text: "Something else" },
+        "another call with a key",
+      ),
+    ).toEqual({ ok: true });
+    // The note is gone: without that, the test would show nothing but
+    // what the test before it shows.
+    expect(await notes()).toEqual([]);
+
+    // Taken up again from its first step. LinkedIn would take the text a
+    // second time by now: it refuses a repetition for some minutes only.
+    using run = await runOf(context.workspace, targetId);
+    await run.restart();
+    // Read from the workspace itself: the session of the client has
+    // ended in the month that has passed, and its socket with it.
+    const target = () =>
+      runInDurableObject(objectOf(context.workspace), (_, state) =>
+        state.storage.sql
+          .exec("select status, attempt, error from post_target")
+          .one(),
+      );
+    await vi.waitFor(
+      async () =>
+        expect(await target()).toEqual({
+          status: "uncertain",
+          attempt: 1,
+          error: cutOffMessage,
+        }),
+      patience,
+    );
+    expect(context.asked()).toBe(1);
+    expect(await context.posted()).toHaveLength(1);
+  });
+
+  it("goes on when the workspace has noted that it begins and only the answer was lost: the step tells it again, with the same mark", async () => {
     const context = await withChannel("live");
     // The workspace notes that the step begins, and its answer is lost on
-    // the way back: the step fails before it has called the adapter, and
-    // the platform runs it again. To that second run, the note says what
-    // it would say after a step that was cut off with its request out.
+    // the way back, as when a deploy takes the object away under the
+    // call. Once: the step asks again.
     const original = WorkspaceStore.prototype.stepBegins;
     const noted = vi
       .spyOn(WorkspaceStore.prototype, "stepBegins")
@@ -623,6 +696,37 @@ describe("a step that asks LinkedIn to publish and is cut off", () => {
         original.apply(this, args);
         throw new Error("The answer was lost");
       });
+    onTestFinished(() => noted.mockRestore());
+
+    const { target } = await delivered(context, "Noted");
+
+    // Told twice, by the same run of the step: with one mark, which the
+    // second call is handed back as its own.
+    expect(noted).toHaveBeenCalledTimes(2);
+    expect(noted.mock.calls[1]?.[1]).toBe(noted.mock.calls[0]?.[1]);
+    // Nothing had been sent, and nothing kept the step from sending.
+    expect(target).toMatchObject({ status: "sent", attempt: 1 });
+    expect(context.asked()).toBe(1);
+    expect((await context.posted()).map((post) => post.text)).toEqual([
+      "Noted",
+    ]);
+  });
+
+  it("is not run a second time by the platform either, which runs a step again that failed as a step", async () => {
+    const context = await withChannel("live");
+    // The workspace notes that the step begins, and the step never hears
+    // of it, however often it asks: it fails before it has called the
+    // adapter, and the platform runs it again, as another run of the
+    // step, with a mark of its own. To that run, the note says what it
+    // would say after a step that was cut off with its request out.
+    const original = WorkspaceStore.prototype.stepBegins;
+    const noted = vi.spyOn(WorkspaceStore.prototype, "stepBegins");
+    for (let call = 0; call <= beginsWaitsMs.length; call++) {
+      noted.mockImplementationOnce(function (this: WorkspaceStore, ...args) {
+        original.apply(this, args);
+        throw new Error("The answer was lost");
+      });
+    }
     onTestFinished(() => noted.mockRestore());
     // The platform waits a minute before it runs a step again, and a test
     // does not.
@@ -632,7 +736,9 @@ describe("a step that asks LinkedIn to publish and is cut off", () => {
 
     const { draft, targetId, target } = await delivered(context, "Noted");
 
-    expect(noted).toHaveBeenCalledTimes(2);
+    // Every call of the first run, and one of the second.
+    expect(noted).toHaveBeenCalledTimes(beginsWaitsMs.length + 2);
+    expect(noted.mock.calls.at(-1)?.[1]).not.toBe(noted.mock.calls[0]?.[1]);
     expect(target).toMatchObject({
       status: "uncertain",
       attempt: 1,
