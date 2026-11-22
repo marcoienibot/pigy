@@ -4,6 +4,7 @@ import {
   apiBasePath,
   apiOperations,
   apiSchemaNames,
+  maxApiAnswerTextLength,
   maxApiBodyBytes,
 } from "./v1.ts";
 
@@ -30,13 +31,15 @@ const introduction = `The API of pigy does what the app does: it writes posts, s
 
 **Errors.** Every answer that is not a success is \`{ "error": name, "message": text }\`. The name follows from the status: \`UnauthorizedError\` for 401 and 403, \`NotFoundError\` for 404, \`LimitReachedError\` for 429, \`InvalidInputError\` for every other 4xx, \`UnexpectedError\` for 5xx. An \`InvalidInputError\` about one field of the request names it in \`field\`. A 409 says that the post is not in a state for what was asked: it has gone out, is being sent, or is not in the queue.
 
-**Repeating a request.** Send an \`Idempotency-Key\` header of your own making with a request that changes something, up to 255 characters. A request that comes again with the same key is not carried out again: it is answered as the first one was, a refusal included, for 30 days. The same key with another request is refused with a 422. Without the header every request is carried out.
+**Repeating a request.** Send an \`Idempotency-Key\` header of your own making with a request that changes something, up to 255 characters. A request that comes again with the same key is not carried out again, for 30 days. If it was carried out, the repeat is answered with the status of the first answer and with the post, or the posting schedule, as it is when the repeat comes, not as it was: a post that was \`sending\` may be \`sent\` by then, and one that was deleted since is a 404. If it was refused, the repeat is answered with the same refusal. Either way the answer has the header \`Idempotent-Replayed: true\`. A key is the API key's own: two API keys that send the same \`Idempotency-Key\` make two requests. The same key with another request is refused with a 422. A request that failed with a 5xx has not happened, and is carried out when it is repeated. Without the header every request is carried out.
 
-**Limits.** A key may make ${apiRateLimit.limit} requests a minute. Beyond that the answer is a 429 with \`Retry-After\`. A body is at most ${maxApiBodyBytes / 1024} KiB.
+**For servers and scripts.** The API sends no CORS headers and answers no preflight, so a page in a browser cannot call it from another site: a key is a secret, and a page has no place to keep one. Call it from a server or a command line.
 
-**Times** are ISO 8601, in UTC in every answer.
+**Limits.** A key may make ${apiRateLimit.limit} requests a minute. Beyond that the answer is a 429 with \`Retry-After\`. A body is at most ${maxApiBodyBytes / 1024} KiB. An answer carries at most ${maxApiAnswerTextLength} characters of the texts of posts: a page of posts ends before the post that would take it past that, and one post leaves out the texts that its channels have of their own once there is no room for more, which \`targets\` says.
 
-**Pages.** A list is answered a page at a time, with \`pageInfo\`: pass its \`endCursor\` as \`after\` for the next page while \`hasNextPage\` is true.
+**Times** are ISO 8601, in UTC in every answer, and in the year 9999 at the latest.
+
+**Pages.** A list is answered a page at a time, with \`pageInfo\`: pass its \`endCursor\` as \`after\` for the next page while \`hasNextPage\` is true. A page can have fewer posts than were asked for.
 
 **Not there yet.** Images: \`POST /media\` and \`assets\` are refused. Engagement: \`metrics\` is null.`;
 
@@ -127,7 +130,7 @@ function operationOf(name: string, operation: ApiOperation): JsonObject {
             in: "header",
             required: false,
             description:
-              "Names the request, so that it is carried out once however often it is sent.",
+              "Names the request, so that it is carried out once however often this API key sends it. The answer to a repeat has the header `Idempotent-Replayed: true`.",
             schema: { type: "string", maxLength: 255 },
           } satisfies JsonObject,
         ]
@@ -143,6 +146,15 @@ function operationOf(name: string, operation: ApiOperation): JsonObject {
             "application/json": { schema: schemaOf(operation.response) },
           },
         };
+  if (writes) {
+    success.headers = {
+      "Idempotent-Replayed": {
+        description:
+          "`true` if the request was not carried out now: it came with an `Idempotency-Key` that this API key had sent before.",
+        schema: { type: "string", enum: ["true"] },
+      },
+    };
+  }
   return {
     operationId: name,
     summary: operation.summary,

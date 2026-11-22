@@ -71,7 +71,8 @@ function call(
 test("makes a key that is shown once, which a script creates a draft with, and revokes it", async ({
   ownPage: page,
 }) => {
-  // Two sign-ins, a key that is made and used, and two loads of the page.
+  // Close to the time that a test has: a person of its own, a key that
+  // is made, used and revoked, and the page loaded again in between.
   test.slow();
   await openKeys(page);
   await expect(page.getByText("The sandbox has no API keys.")).toBeVisible();
