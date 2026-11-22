@@ -227,7 +227,7 @@ describe("utf8Range", () => {
     });
     // "e" with a combining acute accent: one byte and two. Before the
     // tag are "caf", those three and a space: seven bytes.
-    const accented = "é";
+    const accented = "e\u0301";
     expect(sliced(`caf${accented} #caf${accented}`, `#caf${accented}`)).toEqual(
       {
         byteStart: 7,
