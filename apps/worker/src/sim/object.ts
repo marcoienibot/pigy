@@ -229,6 +229,22 @@ export function simWorldObject({
     }
 
     /**
+     * The bytes of an image that was published in the world, whole, by
+     * the name that a post has for it, or null if the world does not
+     * keep them. Returns nothing if `workspace` is not the sandbox that
+     * the world belongs to.
+     */
+    image(
+      workspace: WorkspaceIdentity,
+      id: string,
+    ): Uint8Array | null | undefined {
+      if (!this.#bind(workspaceIdentitySchema.parse(workspace))) {
+        return undefined;
+      }
+      return this.#world().world.blobs.get(id) ?? null;
+    }
+
+    /**
      * The ways the networks of the world can be made to fail, and the
      * faults that are armed. Returns nothing if `workspace` is not the
      * sandbox that the world belongs to.

@@ -7,8 +7,10 @@ import {
   cardLinks,
   cardMaker,
   channelLimits,
+  contentImageSchema,
   linkCardSchema,
   type MutatorArgs,
+  mediaLimitsOf,
   type Network,
   type PostContent,
   targetLimits,
@@ -28,6 +30,9 @@ import { fetchLinkCard } from "@pigy/providers/card";
 import { openCredentials, sealCredentials } from "../channels/credentials.ts";
 import type { AppDependencies, Bindings } from "../env.ts";
 import { type LogContext, log } from "../log.ts";
+import { mediaLinksWith } from "../media/links.ts";
+import { imagesTransformer } from "../media/transform.ts";
+import { ImageUnavailable, imagesFor, mediaSource } from "../media/variants.ts";
 import { blueskyKeysWithoutRequest } from "../network/bluesky-client.ts";
 import type { providerOf } from "../network/providers.ts";
 import type { Reach } from "../network/reach.ts";
@@ -81,7 +86,15 @@ import { retryWaitSeconds } from "./retry.ts";
  *    What comes out of it all the same is the platform's, as out of
  *    every step. A delivery to a network that makes its cards itself
  *    skips the step, and so does one without a link.
- * 4. `publish` of @pigy/providers drives the adapter of the network: each
+ * 4. `media` makes the images of the post fit the network, for a post
+ *    that has images: of an image with more bytes or pixels than the
+ *    account takes, or of a type that its network does not take, a
+ *    smaller one is made, once, and kept in the bucket next to the
+ *    original, `imagesFor` of src/media/variants.ts. It asks nothing of
+ *    the network. What it returns says which file each image goes out
+ *    as, and what that file is: no bytes. A post without images skips
+ *    the step, as every run from before pigy had images does.
+ * 5. `publish` of @pigy/providers drives the adapter of the network: each
  *    of its steps is a step here, `publish-1`, `publish-2` and so on, with
  *    at most one request that changes something on the network. After
  *    each, `record-publish-N` tells the workspace how far the post has
@@ -91,7 +104,7 @@ import { retryWaitSeconds } from "./retry.ts";
  *    each of these steps first tells the workspace that it begins, and
  *    does not call the adapter if a run of the same step began before:
  *    see `sendingOnce` below.
- * 5. `end` tells the workspace how the delivery ended.
+ * 6. `end` tells the workspace how the delivery ended.
  *
  * What the platform stores of a run is to be taken for readable: what the
  * run was started with, and what each step returned. Neither holds a
@@ -139,6 +152,14 @@ const cardStep = {
   retries: { limit: 3, delay: "5 seconds", backoff: "constant" },
   timeout: "30 seconds",
 } as const;
+
+/**
+ * The address that the links to the images of a sandbox are made with.
+ * No host answers at it: the simulated world of the sandbox is what
+ * fetches such a link, and it reads the bucket itself, with the check
+ * that the app makes of a link: `linkedImage` of src/sim/object.ts.
+ */
+export const sandboxMediaOrigin = "https://pigy.invalid";
 
 /**
  * How old the limits of a channel may be before a delivery asks the
@@ -791,8 +812,11 @@ export async function deliver(
     // again, so its page is not read again: a delivery that is tried
     // again reads for what is left of it.
     const published = progress?.parts.length ?? 0;
+    // Nor is one read for a part with images: a post shows its images
+    // or the card of its link, and where pigy makes the card, the images
+    // are what it sends.
     const links = cardLinks(channel.network, content).map((link, index) =>
-      index < published ? null : link,
+      index < published || content.parts[index]?.media?.length ? null : link,
     );
     if (links.every((link) => link === null)) return content;
     // Nothing is caught here. The step does not fail by itself: what a
@@ -818,6 +842,61 @@ export async function deliver(
       parts: content.parts.map((part, index) => {
         const card = cards.data?.[index];
         return card ? { ...part, card } : part;
+      }),
+    };
+  };
+
+  /**
+   * The content of a delivery with its images as the network gets them:
+   * `imagesFor`, in a step of its own, so that every step of the adapter
+   * is handed the same files. A part that an attempt before this one has
+   * published needs none.
+   *
+   * The step goes by the limits of the account as the workspace has them
+   * now, which `prepare` has just brought up to date. What it returns is
+   * the names of files in the bucket and what they are: no secret, and a
+   * few lines for each image.
+   */
+  const withMedia = async ({
+    content,
+    progress,
+  }: Prepared): Promise<PostContent> => {
+    if (progress?.done || content.parts.every(({ media }) => !media?.length)) {
+      return content;
+    }
+    const made = await tried("media", async () => {
+      const delivery = await asked(() =>
+        deliveryOf(env.WORKSPACE, workspace, run),
+      );
+      if (!delivery) throw superseded();
+      const { limits } = delivery.channel;
+      // `prepare` has stored them.
+      if (!limits) throw new Error("The channel has no limits");
+      try {
+        return {
+          images: await imagesFor(
+            env.MEDIA,
+            imagesTransformer(env.IMAGES),
+            workspace.id,
+            mediaLimitsOf(limits),
+            content,
+            progress?.parts.length ?? 0,
+          ),
+        };
+      } catch (error) {
+        if (error instanceof ImageUnavailable) throw refused(error.message);
+        // The bucket, or what makes images, failed for a reason of its
+        // own: the step has changed nothing anywhere, and the platform
+        // runs it again.
+        throw new Unasked(error);
+      }
+    });
+    // What a step returned is read like everything that was stored.
+    const images = contentImageSchema.array().array().parse(made.images);
+    return {
+      parts: content.parts.map((part, index) => {
+        const ofPart = images[index] ?? [];
+        return ofPart.length > 0 ? { ...part, media: ofPart } : part;
       }),
     };
   };
@@ -870,7 +949,23 @@ export async function deliver(
       sendingOnce(provider),
       {
         ...accessOf(prepared.channel, provider, channelVault),
-        content: await withCards(prepared, reach),
+        content: await withCards(
+          { ...prepared, content: await withMedia(prepared) },
+          reach,
+        ),
+        // The images are read from the bucket, by the names that the
+        // step above gave them. A network that fetches an image itself
+        // is told a link that pigy signs: for a live workspace at the
+        // address that this pigy is reached at, which it has to be told,
+        // for a sandbox at one that only its simulated world asks, and
+        // which leads nowhere else.
+        media: mediaSource(
+          env.MEDIA,
+          workspace.id,
+          mediaLinksWith(env, developmentCredentialKeys),
+          reach.simulated ? sandboxMediaOrigin : env.APP_URL,
+          now,
+        ),
         // What names the delivery to the network, the same in every
         // attempt.
         key: targetId,

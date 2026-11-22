@@ -6,6 +6,7 @@ import {
   sandboxFeedMarks,
   sandboxFeedSchema,
 } from "@pigy/core";
+import { imageInfo } from "@pigy/simulators/world";
 import { drizzle } from "drizzle-orm/d1";
 import { type Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -21,6 +22,7 @@ import {
   worldFaults,
   worldFeed,
   worldFetch,
+  worldImage,
   worldPage,
 } from "./world.ts";
 
@@ -165,6 +167,24 @@ export function sandboxRoutes(dependencies: AppDependencies): Hono<AppEnv> {
     return c.json(
       c.req.query(sandboxFeedMarks) === undefined ? withoutMarks(feed) : feed,
     );
+  });
+
+  // An image of a post of the feed: to the owner of the sandbox, as an
+  // image and as nothing else. What it is, is read from its bytes here.
+  app.get("/images/:id", async (c) => {
+    const sandbox = await ownSandbox(c, dependencies);
+    const bytes = await worldImage(c.env.SIM_WORLD, sandbox, c.req.param("id"));
+    const info = bytes && imageInfo(bytes);
+    if (!bytes || !info) return handleNotFound(c);
+    return new Response(bytes as Uint8Array<ArrayBuffer>, {
+      headers: {
+        "Content-Type": info.type,
+        "X-Content-Type-Options": "nosniff",
+        "Content-Disposition": "attachment",
+        "Content-Security-Policy": "default-src 'none'; sandbox",
+        "Cross-Origin-Resource-Policy": "same-origin",
+      },
+    });
   });
 
   app.get("/faults", async (c) => {

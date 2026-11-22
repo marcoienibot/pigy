@@ -142,7 +142,15 @@ function threaded({ accounts, posts }: WorldContents): SandboxFeed {
   const entries = new Map<string, SandboxPost>();
   const key = (network: string, id: string) => `${network} ${id}`;
   // Oldest first, so that replies are listed in the order they were made.
-  for (const { network, id, text, createdAt, entities, card } of posts) {
+  for (const {
+    network,
+    id,
+    text,
+    createdAt,
+    entities,
+    card,
+    images,
+  } of posts) {
     entries.set(key(network, id), {
       id,
       text,
@@ -154,6 +162,12 @@ function threaded({ accounts, posts }: WorldContents): SandboxFeed {
         end,
       })),
       card: card ?? null,
+      images: (images ?? []).map(({ blob, alt, width, height }) => ({
+        id: blob,
+        alt,
+        width,
+        height,
+      })),
       replies: [],
     });
   }
@@ -195,6 +209,21 @@ function threaded({ accounts, posts }: WorldContents): SandboxFeed {
 }
 
 /** How the networks of the sandbox `workspace` can fail, and what is armed. */
+/**
+ * The bytes of an image that was published in the world of the sandbox
+ * `workspace`, by the name that the feed has for it, or null if the world
+ * does not keep them, or never had them.
+ */
+export async function worldImage(
+  namespace: Bindings["SIM_WORLD"],
+  workspace: WorkspaceIdentity,
+  id: string,
+): Promise<Uint8Array | null> {
+  const bytes = await namespace.getByName(workspace.id).image(workspace, id);
+  if (bytes === undefined) throw foreign(workspace);
+  return bytes;
+}
+
 export async function worldFaults(
   namespace: Bindings["SIM_WORLD"],
   workspace: WorkspaceIdentity,

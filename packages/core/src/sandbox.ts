@@ -89,6 +89,9 @@ export const sandboxLink = "https://example.test/";
  * leave it out, as every schema of an answer that a client fetches does
  * from phase 4b on: the next field needs no such query. AGENTS.md, "Add
  * an API route", has the rule.
+ * - `GET /api/sandbox/images/<id>` answers with the bytes of an image of
+ *   a post of the feed, by the `id` that the post has for it, or with a
+ *   404 once the world no longer keeps them.
  * - `GET /api/sandbox/faults` answers with `SandboxFaults`: the ways each
  *   simulated network can be made to fail, and the faults that are armed.
  * - `POST /api/sandbox/faults` takes a `SandboxFault` and arms it: the next
@@ -120,9 +123,32 @@ export type SandboxPost = {
    * texts are what a page says of itself: text, never markup.
    */
   card: { url: string; title: string; description: string } | null;
+  /**
+   * The images of the post, in the order that the network shows them in.
+   * Left out by a server from before the simulated networks took images.
+   */
+  images?: SandboxImage[] | undefined;
   /** The replies of the same account, oldest first. A thread is a chain. */
   replies: SandboxPost[];
 };
+
+/** An image of a post on a simulated network. */
+export type SandboxImage = {
+  /**
+   * What names the image to `sandboxImagePath`, where its bytes are
+   * served to the owner of the sandbox, for as long as the simulated
+   * world keeps them: the latest ones.
+   */
+  id: string;
+  /** What it shows, as the network was told. Empty if it was told nothing. */
+  alt: string;
+  width: number;
+  height: number;
+};
+
+/** The address of an image of a post of the sandbox of whoever asks. */
+export const sandboxImagePath = (id: string) =>
+  `/api/sandbox/images/${encodeURIComponent(id)}`;
 
 /** A link, a mention or a hashtag in the text of a `SandboxPost`. */
 export type SandboxEntity = {
@@ -155,6 +181,16 @@ export const sandboxPostSchema: z.ZodType<SandboxPost> = z.object({
       description: z.string(),
     })
     .nullable(),
+  images: z
+    .array(
+      z.object({
+        id: z.string().min(1).max(100),
+        alt: z.string(),
+        width: z.number().int().positive(),
+        height: z.number().int().positive(),
+      }),
+    )
+    .optional(),
   get replies() {
     return z.array(sandboxPostSchema);
   },
