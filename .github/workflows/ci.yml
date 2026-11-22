@@ -4,6 +4,8 @@ on:
   pull_request:
   push:
     branches: [main]
+  # By hand, on `main`: the checks, and then the deploy, as after a push.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -72,3 +74,97 @@ jobs:
             e2e/playwright-report/
             e2e/test-results/
           retention-days: 7
+
+  # Says why nothing was deployed, in a repository that has not switched
+  # deployment on: SETUP.md, "Deploying from CI". It fails nothing.
+  deploy-off:
+    if: >-
+      github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+      && vars.DEPLOY != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - run: |
+          echo "Not deployed: the repository variable DEPLOY is not \"true\". SETUP.md says how deployment from CI is switched on." >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice title=Not deployed::The repository variable DEPLOY is not \"true\". SETUP.md says how deployment from CI is switched on."
+
+  # Deploys what was pushed to `main`, once every check has passed: the
+  # migrations of D1 first, then the Worker with the web app. SETUP.md has
+  # what the owner sets up for it, and AGENTS.md, "Deployment", what a
+  # deploy may not change.
+  deploy:
+    needs: [lint, typecheck, test, build, e2e]
+    # Not for a pull request, whose code nobody has merged. Not unless the
+    # owner has switched it on, with the repository variable DEPLOY. And
+    # not for a push whose commit message says "[no deploy]": that is for
+    # a change that must wait for a moment in which nothing is being sent,
+    # and is then deployed by hand, with "Run workflow".
+    if: >-
+      github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+      && vars.DEPLOY == 'true'
+      && !contains(github.event.head_commit.message, '[no deploy]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    # The secrets of the deploy are those of this environment, which the
+    # owner restricts to `main`: a job of a pull request cannot read them.
+    environment: production
+    # One deploy at a time, in the order of the pushes: a run waits for the
+    # one before it, and is given up for a newer one that waits too.
+    concurrency:
+      group: deploy
+      cancel-in-progress: false
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Check that the deploy is set up
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error title=Not deployed::DEPLOY is \"true\", but the environment \"production\" lacks the secret CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID. SETUP.md says how they are made."
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The checks of an older push can end after those of a newer one. Its
+      # deploy would then put the older code in the place of the newer.
+      - name: Check that this is still the newest commit of main
+        id: newest
+        run: |
+          head="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [ "$head" = "$GITHUB_SHA" ]; then
+            echo "is=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Not deployed::main has moved on to $head, whose own run deploys."
+          fi
+      - if: steps.newest.outputs.is == 'true'
+        uses: ./.github/actions/setup
+      # The production build, made here and deployed from here: never a
+      # build that the tests ran against, which has the simulated sign-in.
+      # `pnpm build` fails if the build has any of that.
+      - if: steps.newest.outputs.is == 'true'
+        run: pnpm build
+      # Each build points `wrangler deploy` at itself. This is the one that
+      # the step before has made, and it says so.
+      - name: Check that the build to deploy is the production build
+        if: steps.newest.outputs.is == 'true'
+        run: |
+          config="$(node -p 'require("./apps/web/.wrangler/deploy/config.json").configPath')"
+          case "$config" in
+            */dist/*) echo "Deploying $config" ;;
+            *) echo "::error::wrangler would deploy $config, which is not the production build."; exit 1 ;;
+          esac
+      # Before the code that needs them. Until the deploy below is done,
+      # and for good if it fails, the code of the release before runs on
+      # the new schema: a migration only adds what that code can ignore.
+      # AGENTS.md, "Change the database schema".
+      - name: Apply the migrations of D1
+        if: steps.newest.outputs.is == 'true'
+        run: pnpm --filter @pigy/worker exec wrangler d1 migrations apply DB --remote
+      - name: Deploy
+        if: steps.newest.outputs.is == 'true'
+        run: pnpm --filter @pigy/web exec wrangler deploy
