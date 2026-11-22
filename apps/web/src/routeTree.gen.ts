@@ -19,6 +19,7 @@ import { Route as AppInboxRouteImport } from './routes/_app/inbox'
 import { Route as AppQueueRouteImport } from './routes/_app/queue'
 import { Route as AppSentRouteImport } from './routes/_app/sent'
 import { Route as AppSettingsRouteImport } from './routes/_app/settings'
+import { Route as AppShareRouteImport } from './routes/_app/share'
 import { Route as AppSimulatorRouteImport } from './routes/_app/simulator'
 import { Route as AppSettingsIndexRouteImport } from './routes/_app/settings/index'
 import { Route as AppSettingsAboutRouteImport } from './routes/_app/settings/about'
@@ -75,6 +76,11 @@ const AppSettingsRoute = AppSettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => AppRoute,
 } as any)
+const AppShareRoute = AppShareRouteImport.update({
+  id: '/share',
+  path: '/share',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppSimulatorRoute = AppSimulatorRouteImport.update({
   id: '/simulator',
   path: '/simulator',
@@ -116,6 +122,7 @@ export interface FileRoutesByFullPath {
   '/queue': typeof AppQueueRoute
   '/sent': typeof AppSentRoute
   '/settings': typeof AppSettingsRouteWithChildren
+  '/share': typeof AppShareRoute
   '/simulator': typeof AppSimulatorRouteWithChildren
   '/settings/about': typeof AppSettingsAboutRoute
   '/settings/access': typeof AppSettingsAccessRoute
@@ -131,6 +138,7 @@ export interface FileRoutesByTo {
   '/inbox': typeof AppInboxRoute
   '/queue': typeof AppQueueRoute
   '/sent': typeof AppSentRoute
+  '/share': typeof AppShareRoute
   '/': typeof AppIndexRoute
   '/settings/about': typeof AppSettingsAboutRoute
   '/settings/access': typeof AppSettingsAccessRoute
@@ -149,6 +157,7 @@ export interface FileRoutesById {
   '/_app/queue': typeof AppQueueRoute
   '/_app/sent': typeof AppSentRoute
   '/_app/settings': typeof AppSettingsRouteWithChildren
+  '/_app/share': typeof AppShareRoute
   '/_app/simulator': typeof AppSimulatorRouteWithChildren
   '/_app/': typeof AppIndexRoute
   '/_app/settings/about': typeof AppSettingsAboutRoute
@@ -169,6 +178,7 @@ export interface FileRouteTypes {
     | '/queue'
     | '/sent'
     | '/settings'
+    | '/share'
     | '/simulator'
     | '/settings/about'
     | '/settings/access'
@@ -184,6 +194,7 @@ export interface FileRouteTypes {
     | '/inbox'
     | '/queue'
     | '/sent'
+    | '/share'
     | '/'
     | '/settings/about'
     | '/settings/access'
@@ -201,6 +212,7 @@ export interface FileRouteTypes {
     | '/_app/queue'
     | '/_app/sent'
     | '/_app/settings'
+    | '/_app/share'
     | '/_app/simulator'
     | '/_app/'
     | '/_app/settings/about'
@@ -288,6 +300,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSettingsRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/share': {
+      id: '/_app/share'
+      path: '/share'
+      fullPath: '/share'
+      preLoaderRoute: typeof AppShareRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/simulator': {
       id: '/_app/simulator'
       path: '/simulator'
@@ -370,6 +389,7 @@ interface AppRouteChildren {
   AppQueueRoute: typeof AppQueueRoute
   AppSentRoute: typeof AppSentRoute
   AppSettingsRoute: typeof AppSettingsRouteWithChildren
+  AppShareRoute: typeof AppShareRoute
   AppSimulatorRoute: typeof AppSimulatorRouteWithChildren
   AppIndexRoute: typeof AppIndexRoute
 }
@@ -381,6 +401,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppQueueRoute: AppQueueRoute,
   AppSentRoute: AppSentRoute,
   AppSettingsRoute: AppSettingsRouteWithChildren,
+  AppShareRoute: AppShareRoute,
   AppSimulatorRoute: AppSimulatorRouteWithChildren,
   AppIndexRoute: AppIndexRoute,
 }
