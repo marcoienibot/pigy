@@ -11,7 +11,7 @@ import {
   MutationRejected,
   type MutationSource,
   type MutatorArgs,
-  mediaLimits,
+  mediaRowLimits,
   type Network,
   originalLifetimeMs,
   type PostContent,
@@ -1372,7 +1372,7 @@ export class WorkspaceStore {
                 name: "media.fail",
                 args: {
                   id: mediaId,
-                  error: outcome.error.slice(0, mediaLimits.errorLength),
+                  error: outcome.error.slice(0, mediaRowLimits.errorLength),
                 } satisfies MutatorArgs<"media.fail">,
               },
         ],

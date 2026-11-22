@@ -54,6 +54,8 @@ type Made = {
   forAccounts: readonly Part[];
   /** How many accounts the draft goes to. */
   targets: number;
+  /** How many images its parts have. */
+  images: number;
 };
 
 /**
@@ -89,11 +91,14 @@ function draftOf(
   parts: readonly Part[],
   forAccounts: readonly Part[],
   targets: number,
+  /** How many images its parts have, those of every text together. */
+  images: number,
 ): Draft {
   const before = made.get(post);
   if (
     before &&
     before.targets === targets &&
+    before.images === images &&
     same(before.draft.parts, parts) &&
     same(before.forAccounts, forAccounts)
   ) {
@@ -110,7 +115,11 @@ function draftOf(
       forAccounts.filter((part) => part.targetId === first?.targetId),
     );
   }
-  const empty = lines.length === 0;
+  // A draft with an image is not empty, and is called by what it has.
+  const empty = lines.length === 0 && images === 0;
+  if (lines.length === 0 && images > 0) {
+    lines = [images === 1 ? "An image" : `${images} images`];
+  }
   const draft = {
     id: post.id,
     parts,
@@ -120,7 +129,7 @@ function draftOf(
     snippet: lines.slice(1).join(" ").slice(0, snippetLength),
     updatedAt: post.updatedAt,
   };
-  made.set(post, { draft, forAccounts, targets });
+  made.set(post, { draft, forAccounts, targets, images });
   return draft;
 }
 
@@ -142,6 +151,13 @@ export function selectDrafts(tables: Tables): Draft[] {
     targets.set(postId, (targets.get(postId) ?? 0) + 1);
   }
 
+  // The images of each post: of the parts of all its texts.
+  const images = new Map<string, number>();
+  for (const { partId } of tables.part_media.values()) {
+    const postId = tables.post_part.get(partId)?.postId;
+    if (postId) images.set(postId, (images.get(postId) ?? 0) + 1);
+  }
+
   const drafts: Draft[] = [];
   for (const post of tables.post.values()) {
     const text = texts.get(post.id);
@@ -158,6 +174,7 @@ export function selectDrafts(tables: Tables): Draft[] {
             (a.id < b.id ? -1 : 1),
         ),
         targets.get(post.id) ?? 0,
+        images.get(post.id) ?? 0,
       ),
     );
   }
@@ -243,7 +260,7 @@ export function useNewDraft() {
  * as its own, all of it, however long it is: for a text that is brought
  * back, with a draft that was deleted or an account that was left out.
  * `ownTextMutations` of `@pigy/core` has how, and why it is more than
- * one mutation for a long text.
+ * one mutation for a long text. Returns the IDs of the parts of the text.
  */
 export function restoreOwnText(
   mutate: <Name extends MutatorName>(
@@ -253,7 +270,7 @@ export function restoreOwnText(
   postId: string,
   channelId: string,
   parts: readonly { text: string }[],
-): void {
+): string[] {
   const mutations = ownTextMutations(
     postId,
     channelId,
@@ -269,4 +286,11 @@ export function restoreOwnText(
       mutate(mutation.name, mutation.args);
     }
   }
+  // The IDs of the parts that were made, in the order of `parts`: for
+  // whoever puts their images back into them.
+  return mutations.flatMap((mutation) =>
+    mutation.name === "target.customize"
+      ? mutation.args.parts.map(({ id }) => id)
+      : [mutation.args.id],
+  );
 }

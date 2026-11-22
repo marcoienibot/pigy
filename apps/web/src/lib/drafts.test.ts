@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { selectDrafts, threadLabel } from "@/lib/drafts";
-import { part, post, tablesOf, target } from "@/lib/rows.test-support";
+import {
+  media,
+  part,
+  partMedia,
+  post,
+  tablesOf,
+  target,
+} from "@/lib/rows.test-support";
 
 describe("selectDrafts", () => {
   it("has the parts of a thread in the order they are read in", () => {
@@ -101,6 +108,26 @@ describe("selectDrafts", () => {
       // order, and not a mix of the texts.
       title: "For Grace",
       snippet: "second line",
+    });
+  });
+
+  it("does not take a draft with an image and no text for an empty one", () => {
+    const draft = post();
+    const text = part(draft.id, { text: "" });
+    const image = media();
+    const rows = { post: [draft], post_part: [text], media: [image] };
+    const [without] = selectDrafts(tablesOf(rows));
+    expect(without).toMatchObject({ empty: true, untouched: true, title: "" });
+    // The same rows with the image in the part: the draft is somebody's
+    // work, which "New draft" must not take up and a deletion must offer
+    // to bring back.
+    const [withImage] = selectDrafts(
+      tablesOf({ ...rows, part_media: [partMedia(text.id, image.id)] }),
+    );
+    expect(withImage).toMatchObject({
+      empty: false,
+      untouched: false,
+      title: "An image",
     });
   });
 

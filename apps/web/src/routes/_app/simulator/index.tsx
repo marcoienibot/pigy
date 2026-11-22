@@ -3,6 +3,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { RefreshCw } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { Avatar } from "@/components/avatar";
+import { SandboxImages } from "@/components/image-strip";
 import { MarkedText } from "@/components/marked-text";
 import { EmptyState } from "@/components/page";
 import { RefreshFailure } from "@/components/refresh-failure";
@@ -314,6 +315,7 @@ function FeedPost({
           }))}
         />
       </p>
+      <SandboxImages images={post.images ?? []} />
       {post.card && (
         // What the network shows of the page that the link leads to: text
         // that the page wrote, shown as text.

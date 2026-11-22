@@ -22,6 +22,7 @@ import {
 import { toast } from "sonner";
 import { MarkLayer } from "@/components/marked-text";
 import { EmptyState, Page } from "@/components/page";
+import { filesOf, PartImagesField, useAttach } from "@/components/part-images";
 import { PublishPanel } from "@/components/publish-panel";
 import { SyncIndicator } from "@/components/sync-indicator";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -59,6 +60,13 @@ import {
   type Preview,
   previewsOf,
 } from "@/lib/markup";
+import {
+  attachAgain,
+  contentImagesOf,
+  imagesOf,
+  type PartImage,
+  selectPartImages,
+} from "@/lib/media";
 import { connectableNetworks } from "@/lib/networks";
 import { undoMs } from "@/lib/notices";
 import {
@@ -109,6 +117,13 @@ export const Route = createFileRoute("/_app/")({
 type Went = { channelId: string; own: readonly Part[] | null }[];
 
 /**
+ * The images that went with a draft that was deleted, by the ID of the
+ * part that each was in: of the post's own text and of the texts of
+ * single accounts.
+ */
+type Images = ReadonlyMap<string, readonly PartImage[]>;
+
+/**
  * Whether `parts` can become the text of one account in one step, which
  * is how "Customize" begins one: `target.customize` carries no more.
  */
@@ -147,7 +162,7 @@ function Drafts() {
    * screen is made anew for the other one, and so are the notices.
    */
   const deleted = useRef<
-    { draft: Draft; went: Went; notice: string | number }[]
+    { draft: Draft; went: Went; images: Images; notice: string | number }[]
   >([]);
   const tablesNow = useSyncedNow();
 
@@ -181,6 +196,7 @@ function Drafts() {
   const restore = (
     draft: Draft,
     went: Went,
+    images: Images,
     notice: string | number,
     /** Asked for with the button of the notice, and not with the keys. */
     fromNotice = false,
@@ -194,15 +210,20 @@ function Drafts() {
     const [first, ...more] = draft.parts;
     let last = uuidv7(new Date());
     mutate("post.create", { id, partId: last, text: first?.text ?? "" });
-    for (const { text } of more) {
+    // With the images that each part had: the images themselves were
+    // not deleted with the draft, the server keeps one that is in no
+    // part for a day.
+    if (first) attachAgain(mutate, last, images.get(first.id) ?? []);
+    for (const part of more) {
       const partId = uuidv7(new Date());
       mutate("part.add", {
         id: partId,
         postId: id,
         channelId: null,
         afterId: last,
-        text,
+        text: part.text,
       });
+      attachAgain(mutate, partId, images.get(part.id) ?? []);
       last = partId;
     }
     const connected = tablesNow().channel;
@@ -213,7 +234,13 @@ function Drafts() {
       mutate("target.add", { id: uuidv7(new Date()), postId: id, channelId });
       // With the text that was written for it, if it had one: all of
       // it, also where it has grown longer than one step carries.
-      if (own) restoreOwnText(mutate, id, channelId, own);
+      if (own) {
+        const partIds = restoreOwnText(mutate, id, channelId, own);
+        own.forEach((part, index) => {
+          const partId = partIds[index];
+          if (partId) attachAgain(mutate, partId, images.get(part.id) ?? []);
+        });
+      }
     }
     // The notice that was pressed leaves the page, and the keyboard with
     // it: it goes into the text of the draft, and not to the page, where
@@ -246,8 +273,15 @@ function Drafts() {
     const went: Went = [...targetsOf(selectDraftTargets(tables), draft.id)].map(
       (channelId) => ({ channelId, own: own.get(channelId) ?? null }),
     );
+    // And the images of its parts, of every text.
+    const images: Images = new Map(
+      [...draft.parts, ...[...own.values()].flat()].map((part) => [
+        part.id,
+        imagesOf(selectPartImages(tables), part.id),
+      ]),
+    );
     mutate("post.delete", { id: draft.id });
-    // Nothing to bring back of a draft without text.
+    // Nothing to bring back of a draft without text and without images.
     if (draft.empty) return;
     const notice: string | number = toast("Draft deleted", {
       duration: undoMs,
@@ -255,7 +289,7 @@ function Drafts() {
       // notices are on screen next to this one.
       action: {
         label: "Undo",
-        onClick: () => restore(draft, went, notice, true),
+        onClick: () => restore(draft, went, images, notice, true),
       },
       onDismiss: () => forget(notice),
       onAutoClose: () => forget(notice),
@@ -263,7 +297,7 @@ function Drafts() {
     // The notice outlives this screen. It does not outlive the workspace,
     // where there would be nothing to bring the draft back into: the shell
     // sees to that.
-    deleted.current.push({ draft, went, notice });
+    deleted.current.push({ draft, went, images, notice });
   };
 
   /**
@@ -355,7 +389,7 @@ function Drafts() {
       !isBusy(event)
     ) {
       event.preventDefault();
-      restore(last.draft, last.went, last.notice);
+      restore(last.draft, last.went, last.images, last.notice);
     }
   });
 
@@ -699,7 +733,12 @@ function Editor({
   const channels = useSynced(selectChannels);
   const chosen = targetsOf(useSynced(selectDraftTargets), draft.id);
   const own = ownTextsOf(useSynced(selectOwnTexts), draft.id);
-  const composer = compose(draft.parts, channels, chosen, own);
+  const partImages = useSynced(selectPartImages);
+  const contentImages = useMemo(
+    () => contentImagesOf(partImages),
+    [partImages],
+  );
+  const composer = compose(draft.parts, channels, chosen, own, contentImages);
 
   // The account whose own text is shown. One that has none, or no longer,
   // because the text was dropped or the account left out, here or on
@@ -863,10 +902,12 @@ function Editor({
       const before = parts[index - 1];
       const neighbour = before ?? parts[index + 1];
       if (index < 0 || !neighbour) return;
+      // Its images go with it, and come back with it: read before.
+      const images = imagesOf(partImages, part.id);
       mutate("part.remove", { id: part.id });
       focus(neighbour.id, before ? "end" : "start");
-      // Nothing to bring back of a part without text.
-      if (part.text === "") return;
+      // Nothing to bring back of a part without text and without images.
+      if (part.text === "" && images.length === 0) return;
       const channelId = shown;
       toast("Part removed", {
         duration: undoMs,
@@ -886,6 +927,7 @@ function Editor({
               afterId: before?.id ?? null,
               text: part.text,
             });
+            attachAgain(mutate, id, images);
             // The notice leaves the page with the press: the keyboard
             // goes to the part that is back, and not to the page, where
             // its keys open and delete drafts. The notice can be
@@ -962,6 +1004,12 @@ function Editor({
       postId: draft.id,
       channelId: channel.id,
       parts,
+    });
+    // The text of an account begins as the post's, with its images: they
+    // are the account's own from here on, to take out or to add to.
+    parts.forEach(({ id }, index) => {
+      const from = draft.parts[index];
+      if (from) attachAgain(mutate, id, imagesOf(partImages, from.id));
     });
     // The text is there with the next render, and shown then. The button
     // that was pressed is gone by then, and the keyboard would be left on
@@ -1101,6 +1149,7 @@ function Editor({
               gauges={gauges}
               networks={networks}
               previews={previews[index] ?? "[]"}
+              images={imagesOf(partImages, part.id)}
               answers={answers}
               actions={stable}
             />
@@ -1185,6 +1234,7 @@ const PartField = memo(function PartField({
   gauges,
   networks,
   previews,
+  images,
   answers,
   actions,
 }: {
@@ -1204,10 +1254,15 @@ const PartField = memo(function PartField({
    * that show it: `Preview[]` of lib/markup.ts, as JSON.
    */
   previews: string;
+  /** The images of the part, in the order they are shown in. */
+  images: readonly PartImage[];
   answers: EditorAnswers;
   actions: PartActions;
 }) {
   const { text } = part;
+  // Files that are pasted into the text or dropped on the part.
+  const attach = useAttach(part.id, images.length);
+  const limits = useMemo(() => gauges.map((gauge) => gauge.limits), [gauges]);
   const { workspace } = Route.useRouteContext();
   const field = useRef<HTMLTextAreaElement>(null);
   const alone = count === 1;
@@ -1314,6 +1369,16 @@ const PartField = memo(function PartField({
         // into. The parts of a thread are as high as their text.
         alone ? "flex-1" : "border-b",
       )}
+      // A file that is dropped on a part goes into it. Without this the
+      // browser would open the file in place of the app.
+      onDragOver={(event) => {
+        if (event.dataTransfer.types.includes("Files")) event.preventDefault();
+      }}
+      onDrop={(event) => {
+        if (!event.dataTransfer.types.includes("Files")) return;
+        event.preventDefault();
+        void attach(filesOf(event.dataTransfer));
+      }}
     >
       {/* The field, and behind it the layer that tints its links,
           mentions and hashtags: the same text in the same letters. */}
@@ -1338,6 +1403,14 @@ const PartField = memo(function PartField({
           onChange={(event) => {
             typed.current = event.target.value;
             actions.setText(part, event.target.value);
+          }}
+          onPaste={(event) => {
+            // An image that is pasted goes into the part. Text is the
+            // field's to take, as ever.
+            const files = filesOf(event.clipboardData);
+            if (files.length === 0) return;
+            event.preventDefault();
+            void attach(files);
           }}
           onSelect={(event) => {
             const { selectionStart, selectionEnd } = event.currentTarget;
@@ -1422,6 +1495,13 @@ const PartField = memo(function PartField({
           workspace={workspace}
         />
       ))}
+      <PartImagesField
+        partId={part.id}
+        images={images}
+        label={alone ? "the post" : `part ${number}`}
+        limits={limits}
+        hasLink={marks.some(({ kind }) => kind === "link")}
+      />
       <div className="flex min-h-9 flex-wrap items-center gap-x-3 gap-y-1 px-4 pb-2 text-xs text-muted-foreground md:px-6">
         {!alone && (
           <span className="tabular-nums">

@@ -103,6 +103,32 @@ export function result(
   };
 }
 
+export function media(fields: Partial<Row<"media">> = {}): Row<"media"> {
+  return {
+    id: id(),
+    kind: "image",
+    status: "ready",
+    name: "photo.jpg",
+    type: "image/jpeg",
+    size: 400_000,
+    width: 1600,
+    height: 1200,
+    animated: false,
+    createdAt: 1,
+    error: null,
+    originalGoneAt: null,
+    ...fields,
+  };
+}
+
+export function partMedia(
+  partId: string,
+  mediaId: string,
+  fields: Partial<Row<"part_media">> = {},
+): Row<"part_media"> {
+  return { id: id(), partId, mediaId, position: 0, alt: "", ...fields };
+}
+
 /** The tables that hold `rows`, each in the table that it is named with. */
 export function tablesOf(
   rows: {

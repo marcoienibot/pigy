@@ -8,6 +8,7 @@ import type {
   StoredRow,
   Write,
 } from "@pigy/core";
+import { isFilesName } from "@/lib/upload-files";
 
 /**
  * The local copies in IndexedDB: one database per user and workspace, so
@@ -179,7 +180,9 @@ async function unsynced(userId: string): Promise<Map<string, number>> {
   const ofUser = `${prefix}${userId}/`;
   const counts = new Map<string, number>();
   for (const name of await copyNames()) {
-    if (!name.startsWith(ofUser)) continue;
+    // The files that wait to be uploaded are next to the copies, and
+    // are no copy: lib/upload-files.ts.
+    if (!name.startsWith(ofUser) || isFilesName(name)) continue;
     const db = await open(name);
     try {
       const outbox = db.transaction("outbox").objectStore("outbox").count();

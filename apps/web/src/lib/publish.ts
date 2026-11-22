@@ -1,4 +1,5 @@
 import {
+  type ContentImage,
   countCharacters,
   inReadingOrder,
   joinLinkedInParts,
@@ -48,7 +49,16 @@ export function targetsOf(
 }
 
 /** The text of one part: all that the editor checks of it. */
-type Text = { readonly text: string };
+type Text = {
+  readonly text: string;
+  /** The ID of the part, by which its images are found. */
+  readonly id?: string;
+};
+
+/** The images of the parts of a draft, as `validateContent` judges them. */
+export type ContentImages = ReadonlyMap<string, readonly ContentImage[]>;
+
+const noImages: ContentImages = new Map();
 
 /**
  * The texts that are written for one account in place of the post's own,
@@ -157,8 +167,6 @@ export type Composer = {
   blocked: Blocked | null;
 };
 
-const isEmpty = ({ text }: Text) => text.trim() === "";
-
 /**
  * What the editor shows of a draft with the text `parts` for `channels`,
  * of which those in `chosen` are the ones that the draft is to go to.
@@ -170,7 +178,13 @@ export function compose(
   channels: readonly Channel[],
   chosen: ReadonlySet<string>,
   own: ReadonlyMap<string, readonly Text[]> = noOwnTexts,
+  /** The images of the parts that have some, by the ID of the part. */
+  images: ContentImages = noImages,
 ): Composer {
+  const imagesOf = ({ id }: Text) => (id && images.get(id)) || [];
+  // A part with an image needs no text.
+  const isEmpty = (part: Text) =>
+    part.text.trim() === "" && imagesOf(part).length === 0;
   const choices = channels.map((channel): Choice => {
     const isChosen = chosen.has(channel.id);
     const written = isChosen ? own.get(channel.id) : undefined;
@@ -191,7 +205,12 @@ export function compose(
     }
     if (channel.limits !== null) {
       for (const issue of validateContent(channel.limits, {
-        parts: gets.map(({ text }) => ({ text })),
+        parts: gets.map((part) => {
+          const media = imagesOf(part);
+          return media.length > 0
+            ? { text: part.text, media: [...media] }
+            : { text: part.text };
+        }),
       })) {
         if (issue.code !== "empty") refuses.push(issue.message);
       }

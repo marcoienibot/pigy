@@ -529,7 +529,7 @@ export const maxImagesPerPart = 4;
 export const maxAltLength = 5000;
 
 /** The longest values that a media row holds. */
-export const mediaLimits = {
+export const mediaRowLimits = {
   nameLength: 255,
   errorLength: 300,
 } as const;
@@ -557,7 +557,7 @@ export const mediaRowSchema = z.strictObject({
   kind: z.literal("image"),
   status: mediaStatusSchema,
   /** The name of the file on the device that it came from, for display. */
-  name: z.string().max(mediaLimits.nameLength),
+  name: z.string().max(mediaRowLimits.nameLength),
   type: z.enum(imageTypes),
   /**
    * How many bytes: of the file while the row is `uploading`, and of the
@@ -572,7 +572,7 @@ export const mediaRowSchema = z.strictObject({
   animated: z.boolean(),
   createdAt: timeSchema,
   /** Why the server has no image for the row. Null unless `failed`. */
-  error: z.string().min(1).max(mediaLimits.errorLength).nullable(),
+  error: z.string().min(1).max(mediaRowLimits.errorLength).nullable(),
   /**
    * When the server let go of the image itself, some time after the last
    * post that it is in was sent everywhere: section 10 of PLAN.md. A

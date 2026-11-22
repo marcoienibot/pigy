@@ -1,0 +1,85 @@
+/**
+ * The files that wait to be uploaded, kept on the device: an image that
+ * was put into a draft is in the memory of its tab, and here, so that a
+ * tab that is loaded again, or opened later, goes on with the upload. A
+ * web page cannot take a file from the disk a second time by itself: what
+ * it does not keep, the person would have to choose again.
+ *
+ * One database per person, next to the copies of their workspaces and
+ * under the same beginning of a name, so that whatever deletes the
+ * copies of a person deletes these with them: `deleteCopies` of
+ * sync/indexed-db.ts. A file is deleted when its upload has ended.
+ */
+
+/** The name of the database with the files of `userId`. */
+export function filesName(userId: string): string {
+  return `pigy/${userId}/files`;
+}
+
+/** Whether `name` is the database of somebody's files, and no copy. */
+export const isFilesName = (name: string) => name.endsWith("/files");
+
+/** Where files are kept by a key. */
+export type FileStore = {
+  put(key: string, file: Blob): Promise<void>;
+  get(key: string): Promise<Blob | undefined>;
+  delete(key: string): Promise<void>;
+};
+
+const done = <Result>(request: IDBRequest<Result>) =>
+  new Promise<Result>((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+
+/** The files of `userId` in IndexedDB. */
+export function indexedDbFiles(userId: string): FileStore {
+  let opened: Promise<IDBDatabase> | undefined;
+  const database = () => {
+    opened ??= new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(filesName(userId), 1);
+      request.onupgradeneeded = () => {
+        request.result.createObjectStore("files");
+      };
+      request.onsuccess = () => {
+        const db = request.result;
+        // Whoever deletes the database is not kept waiting.
+        db.onversionchange = () => {
+          db.close();
+          opened = undefined;
+        };
+        resolve(db);
+      };
+      request.onerror = () => reject(request.error);
+    });
+    return opened;
+  };
+  const store = async (mode: IDBTransactionMode) =>
+    (await database()).transaction("files", mode).objectStore("files");
+  return {
+    put: async (key, file) => {
+      await done((await store("readwrite")).put(file, key));
+    },
+    get: async (key) => {
+      const file: unknown = await done((await store("readonly")).get(key));
+      return file instanceof Blob ? file : undefined;
+    },
+    delete: async (key) => {
+      await done((await store("readwrite")).delete(key));
+    },
+  };
+}
+
+/** Files in memory, for a test and for a device without IndexedDB. */
+export function memoryFiles(): FileStore {
+  const files = new Map<string, Blob>();
+  return {
+    put: async (key, file) => {
+      files.set(key, file);
+    },
+    get: async (key) => files.get(key),
+    delete: async (key) => {
+      files.delete(key);
+    },
+  };
+}

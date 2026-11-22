@@ -19,7 +19,7 @@ import {
   maxSlots,
   maxTimeZoneLength,
   maxUploading,
-  mediaLimits,
+  mediaRowLimits,
   notificationRowSchema,
   partsFor,
   type Row,
@@ -972,7 +972,7 @@ export const mutators = {
   "media.create": mutator(
     z.strictObject({
       id: idSchema,
-      name: z.string().max(mediaLimits.nameLength),
+      name: z.string().max(mediaRowLimits.nameLength),
       type: z.enum(imageTypes),
       size: z.number().int().positive().max(maxImageBytes),
       width: z.number().int().positive(),
@@ -1141,7 +1141,7 @@ export const mutators = {
   "media.fail": mutator(
     z.strictObject({
       id: idSchema,
-      error: z.string().min(1).max(mediaLimits.errorLength),
+      error: z.string().min(1).max(mediaRowLimits.errorLength),
     }),
     (tx, { id, error }) => {
       const media = existingMedia(tx, id);

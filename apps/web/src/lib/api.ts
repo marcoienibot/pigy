@@ -56,7 +56,7 @@ export class ApiError extends Error {
  * A call to the API that got no answer, which `request` throws: see
  * `unanswered`. The message is the browser's.
  */
-class Unanswered extends Error {
+export class Unanswered extends Error {
   constructor(message: string, cause: unknown) {
     super(message, { cause });
   }
@@ -434,4 +434,46 @@ export async function revokeApiKey(
   keyId: string,
 ): Promise<void> {
   await request(`${apiKeysPath(workspaceId)}/${keyId}`, { method: "DELETE" });
+}
+
+/**
+ * A request of the upload of an image: `packages/core/src/media/upload.ts`
+ * has the protocol. `body` is one chunk of the file.
+ */
+export async function uploadRequest(
+  path: string,
+  method: "POST" | "PUT",
+  body?: Blob,
+): Promise<unknown> {
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      method,
+      ...(body && {
+        headers: { "Content-Type": "application/octet-stream" },
+        body,
+      }),
+    });
+  } catch (error) {
+    throw error instanceof TypeError
+      ? new Unanswered(error.message, error)
+      : error;
+  }
+  if (response.ok) return response.json();
+  const said = errorResponseSchema.safeParse(
+    await response.json().catch(() => undefined),
+  );
+  throw new ApiError(
+    response.status,
+    said.data?.message ?? `${method} ${path} returned ${response.status}`,
+  );
+}
+
+/**
+ * The bytes of an image of a workspace, or of a post of the sandbox, for
+ * whoever is signed in: for a picture on the page. Nothing keeps them
+ * but the page.
+ */
+export async function fetchImage(path: string): Promise<Blob> {
+  return (await request(path)).blob();
 }

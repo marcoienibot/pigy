@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { ExternalLink, LoaderCircle, Trash2 } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Avatar } from "@/components/avatar";
+import { PostImages } from "@/components/image-strip";
 import { MarkedText } from "@/components/marked-text";
 import { EmptyState, Page } from "@/components/page";
 import {
@@ -289,6 +290,9 @@ function SentItem({
             </Tooltip>
           )}
         </header>
+        <div className="px-3">
+          <PostImages partIds={post.parts.map(({ id }) => id)} />
+        </div>
         <p className="flex flex-wrap items-center gap-x-2 px-3 pt-1 pb-2 text-xs text-muted-foreground">
           <Status words={words} />
           <span aria-hidden="true">·</span>

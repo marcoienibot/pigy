@@ -14,6 +14,7 @@ import {
   useOpenCommandPalette,
 } from "@/components/command-palette";
 import { unreadLabel } from "@/components/inbox-bell";
+import { UploadKeeper } from "@/components/part-images";
 import { Rejections } from "@/components/rejections";
 import { SyncIndicator } from "@/components/sync-indicator";
 import { Kbd } from "@/components/ui/kbd";
@@ -73,6 +74,8 @@ export function AppShell({ children }: { children: ReactNode }) {
     <CommandPalette>
       <Shell>{children}</Shell>
       <Notices key={workspace.id} />
+      {/* The uploads of the workspace go on whatever screen is shown. */}
+      <UploadKeeper />
     </CommandPalette>
   );
 }
