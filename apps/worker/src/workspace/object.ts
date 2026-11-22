@@ -616,7 +616,11 @@ export function workspaceObject(
     /** Takes up the scheduled posts whose time has come. */
     #publishDue(): void {
       const from = this.#store.seq;
-      this.#store.publishDue(now().getTime());
+      const time = now().getTime();
+      // Before it is tried: what fails here has been tried all the same,
+      // and is come back to in a while, not at once.
+      this.#store.dueLookedAt = Math.max(this.#store.dueLookedAt, time);
+      this.#store.publishDue(time);
       this.#publish(from);
     }
 

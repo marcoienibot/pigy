@@ -268,6 +268,42 @@ it("sets its alarm to the earliest scheduled post, whichever was scheduled first
   expect(await ahead()).toBeLessThanOrEqual(3 * hour);
 });
 
+it("leaves the look at a delivery under way where it is when a later post is scheduled", async () => {
+  const held = gate((request) => request === postStatus);
+  const context = await ready({ interceptNetwork: held.intercept });
+  const { workspace, channel, client } = context;
+  const ahead = async () => ((await alarmOf(workspace)) ?? 0) - Date.now();
+  // A post is on its way to the account: its request to the network is
+  // held, and the object comes back within a minute to see that the
+  // delivery ends.
+  const under = await writeDraft(client, workspace, "Under way");
+  held.close();
+  await mutate(
+    client,
+    client.mutation("target.add", {
+      id: newId(),
+      postId: under.postId,
+      channelId: channel,
+    }),
+    client.mutation("post.publish", { id: under.postId }),
+  );
+  await held.reached();
+  // The alarm that began the delivery sets the next one when it is done,
+  // which is a moment after the request has gone out.
+  await vi.waitFor(async () => expect(await alarmOf(workspace)).not.toBeNull());
+  expect(await ahead()).toBeLessThanOrEqual(deliveryWatchMs);
+  const look = await alarmOf(workspace);
+
+  // A post for hours from now is nothing to put that look off for, not
+  // by the moment either that has passed since: every change of a
+  // workspace that is written in would put it off a little more.
+  await schedule(client, workspace, "Later", now() + 3 * hour, channel);
+  expect(await alarmOf(workspace)).toBe(look);
+
+  held.open();
+  expect(await settled(client, under.postId)).toMatchObject({ status: "sent" });
+});
+
 it("sets no alarm for a workspace in which nothing is scheduled", async () => {
   const { workspace, channel, client } = await ready();
   const { postId } = await schedule(
@@ -577,7 +613,7 @@ it("comes back for a due post that it could not take up, a minute later and not 
 
   expect(taking).toHaveBeenCalledTimes(1);
   expect(errors).toHaveBeenCalledWith(
-    "The posts and deliveries of a workspace were not looked after",
+    "The scheduled posts of a workspace were not taken up",
     expect.anything(),
   );
   expect(posts()).toEqual([]);
