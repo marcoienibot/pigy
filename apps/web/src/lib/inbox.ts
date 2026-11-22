@@ -47,7 +47,9 @@ export function selectInbox(tables: Tables): InboxItem[] {
       // gone before it heard the same of the notification.
       if (!postId || !tables.post.has(postId)) continue;
       const parts = [...tables.post_part.values()]
-        .filter((part) => part.postId === postId)
+        // The text of the post itself, not what is written for one
+        // account in its place.
+        .filter((part) => part.postId === postId && part.targetId === null)
         .sort((a, b) => a.position - b.position || (a.id < b.id ? -1 : 1));
       const targets: Row<"post_target">[] = [
         ...tables.post_target.values(),
