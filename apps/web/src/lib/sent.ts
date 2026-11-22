@@ -74,6 +74,13 @@ export type SentPost = {
    */
   parts: { id: string; text: string }[];
   /**
+   * What the post is called: the first part of its own text, or, where
+   * that has nothing in it because every account got a text of its own,
+   * the first part with something in it of the first such text. Empty
+   * only for a post without any text.
+   */
+  title: string;
+  /**
    * When the post was published: when the first of its targets was asked
    * for. A target that is tried again is asked for anew, so a post whose
    * every target was tried again counts from then.
@@ -121,50 +128,55 @@ export function selectSent(tables: Tables): SentPost[] {
     const asked = ofPost.flatMap(({ queuedAt }) =>
       queuedAt === null ? [] : [queuedAt],
     );
+    const sentTo = ofPost
+      .map((target): SentTarget => {
+        const channel = tables.channel.get(target.channelId) ?? null;
+        const failed =
+          target.status === "error" || target.status === "uncertain";
+        // What this account got, which its results are in the order of.
+        const got = partsFor(all, target.id);
+        const position = new Map(got.map((part, index) => [part.id, index]));
+        return {
+          id: target.id,
+          status: target.status,
+          error: target.error,
+          sentAt: target.sentAt,
+          channel,
+          ownText: got.some((part) => part.targetId === target.id)
+            ? got.map(({ id, text }) => ({ id, text }))
+            : null,
+          published: (results.get(target.id) ?? [])
+            // A result of a part that is not in the text has no place
+            // to be shown in.
+            .filter((result) => position.has(result.partId))
+            .sort(
+              (a, b) =>
+                (position.get(a.partId) ?? 0) - (position.get(b.partId) ?? 0),
+            )
+            .map(({ partId, remoteId, url }) => ({ partId, remoteId, url })),
+          canRetry:
+            failed && channel !== null && channel.status !== "needs_reconnect",
+          reconnect: failed && channel?.status === "needs_reconnect",
+        };
+      })
+      .sort(
+        (a, b) =>
+          (order.get(a.channel?.id ?? "") ?? Number.POSITIVE_INFINITY) -
+            (order.get(b.channel?.id ?? "") ?? Number.POSITIVE_INFINITY) ||
+          (a.id < b.id ? -1 : 1),
+      );
+    const hasText = ({ text }: { text: string }) => text.trim() !== "";
     posts.push({
       id: post.id,
       status: post.status,
       parts: ordered.map(({ id, text }) => ({ id, text })),
+      title:
+        (ordered[0] && hasText(ordered[0])
+          ? ordered[0]
+          : sentTo.flatMap(({ ownText }) => ownText ?? []).find(hasText)
+        )?.text ?? "",
       publishedAt: asked.length > 0 ? Math.min(...asked) : post.updatedAt,
-      targets: ofPost
-        .map((target): SentTarget => {
-          const channel = tables.channel.get(target.channelId) ?? null;
-          const failed =
-            target.status === "error" || target.status === "uncertain";
-          // What this account got, which its results are in the order of.
-          const got = partsFor(all, target.id);
-          const position = new Map(got.map((part, index) => [part.id, index]));
-          return {
-            id: target.id,
-            status: target.status,
-            error: target.error,
-            sentAt: target.sentAt,
-            channel,
-            ownText: got.some((part) => part.targetId === target.id)
-              ? got.map(({ id, text }) => ({ id, text }))
-              : null,
-            published: (results.get(target.id) ?? [])
-              // A result of a part that is not in the text has no place
-              // to be shown in.
-              .filter((result) => position.has(result.partId))
-              .sort(
-                (a, b) =>
-                  (position.get(a.partId) ?? 0) - (position.get(b.partId) ?? 0),
-              )
-              .map(({ partId, remoteId, url }) => ({ partId, remoteId, url })),
-            canRetry:
-              failed &&
-              channel !== null &&
-              channel.status !== "needs_reconnect",
-            reconnect: failed && channel?.status === "needs_reconnect",
-          };
-        })
-        .sort(
-          (a, b) =>
-            (order.get(a.channel?.id ?? "") ?? Number.POSITIVE_INFINITY) -
-              (order.get(b.channel?.id ?? "") ?? Number.POSITIVE_INFINITY) ||
-            (a.id < b.id ? -1 : 1),
-        ),
+      targets: sentTo,
     });
   }
   return posts.sort(

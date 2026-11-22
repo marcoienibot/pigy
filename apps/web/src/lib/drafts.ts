@@ -1,4 +1,12 @@
-import { inReadingOrder, type Row, type Tables, uuidv7 } from "@pigy/core";
+import {
+  inReadingOrder,
+  type MutatorArgs,
+  type MutatorName,
+  ownTextMutations,
+  type Row,
+  type Tables,
+  uuidv7,
+} from "@pigy/core";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback } from "react";
 import { useMutate, useSyncedNow } from "@/sync/react";
@@ -15,9 +23,21 @@ export type Draft = {
    * is at least one. More than one is a thread.
    */
   parts: readonly Part[];
-  /** No part has anything in it. */
+  /**
+   * Nothing is written in it: no part has anything in it, of the post's
+   * own text or of a text that is written for one account.
+   */
   empty: boolean;
-  /** The first line that has something in it. Empty for an empty draft. */
+  /**
+   * Nobody has done anything with it: it is empty, and goes nowhere. Such
+   * a draft is what "New draft" takes up again in place of making another.
+   */
+  untouched: boolean;
+  /**
+   * The first line that has something in it: of the post's own text, or
+   * of a text for one account where the post's own has nothing. Empty for
+   * an empty draft.
+   */
   title: string;
   /** What follows the title, on one line. */
   snippet: string;
@@ -26,6 +46,15 @@ export type Draft = {
 };
 
 const snippetLength = 160;
+
+/** What a draft is made of, besides its post. */
+type Made = {
+  draft: Draft;
+  /** The parts that are written for single accounts, in a fixed order. */
+  forAccounts: readonly Part[];
+  /** How many accounts the draft goes to. */
+  targets: number;
+};
 
 /**
  * The drafts that were made before, by the row of their post. A row is
@@ -37,31 +66,61 @@ const snippetLength = 160;
  * keystroke. The parts of a draft are their rows, so a part that has not
  * changed is the same object too, for the editor of a thread to see which
  * of its fields to render again.
+ *
+ * The row of the post does not say all of it: an account that is
+ * disconnected takes its target and its text with it and leaves the post
+ * as it was. So the parts for accounts and the number of targets are
+ * compared too.
  */
-const made = new WeakMap<Row<"post">, Draft>();
+const made = new WeakMap<Row<"post">, Made>();
 
-function draftOf(post: Row<"post">, parts: readonly Part[]): Draft {
-  const before = made.get(post);
-  if (
-    before &&
-    before.parts.length === parts.length &&
-    before.parts.every((part, index) => part === parts[index])
-  ) {
-    return before;
-  }
-  const lines = parts
+const same = (a: readonly Part[], b: readonly Part[]) =>
+  a.length === b.length && a.every((part, index) => part === b[index]);
+
+/** The lines of `parts` that have something in them. */
+const linesOf = (parts: readonly Part[]) =>
+  parts
     .flatMap((part) => part.text.split("\n"))
     .map((line) => line.trim())
     .filter((line) => line !== "");
+
+function draftOf(
+  post: Row<"post">,
+  parts: readonly Part[],
+  forAccounts: readonly Part[],
+  targets: number,
+): Draft {
+  const before = made.get(post);
+  if (
+    before &&
+    before.targets === targets &&
+    same(before.draft.parts, parts) &&
+    same(before.forAccounts, forAccounts)
+  ) {
+    return before.draft;
+  }
+  let lines = linesOf(parts);
+  if (lines.length === 0) {
+    // A draft whose every account has a text of its own can leave the
+    // post's empty. It is called by the first of those texts that has
+    // something in it, and not "Empty draft".
+    // They are sorted by account, so the parts of one follow each other.
+    const first = forAccounts.find((part) => part.text.trim() !== "");
+    lines = linesOf(
+      forAccounts.filter((part) => part.targetId === first?.targetId),
+    );
+  }
+  const empty = lines.length === 0;
   const draft = {
     id: post.id,
     parts,
-    empty: parts.every((part) => part.text === ""),
+    empty,
+    untouched: empty && targets === 0,
     title: lines[0] ?? "",
     snippet: lines.slice(1).join(" ").slice(0, snippetLength),
     updatedAt: post.updatedAt,
   };
-  made.set(post, draft);
+  made.set(post, { draft, forAccounts, targets });
   return draft;
 }
 
@@ -69,19 +128,38 @@ function draftOf(post: Row<"post">, parts: readonly Part[]): Draft {
 export function selectDrafts(tables: Tables): Draft[] {
   // The text of a draft is its own: the parts that are written for one
   // account in its place are the editor's to show, with that account.
+  // The list goes by them only for what it calls a draft.
   const texts = new Map<string, Part[]>();
+  const forAccounts = new Map<string, Part[]>();
   for (const part of tables.post_part.values()) {
-    if (part.targetId !== null) continue;
-    const text = texts.get(part.postId);
+    const of = part.targetId === null ? texts : forAccounts;
+    const text = of.get(part.postId);
     if (text) text.push(part);
-    else texts.set(part.postId, [part]);
+    else of.set(part.postId, [part]);
+  }
+  const targets = new Map<string, number>();
+  for (const { postId } of tables.post_target.values()) {
+    targets.set(postId, (targets.get(postId) ?? 0) + 1);
   }
 
   const drafts: Draft[] = [];
   for (const post of tables.post.values()) {
     const text = texts.get(post.id);
     if (post.status !== "draft" || !text) continue;
-    drafts.push(draftOf(post, inReadingOrder(text)));
+    drafts.push(
+      draftOf(
+        post,
+        inReadingOrder(text),
+        // By account, and each text in the order it is read in.
+        (forAccounts.get(post.id) ?? []).sort(
+          (a, b) =>
+            (a.targetId ?? "").localeCompare(b.targetId ?? "") ||
+            a.position - b.position ||
+            (a.id < b.id ? -1 : 1),
+        ),
+        targets.get(post.id) ?? 0,
+      ),
+    );
   }
   // By ID among drafts of the same moment, so that the order is the same
   // every time.
@@ -101,6 +179,16 @@ export function threadLabel({ parts }: Pick<Draft, "parts">): string | null {
  */
 let focusOnOpen: string | undefined;
 
+/**
+ * Has the editor take the focus for the draft `id` when it opens it: for
+ * a draft that the person has asked for from something that leaves the
+ * page with the press, a notice for example. The keyboard would otherwise
+ * be left on the page, where the keys are shortcuts of the screen.
+ */
+export function focusWhenOpened(id: string): void {
+  focusOnOpen = id;
+}
+
 /** Whether the editor should focus `id`. It is asked once per draft. */
 export function takeFocusOnOpen(id: string): boolean {
   if (focusOnOpen !== id) return false;
@@ -110,8 +198,9 @@ export function takeFocusOnOpen(id: string): boolean {
 
 /**
  * Returns the function behind "New draft": it opens a draft to write in,
- * with `text` if that is given. An empty draft that is there already is
- * used rather than making another.
+ * with `text` if that is given. A draft that is there already and that
+ * nobody has done anything with is used rather than making another: one
+ * without text, without a text for an account, and that goes nowhere.
  */
 export function useNewDraft() {
   const mutate = useMutate();
@@ -122,7 +211,7 @@ export function useNewDraft() {
     (text = "") => {
       let id =
         text === ""
-          ? selectDrafts(read()).find((draft) => draft.empty)?.id
+          ? selectDrafts(read()).find((draft) => draft.untouched)?.id
           : undefined;
       if (!id) {
         id = uuidv7(new Date());
@@ -133,4 +222,40 @@ export function useNewDraft() {
     },
     [mutate, read, navigate],
   );
+}
+
+/**
+ * Gives the account `channelId` of the draft `postId` the text `parts`
+ * as its own, all of it, however long it is: for a text that is brought
+ * back, with a draft that was deleted or an account that was left out.
+ * `ownTextMutations` of `@pigy/core` has how, and why it is more than
+ * one mutation for a long text. Returns the ID of the first part, or
+ * undefined for no parts.
+ */
+export function restoreOwnText(
+  mutate: <Name extends MutatorName>(
+    name: Name,
+    args: MutatorArgs<Name>,
+  ) => void,
+  postId: string,
+  channelId: string,
+  parts: readonly { text: string }[],
+): string | undefined {
+  const mutations = ownTextMutations(
+    postId,
+    channelId,
+    parts.map(({ text }) => text),
+    () => uuidv7(new Date()),
+  );
+  for (const mutation of mutations) {
+    if (mutation.name === "target.customize") {
+      mutate(mutation.name, mutation.args);
+    } else {
+      mutate(mutation.name, mutation.args);
+    }
+  }
+  const [first] = mutations;
+  return first?.name === "target.customize"
+    ? first.args.parts[0]?.id
+    : undefined;
 }

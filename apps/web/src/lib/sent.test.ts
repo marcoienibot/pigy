@@ -220,6 +220,33 @@ describe("selectSent", () => {
     ]);
     expect(toGrace?.ownText).toBeNull();
     expect(toGrace?.published.map(({ remoteId }) => remoteId)).toEqual(["3"]);
+    // It is called by its own text, which somebody got.
+    expect(item?.title).toBe("The post");
+  });
+
+  it("calls a post whose own text is empty by the text that an account got", () => {
+    const ada = channel();
+    const published = post({ status: "sent" });
+    const customized = target(published.id, ada.id, { status: "sent" });
+    const [item] = selectSent(
+      tablesOf({
+        post: [published],
+        channel: [ada],
+        post_target: [customized],
+        post_part: [
+          // Every account had a text of its own, so the post's own could
+          // stay empty: it went nowhere.
+          part(published.id, { text: "" }),
+          part(published.id, { targetId: customized.id, text: " " }),
+          part(published.id, {
+            targetId: customized.id,
+            position: 1,
+            text: "For Ada",
+          }),
+        ],
+      }),
+    );
+    expect(item?.title).toBe("For Ada");
   });
 });
 

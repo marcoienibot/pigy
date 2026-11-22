@@ -229,7 +229,6 @@ function SentItem({
   onDelete: () => void;
 }) {
   const textId = `${post.id}-text`;
-  const [first] = post.parts;
   const words = postStatusWords(post);
 
   return (
@@ -249,7 +248,7 @@ function SentItem({
             id={textId}
             className="line-clamp-6 min-w-0 flex-1 break-words whitespace-pre-wrap"
           >
-            {first?.text || (
+            {post.title || (
               <span className="text-muted-foreground">Empty post</span>
             )}
           </p>

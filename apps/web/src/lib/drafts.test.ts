@@ -27,18 +27,23 @@ describe("selectDrafts", () => {
 
   it("leaves the text that is written for one account out of the draft", () => {
     const draft = post();
-    const own = part(draft.id, { text: "The post" });
     const toAccount = target(draft.id, "01900000-0000-7000-8000-00000000cccc");
+    // Made first, so that its ID is the lower one: `inReadingOrder` puts
+    // it before the post's own part, which has the same position.
+    const account = part(draft.id, {
+      targetId: toAccount.id,
+      text: "For one account",
+    });
+    const own = part(draft.id, { text: "The post" });
     const [item] = selectDrafts(
       tablesOf({
         post: [draft],
         post_target: [toAccount],
-        post_part: [
-          own,
-          // Before the post's own part by its position, to show that it
-          // is not taken for the first part of the draft.
-          part(draft.id, { targetId: toAccount.id, text: "For one account" }),
-        ],
+        // The account's part is the first of the two rows, and has the
+        // same position as the post's own. A draft that took its parts in
+        // the order of the table, or by position alone, would begin with
+        // it.
+        post_part: [account, own],
       }),
     );
     expect(item?.parts).toEqual([own]);
@@ -66,6 +71,84 @@ describe("selectDrafts", () => {
     expect(drafts.find(({ id }) => id === started.id)?.title).toBe(
       "Later part",
     );
+  });
+
+  it("is not empty, and has a title, when only the texts of its accounts have something in them", () => {
+    const draft = post();
+    const toAda = target(draft.id, "01900000-0000-7000-8000-00000000aaaa");
+    const toGrace = target(draft.id, "01900000-0000-7000-8000-00000000bbbb");
+    const [item] = selectDrafts(
+      tablesOf({
+        post: [draft],
+        post_target: [toAda, toGrace],
+        post_part: [
+          // The post's own text is empty: every account has its own.
+          part(draft.id, { text: "" }),
+          part(draft.id, { targetId: toAda.id, text: "  " }),
+          part(draft.id, {
+            targetId: toGrace.id,
+            position: 1,
+            text: "second line",
+          }),
+          part(draft.id, { targetId: toGrace.id, text: "For Grace" }),
+        ],
+      }),
+    );
+    expect(item).toMatchObject({
+      empty: false,
+      untouched: false,
+      // The first text of an account that has something in it, in its
+      // order, and not a mix of the texts.
+      title: "For Grace",
+      snippet: "second line",
+    });
+  });
+
+  it("calls a draft untouched only when it has no text and goes nowhere", () => {
+    const blank = post();
+    const chosen = post();
+    const customized = post();
+    const toChosen = target(chosen.id, "01900000-0000-7000-8000-00000000aaaa");
+    const toCustomized = target(
+      customized.id,
+      "01900000-0000-7000-8000-00000000aaaa",
+    );
+    const drafts = selectDrafts(
+      tablesOf({
+        post: [blank, chosen, customized],
+        post_target: [toChosen, toCustomized],
+        post_part: [
+          part(blank.id, { text: "" }),
+          // Empty, and somebody has chosen where it goes.
+          part(chosen.id, { text: "" }),
+          // Empty of its own, with a text for its account.
+          part(customized.id, { text: "" }),
+          part(customized.id, { targetId: toCustomized.id, text: "Written" }),
+        ],
+      }),
+    );
+    // "New draft" takes up the first again, and neither of the others.
+    expect(
+      Object.fromEntries(drafts.map((draft) => [draft.id, draft.untouched])),
+    ).toEqual({ [blank.id]: true, [chosen.id]: false, [customized.id]: false });
+  });
+
+  it("hands out another draft when its account went with its text, which leaves the row of the post as it was", () => {
+    const draft = post();
+    const own = part(draft.id, { text: "" });
+    const toAccount = target(draft.id, "01900000-0000-7000-8000-00000000aaaa");
+    const account = part(draft.id, { targetId: toAccount.id, text: "Written" });
+    const [before] = selectDrafts(
+      tablesOf({
+        post: [draft],
+        post_target: [toAccount],
+        post_part: [own, account],
+      }),
+    );
+    // What a disconnect of the channel does: no mutator touches the post.
+    const [after] = selectDrafts(tablesOf({ post: [draft], post_part: [own] }));
+    expect(before).toMatchObject({ title: "Written", untouched: false });
+    expect(after).toMatchObject({ title: "", empty: true, untouched: true });
   });
 
   it("hands out the same draft for the same rows, and another when a part has changed", () => {
