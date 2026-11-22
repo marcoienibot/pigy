@@ -215,7 +215,21 @@ export function createContainer(
     // permissions are these.
     const refused = lacking(state, caller, ["threads_manage_replies"]);
     if (refused) return refused;
-    if (!state.posts.get(replyToId)) return noSuchObject(state, replyToId);
+    const repliedTo = state.posts.get(replyToId);
+    if (!repliedTo) return noSuchObject(state, replyToId);
+    // Documented: with this permission an app replies in the threads
+    // that the account began. A reply under somebody else's post takes
+    // permissions that are not simulated. GUESS: the words and the code
+    // of the refusal.
+    if (rootOf(state, repliedTo).accountId !== caller.user.id) {
+      return refuse(state, {
+        status: 403,
+        message:
+          "(#10) Application does not have permission for this action: the post that begins the thread is not the account's own",
+        type: "THApiException",
+        code: 10,
+      });
+    }
   }
   const now = state.world.now().getTime();
   const container: Container = {
@@ -238,6 +252,31 @@ export function createContainer(
   }
   state.containers.put(container.id, container);
   return json(200, { id: container.id });
+}
+
+/** What a post is made of, besides who posts it and when. */
+export type NewPost = Pick<ThreadsPost, "text" | "replyToId"> &
+  Pick<Partial<ThreadsPost>, "media" | "quote" | "poll">;
+
+/** Puts a post of `user` into the world, now. It checks nothing. */
+export function addPost(
+  state: State,
+  user: ThreadsUser,
+  post: NewPost,
+): ThreadsPost {
+  const id = nextId(state.world);
+  const shortcode = `C${BigInt(id).toString(36)}`;
+  const added: ThreadsPost = {
+    ...post,
+    network: "threads",
+    id,
+    accountId: user.id,
+    createdAt: state.world.now().getTime(),
+    shortcode,
+    url: `${profileUrl(user)}/post/${shortcode}`,
+  };
+  state.posts.put(id, added);
+  return added;
 }
 
 /** What Threads says when an account has done something too often. */
@@ -279,20 +318,11 @@ export function publish(
   if (usageOf(state, quota, user.id).length >= quotas[quota]) {
     return overQuota(state, quota);
   }
-  const id = nextId(state.world);
-  const post: ThreadsPost = {
-    network: "threads",
-    id,
-    accountId: user.id,
-    // GUESS: Threads keeps the text as it was sent.
+  // GUESS: Threads keeps the text as it was sent.
+  const { id } = addPost(state, user, {
     text: container.text,
     replyToId: container.replyToId,
-    createdAt: state.world.now().getTime(),
-    shortcode: `C${BigInt(id).toString(36)}`,
-    url: "",
-  };
-  post.url = `${profileUrl(user)}/post/${post.shortcode}`;
-  state.posts.put(id, post);
+  });
   state.containers.put(container.id, { ...container, publishedAs: id });
   use(state, quota, user.id);
   return json(200, { id });
@@ -327,7 +357,9 @@ function media(
   return pick(state, fields, {
     id: post.id,
     media_product_type: "THREADS",
-    media_type: "TEXT_POST",
+    // Documented: a post of text says TEXT_POST, where its container was
+    // made as TEXT.
+    media_type: post.media ?? "TEXT_POST",
     permalink: post.url,
     // Documented: the owner is only said of a post of the account's own.
     owner: post.accountId === user.id ? { id: post.accountId } : undefined,
@@ -335,7 +367,12 @@ function media(
     text: post.text,
     timestamp: timestamp(post.createdAt),
     shortcode: post.shortcode,
-    is_quote_post: false,
+    is_quote_post: post.quote === true,
+    // GUESS: a post says its poll like this, and one without a poll
+    // leaves the field out.
+    poll_attachment: post.poll
+      ? { option_a: "Yes", option_b: "No" }
+      : undefined,
     has_replies: state.posts.all().some((other) => other.replyToId === post.id),
     is_reply: isReply,
     is_reply_owned_by_me: isReply ? post.accountId === user.id : undefined,

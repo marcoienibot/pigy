@@ -44,6 +44,14 @@ export type ThreadsPost = SimPost & {
   network: "threads";
   /** The part of the address of the post that names it. */
   shortcode: string;
+  /**
+   * What the post has besides its text, for one that a person made in
+   * the app of Threads: the API of this simulation makes posts of plain
+   * text, which have none of these.
+   */
+  media?: "IMAGE" | "VIDEO" | "CAROUSEL_ALBUM";
+  quote?: boolean;
+  poll?: boolean;
 };
 
 /**

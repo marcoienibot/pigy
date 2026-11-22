@@ -632,6 +632,74 @@ describe("publishing", () => {
     ]);
   });
 
+  it("refuses a reply in a thread that somebody else began, however deep", async () => {
+    const sim = setup();
+    const ada = await tokenFor(sim, sim.ada);
+    const grace = await tokenFor(sim, sim.grace);
+    const first = await post(sim, ada, "Ada's post");
+    const refused = await answer(
+      await container(sim, grace, "Me too", { reply_to_id: first }),
+    );
+    expect(refused.status).toBe(403);
+    expect(refused.body.error?.code).toBe(10);
+    // Also under a reply of the account's own, which a person can post
+    // there in the app of Threads: the thread is still Ada's.
+    const { id: own } = sim.simulator.addPost(sim.grace.id, {
+      text: "Grace, by hand",
+      replyToId: first,
+    });
+    expect(
+      (await container(sim, grace, "And again", { reply_to_id: own })).status,
+    ).toBe(403);
+    // Ada replies to Grace in her own thread.
+    await post(sim, ada, "Thank you", { reply_to_id: own });
+    expect(texts(sim)).toEqual(["Ada's post", "Grace, by hand", "Thank you"]);
+  });
+
+  it("says of a post what it has besides its text", async () => {
+    const sim = setup();
+    const token = await tokenFor(sim);
+    const text = await post(sim, token, "Words");
+    // What a person posts in the app of Threads.
+    const photo = sim.simulator.addPost(sim.ada.id, {
+      text: "Words",
+      media: "IMAGE",
+    });
+    const quote = sim.simulator.addPost(sim.ada.id, {
+      text: "Words",
+      quote: true,
+    });
+    const poll = sim.simulator.addPost(sim.ada.id, {
+      text: "Words",
+      poll: true,
+    });
+    const said = async (id: string) =>
+      (
+        await answer(
+          await call(sim, "GET", `/${id}`, {
+            fields: "media_type,is_quote_post,poll_attachment",
+            access_token: token,
+          }),
+        )
+      ).body;
+    expect(await said(text)).toEqual({
+      media_type: "TEXT_POST",
+      is_quote_post: false,
+    });
+    expect(await said(photo.id)).toEqual({
+      media_type: "IMAGE",
+      is_quote_post: false,
+    });
+    expect(await said(quote.id)).toEqual({
+      media_type: "TEXT_POST",
+      is_quote_post: true,
+    });
+    expect(await said(poll.id)).toMatchObject({
+      media_type: "TEXT_POST",
+      poll_attachment: expect.any(Object),
+    });
+  });
+
   it("limits the posts of an account to 250 in 24 hours, and says how many are used", async () => {
     const sim = setup();
     const token = await tokenFor(sim);
@@ -704,13 +772,15 @@ describe("reading", () => {
   it("lists the replies to a post, and says which are the account's own", async () => {
     const sim = setup();
     const ada = await tokenFor(sim, sim.ada);
-    const grace = await tokenFor(sim, sim.grace);
     const first = await post(sim, ada, "First");
     sim.world.advance(1000);
     const own = await post(sim, ada, "Ada's reply", { reply_to_id: first });
     sim.world.advance(1000);
-    const other = await post(sim, grace, "Grace's reply", {
-      reply_to_id: first,
+    // Somebody else replies in the app of Threads: no app of this
+    // simulation replies under a post that is not its account's own.
+    const { id: other } = sim.simulator.addPost(sim.grace.id, {
+      text: "Grace's reply",
+      replyToId: first,
     });
     // A reply to a reply is no reply to the first post.
     await post(sim, ada, "Deeper", { reply_to_id: own });

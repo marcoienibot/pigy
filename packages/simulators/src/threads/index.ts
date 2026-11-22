@@ -6,10 +6,12 @@ import {
   simulatedSecret,
 } from "../world/index.ts";
 import {
+  addPost,
   type Caller,
   createContainer,
   deletePost,
   lacking,
+  type NewPost,
   noSuchObject,
   object,
   ownThreads,
@@ -30,12 +32,13 @@ import {
   createState,
   nextId,
   type ThreadsApp,
+  type ThreadsPost,
   type ThreadsToken,
   type ThreadsUser,
 } from "./state.ts";
 
 export { slowProcessingMs } from "./api.ts";
-export type { ThreadsApp, ThreadsUser } from "./state.ts";
+export type { ThreadsApp, ThreadsPost, ThreadsUser } from "./state.ts";
 
 /**
  * A simulation of Threads as an app meets it that posts text for an
@@ -122,6 +125,16 @@ export type ThreadsSimulator = {
   setRedirectUris(appId: string, redirectUris: string[]): void;
   /** Adds an account, for somebody to connect as. */
   addUser(user: { username: string; name: string }): ThreadsUser;
+  /**
+   * Puts a post of an account into the world, as a person makes one in
+   * the app of Threads, where they can do what this simulation lets no
+   * app do: post a photo, a video, a quote or a poll, and reply under
+   * anybody's post. Nothing is checked, and no quota is counted.
+   */
+  addPost(
+    userId: string,
+    post: Pick<NewPost, "text"> & Partial<NewPost>,
+  ): ThreadsPost;
   /** Arms a fault, which strikes the next request it applies to. */
   arm(fault: ThreadsFault): void;
 };
@@ -448,6 +461,15 @@ export function createThreadsSimulator(world: SimWorld): ThreadsSimulator {
       };
       state.users.put(user.id, user);
       return user;
+    },
+
+    addPost(userId, { replyToId = null, ...post }) {
+      const user = state.users.get(userId);
+      if (!user) throw new Error(`There is no account ${userId}`);
+      if (replyToId !== null && !state.posts.get(replyToId)) {
+        throw new Error(`There is no post ${replyToId} to reply to`);
+      }
+      return addPost(state, user, { ...post, replyToId });
     },
 
     arm({ kind, operation }) {
