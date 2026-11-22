@@ -234,13 +234,7 @@ function Drafts() {
       mutate("target.add", { id: uuidv7(new Date()), postId: id, channelId });
       // With the text that was written for it, if it had one: all of
       // it, also where it has grown longer than one step carries.
-      if (own) {
-        const partIds = restoreOwnText(mutate, id, channelId, own);
-        own.forEach((part, index) => {
-          const partId = partIds[index];
-          if (partId) attachAgain(mutate, partId, images.get(part.id) ?? []);
-        });
-      }
+      if (own) restoreOwnText(mutate, id, channelId, own, images);
     }
     // The notice that was pressed leaves the page, and the keyboard with
     // it: it goes into the text of the draft, and not to the page, where

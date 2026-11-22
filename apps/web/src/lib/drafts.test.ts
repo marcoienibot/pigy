@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { selectDrafts, threadLabel } from "@/lib/drafts";
+import { restoreOwnText, selectDrafts, threadLabel } from "@/lib/drafts";
+import { selectPartImages } from "@/lib/media";
 import {
   media,
   part,
@@ -204,5 +205,58 @@ describe("selectDrafts", () => {
     expect(of(after, typedIn.id)?.parts[0]).toBe(
       of(before, typedIn.id)?.parts[0],
     );
+  });
+});
+
+describe("restoreOwnText", () => {
+  it("brings the text of an account back with the images of each of its parts, in their order", () => {
+    const draft = post();
+    const channelId = "channel-1";
+    const first = part(draft.id, { position: 0, text: "One", targetId: "t" });
+    const second = part(draft.id, { position: 1, text: "Two", targetId: "t" });
+    const [boats, gulls, terns] = [media(), media(), media()];
+    // What the device had before the account was left out.
+    const images = selectPartImages(
+      tablesOf({
+        post: [draft],
+        post_part: [first, second],
+        media: [boats, gulls, terns],
+        part_media: [
+          partMedia(second.id, terns.id, { position: 1, alt: "Terns" }),
+          partMedia(first.id, boats.id, { position: 0, alt: "Boats" }),
+          partMedia(second.id, gulls.id, { position: 0, alt: "" }),
+        ],
+      }),
+    );
+    const made: { name: string; args: Record<string, unknown> }[] = [];
+    const ids = restoreOwnText(
+      (name, args) =>
+        made.push({ name, args: args as Record<string, unknown> }),
+      draft.id,
+      channelId,
+      [first, second],
+      images,
+    );
+
+    expect(made.map(({ name }) => name)).toEqual([
+      "target.customize",
+      "media.attach",
+      "media.attach",
+      "media.attach",
+    ]);
+    // Each image into the part that is made of the one it was in.
+    expect(
+      made
+        .filter(({ name }) => name === "media.attach")
+        .map(({ args }) => [
+          ids.indexOf(String(args.partId)),
+          args.mediaId,
+          args.alt,
+        ]),
+    ).toEqual([
+      [0, boats.id, "Boats"],
+      [1, gulls.id, ""],
+      [1, terns.id, "Terns"],
+    ]);
   });
 });

@@ -9,6 +9,7 @@ import {
 } from "@pigy/core";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback } from "react";
+import { attachAgain, type PartImages } from "@/lib/media";
 import { useMutate, useSyncedNow } from "@/sync/react";
 
 /** One part of a text, as the editor shows it: its row. */
@@ -257,8 +258,9 @@ export function useNewDraft() {
 
 /**
  * Gives the account `channelId` of the draft `postId` the text `parts`
- * as its own, all of it, however long it is: for a text that is brought
- * back, with a draft that was deleted or an account that was left out.
+ * as its own, all of it, however long it is, with the images that each
+ * part had, by its ID in `images`: for a text that is brought back, with
+ * a draft that was deleted or an account that was left out.
  * `ownTextMutations` of `@pigy/core` has how, and why it is more than
  * one mutation for a long text. Returns the IDs of the parts of the text.
  */
@@ -269,7 +271,8 @@ export function restoreOwnText(
   ) => void,
   postId: string,
   channelId: string,
-  parts: readonly { text: string }[],
+  parts: readonly { id: string; text: string }[],
+  images: PartImages = new Map(),
 ): string[] {
   const mutations = ownTextMutations(
     postId,
@@ -286,11 +289,16 @@ export function restoreOwnText(
       mutate(mutation.name, mutation.args);
     }
   }
-  // The IDs of the parts that were made, in the order of `parts`: for
-  // whoever puts their images back into them.
-  return mutations.flatMap((mutation) =>
+  // The IDs of the parts that were made, in the order of `parts`, which
+  // get their images back.
+  const made = mutations.flatMap((mutation) =>
     mutation.name === "target.customize"
       ? mutation.args.parts.map(({ id }) => id)
       : [mutation.args.id],
   );
+  parts.forEach((part, index) => {
+    const partId = made[index];
+    if (partId) attachAgain(mutate, partId, images.get(part.id) ?? []);
+  });
+  return made;
 }
