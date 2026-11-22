@@ -10,7 +10,13 @@ import {
 } from "@pigy/core";
 import { and, desc, eq, isNull, lte, or, sql } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
-import { allowedEmails, apiKeys, users, workspaces } from "../db/schema.ts";
+import {
+  allowedEmails,
+  apiKeys,
+  sessions,
+  users,
+  workspaces,
+} from "../db/schema.ts";
 import { randomHex, sha256Hex } from "../digest.ts";
 import type { WorkspaceIdentity } from "../workspace/store.ts";
 
@@ -84,15 +90,26 @@ export async function apiKeysOf(
 
 /**
  * Makes a key for `workspace` and returns it with its secret, which is
- * the key itself: nothing can hand it out again. Null if the workspace
- * has as many keys as it can have.
+ * the key itself: nothing can hand it out again.
+ *
+ * `sessionId` is the session that the request came with. No key is made
+ * unless it is still a session of the owner of the workspace when the key
+ * is stored: `signed_out`. A request passes the check of its session and
+ * then waits, for its body if for nothing else, and a sign-in elsewhere
+ * can end the sessions of the account meanwhile and revoke its keys,
+ * `auth/session.ts`. A key that was stored after that would be a new one,
+ * good for the identity that was just revoked. Whatever ends the access
+ * of an account ends its sessions, so the session is what is asked.
+ *
+ * `full` if the workspace has as many keys as it can have.
  */
 export async function createApiKey(
   db: DrizzleD1Database,
-  workspace: Pick<WorkspaceIdentity, "id" | "environment">,
+  workspace: WorkspaceIdentity,
+  sessionId: string,
   { name, scopes, expiresAt }: CreateApiKeyRequest,
   now: Date,
-): Promise<{ apiKey: ApiKey; secret: string } | null> {
+): Promise<{ apiKey: ApiKey; secret: string } | "full" | "signed_out"> {
   const id = randomHex(8);
   const secret = randomHex(32);
   const prefix = apiKeyPrefixes[workspace.environment];
@@ -108,9 +125,15 @@ export async function createApiKey(
     lastUsedAt: null,
     expiresAt: expiresAt === null ? null : new Date(expiresAt),
   };
-  // Counted and stored in one statement: of the requests that arrive
-  // together when there is room for one key, one finds the room. The
-  // values are written as the columns of `apiKeys` store them.
+  const session = and(
+    eq(sessions.id, sessionId),
+    eq(sessions.userId, workspace.ownerId),
+  );
+  // Counted, checked and stored in one statement. Of the requests that
+  // arrive together when there is room for one key, one finds the room,
+  // and what ends the session comes before this statement or after it,
+  // never between its check and its insert. The values are written as
+  // the columns of `apiKeys` store them.
   const stored = await db.run(sql`
     insert into ${apiKeys} (
       ${sql.identifier(apiKeys.id.name)},
@@ -129,8 +152,17 @@ export async function createApiKey(
       select count(*) from ${apiKeys}
       where ${apiKeys.workspaceId} = ${row.workspaceId}
         and ${apiKeys.revokedAt} is null
-    ) < ${maxApiKeys}`);
-  if (stored.meta.changes === 0) return null;
+    ) < ${maxApiKeys}
+      and exists (select 1 from ${sessions} where ${session})`);
+  if (stored.meta.changes === 0) {
+    // Which of the two it was, for the answer alone: nothing is stored
+    // by it.
+    const [still] = await db
+      .select({ id: sessions.id })
+      .from(sessions)
+      .where(session);
+    return still ? "full" : "signed_out";
+  }
   return { apiKey: apiKeyOf(row), secret: `${prefix}${id}_${secret}` };
 }
 

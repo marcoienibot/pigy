@@ -1,6 +1,10 @@
 import { env } from "cloudflare:workers";
-import { apiKeyListResponseSchema, maxApiKeys } from "@pigy/core";
-import { expect, it } from "vitest";
+import {
+  apiKeyListResponseSchema,
+  grantableApiScopes,
+  maxApiKeys,
+} from "@pigy/core";
+import { expect, it, vi } from "vitest";
 import { lastUsedEveryMs } from "../src/api/keys.ts";
 import { apiClient, makeKey, startedApi } from "./api.ts";
 import {
@@ -155,6 +159,77 @@ it("keeps to the number of keys when two are made at once", async () => {
   );
   expect(statuses.sort()).toEqual([201, 409]);
   expect(await listed(browser, workspaces.live)).toHaveLength(maxApiKeys);
+});
+
+it("makes no key for a request whose session was ended while its body arrived", async () => {
+  const { test } = await startedApi();
+  await invite(test, "member@example.com");
+  const account = { email: "member@example.com", sub: "1001" };
+  const member = await signedIn(test, account);
+  const ids = await workspaceIds(member);
+
+  // A request to make a key whose body arrives slowly. The stream hands
+  // nothing out before it is asked, so `asked` says that the route has
+  // let the session through and waits for the body.
+  let asked = false;
+  let arrive = () => {};
+  const body = new ReadableStream<Uint8Array>(
+    {
+      pull(controller) {
+        asked = true;
+        return new Promise<void>((resolve) => {
+          arrive = () => {
+            controller.enqueue(
+              new TextEncoder().encode(
+                JSON.stringify({
+                  name: "Too late",
+                  scopes: [...grantableApiScopes],
+                  expiresAt: null,
+                }),
+              ),
+            );
+            controller.close();
+            resolve();
+          };
+        });
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  const origin = "https://pigy.test";
+  const answer = Promise.resolve(
+    member.send(
+      new Request(`${origin}/api/workspaces/${ids.live}/api-keys`, {
+        method: "POST",
+        headers: {
+          Cookie: [...member.cookies]
+            .map(([name, value]) => `${name}=${value}`)
+            .join("; "),
+          Origin: origin,
+          "Content-Type": "application/json",
+        },
+        body,
+      }),
+    ),
+  );
+  await vi.waitFor(() => expect(asked).toBe(true));
+
+  // Meanwhile Google says at a sign-in that the address of the account
+  // is no longer verified: its sessions end and its keys are revoked.
+  // The address stays stored and invited, so a key that was made now
+  // would be taken.
+  const refused = await signIn(test, test.browser(), {
+    ...account,
+    verified: false,
+  });
+  expect(locationOf(refused)).toBe("/sign-in?error=email_not_verified");
+  expect(await me(member)).toBeNull();
+
+  arrive();
+  const response = await answer;
+  expect(response.status).toBe(401);
+  expect(await response.json()).toMatchObject({ error: "UnauthorizedError" });
+  expect((await stored()).results).toEqual([]);
 });
 
 it("lets only the person who is signed in manage the keys of their workspace", async () => {

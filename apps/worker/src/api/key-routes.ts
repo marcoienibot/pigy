@@ -9,6 +9,7 @@ import { drizzle } from "drizzle-orm/d1";
 import { type Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { requireUser } from "../auth/guards.ts";
+import { clearSessionCookie } from "../auth/session.ts";
 import type { AppDependencies, AppEnv } from "../env.ts";
 import { InvalidField, parseJsonBody } from "../errors.ts";
 import { ownWorkspace } from "../workspace/workspaces.ts";
@@ -64,10 +65,17 @@ export function apiKeyRoutes(dependencies: AppDependencies): Hono<AppEnv> {
     const created = await createApiKey(
       drizzle(c.env.DB),
       workspace,
+      c.var.sessionId,
       request,
       time,
     );
-    if (!created) {
+    if (created === "signed_out") {
+      // The session ended while the request was on its way: answered as
+      // `requireUser` answers a request that comes without one.
+      clearSessionCookie(c);
+      throw new HTTPException(401, { message: "Sign in to continue" });
+    }
+    if (created === "full") {
       throw new HTTPException(409, {
         message: `A workspace has at most ${maxApiKeys} API keys. Revoke one first.`,
       });
