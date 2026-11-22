@@ -3,6 +3,7 @@ import type { DrizzleD1Database } from "drizzle-orm/d1";
 import type { Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { allowedEmails, sessions, users } from "../db/schema.ts";
+import { randomHex, sha256Hex } from "../digest.ts";
 import type { AppEnv, Auth } from "../env.ts";
 
 /**
@@ -19,20 +20,6 @@ const lifetimeMs = 30 * dayMs;
 const renewAfterMs = dayMs;
 
 const encoder = new TextEncoder();
-
-function randomHex(bytes: number): string {
-  return hex(crypto.getRandomValues(new Uint8Array(bytes)));
-}
-
-function hex(bytes: ArrayBuffer | Uint8Array): string {
-  return Array.from(new Uint8Array(bytes), (byte) =>
-    byte.toString(16).padStart(2, "0"),
-  ).join("");
-}
-
-async function sha256Hex(text: string): Promise<string> {
-  return hex(await crypto.subtle.digest("SHA-256", encoder.encode(text)));
-}
 
 /** Starts a session and returns the token for the cookie. */
 export async function createSession(

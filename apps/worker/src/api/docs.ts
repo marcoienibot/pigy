@@ -195,7 +195,6 @@ ${fieldTable(schema)}
   code { font: 13px ui-monospace, monospace; }
   small { opacity: 0.7; }
   .method { border: 1px solid #8886; border-radius: 4px; font: 600 12px ui-monospace, monospace; padding: 1px 6px; }
-  .table { overflow-x: auto; }
   table { border-collapse: collapse; margin: 0 0 10px; width: 100%; }
   th, td { border-top: 1px solid #8884; padding: 5px 8px 5px 0; text-align: left; vertical-align: top; }
   th { border-top: 0; font-weight: 600; }

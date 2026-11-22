@@ -20,6 +20,7 @@ import { HTTPException } from "hono/http-exception";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { z } from "zod";
 import { readAdminEmails } from "../auth/config.ts";
+import { sha256Hex } from "../digest.ts";
 import type { AppDependencies, Bindings } from "../env.ts";
 import { InvalidField, parseInput } from "../errors.ts";
 import type { ApiCall } from "../workspace/api.ts";
@@ -54,17 +55,6 @@ type ApiEnv = {
 };
 
 type ApiContext = Context<ApiEnv>;
-
-/** A SHA-256 of `text`, as hex. */
-async function digest(text: string): Promise<string> {
-  const bytes = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(text),
-  );
-  return Array.from(new Uint8Array(bytes), (byte) =>
-    byte.toString(16).padStart(2, "0"),
-  ).join("");
-}
 
 /**
  * The body of a request as text, read up to `maxApiBodyBytes` and no
@@ -139,8 +129,8 @@ async function repeatOf(
   }
   return {
     // The header as a digest: of one length whatever was sent.
-    key: `api:${c.var.api.key.id}:${await digest(header)}`,
-    fingerprint: await digest(
+    key: `api:${c.var.api.key.id}:${await sha256Hex(header)}`,
+    fingerprint: await sha256Hex(
       `${c.req.method} ${new URL(c.req.url).pathname}\n${body}`,
     ),
   };

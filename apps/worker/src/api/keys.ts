@@ -11,6 +11,7 @@ import {
 import { and, count, desc, eq, isNull, lte, or } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { allowedEmails, apiKeys, users, workspaces } from "../db/schema.ts";
+import { randomHex, sha256Hex } from "../digest.ts";
 import type { WorkspaceIdentity } from "../workspace/store.ts";
 
 /**
@@ -29,19 +30,6 @@ import type { WorkspaceIdentity } from "../workspace/store.ts";
  */
 
 const encoder = new TextEncoder();
-
-function hex(bytes: ArrayBuffer | Uint8Array): string {
-  return Array.from(new Uint8Array(bytes), (byte) =>
-    byte.toString(16).padStart(2, "0"),
-  ).join("");
-}
-
-const randomHex = (bytes: number) =>
-  hex(crypto.getRandomValues(new Uint8Array(bytes)));
-
-async function sha256Hex(text: string): Promise<string> {
-  return hex(await crypto.subtle.digest("SHA-256", encoder.encode(text)));
-}
 
 /** A key as it is written, in its three parts. */
 const keyPattern = new RegExp(
