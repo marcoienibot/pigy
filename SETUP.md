@@ -45,6 +45,7 @@ The deploy creates everything that pigy runs on but the bucket of the images, wh
 - Two Durable Object classes with SQLite storage: `WorkspaceDO`, bound as `WORKSPACE`, and `SimWorldDO`, bound as `SIM_WORLD`.
 - The workflow `pigy-publish`, of the class `PublishWorkflow`, bound as `PUBLISH`. Workflows are part of the Workers Paid plan as pigy uses them, section 1.
 - A rate limiter, bound as `API_RATE_LIMITER`, which counts the requests of each key of the public API: 120 in 60 seconds. Its namespace is `1001`, a number of the account's own choosing that no other rate limiter of the account may use. To check, if the account has other Workers: that none of them binds a rate limiter with that number.
+- A second one, bound as `POLICY_REPORT_LIMITER`, which counts the reports of the content security policy that each address sends: 20 requests in 60 seconds, namespace `1002`, which no other limiter of the account may use either.
 - The R2 bucket `pigy-media`, bound as `MEDIA`: the images that people attach to their posts, as pigy keeps them, and their small pictures. It gets no public address and no custom domain: every byte of it is served by the Worker. A lifecycle rule of the bucket that aborts a multipart upload which is not complete after eight days is worth adding in its settings, `PLAN.md` section 19: pigy gives such an upload up after a week by itself and asks the bucket to drop its parts for eight days after that. The rule is for an upload that the bucket did not drop then: pigy stops asking, and says so in the log.
 - Cloudflare Images, bound as `IMAGES`, which makes the small pictures and the smaller images that a network takes. It needs nothing set up, and is billed by the transformation.
 - Workers Logs for what pigy writes, with the invocation logs and the traces off, section 9.
@@ -141,7 +142,8 @@ In this order. Each is something that only a deployed pigy can show.
 7. Turn "Notifications on this device" on in Settings, on the phone. In the sandbox, arm a failure on Simulator → Failures and publish: the phone shows a notification, and pressing it leads to the post.
 8. Share a link from another app to pigy on Android.
 9. Deploy a change, and see the phone take the new version the next time the app is started.
-10. Look at the headers: `curl -sI https://<host>/` has `content-security-policy`, `curl -sI https://<host>/api/health` has `strict-transport-security`, and `curl -sI https://<host>/assets/nothing.js` answers 404 with `cache-control: no-store`. In the console of the browser, on any screen, no message names the content security policy.
+10. Look at the headers: `curl -sI https://<host>/` has `content-security-policy`, ending in `report-to csp; report-uri /api/policy-reports`, and `reporting-endpoints`, `curl -sI https://<host>/api/health` has `strict-transport-security`, and `curl -sI https://<host>/assets/nothing.js` answers 404 with `cache-control: no-store`. In the console of the browser, on any screen, no message names the content security policy.
+11. Reports of the policy: on a screen of the app, in the console of Chrome and then of Firefox, run `document.head.append(Object.assign(document.createElement("script"), { textContent: "1" }))`. The console says that the policy refused it, and within two minutes Observability has a line of the kind `policy` with `blocked` `inline` and the path of the screen as `page`, one for each browser. `PLAN.md` section 19, "Hardening (phase 11b)", has why this has to be tried here: the browser of the tests never sent its report of the Reporting API.
 
 ## 8. What was never verified against the real services
 
@@ -153,28 +155,58 @@ pigy has not met a real Cloudflare, a real network or a real phone. `PLAN.md` se
 
 The live conformance run of each network confirms most of what its list has: `AGENTS.md`, "Run the conformance suite against a real network". It posts to a real account, so it takes an account that is there for the purpose.
 
-## 9. Logs, and what to watch
+## 9. Logs, alerts, and what to watch
 
-Nothing alerts anybody: no alerting service is set up. Look at the logs after a deploy, and when somebody says that something did not work.
+pigy sets up no alerting service of its own: whoever runs it is told of errors by what Cloudflare offers for Workers Logs, which is set up by hand, below under "Being told". Look at the logs after a deploy as well, and when somebody says that something did not work.
 
 **Where.** In the Cloudflare dashboard: Workers & Pages → pigy → Observability. Or live, in a terminal: `wrangler tail pigy`. Workers Logs keeps what it has for some days: the dashboard says how many on your plan.
 
 **What is there.** Only what pigy writes itself: one line of JSON for everything that went wrong, from `apps/worker/src/log.ts`. Each line has:
 
 - `level`: `error` is for you to look at, a bug or something that is not set up. `warn` is how something ended that pigy has dealt with, such as a network that refused an access: the person was told on a screen.
-- `kind`: `request` (a route answered with a 500), `configuration` (a secret is missing or not valid), `sign-in`, `connection`, `renewal`, `delivery`, `schedule`, `push`, `media` (the bucket or Images failed for an image), `sync`, `alarm`.
-- `message`, in words, and where it applies `route`, `step`, `workspaceId`, `channelId`, `targetId`, `postId`, `mediaId`, `network`, `host`, `status`.
+- `kind`: `request` (a route answered with a 500), `configuration` (a secret is missing or not valid), `sign-in`, `access`, `connection`, `renewal`, `stats`, `delivery`, `schedule`, `push`, `media` (the bucket or Images failed for an image), `sync`, `alarm`, `policy`. The table below says what each is.
+- `message`, in words, and where it applies `route`, `step`, `workspaceId`, `channelId`, `targetId`, `postId`, `mediaId`, `network`, `host`, `status`, and for `policy` the fields of a report: `directive`, `blocked`, `page`, `disposition`, `count`.
 - `error`: the error with its stack and the errors that caused it. Of anything else that an error carries, a line says only what kind of thing it is, such as `[object URLSearchParams]`: a library puts there what it compared, which can be the code of a callback or a token.
 
 A line never holds a secret, the text of a post, or the address of a person. To check, in the dashboard: that the fields of a line can be filtered by. If they cannot, the lines are still searched as text.
 
-**What to watch.**
+**What to watch**, kind by kind. A query in the Query Builder of Observability is a filter on the fields of a line: `level = "error" AND kind = "delivery"`. To check: that the fields can be filtered by, which rests on Workers Logs reading a line of JSON that is logged as text, `PLAN.md` section 19. If they cannot, search the lines as text for `"kind":"delivery"` and `"level":"error"`, which is how they are written. Save each query that you use, with a name, so that it is one click the next time.
 
-- `level` is `error`: every one is worth a look. `kind` is `configuration` means that a secret is missing or mistyped, and the message names it.
-- `kind` is `alarm`: a workspace could not set its alarm. Nothing is published or renewed in that workspace until it is next used.
-- `kind` is `delivery` with "ended without a word": a run of the publishing workflow stopped without reporting. One after a deploy is the deploy. Several are not.
-- `kind` is `renewal` at `error`: an access could not be renewed for a reason of pigy's own. A Threads access that is not renewed for weeks ends.
-- The runs of the workflow, under Workers & Pages → Workflows → pigy-publish: a run that is failed or stuck.
+| `kind` | At `error` | At `warn` | Query |
+| --- | --- | --- | --- |
+| `request` | A route answered with a 500: a bug. `route` names it by its pattern | Never | `kind = "request"` |
+| `configuration` | A secret is missing or not valid, and the message names it | Never | `kind = "configuration"` |
+| `sign-in` | Google could not be reached, or answered what pigy did not expect | Somebody cancelled, took too long, or came back with a callback that is not theirs | `kind = "sign-in" AND level = "error"` |
+| `access` | Never | A workspace was not told that it was frozen or thawed, or could not read whether it is: it makes up for it by itself. Many in a row are D1 in trouble | `kind = "access"` |
+| `connection` | Connecting or disconnecting an account failed for a reason of pigy's own | A network refused, or the person declined | `kind = "connection" AND level = "error"` |
+| `renewal` | An access could not be renewed for a reason of pigy's own. A Threads access that is not renewed for weeks ends | A network refused, and the account asks to be connected again | `kind = "renewal" AND level = "error"` |
+| `stats` | The stats of a delivery could not be read or stored for a reason of pigy's own. The read is tried again later, and the Sent screen shows the counts read before | The access of a channel did not open to read the stats with | `kind = "stats" AND level = "error"` |
+| `delivery` | The workflow of a delivery was not created, could not be asked how it is, or "ended without a word": one after a deploy is the deploy, several are not | A network refused a post: the person was told on the Sent screen | `kind = "delivery" AND level = "error"` |
+| `schedule` | A due post was not taken up, or one that was put aside was not deleted: a bug | Never | `kind = "schedule"` |
+| `push` | A push service did not take a message or did not answer, which costs that device that message, or the messages of a workspace were not sent. One now and then is a push service; many are a bug, or a key that the push services do not take | Never | `kind = "push"`, grouped by `host` |
+| `media` | The bucket or Cloudflare Images failed for an image: an upload that was not taken in, the images of a delivery that could not be made ready, or what the alarm does with images by the clock, such as an upload that the bucket did not drop. One now and then is the platform; many are a bug | No small picture could be made of an image | `kind = "media" AND level = "error"` |
+| `sync` | A mutation or a message failed: a bug | Never | `kind = "sync"` |
+| `alarm` | A workspace could not set its alarm. Nothing is published or renewed in it until it is next used | Never | `kind = "alarm"` |
+| `policy` | Never | The content security policy refused something on a page, as a browser reported it. Most are extensions of a browser, whose scheme `blocked` names. One of the app's own, `blocked = "inline"` or the address of pigy on a screen that everybody uses, is a bug | `kind = "policy"`, grouped by `directive`, `blocked` and `page` |
+
+The query to look at every day, or to be told of: `level = "error"`, counted and grouped by `kind`, over the last 24 hours. Every line at `error` is worth a look.
+
+And outside the log: the runs of the workflow, under Workers & Pages → Workflows → pigy-publish, for a run that is failed or stuck.
+
+**Being told.** Not verified: nobody has done this on an account yet. As of late 2026 Cloudflare has custom alerts on the data of Workers, "Monitors", in beta, under Observability → Alerts: <https://developers.cloudflare.com/notifications/monitors/>. A monitor runs a query of the SQL API over a dataset of Workers events on a schedule, compares its result with a threshold, and sends an email, a webhook or a PagerDuty alert. The one to make:
+
+1. Observability → Alerts → create a monitor, with the dataset of the events of Workers, for the Worker `pigy`.
+2. A threshold monitor whose query counts the lines with `level` `error` in the window, as the column `value`, and that fires when it is above 0. Where the dataset has the fields of a line apart, that is a filter on `level`. Where it has the line as text, the filter is that the message contains `"level":"error"`. To check: which of the two it is, in the preview of the query, which charts up to seven days.
+3. A window of an hour, so that a burst is one email and not sixty.
+4. Delivered by email, to you.
+
+A second monitor for `kind` `policy`, at a threshold of some tens a day, says when the refusals rise beyond the noise of extensions. Not needed at first.
+
+To check, once made: that its preview shows the lines at `error` of the last days, if there are any, and that its email arrives. For the second, set the threshold to fire at 0 or more, which any window does, wait for the email, and set it back to above 0.
+
+If Monitors are not there for the account, or not out of beta: save the query of the daily look and run it by hand. The budget alerts of Workers, which tell of what the account spends, are another thing and are on by themselves.
+
+Do not use Logpush or a Tail Worker to send the logs to a service that alerts, unless that service is given the lines of pigy's log and nothing else: what Cloudflare pushes of a request has its address with its query, which holds the code of a callback, and the requests that the Worker makes, which hold the token of a Threads account: the next paragraph.
 
 **What is off, and has to stay off.** `apps/worker/wrangler.jsonc`, `observability`:
 
