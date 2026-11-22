@@ -1,5 +1,8 @@
+import { pushHosts } from "@pigy/simulators/push";
 import type { SimToken } from "@pigy/simulators/world";
 import { describe, expect, it, onTestFinished } from "vitest";
+import { pushesAtOnce } from "../src/push/notify.ts";
+import { maxDevices, pushEndpoint } from "../src/push/subscriptions.ts";
 import {
   connectInSandbox,
   connectLinkedInLive,
@@ -643,26 +646,165 @@ describe("the devices that are told", () => {
     expect(messagesOf(test, hers)).toEqual([]);
   });
 
-  it("hands a device to whoever turned notifications on in it last", async () => {
+  it("does not hand the device of somebody who is signed in to another person who names its address", async () => {
     const context = await withChannel();
-    const { test, browser, workspace } = context;
+    const { test, browser } = context;
     const phone = await turnOn(test, browser);
     await invite(test, "grace@example.com");
     const grace = await signedIn(test, { email: "grace@example.com" });
 
-    // The same browser, after somebody else has signed in on it: it has
-    // one subscription, which it hands out again.
+    // Grace has learned the subscription of the admin's device, or signed
+    // in on the same browser over a session that is still good.
+    const response = await grace.fetch("/api/push/subscription", {
+      method: "PUT",
+      json: phone,
+    });
+
+    expect(response.status).toBe(409);
+    // The device is still the admin's, and is told of the admin's post.
+    await published(context, tooLong);
+    expect(await received(test, phone, 1)).toHaveLength(1);
+    expect(await keptEndpoints(test)).toEqual([phone.endpoint]);
+  });
+
+  it("hands a device to the next person once the session that turned it on is over", async () => {
+    const context = await withChannel();
+    const { test, browser, workspace } = context;
+    const phone = await turnOn(test, browser);
+    // Nobody has used the admin's session for longer than it lasts. Its
+    // row is still there: nothing has deleted it.
+    test.advance(31 * day);
+    await invite(test, "grace@example.com");
+    const grace = await signedIn(test, { email: "grace@example.com" });
+
+    // The same browser hands out the subscription that it has.
     const response = await grace.fetch("/api/push/subscription", {
       method: "PUT",
       json: phone,
     });
     expect(response.status).toBe(200);
 
-    await published(context, tooLong);
+    const again = await signedIn(test, { email: adminEmail });
+    const client = await looking(again, workspace);
+    await published({ ...context, client }, tooLong);
     await attend(workspace);
     // What the admin's post did is not told to a device that is Grace's.
     expect(messagesOf(test, phone)).toEqual([]);
     expect(await keptEndpoints(test)).toEqual([phone.endpoint]);
+  });
+
+  it("hands a device to the same person who has signed in anew in its browser", async () => {
+    const context = await withChannel();
+    const { test, browser } = context;
+    const phone = await turnOn(test, browser);
+    const again = await signedIn(test, { email: adminEmail });
+
+    const response = await again.fetch("/api/push/subscription", {
+      method: "PUT",
+      json: phone,
+    });
+
+    expect(response.status).toBe(200);
+    expect(await keptEndpoints(test)).toEqual([phone.endpoint]);
+    await published(context, tooLong);
+    // One row, so one message.
+    expect(await received(test, phone, 1)).toHaveLength(1);
+  });
+
+  it("keeps one subscription for a session, the one that its browser handed out last", async () => {
+    const { test, browser } = await withPush();
+    await turnOn(test, browser);
+
+    // The browser has unsubscribed and subscribed anew, or somebody sends
+    // one made-up subscription after the other.
+    const second = await turnOn(test, browser);
+
+    expect(await keptEndpoints(test)).toEqual([second.endpoint]);
+  });
+
+  it("keeps the ten devices that a person turned on last", async () => {
+    const { test, browser } = await withPush();
+    const devices = [await turnOn(test, browser)];
+    for (let more = 0; more < maxDevices; more += 1) {
+      // Each in a browser of its own, a moment after the one before.
+      test.advance(1000);
+      devices.push(
+        await turnOn(test, await signedIn(test, { email: adminEmail })),
+      );
+    }
+
+    // Eleven were turned on: the first of them is gone.
+    expect(await keptEndpoints(test)).toEqual(
+      devices
+        .slice(1)
+        .map(({ endpoint }) => endpoint)
+        .sort(),
+    );
+  });
+
+  it("asks only so many push services at once", async () => {
+    let open = 0;
+    let most = 0;
+    const context = await withChannel({
+      interceptPush: (push) => async (input, init) => {
+        open += 1;
+        most = Math.max(most, open);
+        try {
+          // Long enough for every request that is made at once to be
+          // open at the same time.
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          return await push(input, init);
+        } finally {
+          open -= 1;
+        }
+      },
+    });
+    const { test, browser } = context;
+    const devices = [await turnOn(test, browser)];
+    while (devices.length < maxDevices) {
+      devices.push(
+        await turnOn(test, await signedIn(test, { email: adminEmail })),
+      );
+    }
+
+    await published(context, tooLong);
+
+    for (const device of devices) await received(test, device, 1);
+    expect(most).toBe(pushesAtOnce);
+  });
+
+  it("does not send a message again to the devices that have it when a device that is gone could not be forgotten", async () => {
+    const context = await withChannel();
+    const { test, browser, workspace } = context;
+    const gone = await turnOn(test, browser);
+    const there = await turnOn(
+      test,
+      await signedIn(test, { email: adminEmail }),
+    );
+    test.push.unsubscribe(gone.endpoint);
+    const errors = expectErrors();
+    // The database is in trouble when the subscription that is gone is
+    // deleted, after the other device has taken its message.
+    const mend = breakDatabase((sql) =>
+      sql.startsWith('delete from "push_subscription"'),
+    );
+
+    await published(context, tooLong);
+    // Which waits until nothing is left to send: the message is off the
+    // queue although the cleaning up failed.
+    await received(test, there, 1);
+    await attend(workspace);
+
+    expect(messagesOf(test, there)).toHaveLength(1);
+    expect(errors).toHaveBeenCalledWith(
+      "The push subscriptions that are gone were not deleted",
+      expect.anything(),
+    );
+    // The device that is gone is found gone again with the next message.
+    mend();
+    await published(context, tooLong);
+    await received(test, there, 2);
+    expect(await keptEndpoints(test)).toEqual([there.endpoint]);
   });
 
   it("turns a device off, and only for the person whose it is", async () => {
@@ -725,6 +867,16 @@ describe("the address of a push service", () => {
     ["with a port", "https://fcm.googleapis.com:8443/push/abc"],
     ["with credentials", "https://user:secret@fcm.googleapis.com/push/abc"],
     ["that is no address", "fcm.googleapis.com/push/abc"],
+    ["at a host that is no push service", "https://push.example.com/abc"],
+    ["at a host next to a push service", "https://www.googleapis.com/abc"],
+    [
+      "at a host that only ends like a push service",
+      "https://evilpush.apple.com/abc",
+    ],
+    [
+      "at a host that only begins like a push service",
+      "https://fcm.googleapis.com.example.com/abc",
+    ],
   ])("is refused %s, and nothing is sent to it", async (_what, endpoint) => {
     const context = await withChannel();
     const { test, browser, workspace } = context;
@@ -747,6 +899,46 @@ describe("the address of a push service", () => {
     expect(
       test.network.requests.filter((request) => request.includes("abc")),
     ).toEqual([]);
+  });
+
+  it.each(pushHosts)(
+    "is taken at %s, the push service of a browser",
+    async (host) => {
+      const context = await withChannel();
+      const { test, browser } = context;
+      const subscription = await test.push.subscribe({
+        applicationServerKey: await publicKeyOf(browser),
+        host,
+      });
+
+      const response = await browser.fetch("/api/push/subscription", {
+        method: "PUT",
+        json: subscription,
+      });
+
+      expect(response.status).toBe(200);
+      await published(context, tooLong);
+      expect(await received(test, subscription, 1)).toHaveLength(1);
+    },
+  );
+
+  it.each([
+    "https://wns2-par02p.notify.windows.com/w/?token=abc",
+    "https://updates.push.services.mozilla.com/wpush/v2/abc",
+    "https://autopush.push.services.mozilla.com/wpush/v2/abc",
+    "https://web.push.apple.com/abc",
+    "https://fcm.googleapis.com/fcm/send/abc",
+  ])("passes for %s", (endpoint) => {
+    expect(pushEndpoint(endpoint, "pigy.example")).toBe(endpoint);
+  });
+
+  it("never passes for the host that pigy itself is reached at", () => {
+    // A list of hosts can be wrong, or pigy can be run at a host under
+    // one of them: the Worker does not send to itself all the same.
+    const endpoint = "https://pigy.push.apple.com/api/admin/allowlist";
+    expect(pushEndpoint(endpoint, "elsewhere.example")).toBe(endpoint);
+    expect(pushEndpoint(endpoint, "pigy.push.apple.com")).toBeNull();
+    expect(pushEndpoint(endpoint, "PIGY.push.apple.com")).toBeNull();
   });
 
   it("is not asked when it got into the database some other way", async () => {
@@ -794,7 +986,12 @@ describe("the secrets of a subscription", () => {
       applicationServerKey: await publicKeyOf(browser),
     });
     const values: unknown[] = [];
-    breakDatabase((sql) => sql.includes('"push_subscription"'), values);
+    // The statement that stores the subscription, which is the one that
+    // is run with its keys.
+    breakDatabase(
+      (sql) => sql.startsWith('insert into "push_subscription"'),
+      values,
+    );
 
     const response = await browser.fetch("/api/push/subscription", {
       method: "PUT",

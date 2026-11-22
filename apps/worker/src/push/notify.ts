@@ -1,5 +1,6 @@
 import type { Clock, Fetch, PushMessage } from "@pigy/core";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
+import { loggable } from "../errors.ts";
 import {
   devicesOf,
   forget,
@@ -27,6 +28,13 @@ export function pushSubject(origin: string): string {
   return url.protocol === "https:" ? url.origin : `mailto:pigy@${url.hostname}`;
 }
 
+/**
+ * How many push services are asked at the same time for one message. A
+ * person has `maxDevices` at most, so this is about not opening them all
+ * at once, on a platform that allows a request few connections.
+ */
+export const pushesAtOnce = 4;
+
 /** The message of `error`, without anything of the subscription `device`. */
 function withoutSubscription(error: unknown, device: Subscribed): string {
   if (!(error instanceof Error)) return "unknown error";
@@ -47,14 +55,17 @@ function withoutSubscription(error: unknown, device: Subscribed): string {
 
 /**
  * Sends `message` to every device that `userId` has turned notifications
- * on for, and returns how many took it. A device whose push service says
- * that its subscription is gone is forgotten.
+ * on for, `pushesAtOnce` at a time, and returns how many took it. A device
+ * whose push service says that its subscription is gone is forgotten.
  *
  * What goes wrong with one device is logged and does not keep the message
  * from the others. Nothing of a subscription is logged, its address
  * included: only the host of its push service. It throws only if the
- * database fails: then nothing is known of the devices, and the caller
- * tries again.
+ * devices could not be read: then nothing was sent, and the caller tries
+ * again. Once a device was tried, it does not throw: a caller that tried
+ * again would send to the devices that have the message a second time.
+ * So a subscription that is gone and could not be deleted is logged, and
+ * found gone again with the next message.
  */
 export async function pushToDevices(
   {
@@ -71,41 +82,67 @@ export async function pushToDevices(
   const body = new TextEncoder().encode(JSON.stringify(message));
   const gone: string[] = [];
   let sent = 0;
-  await Promise.all(
-    devices.map(async (device) => {
-      // Checked when the subscription was taken, and again here: what is
-      // in the database is not trusted more than what a browser said.
-      if (pushEndpoint(device.endpoint) === null) {
-        gone.push(device.id);
-        return;
-      }
-      const { host } = new URL(device.endpoint);
-      try {
-        const outcome = await sendPush({ fetch, now }, key, device, body, {
-          ttlSeconds: pushTtlSeconds,
-          topic,
-          subject: pushSubject(device.origin),
-        });
-        if (outcome.outcome === "sent") sent += 1;
-        else if (outcome.outcome === "gone") gone.push(device.id);
-        else if (outcome.outcome === "refused") {
-          console.error(
-            `The push service at ${host} did not take a message: it answered ${outcome.status}`,
-          );
-        } else {
-          console.error(`The push service at ${host} did not answer`);
-        }
-      } catch (error) {
-        // A failure of pigy's own, or of whatever stands behind `fetch`.
-        // Its message is logged and nothing else of it, and that without
-        // what it may repeat of the subscription: an error can name the
-        // address that a request was for.
+  const send = async (device: Subscribed): Promise<void> => {
+    // Checked when the subscription was taken, and again here: what is
+    // in the database is not trusted more than what a browser said.
+    if (pushEndpoint(device.endpoint, hostOf(device.origin)) === null) {
+      gone.push(device.id);
+      return;
+    }
+    const { host } = new URL(device.endpoint);
+    try {
+      const outcome = await sendPush({ fetch, now }, key, device, body, {
+        ttlSeconds: pushTtlSeconds,
+        topic,
+        subject: pushSubject(device.origin),
+      });
+      if (outcome.outcome === "sent") sent += 1;
+      else if (outcome.outcome === "gone") gone.push(device.id);
+      else if (outcome.outcome === "refused") {
         console.error(
-          `A push message to ${host} failed: ${withoutSubscription(error, device)}`,
+          `The push service at ${host} did not take a message: it answered ${outcome.status}`,
         );
+      } else {
+        console.error(`The push service at ${host} did not answer`);
+      }
+    } catch (error) {
+      // A failure of pigy's own, or of whatever stands behind `fetch`.
+      // Its message is logged and nothing else of it, and that without
+      // what it may repeat of the subscription: an error can name the
+      // address that a request was for.
+      console.error(
+        `A push message to ${host} failed: ${withoutSubscription(error, device)}`,
+      );
+    }
+  };
+  // Each of these takes the next device when it is done with one.
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(pushesAtOnce, devices.length) }, async () => {
+      for (;;) {
+        const device = devices[next];
+        next += 1;
+        if (!device) return;
+        await send(device);
       }
     }),
   );
-  await forget(db, gone);
+  try {
+    await forget(db, gone);
+  } catch (error) {
+    console.error(
+      "The push subscriptions that are gone were not deleted",
+      loggable(error),
+    );
+  }
   return sent;
+}
+
+/** The host of the address `origin`, or none if it is no address. */
+function hostOf(origin: string): string {
+  try {
+    return new URL(origin).host;
+  } catch {
+    return "";
+  }
 }

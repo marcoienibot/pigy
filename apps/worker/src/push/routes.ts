@@ -27,7 +27,7 @@ import type { VapidKey } from "./web-push.ts";
  * | Route | What it does |
  * | --- | --- |
  * | `GET /` | The public key that a page subscribes with. 503 for a pigy without a key |
- * | `PUT /subscription` | Takes the subscription of this browser for the session |
+ * | `PUT /subscription` | Takes the subscription of this browser for the session, in place of what the session had. 400 about `endpoint` for an address that is not of a push service, 409 for a subscription of somebody else |
  * | `POST /subscription/state` | Whether the server sends to this browser, for this session |
  * | `DELETE /subscription` | Forgets the subscription of this browser |
  *
@@ -72,7 +72,7 @@ export function pushRoutes(dependencies: AppDependencies): Hono<AppEnv> {
       c,
       pushSubscriptionRequestSchema,
     );
-    const checked = pushEndpoint(endpoint);
+    const checked = pushEndpoint(endpoint, new URL(c.req.url).host);
     if (checked === null) {
       throw new InvalidField(
         "endpoint",
@@ -85,7 +85,7 @@ export function pushRoutes(dependencies: AppDependencies): Hono<AppEnv> {
         "These are not the keys of a push subscription",
       );
     }
-    await subscribe(
+    const subscribed = await subscribe(
       drizzle(c.env.DB),
       session(c),
       { endpoint: checked, ...keys },
@@ -95,13 +95,22 @@ export function pushRoutes(dependencies: AppDependencies): Hono<AppEnv> {
         at: now(),
       },
     );
+    if (!subscribed) {
+      // The browser has handed out a subscription that another person
+      // turned on in it, or somebody names one that is not theirs. The
+      // page unsubscribes the browser and subscribes it anew.
+      throw new HTTPException(409, {
+        message:
+          "This subscription belongs to somebody else who is signed in. Turn notifications on again.",
+      });
+    }
     return c.json<PushStateResponse>({ subscribed: true });
   });
 
   app.post("/subscription/state", async (c) => {
     const key = await keyFor(c);
     const { endpoint } = await parseJsonBody(c, pushEndpointRequestSchema);
-    const checked = pushEndpoint(endpoint);
+    const checked = pushEndpoint(endpoint, new URL(c.req.url).host);
     return c.json<PushStateResponse>({
       subscribed:
         checked !== null &&
@@ -116,7 +125,7 @@ export function pushRoutes(dependencies: AppDependencies): Hono<AppEnv> {
 
   app.delete("/subscription", async (c) => {
     const { endpoint } = await parseJsonBody(c, pushEndpointRequestSchema);
-    const checked = pushEndpoint(endpoint);
+    const checked = pushEndpoint(endpoint, new URL(c.req.url).host);
     if (checked !== null) {
       await unsubscribe(drizzle(c.env.DB), c.var.auth.user.id, checked);
     }
