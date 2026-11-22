@@ -57,7 +57,13 @@ export const postParts = sqliteTable(
     position: integer("position").notNull(),
     text: text("text").notNull(),
   },
-  (table) => [index("post_part_post_id_idx").on(table.postId)],
+  (table) => [
+    index("post_part_post_id_idx").on(table.postId),
+    // `target_id` refers to a target, so SQLite looks for the parts of
+    // every target that is deleted: without this, through all the parts
+    // of the workspace, for each account that a draft no longer goes to.
+    index("post_part_target_id_idx").on(table.targetId),
+  ],
 );
 
 export const channels = sqliteTable(
@@ -188,6 +194,10 @@ export const targetPartResults = sqliteTable(
       table.targetId,
       table.partId,
     ),
+    // `part_id` refers to a part, so SQLite looks for the results of
+    // every part that is deleted. The index above begins with the target
+    // and is no help with that.
+    index("target_part_result_part_id_idx").on(table.partId),
   ],
 );
 

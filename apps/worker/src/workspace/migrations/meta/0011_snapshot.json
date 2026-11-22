@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "2c23a948-e2db-4377-8ac5-2cff01e7d99e",
+  "id": "f33f6db8-f86f-4d28-96ec-2245c16d6f63",
   "prevId": "7a36ac54-8918-49ba-b56d-acdb377d2629",
   "tables": {
     "change_log": {
@@ -268,6 +268,13 @@
           "name": "post_part_post_id_idx",
           "columns": [
             "post_id"
+          ],
+          "isUnique": false
+        },
+        "post_part_target_id_idx": {
+          "name": "post_part_target_id_idx",
+          "columns": [
+            "target_id"
           ],
           "isUnique": false
         }
@@ -569,6 +576,13 @@
             "part_id"
           ],
           "isUnique": true
+        },
+        "target_part_result_part_id_idx": {
+          "name": "target_part_result_part_id_idx",
+          "columns": [
+            "part_id"
+          ],
+          "isUnique": false
         }
       },
       "foreignKeys": {
