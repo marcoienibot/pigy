@@ -139,11 +139,11 @@ describe("detectEntities", () => {
     }
   });
 
-  it("links an address without a scheme everywhere but on Mastodon", () => {
+  it("links an address without a scheme on Bluesky, where pigy writes the links", () => {
     const text = "see example.com";
-    expect(found("mastodon", text)).toEqual([]);
-    for (const network of ["bluesky", "linkedin", "threads"] as const) {
-      expect(found(network, text)).toEqual(["link example.com"]);
+    expect(found("bluesky", text)).toEqual(["link example.com"]);
+    for (const network of ["linkedin", "mastodon", "threads"] as const) {
+      expect(found(network, text)).toEqual([]);
     }
   });
 
@@ -265,7 +265,7 @@ describe("cardLinks", () => {
   });
 
   it("goes by what the network takes for a link", () => {
-    // Mastodon links no address without its scheme.
+    // Only Bluesky gets a link without its scheme.
     expect(cardLinks("mastodon", content)).toEqual([
       null,
       "https://a.example",
@@ -280,7 +280,9 @@ describe("cardLinks", () => {
       null,
     ]);
     expect(
-      cardLinks("linkedin", { parts: [{ text: "a.dev" }, { text: "b.dev" }] }),
+      cardLinks("linkedin", {
+        parts: [{ text: "https://a.dev" }, { text: "https://b.dev" }],
+      }),
     ).toEqual(["https://a.dev", null]);
   });
 });

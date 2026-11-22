@@ -12,9 +12,12 @@ import type { Network } from "./network.ts";
  *
  * The rules, decided in phase 4b:
  *
- * - **Links** are found by `findLinks` of links.ts, for every network the
- *   same way. Mastodon links only an address with its scheme, so one
- *   without is plain text there.
+ * - **Links** are found by `findLinks` of links.ts. An address with its
+ *   scheme is a link on every network. One without, "example.com/page",
+ *   is a link on Bluesky, where pigy marks the links up itself and does
+ *   what Bluesky's own app does. On the other three it is plain text for
+ *   pigy: Mastodon links no such address, and whether LinkedIn and Threads
+ *   do is theirs to decide and not documented (GUESS: PLAN.md section 19).
  * - **Hashtags** are found the same way for every network: "#" or "＃" and
  *   then letters, marks, digits and underscores of any script, with a
  *   letter among them, so "#1" is none. It does not begin in the middle of
@@ -161,7 +164,7 @@ export function detectEntities(
   text: string,
 ): TextEntity[] {
   const links: TextEntity[] = findLinks(text, {
-    bare: network !== "mastodon",
+    bare: network === "bluesky" || network === null,
   }).map((link) => ({ kind: "link", ...link }));
   let hashtags = hashtagsOf(text);
   const found: TextEntity[] = [...links];

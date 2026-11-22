@@ -19,9 +19,10 @@
  *   whitespace or an opening bracket or at the beginning, whose top-level
  *   domain is one of a list, with the same port, path and query as above.
  *   It stands for the same address with "https://". Mastodon links no
- *   such text, so its counting and its detection leave these out:
- *   `bare` is false there. As in Bluesky's app, "readme.md" is a link by
- *   this rule, because ".md" is a top-level domain.
+ *   such text, so its counting leaves these out, and so does the
+ *   detection for every network but Bluesky: entities.ts says why. As in
+ *   Bluesky's app, "readme.md" is a link by this rule, because ".md" is a
+ *   top-level domain.
  *
  * The patterns do without lookbehind, which older browsers that pigy still
  * opens in cannot compile: what must stand before a match is matched with
