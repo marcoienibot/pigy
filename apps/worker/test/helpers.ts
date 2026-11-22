@@ -155,6 +155,13 @@ export function setup(
      * limiter of the local runtime, for a test that is about the limit.
      */
     rateLimiter?: RateLimit;
+    /**
+     * Counts the reports of the content security policy that a client
+     * sends, in place of the limiter of the local runtime.
+     */
+    policyReportLimiter?: RateLimit;
+    /** The same for the reports of all clients together. */
+    policyReportTotalLimiter?: RateLimit;
   } = {},
 ) {
   clock.time = new Date("2026-11-14T10:00:00Z");
@@ -298,6 +305,10 @@ export function setup(
     SIM_WORLD: env.SIM_WORLD,
     PUBLISH: env.PUBLISH,
     API_RATE_LIMITER: options.rateLimiter ?? env.API_RATE_LIMITER,
+    POLICY_REPORT_LIMITER:
+      options.policyReportLimiter ?? env.POLICY_REPORT_LIMITER,
+    POLICY_REPORT_TOTAL_LIMITER:
+      options.policyReportTotalLimiter ?? env.POLICY_REPORT_TOTAL_LIMITER,
     ASSETS: assets,
     MEDIA: env.MEDIA,
     IMAGES: env.IMAGES,

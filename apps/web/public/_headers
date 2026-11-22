@@ -33,8 +33,15 @@
 #   in and connecting an account are links and redirects, which no
 #   directive of this policy is asked about.
 # - frame-ancestors: nobody shows pigy in a frame.
+# - report-to and report-uri: where a browser reports what the policy
+#   refused, the endpoint of the Worker, apps/worker/src/policy-reports.ts.
+#   A browser with the Reporting API goes by report-to, which names the
+#   endpoint of Reporting-Endpoints below, and leaves report-uri alone.
+#   Firefox has report-uri alone. The report is the browser's, and no
+#   directive of the policy is asked about it.
 /*
-  Content-Security-Policy: default-src 'none'; script-src 'self' {{inline-scripts}}; style-src 'self' {{injected-styles}}; img-src 'self' blob: https:; font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'
+  Content-Security-Policy: default-src 'none'; script-src 'self' {{inline-scripts}}; style-src 'self' {{injected-styles}}; img-src 'self' blob: https:; font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'; report-to csp; report-uri /api/policy-reports
+  Reporting-Endpoints: csp="/api/policy-reports"
   X-Content-Type-Options: nosniff
   # A full address within pigy, where the Worker reads the origin of a
   # form that is sent. Nothing to anybody else: an address of pigy names

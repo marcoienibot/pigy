@@ -161,7 +161,7 @@ test("the app shell says what a browser may do with it", async ({
   const shell = (await request.get("/queue")).headers();
 
   expect(shell["content-security-policy"]).toMatch(
-    /^default-src 'none'; script-src 'self' 'sha256-[A-Za-z0-9+/]+='; style-src 'self' ('sha256-[A-Za-z0-9+/]+=' ?)+; img-src 'self' blob: https:; font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'$/,
+    /^default-src 'none'; script-src 'self' 'sha256-[A-Za-z0-9+/]+='; style-src 'self' ('sha256-[A-Za-z0-9+/]+=' ?)+; img-src 'self' blob: https:; font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'; report-to csp; report-uri \/api\/policy-reports$/,
   );
   // Nothing is allowed wholesale, and no placeholder of the build is left.
   expect(shell["content-security-policy"]).not.toContain("unsafe");
@@ -176,6 +176,7 @@ test("the app shell says what a browser may do with it", async ({
   const api = (await request.get("/api/health")).headers();
   for (const name of [
     "x-content-type-options",
+    "reporting-endpoints",
     "referrer-policy",
     "cross-origin-opener-policy",
     "permissions-policy",
@@ -184,7 +185,7 @@ test("the app shell says what a browser may do with it", async ({
     expect(api[name], name).toBe(shell[name]);
   }
   expect(api["content-security-policy"]).toBe(
-    "default-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'",
+    "default-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'; report-to csp; report-uri /api/policy-reports",
   );
   expect(api["strict-transport-security"]).toBeUndefined();
 });
@@ -204,7 +205,7 @@ test("connecting an account through a consent page, publishing and the simulator
   // The page of a simulated network has a policy of its own: no script,
   // and its one style sheet by its hash.
   expect((await consent).headers()["content-security-policy"]).toMatch(
-    /^default-src 'none'; style-src 'sha256-[A-Za-z0-9+/]+='; form-action 'self'; base-uri 'none'; frame-ancestors 'none'$/,
+    /^default-src 'none'; style-src 'sha256-[A-Za-z0-9+/]+='; form-action 'self'; base-uri 'none'; frame-ancestors 'none'; report-to csp; report-uri \/api\/policy-reports$/,
   );
   // The hash is right: the style sheet is applied. A browser that
   // refused it would draw the notice without its border.

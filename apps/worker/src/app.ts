@@ -12,6 +12,7 @@ import type { AppDependencies, AppEnv } from "./env.ts";
 import { handleError, handleNotFound } from "./errors.ts";
 import { mediaRoutes } from "./media/routes.ts";
 import { blueskyClientRoutes } from "./network/bluesky-client.ts";
+import { policyReportRoutes } from "./policy-reports.ts";
 import { previewRoutes } from "./preview/routes.ts";
 import { pushRoutes } from "./push/routes.ts";
 import { securityHeaders } from "./security-headers.ts";
@@ -57,6 +58,9 @@ export function createApp(dependencies: AppDependencies): Hono<AppEnv> {
   app.route(apiBasePath, apiRoutes(dependencies));
   app.route("/api/sandbox", sandboxRoutes(dependencies));
   app.route("/api/push", pushRoutes(dependencies));
+  // What browsers report of the content security policy: for anybody,
+  // without the session.
+  app.route("/api", policyReportRoutes());
   app.route("/sync", syncRoutes(dependencies));
   // The files of the web app that are named after their content.
   app.route("/assets", assetRoutes());

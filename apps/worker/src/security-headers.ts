@@ -1,6 +1,7 @@
 import type { MiddlewareHandler } from "hono";
 import { isLocal } from "./auth/config.ts";
 import type { AppEnv } from "./env.ts";
+import { reportingEndpoints, reportTo } from "./policy-reports.ts";
 
 /**
  * The headers that say what a browser may do with an answer of the
@@ -16,6 +17,9 @@ import type { AppEnv } from "./env.ts";
 
 const always = {
   "X-Content-Type-Options": "nosniff",
+  // Where a browser with the Reporting API sends what a policy refused:
+  // `report-to` of the policies names this endpoint.
+  "Reporting-Endpoints": reportingEndpoints,
   // As for the app shell: a full address within pigy, nothing to anybody
   // else. The Worker reads the origin of a form that a page of a simulated
   // network sends, which "no-referrer" would take away.
@@ -25,7 +29,9 @@ const always = {
     "accelerometer=(), autoplay=(), browsing-topics=(), camera=(), display-capture=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), usb=(), xr-spatial-tracking=()",
 };
 
-const never = "base-uri 'none'; frame-ancestors 'none'";
+// What every policy of the Worker ends with: nothing in a frame, no other
+// base for the addresses of a page, and where to report what it refused.
+const never = `base-uri 'none'; frame-ancestors 'none'; ${reportTo}`;
 
 /**
  * For what is no page: JSON, a redirect, an error. Nothing in it is to be
