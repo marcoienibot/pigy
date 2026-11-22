@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Page } from "@/components/page";
 import { Button } from "@/components/ui/button";
 import { keepOnDeviceOnce } from "@/lib/device-storage";
-import { sharedFrom, sharedText } from "@/lib/share";
+import { dropShared, keptShared, sharedFrom, sharedText } from "@/lib/share";
 import { environmentLabels } from "@/lib/workspace";
 import { useMutate } from "@/sync/react";
 
@@ -22,9 +22,11 @@ import { useMutate } from "@/sync/react";
  * a change like any other, made on the device, also without a connection.
  *
  * It is under the route that needs a session, so somebody who is signed
- * out signs in first and is brought back here, to the same address. The
- * address is a path of the app's own, and not one of the Worker's: the
- * service worker answers it with the app shell.
+ * out signs in first and is brought back here. What was shared waits in
+ * the tab meanwhile and not in the address that the sign-in comes back
+ * to, which the server does not keep at any length: `keepShared` of
+ * lib/share.ts. The address is a path of the app's own, and not one of
+ * the Worker's: the service worker answers it with the app shell.
  */
 export const Route = createFileRoute("/_app/share")({
   component: Share,
@@ -37,7 +39,18 @@ function Share() {
   // From the address as the browser has it: see `sharedFrom`. Read once,
   // when the screen is made, which it is anew in the other workspace when
   // the person changes to that one: the address stays as it is then.
-  const [text] = useState(() => sharedText(sharedFrom(window.location.search)));
+  const [text] = useState(() => {
+    const fromAddress = sharedText(sharedFrom(window.location.search));
+    if (fromAddress === "") {
+      // What was shared before the sign-in, which the tab has kept. It
+      // stays kept until the person has decided, so that a reload and a
+      // change of workspace show it again, as they do for an address.
+      return sharedText(sharedFrom(keptShared()));
+    }
+    // A share that has come since takes the place of one that was kept.
+    dropShared();
+    return fromAddress;
+  });
 
   // Nothing was shared: an address that somebody typed, or a share of
   // nothing.
@@ -46,6 +59,7 @@ function Share() {
   const save = () => {
     const id = uuidv7(new Date());
     mutate("post.create", { id, partId: uuidv7(new Date()), text });
+    dropShared();
     keepOnDeviceOnce();
     // In the place of this address, so that going back does not offer
     // the same thing again.
@@ -72,7 +86,10 @@ function Share() {
           </Button>
           <Button
             variant="outline"
-            onClick={() => void navigate({ to: "/", replace: true })}
+            onClick={() => {
+              dropShared();
+              void navigate({ to: "/", replace: true });
+            }}
           >
             Discard
           </Button>

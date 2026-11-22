@@ -52,3 +52,69 @@ export function sharedFrom(query: string): Shared {
   }
   return shared;
 }
+
+/**
+ * Where a tab keeps what was shared to somebody who is signed out, while
+ * they sign in: the query of the share's address, as it came.
+ *
+ * It does not travel through the sign-in with the address to come back
+ * to, as it once did: the server keeps no such address of more than
+ * 1,000 characters, which a text of 1,200 letters is, or one of 120
+ * Chinese characters, and the person arrived at their drafts without it.
+ *
+ * In `sessionStorage`: it is the tab's, as the address was, and it goes
+ * with the tab. It is nobody's data. It came with an address that this
+ * tab was opened at before anybody was signed in, so whoever signs in in
+ * the tab next is shown it, as they were when the address carried it:
+ * signing in is what the share waited for. It is text that the page of
+ * somebody else may have supplied, so it is shown and asked about like
+ * every share, and stored nowhere else before "Save as draft".
+ */
+const keptKey = "pigy-share";
+
+/** The storage of the tab, or undefined where the browser has none. */
+function tabStorage(): Storage | undefined {
+  try {
+    return sessionStorage;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Keeps what the address with the query `query` shares, for after the
+ * sign-in, in the place of whatever was kept before. A query that shares
+ * nothing leaves nothing kept. False if the tab could not keep it.
+ */
+export function keepShared(query: string): boolean {
+  try {
+    const storage = tabStorage();
+    if (!storage) return false;
+    if (sharedText(sharedFrom(query)) === "") storage.removeItem(keptKey);
+    else storage.setItem(keptKey, query);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The query that was kept with `keepShared`, or an empty one. */
+export function keptShared(): string {
+  try {
+    return tabStorage()?.getItem(keptKey) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Forgets what was kept: it is saved or discarded, another share has
+ * come, or the person has gone elsewhere in the app without deciding.
+ */
+export function dropShared(): void {
+  try {
+    tabStorage()?.removeItem(keptKey);
+  } catch {
+    // Nothing was kept where nothing can be.
+  }
+}

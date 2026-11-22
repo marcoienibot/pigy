@@ -13,7 +13,8 @@ import { renewNotifications } from "@/lib/notifications";
 import { useOnline } from "@/lib/online";
 import { checkForUpdate, onSubscriptionChanged } from "@/lib/service-worker";
 import { checkSession, loadSession, SessionUnknown } from "@/lib/session";
-import { chosenWorkspace, showWorkspace } from "@/lib/workspace";
+import { dropShared, keepShared } from "@/lib/share";
+import { chosenWorkspace, keepsAddress, showWorkspace } from "@/lib/workspace";
 import { SyncProvider } from "@/sync/react";
 import { syncUnsent, workspaceSync } from "@/sync/workspace-sync";
 
@@ -43,17 +44,33 @@ export const Route = createFileRoute("/_app")({
       // would write it. The two differ where a value of the query reads
       // like JSON, as a text can that was shared to pigy, and it has to
       // come back as it went.
-      const here = preload
+      let here = preload
         ? location.href
         : window.location.pathname +
           window.location.search +
           window.location.hash;
+      // What was shared to pigy does not go that way: it can be longer
+      // than any address that the server keeps through a sign-in, and the
+      // person would come back to their drafts without it. The tab keeps
+      // it, and the share screen takes it up: `keepShared`. A tab that
+      // can keep nothing sends it with the address, as far as that goes.
+      if (
+        !preload &&
+        keepsAddress(window.location.pathname) &&
+        keepShared(window.location.search)
+      ) {
+        here = window.location.pathname;
+      }
       throw redirect({
         to: "/sign-in",
         search: here === "/" ? {} : { returnTo: here },
         replace: true,
       });
     }
+    // What a tab has kept of a share, for the sign-in, is for the share
+    // screen. Somebody who goes to another screen without deciding there
+    // has left it, as they leave a share that the address holds.
+    if (!preload && !keepsAddress(location.pathname)) dropShared();
     // An address can name the workspace that it is about: the one that a
     // notification leads to, which the person has pressed on a device
     // whose tab may show the other one. A post of the sandbox is not in

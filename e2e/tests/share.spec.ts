@@ -199,6 +199,76 @@ test("somebody who is signed out signs in first, and what was shared is there th
   await expect(draftRows(page)).toHaveCount(1);
 });
 
+// The server keeps where somebody was going through the sign-in, and no
+// address of more than 1,000 characters: a longer one leads to the first
+// screen. An address is written in ASCII, so a text in another script is
+// several times as long in it as it reads. What was shared does not take
+// that way: it stays on the device.
+for (const [what, text] of [
+  [
+    "a long text",
+    // 1,500 characters, each of them one of the address.
+    `${"Shared while signed out, and long. ".repeat(43).trim()} End.`,
+  ],
+  [
+    "a text in a script that an address has to encode",
+    // 200 characters, each of them nine of the address.
+    `${"分享到小猪的文字，登录之后还在。".repeat(12)}完完完完完完完完`,
+  ],
+] as const) {
+  test(`${what} that is shared to somebody who is signed out is there after the sign-in, whole`, async ({
+    page,
+    ownEmail,
+    isMobile,
+  }) => {
+    // The address as Android would open it is longer than the server
+    // keeps: the test is about nothing otherwise.
+    expect(shareAddress({ text }).length).toBeGreaterThan(1000);
+    await page.goto(shareAddress({ text }));
+    await page.waitForURL(({ pathname }) => pathname === "/sign-in");
+
+    await signIn(page, ownEmail);
+
+    await expect(shared(page)).toHaveText(text);
+    await save(page).click();
+    await expect(editor(page)).toHaveValue(text);
+    await backToList(page, isMobile);
+    await expect(draftRows(page)).toHaveCount(1);
+
+    // Saved, it is no longer kept: the address of a share that names
+    // nothing has nothing to offer a second time.
+    await page.goto("/share");
+    await page.waitForURL(({ pathname }) => pathname === "/");
+    // No draft is open, so this is the list, also on a phone.
+    await expectSync(page, "Synced");
+    await expect(draftRows(page)).toHaveCount(1);
+  });
+}
+
+test("what was shared to somebody who is signed out and left unsaved after the sign-in is not offered again later", async ({
+  page,
+  ownEmail,
+}) => {
+  await page.goto(shareAddress({ text: "Shared, and then left alone" }));
+  await page.waitForURL(({ pathname }) => pathname === "/sign-in");
+  await signIn(page, ownEmail);
+  await expect(shared(page)).toHaveText("Shared, and then left alone");
+  // A reload is no decision: the text is still there, as it is for a
+  // share that the address holds.
+  await page.reload();
+  await expect(shared(page)).toHaveText("Shared, and then left alone");
+
+  // They go elsewhere in the app without saying what to do with it.
+  await page.goto("/settings");
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Settings");
+
+  // The address of a share that names nothing, typed or kept: a share of
+  // nothing, and not the text from before.
+  await page.goto("/share");
+  await page.waitForURL(({ pathname }) => pathname === "/");
+  await expect(shared(page)).toHaveCount(0);
+});
+
 test("what is shared without a connection is shown, saved as a draft on the device, and synced later", async ({
   ownPage: page,
   context,
