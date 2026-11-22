@@ -1,6 +1,11 @@
 import type { Fetch } from "@pigy/core";
 import { createLinkedInSimulator } from "@pigy/simulators/linkedin";
-import { answerConsent, createWorld, feed } from "@pigy/simulators/world";
+import {
+  answerConsent,
+  createWorld,
+  entitiesOf,
+  feed,
+} from "@pigy/simulators/world";
 import { describe, expect, it } from "vitest";
 import { ProviderError } from "../errors.ts";
 import {
@@ -272,6 +277,78 @@ describe("publishing", () => {
       "A (new) post_with #tags, @mentions, a \\ and [brackets] {x|y} <z> *b* ~s~";
     await step(test, credentials, text);
     expect(published(test)).toEqual([text]);
+  });
+
+  it("marks the hashtags of a post, and leaves its mentions as text", async () => {
+    const test = setup();
+    const { credentials } = await connect(test);
+    const text =
+      "Thanks @ada for #big_news, see https://example.test/ (#2 is none)";
+    await step(test, credentials, text);
+    const kept = feed(test.world, ["linkedin"])[0]?.post;
+    // The post reads as it was written.
+    expect(kept?.text).toBe(text);
+    expect(kept && entitiesOf(kept)).toEqual([
+      ["hashtag", "#big_news", "big_news"],
+      // LinkedIn finds the link itself.
+      ["link", "https://example.test/", "https://example.test/"],
+    ]);
+    // No card came with the post, so it has no preview.
+    expect(kept?.card).toBeNull();
+  });
+
+  it("previews the first link of a post as an article, with what the card of its part says", async () => {
+    const test = setup();
+    const { credentials } = await connect(test);
+    await test.provider.publishStep({
+      credentials,
+      content: {
+        parts: [
+          { text: "No link in the first part" },
+          {
+            text: "See https://example.test/",
+            card: {
+              url: "https://example.test/",
+              title: "The example page",
+              description: "A page.",
+            },
+          },
+        ],
+      },
+      key: "target-1",
+      progress: null,
+    });
+    expect(feed(test.world, ["linkedin"])[0]?.post.card).toEqual({
+      url: "https://example.test/",
+      title: "The example page",
+      description: "A page.",
+    });
+  });
+
+  it("posts without a preview where the page of the link named no title, which LinkedIn requires", async () => {
+    const test = setup();
+    const { credentials } = await connect(test);
+    const progress = await test.provider.publishStep({
+      credentials,
+      content: {
+        parts: [
+          {
+            text: "See https://example.test/",
+            card: {
+              url: "https://example.test/",
+              title: " ",
+              description: "D",
+            },
+          },
+        ],
+      },
+      key: "target-1",
+      progress: null,
+    });
+    // The simulated LinkedIn refuses an article without a title: the
+    // post is there because none was sent.
+    expect(progress.done).toBe(true);
+    expect(feed(test.world, ["linkedin"])[0]?.post.card).toBeNull();
   });
 
   it("joins the parts of a thread with an empty line, and gives every part the one post", async () => {

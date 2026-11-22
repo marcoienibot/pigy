@@ -41,6 +41,14 @@ import {
   privateJwkSchema,
   publicJwk,
 } from "./jwt.ts";
+import {
+  embedOf,
+  type Facet,
+  facetsOf,
+  firstLink,
+  maxMentions,
+  mentionedHandles,
+} from "./richtext.ts";
 
 export { parseHandle } from "./identity.ts";
 
@@ -68,7 +76,9 @@ export { parseHandle } from "./identity.ts";
  * keeps the nonces of DPoP in memory of its own, where an adapter takes
  * its clock as a parameter and keeps nothing between calls.
  *
- * Text only so far: no links marked up, no mentions, no media.
+ * A post goes out with its links, mentions and tags marked up and with
+ * the card of its first link: richtext.ts. No media yet, and so no
+ * picture on a card.
  */
 
 /** The collection that posts are records of. */
@@ -268,7 +278,45 @@ const writtenPostSchema = z.strictObject({
   reply: z
     .strictObject({ root: referenceSchema, parent: referenceSchema })
     .optional(),
+  /** Compared with what the step writes: `sameFacets`. */
+  facets: z.array(z.unknown()).optional(),
+  /**
+   * The card of a link, which may be any: a step that is run again may
+   * have been handed another than the run before it, or none. It is a
+   * card of the link that the part has, and nothing else.
+   */
+  embed: z
+    .strictObject({
+      $type: z.literal("app.bsky.embed.external"),
+      external: z.strictObject({
+        uri: z.string(),
+        title: z.string(),
+        description: z.string(),
+      }),
+    })
+    .optional(),
 });
+
+/** `value` as JSON whose keys are in order, so that equal values read equal. */
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    return `{${Object.entries(value)
+      .sort(([a], [b]) => (a < b ? -1 : 1))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${canonical(entry)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+/**
+ * Whether a record has the facets that a step writes: the same, or none
+ * where the step writes none, which leaves the field out.
+ */
+const sameFacets = (found: unknown[] | undefined, written: Facet[]) =>
+  written.length === 0
+    ? found === undefined
+    : canonical(found) === canonical(written);
 
 type Reference = z.infer<typeof referenceSchema>;
 
@@ -302,6 +350,19 @@ const notesSchema = z.strictObject({
   rkey: z.string().min(1).nullable(),
   /** The reference of each part that is published, in order. */
   refs: z.array(referenceSchema),
+  /**
+   * The accounts that the next part mentions, as the step that chose
+   * `rkey` found them: each handle with its DID. A handle that was not
+   * found to be an account is not in it, and is published as text. It is
+   * recorded so that a step that is run again marks the same mentions,
+   * whatever the handles lead to by then, and takes the record of the run
+   * before for its own. Left out by a step from before pigy marked
+   * mentions up, which is the same as none.
+   */
+  mentions: z
+    .array(z.strictObject({ handle: z.string(), did: z.string().min(1) }))
+    .max(maxMentions)
+    .optional(),
 });
 
 type Notes = z.infer<typeof notesSchema>;
@@ -926,6 +987,41 @@ export function createBlueskyProvider({
   }
 
   /**
+   * The account that `handle` is the handle of, by its DID, or null if it
+   * is nobody's as far as pigy can tell: found the way a connection finds
+   * its account, and checked both ways, so that a handle whose host names
+   * the account of somebody else mentions nobody. Whatever a network does
+   * to keep pigy from finding out makes the handle nobody's too: a
+   * mention is then text, and no post fails for it.
+   */
+  async function mentionedDid(handle: string): Promise<string | null> {
+    const parsed = parseHandle(handle);
+    if (!parsed) return null;
+    try {
+      const did = parseDid(await resolveHandle(parsed));
+      if (!did) return null;
+      return claims(await didDocument(did), parsed) ? did : null;
+    } catch (error) {
+      // What is no failure of a network comes out as it is.
+      if (error instanceof ProviderError) return null;
+      throw error;
+    }
+  }
+
+  /** The accounts that `text` mentions: each handle that is one, with its DID. */
+  async function mentionsOf(text: string) {
+    const found = await Promise.all(
+      mentionedHandles(text).map(async (handle) => ({
+        handle,
+        did: await mentionedDid(handle),
+      })),
+    );
+    return found.flatMap(({ handle, did }) =>
+      did === null ? [] : [{ handle, did }],
+    );
+  }
+
+  /**
    * The name and the picture of an account, from its profile. The handle
    * and no picture if it has none, or if it cannot be read: a connection
    * that fails for its profile, once it has its tokens, would leave a
@@ -1270,7 +1366,12 @@ export function createBlueskyProvider({
         parts: published,
         done: published.length >= content.parts.length,
         waitSeconds: 0,
-        state: next,
+        state: {
+          did: next.did,
+          rkey: next.rkey,
+          refs: next.refs,
+          ...(next.mentions && { mentions: next.mentions }),
+        },
       });
       const index = parts.length;
       const part = content.parts[index];
@@ -1283,13 +1384,17 @@ export function createBlueskyProvider({
       }
 
       // Two steps for each part. The first chooses the key of its record
-      // and sends nothing, so that the key is recorded before anything is
-      // written under it.
+      // and writes nothing, so that the key is recorded before anything is
+      // written under it. It also finds the accounts that the part
+      // mentions, which only reads: a mention is marked up with the DID
+      // of its account, and what a handle leads to can change. Recorded,
+      // it is the same for every run of the step that writes.
       if (notes.rkey === null) {
         const before = notes.refs.at(-1);
         return stepped(parts, {
           ...notes,
           rkey: newTid(now(), before && parseRecordUri(before.uri)?.rkey),
+          mentions: await mentionsOf(part.text),
         });
       }
 
@@ -1304,6 +1409,11 @@ export function createBlueskyProvider({
       // What the part replies to: the first and the previous part, by the
       // versions that were published.
       const reply = root && parent ? { root, parent } : undefined;
+      const facets = facetsOf(
+        part.text,
+        new Map((notes.mentions ?? []).map(({ handle, did }) => [handle, did])),
+      );
+      const embed = embedOf(part.text, part.card);
       const found = await getRecord(
         access.pds,
         access.did,
@@ -1314,13 +1424,20 @@ export function createBlueskyProvider({
       if (found) {
         // A record that is not what this step writes is not this part's:
         // at another address, with another text, replying to anything
-        // else, or with anything that pigy does not send, such as a
-        // picture, links or a language.
+        // else, with other links, mentions or tags marked than this step
+        // marks, or with anything that pigy does not send, such as a
+        // picture or a language. The card of a link is the one thing
+        // that may differ: it is what a page said when it was read, and
+        // this run may have been handed another, or none. It has to be a
+        // card of the first link of the part all the same.
         const post = writtenPostSchema.safeParse(found.value).data;
         const replies = post?.reply;
         if (
           found.uri !== uri ||
           post?.text !== part.text ||
+          !sameFacets(post.facets, facets) ||
+          (post.embed !== undefined &&
+            post.embed.external.uri !== firstLink(part.text)) ||
           (replies && reply
             ? !sameReference(replies.root, reply.root) ||
               !sameReference(replies.parent, reply.parent)
@@ -1348,6 +1465,8 @@ export function createBlueskyProvider({
               // so this need not be recorded before.
               createdAt: now().toISOString(),
               ...(reply && { reply }),
+              ...(facets.length > 0 && { facets }),
+              ...(embed && { embed }),
             },
           }),
           "Bluesky",
@@ -1361,10 +1480,19 @@ export function createBlueskyProvider({
         reference = { uri, cid: written.cid };
       }
       return stepped([...parts, { id: uri, url: postUrl(access.did, rkey) }], {
-        ...notes,
+        did: notes.did,
         rkey: null,
         refs: [...notes.refs, reference],
       });
+    },
+
+    async mentionable(names) {
+      const found = await Promise.all(
+        names
+          .slice(0, maxMentions)
+          .map(async (name) => ((await mentionedDid(name)) ? [name] : [])),
+      );
+      return found.flat();
     },
 
     async readPost(credentials, id) {

@@ -4,6 +4,7 @@ import {
   joinLinkedInParts,
   type Limits,
   linkedInMaxCharacters,
+  type PostContent,
 } from "@pigy/core";
 import { z } from "zod";
 import { forGood, ProviderError, quotable, understanding } from "../errors.ts";
@@ -20,7 +21,7 @@ import {
   type PublishProgress,
   publishProgressSchema,
 } from "../provider.ts";
-import { escapeLittleText } from "./text.ts";
+import { littleText } from "./text.ts";
 
 /**
  * The adapter for LinkedIn, for an application that posts as a member. It
@@ -31,7 +32,8 @@ import { escapeLittleText } from "./text.ts";
  * access to those pages, from what its author knew of them, and nothing
  * of it has met the real LinkedIn: what had to be assumed is marked GUESS,
  * and PLAN.md section 19 lists what a first run has to settle. Text only
- * so far, and members only: no media, and no pages of organizations.
+ * so far, with its hashtags marked and its first link previewed, and
+ * members only: no media, and no pages of organizations.
  *
  * LinkedIn differs from the other networks in three ways that shape this
  * file:
@@ -140,6 +142,34 @@ type Call = {
   /** What the request carries that must not show up in a message. */
   secrets?: readonly string[];
 };
+
+/**
+ * What gives the first link of a post its preview: an article, "Posts
+ * API", "Article Post Creation". LinkedIn reads no page for a post of an
+ * application, so a link in the text is a link and nothing more unless
+ * the post says what its preview shows. The caller has read the page
+ * where it could, and hands over what it found as the card of the part
+ * that the link is in: the first card of the content is that of the first
+ * link of the post, `cardLinks` of `@pigy/core`.
+ *
+ * Without a card the post goes out without `content`, as text with a
+ * link. So does one whose page named no title: LinkedIn requires one of
+ * an article. No picture: an article takes one that was uploaded before,
+ * which comes with media.
+ */
+function articleOf(content: PostContent) {
+  const card = content.parts.find((part) => part.card)?.card;
+  if (!card || card.title.trim() === "") return {};
+  return {
+    content: {
+      article: {
+        source: card.url,
+        title: card.title,
+        ...(card.description && { description: card.description }),
+      },
+    },
+  };
+}
 
 /** `value` as `schema` describes it. Throws if LinkedIn sent other. */
 const understood = understanding(
@@ -496,7 +526,8 @@ export function createLinkedInProvider({
         headers: versioned,
         json: {
           author: `urn:li:person:${memberId}`,
-          commentary: escapeLittleText(joinLinkedInParts(content)),
+          commentary: littleText(joinLinkedInParts(content)),
+          ...articleOf(content),
           visibility,
           distribution: {
             feedDistribution: "MAIN_FEED",

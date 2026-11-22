@@ -178,7 +178,14 @@ export type PublishRequest = {
   /**
    * What to publish. It has passed `validateContent` of `@pigy/core`: a
    * step sends what it is given and leaves the judgement to the network.
-   * The same content is passed to every step of a post.
+   * The same text is passed to every step of a post.
+   *
+   * A part may come with the card of its first link, `card`, where the
+   * caller has read the page: a provider whose network shows a card only
+   * if it is sent one sends it. It is no part of what a step looks for:
+   * a page says one thing today and another tomorrow, so a step that is
+   * run again may be handed another card, or none, and still takes what
+   * the run before it published for its own.
    */
   content: PostContent;
   /**
@@ -353,6 +360,21 @@ export type Provider = {
    * `@pigy/core` checks content against the result.
    */
   limits(credentials: Json): Promise<Limits>;
+
+  /**
+   * Which of `names` are accounts that a mention in a post would be marked
+   * up for. `names` are mentions as `detectEntities` of `@pigy/core` reads
+   * them for the network, without the "@". Only a provider that has to
+   * look an account up to mark a mention up has the method, as Bluesky's:
+   * there a mention of a name that is nobody's is published as the text
+   * that it is, and whoever writes the post can be told before.
+   *
+   * It asks only what is public, and takes no credentials. A name that
+   * could not be looked up is left out like one that nobody has: the
+   * answer is what a post would get that went out now, and may be another
+   * a moment later.
+   */
+  mentionable?(names: readonly string[]): Promise<string[]>;
 
   /**
    * Takes the publishing of a post one step further and returns how far it

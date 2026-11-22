@@ -3,7 +3,12 @@ import {
   type BlueskySimulator,
   createBlueskySimulator,
 } from "@pigy/simulators/bluesky";
-import { answerConsent, createWorld, feed } from "@pigy/simulators/world";
+import {
+  answerConsent,
+  createWorld,
+  entitiesOf,
+  feed,
+} from "@pigy/simulators/world";
 import { describe, expect, it } from "vitest";
 import { newClientKey } from "../../test/bluesky-keys.ts";
 import { ProviderError } from "../errors.ts";
@@ -957,7 +962,41 @@ describe("publishing", () => {
         uri,
         { ...written, embed: { $type: "app.bsky.embed.images", images: [] } },
       ],
-      ["with links marked up", uri, { ...written, facets: [] }],
+      [
+        // The part has no link, so the step marks none.
+        "with a link marked up",
+        uri,
+        {
+          ...written,
+          facets: [
+            {
+              index: { byteStart: 0, byteEnd: 3 },
+              features: [
+                {
+                  $type: "app.bsky.richtext.facet#link",
+                  uri: "https://example.test/",
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      [
+        // The part has no link, so no card is that of its first link.
+        "with the card of a link",
+        uri,
+        {
+          ...written,
+          embed: {
+            $type: "app.bsky.embed.external",
+            external: {
+              uri: "https://example.test/",
+              title: "A page",
+              description: "",
+            },
+          },
+        },
+      ],
       ["in a language", uri, { ...written, langs: ["en"] }],
       [
         "with labels",
@@ -1007,6 +1046,200 @@ describe("publishing", () => {
     const taken = await step(second);
     expect(taken.parts.map(({ id }) => id)).toEqual([first.uri, uri]);
     expect(feed(test.world).map(({ post }) => post.text)).toEqual(["One"]);
+  });
+
+  it("marks up the links, the tags and the mentions of accounts that there are, by the bytes of the text", async () => {
+    const test = await setup();
+    const { access } = await connected(test);
+    const grace = test.simulator.addAccount({
+      handle: "grace.bsky.test",
+      pds,
+      name: "Grace Hopper",
+    });
+    // An emoji and an accent before everything: a facet that was placed
+    // by where it stands in the string would be refused by the PDS, or
+    // would mark other letters than these.
+    const text =
+      "🎉 Café with @Grace.bsky.test and @nobody.bsky.test: https://example.test/a?b=c, example.com #Fête #1";
+    await publishAll(test, access.credentials, [text]);
+    const kept = feed(test.world)[0]?.post;
+    expect(kept?.text).toBe(text);
+    expect(kept && entitiesOf(kept)).toEqual([
+      // Found whatever its case, and marked with the DID of the account.
+      // Nobody has the other handle, so that mention is text.
+      ["mention", "@Grace.bsky.test", grace.id],
+      // Without the comma of the sentence.
+      ["link", "https://example.test/a?b=c", "https://example.test/a?b=c"],
+      // An address without its scheme leads to the one with HTTPS.
+      ["link", "example.com", "https://example.com"],
+      // A tag is kept without its sign. "#1" is none.
+      ["hashtag", "#Fête", "Fête"],
+    ]);
+  });
+
+  it("records whom a part mentions before it writes, and marks the same when the step is run again", async () => {
+    const test = await setup();
+    const { access } = await connected(test);
+    const grace = test.simulator.addAccount({
+      handle: "grace.bsky.test",
+      pds,
+      name: "Grace Hopper",
+    });
+    const content = { parts: [{ text: "Hi @grace.bsky.test" }] };
+    const step = (progress: PublishProgress | null) =>
+      test.provider.publishStep({
+        credentials: access.credentials,
+        content,
+        key: "target",
+        progress,
+      });
+    const chosen = await step(null);
+    // Nothing is written by the step that looks the account up.
+    expect(feed(test.world)).toEqual([]);
+    expect((chosen.state as { mentions: unknown }).mentions).toEqual([
+      { handle: "grace.bsky.test", did: grace.id },
+    ]);
+    // The step writes, and its answer is lost. From then on nobody can be
+    // looked up: a step that asked again would mark no mention, find a
+    // record with one under its key, and refuse it as another post.
+    await step(chosen);
+    test.intercept(async (request, simulator) => {
+      if (request.url.includes("dns-query")) throw new TypeError("No DNS");
+      return simulator(request);
+    });
+    const again = await step(chosen);
+    expect(again.done).toBe(true);
+    expect(feed(test.world)).toHaveLength(1);
+  });
+
+  it.each([
+    [
+      "a handle that the DNS cannot be asked for",
+      (request: Request) => request.url.includes("dns-query"),
+    ],
+    [
+      "a handle whose document cannot be read",
+      (request: Request) => request.url.includes("plc.directory"),
+    ],
+  ])(
+    "publishes a mention as text for %s, and fails nothing",
+    async (_name, lost) => {
+      const test = await setup();
+      const { access } = await connected(test);
+      test.simulator.addAccount({
+        handle: "grace.bsky.test",
+        pds,
+        name: "Grace Hopper",
+      });
+      test.intercept(async (request, simulator) => {
+        if (lost(request)) throw new TypeError("Out of reach");
+        return simulator(request);
+      });
+      await publishAll(test, access.credentials, ["Hi @grace.bsky.test #tag"]);
+      const kept = feed(test.world)[0]?.post;
+      // The post is there, with what could be marked without asking.
+      expect(kept && entitiesOf(kept)).toEqual([["hashtag", "#tag", "tag"]]);
+    },
+  );
+
+  it("does not take a handle for an account that does not claim it", async () => {
+    const test = await setup();
+    const { access } = await connected(test);
+    // The host of a handle can name any account: here the DNS says that
+    // "impostor.bsky.test" is Ada, whose document claims another handle.
+    test.intercept(async (request, simulator) =>
+      request.url.includes("dns-query") &&
+      request.url.includes("_atproto.impostor.bsky.test")
+        ? Response.json({
+            Status: 0,
+            Answer: [{ type: 16, data: `"did=${test.ada.id}"` }],
+          })
+        : simulator(request),
+    );
+    await publishAll(test, access.credentials, ["Hi @impostor.bsky.test"]);
+    const kept = feed(test.world)[0]?.post;
+    expect(kept && entitiesOf(kept)).toEqual([]);
+    expect(await test.provider.mentionable?.(["impostor.bsky.test"])).toEqual(
+      [],
+    );
+  });
+
+  it("says which handles are accounts, for whoever writes a post", async () => {
+    const test = await setup();
+    expect(
+      await test.provider.mentionable?.([
+        "ada.bsky.test",
+        "nobody.bsky.test",
+        "not a handle",
+      ]),
+    ).toEqual(["ada.bsky.test"]);
+  });
+
+  it("publishes a part with the card of its first link, and without one that is another link's", async () => {
+    const test = await setup();
+    const { access } = await connected(test);
+    const card = {
+      url: "https://example.test/",
+      title: "The example page",
+      description: "A page.",
+    };
+    const publishWith = async (text: string) => {
+      let progress: PublishProgress | null = null;
+      while (!progress?.done) {
+        progress = await test.provider.publishStep({
+          credentials: access.credentials,
+          content: { parts: [{ text, card }] },
+          key: text,
+          progress,
+        });
+      }
+    };
+    await publishWith("See https://example.test/ and https://example.com/");
+    // A card of a link that is not the first of the part is not sent: an
+    // app would show it as the preview of something that the post does
+    // not lead with.
+    await publishWith("See https://example.com/ and https://example.test/");
+    await publishWith("No link at all");
+    // By their texts: the clock of the world stands still, so the feed
+    // lists these three in the order of their keys, which are random.
+    expect(
+      Object.fromEntries(
+        feed(test.world).map(({ post }) => [post.text, post.card]),
+      ),
+    ).toEqual({
+      "See https://example.test/ and https://example.com/": card,
+      "See https://example.com/ and https://example.test/": null,
+      "No link at all": null,
+    });
+  });
+
+  it("takes the record of a run before for its part whatever card it has, if it is a card of the part's link", async () => {
+    const test = await setup();
+    const { access } = await connected(test);
+    const text = "See https://example.test/";
+    const step = (
+      progress: PublishProgress | null,
+      card?: { url: string; title: string; description: string },
+    ) =>
+      test.provider.publishStep({
+        credentials: access.credentials,
+        content: { parts: [{ text, ...(card && { card }) }] },
+        key: "target",
+        progress,
+      });
+    const chosen = await step(null);
+    // The first run was handed a card and wrote it, and its answer was
+    // lost. The page cannot be read when the step is run again, so this
+    // run has no card: the record is its part all the same.
+    await step(chosen, {
+      url: "https://example.test/",
+      title: "As the page was",
+      description: "",
+    });
+    const again = await step(chosen);
+    expect(again.done).toBe(true);
+    expect(feed(test.world)).toHaveLength(1);
+    expect(feed(test.world)[0]?.post.card?.title).toBe("As the page was");
   });
 
   it("does not go on with a thread on another account", async () => {
