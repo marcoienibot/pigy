@@ -1,6 +1,7 @@
 import { findLinks } from "../mastodon/text.ts";
-import type { SimCard, SimEntity } from "../world/world.ts";
+import type { SimCard, SimEntity, SimImage } from "../world/world.ts";
 import { apiError, empty, json } from "./http.ts";
+import { imagesOf } from "./images.ts";
 import {
   duplicateWindowMs,
   type LinkedInMember,
@@ -38,8 +39,8 @@ export const postUrl = (id: string) =>
 
 // What a post can have that this does not simulate: a post that is shared
 // again, a post in a group, a sponsored one. Of `content`, the article is
-// simulated, which is how an application gives a link its preview: see
-// `articleOf`.
+// simulated, which is how an application gives a link its preview, see
+// `articleOf`, and images, one or several: images.ts.
 const notSimulated = [
   "reshareContext",
   "container",
@@ -70,36 +71,68 @@ const invalidField = (status: number, field: string, problem: string) =>
   );
 
 /**
- * The preview of a link that `content` gives a post, or what is wrong
- * with it: "Posts API", "Article Post Creation". LinkedIn reads no page
- * for a post of an application, so the application says what the preview
- * shows: the address, `source`, and a `title`, both required, and a
- * `description`.
+ * What `content` gives a post: the preview of a link, or its images, or
+ * what is wrong with it. A post has one content at most: "Posts API".
  *
- * Not simulated, and refused: every other content, which is media, a
- * poll and a carousel, and the picture of an article, `thumbnail`, which
- * is an image that was uploaded before.
+ * Not simulated, and refused: every other content, which is a video, a
+ * document, a poll and a carousel, and the picture of an article,
+ * `thumbnail`, which is an image that was uploaded before.
  */
-function articleOf(
+function contentOf(
+  state: State,
   content: unknown,
-): SimCard | null | { error: string; notSimulated?: true } {
-  if (content === undefined) return null;
-  if (!isRecord(content)) return { error: "content must be an object" };
+  member: LinkedInMember,
+):
+  | { card: SimCard | null; images: SimImage[] }
+  | { error: string; status: number; notSimulated?: true } {
+  if (content === undefined) return { card: null, images: [] };
+  if (!isRecord(content)) {
+    return { status: 422, error: "content must be an object" };
+  }
   const kinds = Object.keys(content);
-  if (kinds.length !== 1 || kinds[0] !== "article") {
+  const [kind] = kinds;
+  if (kinds.length !== 1) {
     return {
-      notSimulated: true,
-      error: `The simulated LinkedIn takes an article for the content of a post, and no "${kinds.find((kind) => kind !== "article") ?? "empty content"}"`,
+      status: 422,
+      error: "content has one of article, media and multiImage",
     };
   }
-  const { article } = content;
+  if (kind === "media" || kind === "multiImage") {
+    const images = imagesOf(state, content, member);
+    if (images === null || "error" in images) {
+      return images ?? { status: 422, error: "content has no images" };
+    }
+    return { card: null, images };
+  }
+  if (kind !== "article") {
+    return {
+      status: 400,
+      notSimulated: true,
+      error: `The simulated LinkedIn takes an article or images for the content of a post, and no "${kind ?? "empty content"}"`,
+    };
+  }
+  const card = articleOf(content.article);
+  return "error" in card
+    ? { status: card.notSimulated ? 400 : 422, ...card }
+    : { card, images: [] as SimImage[] };
+}
+
+/**
+ * The preview of a link that an article gives a post: "Posts API",
+ * "Article Post Creation". LinkedIn reads no page for a post of an
+ * application, so the application says what the preview shows: the
+ * address, `source`, and a `title`, both required, and a `description`.
+ */
+function articleOf(
+  article: unknown,
+): SimCard | { error: string; notSimulated?: true } {
   if (!isRecord(article)) return { error: "content/article must be an object" };
   for (const field of Object.keys(article)) {
     if (field === "thumbnail") {
       return {
         notSimulated: true,
         error:
-          "The simulated LinkedIn keeps no images: an article has no thumbnail there",
+          "The simulated LinkedIn takes no picture for an article: an article has no thumbnail there",
       };
     }
     if (!["source", "title", "description"].includes(field)) {
@@ -236,13 +269,15 @@ export async function createPost(
   const read = readLittleText(commentary);
   if ("error" in read) return apiError(400, read.error);
   const { text } = read;
-  const article = articleOf(body.content);
-  if (article && "error" in article) {
-    return article.notSimulated
-      ? apiError(400, article.error)
-      : invalidField(422, "content", article.error);
+  const shown = contentOf(state, body.content, member);
+  if ("error" in shown) {
+    return shown.notSimulated || shown.status !== 422
+      ? apiError(shown.status, shown.error)
+      : invalidField(422, "content", shown.error);
   }
-  if (text.trim() === "") {
+  // GUESS: a post of images needs no text, as one of a person's does not
+  // in the app of LinkedIn.
+  if (text.trim() === "" && shown.images.length === 0) {
     return invalidField(422, "commentary", "a post needs a text");
   }
   // GUESS: the limit is on the text as it shows, without the backslashes
@@ -256,12 +291,18 @@ export async function createPost(
   }
 
   const now = state.world.now().getTime();
+  // GUESS: a repetition is a post of the same text with the same images,
+  // the very ones, as a post that is sent twice names them. A post of
+  // the same words with other images is another.
+  const blobs = (images: SimImage[] = []) =>
+    images.map(({ blob }) => blob).join(",");
   const same = state.posts
     .all()
     .find(
       (post) =>
         post.accountId === member.id &&
         post.text === text &&
+        blobs(post.images) === blobs(shown.images) &&
         now - post.createdAt < duplicateWindowMs,
     );
   if (same) {
@@ -295,7 +336,8 @@ export async function createPost(
     url: postUrl(id),
     visibility,
     entities: shownIn(text, read.hashtags),
-    card: article,
+    card: shown.card,
+    ...(shown.images.length > 0 && { images: shown.images }),
   };
   state.posts.put(id, post);
   return empty(201, { "x-restli-id": id, "x-linkedin-id": id });
