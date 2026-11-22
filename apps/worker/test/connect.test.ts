@@ -1,6 +1,7 @@
 import { runInDurableObject } from "cloudflare:test";
 import {
   connectErrorSchema,
+  defaultMediaLimits,
   maxConnectIdentifierLength,
   sandboxMastodonDomain,
 } from "@pigy/core";
@@ -89,7 +90,13 @@ it("connects a simulated account to a sandbox without leaving the Worker", async
       // A token of Mastodon's does not run out.
       expiresAt: null,
       // What the simulated server lets its accounts post, read from it.
-      limits: { network: "mastodon", maxCharacters: 500, charactersPerUrl: 23 },
+      limits: {
+        network: "mastodon",
+        maxCharacters: 500,
+        charactersPerUrl: 23,
+        // What the instance takes of images, which it says too.
+        media: defaultMediaLimits.mastodon,
+      },
       limitsCheckedAt: test.clock.time.getTime(),
     },
   ]);

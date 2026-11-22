@@ -1,4 +1,4 @@
-import { sandboxMastodonDomain } from "@pigy/core";
+import { defaultMediaLimits, sandboxMastodonDomain } from "@pigy/core";
 import { feed } from "@pigy/simulators/world";
 import { expect, it } from "vitest";
 import { limitsLifetimeMs } from "../src/publish/workflow.ts";
@@ -480,6 +480,7 @@ it("asks what an account may post again when the answer is a day old", async () 
     network: "mastodon",
     maxCharacters: 10,
     charactersPerUrl: 23,
+    media: defaultMediaLimits.mastodon,
   });
   // Now, by the clock that has not moved since: a few milliseconds past
   // it, because every mutation of a workspace gets a time of its own.

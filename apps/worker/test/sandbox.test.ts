@@ -181,7 +181,7 @@ it("shows what a sandbox has published, by account, with a thread as a chain of 
   // Plain words: nothing in them that a network shows as more than
   // text, and no link that could have a card. test/links.test.ts has the
   // posts that do.
-  const plain = { entities: [], card: null };
+  const plain = { entities: [], card: null, images: [] };
   const chain = (ids: string[]) => ({
     id: ids[0],
     text: "One",

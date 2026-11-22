@@ -147,7 +147,7 @@ export const defaultMediaLimits: {
     maxImages: 4,
     maxImageBytes: 16 * megabyte,
     maxImagePixels: 33_177_600,
-    imageTypes: ["image/jpeg", "image/png", "image/gif", "image/webp"],
+    imageTypes: ["image/jpeg", "image/png", "image/webp", "image/gif"],
     animated: true,
     maxAltLength: 1500,
     maxAspectRatio: null,
