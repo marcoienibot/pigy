@@ -152,13 +152,13 @@ Alternatives considered:
 | Table | Purpose |
 | --- | --- |
 | `channel` | Network, account ID, handle, name, avatar, profile link, status, when it was connected, when to refresh the access and when it ends, sealed credentials, and the limits of the account with the time at which its network was asked for them. Not synced: the access that the person was told the end of, so that a reminder is given once per access (section 13) |
-| `post` | Status, mode, due time, source (UI or API), tags, timestamps |
+| `post` | Status, timestamps, and since phase 5 what says when a scheduled post goes out: the mode (a time that somebody chose, or the queue), the due time, the place in the queue, and when the server held it because it found its time too late (section 9). Source (UI or API) and tags come with the phases that need them |
 | `post_part` | Ordered text of each part: of the post's own text, and of the text that is written for one target in its place, which names the target. Section 8 has it |
 | `part_media` | Media attached to a part, with alt text |
 | `post_target` | Post and channel, status, how often the delivery was begun, error, when it was asked for and when it was sent. Not synced: the progress that the next attempt goes on from, the attempt that has a workflow, the time of the workspace at which the delivery that is under way began, which is part of the ID of its workflow, and whether an attempt of the delivery has ended without anybody knowing what became of what it sent (section 8, at the end). The text that a target gets in place of the post's is not here but in `post_part`, since phase 4a |
 | `target_part_result` | Remote ID and URL of each published part |
 | `media` | Kind, type, size, dimensions, duration, R2 key, processing status |
-| `schedule_slot`, `settings` | Weekly queue slots, timezone, queue paused flag |
+| `schedule_slot`, `settings` | Weekly queue slots, each a weekday and a minute of the day. One row of settings: the time zone and whether the queue is paused. Both synced, since phase 5 |
 | `metric` | Likes, reposts, replies, quotes and views per target over time |
 | `notification` | The inbox: what the person has to hear of, at most one row about a post and one about a channel, under the ID of what it is about, with its kind, when it was made and when it was read. Synced. Section 13 |
 | `push_outbox` | The push messages that are queued for the devices of the owner and have not been handed to the push services yet. Not synced. Section 13 |
@@ -168,7 +168,7 @@ Alternatives considered:
 
 Post status follows Buffer: `draft`, `scheduled`, `sending`, `sent`, `error`. A post is `sending` from the moment its publication is asked for until the last of its targets has ended, and then `sent` if all of them are. A post whose targets ended differently reports `error` and lists each target's own status.
 
-A target has more to say than a post: `pending` while it is only chosen, `queued` while it waits its turn on its channel, `sending`, `sent`, `error`, and `uncertain` for a delivery that ended without anybody knowing how far it got, which a person has to look into. `scheduled` is a status of the post alone: until phase 5 nothing sets it, and the targets of a scheduled post will be `pending` until it is due.
+A target has more to say than a post: `pending` while it is only chosen, `queued` while it waits its turn on its channel, `sending`, `sent`, `error`, and `uncertain` for a delivery that ended without anybody knowing how far it got, which a person has to look into. `scheduled` is a status of the post alone: the targets of a scheduled post are `pending` until it is due. Not synced, since phase 5: the time that the alarm of the object is set to, in its `workspace` row (section 9).
 
 ## 6. The four networks
 
@@ -591,6 +591,22 @@ Left for phase 4b: link cards, and mentions and hashtags marked up for each netw
 - **Views**: a queue list and a calendar, both reading local data.
 - The same alarm also drives token refresh, reconnect reminders and stats refresh.
 
+Phase 5 built this. `SYNC.md` section 4, "Scheduling", is the contract. What was decided, and why:
+
+- **The due time of a queued post is stored, and the mutators compute it.** The alternative was to store only the order and compute the times wherever they are needed. But the alarm of the object needs the next time without a client, the Queue screen and the calendar need all of them, and the API of phase 6 will hand them out: three places that would each compute, and could disagree. So a post of the queue has its place, `queuePosition`, which is what a person arranges, and its time, `dueAt`, which follows from the place, the slots, the time zone and the pause. One function in `packages/core/src/sync/mutators.ts`, `requeue`, gives the posts the slots after the time of the mutation, in their order, and every mutator that changes any of the four runs it. It is deterministic: the same rows and the same `tx.now` give the same times in the browser and in the Worker. Time passing needs no mutation: the first post goes out at its slot, and the others have theirs.
+- **Time zones are computed with `Intl.DateTimeFormat`**, which the browser and the Workers runtime both have, in `packages/core/src/schedule/zone.ts`: no library, and no table of zones in the bundle. The two can have time zone data of different ages. That is the ordinary case of a client that computed something for display: the server's rows replace it. The server refuses a zone that it does not know, so it never computes with another zone than the one that is stored.
+- **Daylight saving.** A slot is a time on the clocks, so it stays at 09:00 when the clocks change. A time that a day does not have, in the hour that is skipped, is used at the moment the gap ends plus what the time was into it, and not left out: somebody with a slot at 02:30 gets a post that night, an hour later by the clock. A time that a day has twice is used once, the first time. This is what `Temporal` calls "compatible". Two slots that land on one moment that way count once.
+- **The time zone is the workspace's, and is the device's to begin with.** The app sets it with the zone of the device before the first thing that goes by it: a slot, a queued or scheduled post. Not when a workspace is opened: that would be a mutation with every first visit, for something that most visits do not need. Settings show it and change it, and every time in the workspace is shown in it, also on a device that is somewhere else, which the screens say.
+- **A scheduled post is not edited in place.** "Edit" takes it back to the drafts, where it is edited and scheduled again. Editing in place would be kinder to a typo, and the mutators could allow it, since no delivery is under way before the time comes. It was left out because every mutator of a text and of a choice of accounts rests on one guard, "only a draft is edited", and so do the screens: the list of drafts, the undo notices, the notices of refused changes. A second editable status touches all of them. The cost is that a queued post loses its place when it is edited. Section 21 has it as a later addition.
+- **A post that is found late.** The object can miss a time: a deploy, an outage, an alarm that the platform delivers late. And a device can schedule a post without a connection and reach the server after the time. Both are one case, and one rule: up to an hour late, the post is sent as soon as the server knows. Later than that, a post with a time that somebody chose is **held**: it stays scheduled, the Queue screen says that it missed its time, and the person sends it, reschedules it or takes it back. A post of the queue takes the next slot. An hour is a guess at where "a little late" ends: an announcement that goes out twenty minutes late is still what was meant, and "see you in ten minutes" the next morning is not. Nothing tells the person of a held post but the Queue screen and the calendar, until phase 9 has notifications.
+- **So `post.schedule` takes a time in the past**, and does not refuse it. Refusing would lose the schedule of a post that was a minute late for no fault of the person, with a notice that a change was refused.
+- **The pause holds the queue and nothing else.** A post with a time that somebody chose goes out while the queue is paused: the pause is for "nothing by itself for now" of the stream of queued posts, and a time that was chosen for one post is a promise about that post. While the queue is paused its posts have no time, and when it goes on they take the slots from then: a slot that passed during the pause is not used, and nothing goes out in a burst.
+- **An account that is disconnected leaves the scheduled posts**, as it leaves the drafts, and a scheduled post that went nowhere else is a draft again. The alternative, to keep the target and fail it when the time comes, would fail a post hours later for something the person did on purpose, and a target of a channel that is gone cannot be tried again.
+- **One path into the pipeline.** A due post is sent by the mutator `post.due`, which does what `post.publish` does: the targets are `queued`, and `startDeliveries` begins them, in the turn of their channel. Nothing else is new in the pipeline: a due post whose account needs reconnecting or whose text no longer passes fails as a published one does, on the Sent screen.
+- **The alarm.** The object has one alarm, for three things: the next scheduled post, a delivery that can begin, and the look at the deliveries that are under way. `#setNextAlarm` of `object.ts` sets it to the earliest, and a change only ever brings it forward: an alarm that comes early finds nothing and sets the next. The object writes down what it has set the alarm to, in its `workspace` row, and decides by that, because asking the runtime takes a moment in which another call can set it. A due post that could not be taken up is come back to in a minute, never at once. The object also takes up what is due before and after every mutation, so the order of things does not depend on how punctual the alarm is.
+
+Left for later: drag to reorder (the queue has move up, move down and to the top), slots per channel as Buffer has them (the queue is the workspace's), a week view of the calendar, and notifications for a held post.
+
 ## 10. Media
 
 - **Upload**: the browser uploads in chunks through the Worker into an R2 multipart upload. Uploads are resumable, which matters on phones.
@@ -810,6 +826,8 @@ Then Bluesky, LinkedIn and Threads follow, each the way Mastodon was built. 3c i
 
 Phase 4 is built in two steps. 4a is the editor and the data: the mutators that make a thread, the counters per network under each part, and the text that one account gets in place of the post's, which the pipeline publishes. Sections 6 and 8 have what was decided. 4b is what the adapters do with a text: link cards, and mentions and hashtags marked up for each network.
 
+Phase 5 is one step: the mutators and tables of scheduling, the alarm of the object, and the screens. Section 9 has what was decided.
+
 Until deployment is set up in phase 11, every phase is built and verified locally against the simulated networks. Connecting real networks and installing on a phone need the deployed address.
 
 Usable milestones:
@@ -970,6 +988,11 @@ Open since phase 3d, all of it about LinkedIn, and none of it confirmed against 
 - Where a member ends the access of an application themselves, which the Channels screen names after a disconnect that could not give the access back: Settings & Privacy → Data privacy → Permitted services (GUESS in `apps/web/src/lib/networks.ts`). And the address at which LinkedIn shows the member who is signed in their own posts, which the Sent screen links to for a delivery that is unknown: `https://www.linkedin.com/in/me/recent-activity/all/` (GUESS, same file).
 - That the live run works at all. It needs an application, and the token of a test member with the scopes `openid`, `profile` and `w_member_social`, which the token generator of the developer portal makes, and it posts for the connections of that member: LinkedIn has no posts that only their author sees. Its test of an access that ends does not run live.
 
+**Scheduling (phase 5).** To confirm on the deployed Worker, phase 11:
+
+- How punctual the alarm of a Durable Object is in production, and what it does over a deploy. The tests run the alarm by hand, and one end-to-end test waits for it in the local runtime. A post goes out when the alarm runs, and one that is found more than an hour late is held or moved (section 9), so an alarm that is minutes late is seen and nothing worse.
+- That the time zone data of the Workers runtime keeps up with that of browsers. Where it is behind, the server computes a slot by the old rule until the runtime is updated, and refuses a zone that it does not know yet with a notice.
+
 ## 20. Moving to a custom domain later
 
 pigy starts on `https://pigy.<your-subdomain>.workers.dev`. Switching to a custom domain later means changing `APP_URL` and then:
@@ -985,6 +1008,8 @@ Posts, drafts, schedules and stats are unaffected.
 
 - A public "try the demo" link with a temporary anonymous sandbox.
 - A posting schedule per account, as in Buffer.
+- Editing a scheduled post in place, so that a queued post keeps its place when a typo is fixed (section 9).
+- Reordering the queue by dragging, and a week view of the calendar.
 - LinkedIn company pages and LinkedIn stats, which need the same LinkedIn approval.
 
 ## References
