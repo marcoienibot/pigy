@@ -36,8 +36,14 @@ describe("htmlToText", () => {
 
   it("leaves alone what only looks like an entity", () => {
     // Decoded once: "&amp;lt;" is the text "&lt;", not "<".
-    expect(htmlToText("<p>&amp;lt; &nosuch; &#99999999;</p>")).toBe(
+    expect(htmlToText("<p>&amp;lt; &nosuch; &amp;#99999999;</p>")).toBe(
       "&lt; &nosuch; &#99999999;",
     );
+  });
+
+  it("reads a reference to a character that there is not as a browser does", () => {
+    // U+FFFD, as the HTML standard has it. Mastodon writes no such
+    // reference: it escapes the "&" of one that somebody typed.
+    expect(htmlToText("<p>&#99999999; &#xD83D;</p>")).toBe("\ufffd \ufffd");
   });
 });

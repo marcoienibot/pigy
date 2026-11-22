@@ -153,9 +153,14 @@ type Call = {
  * link of the post, `cardLinks` of `@pigy/core`.
  *
  * Without a card the post goes out without `content`, as text with a
- * link. So does one whose page named no title: LinkedIn requires one of
- * an article. No picture: an article takes one that was uploaded before,
- * which comes with media.
+ * link. A page that names no title has a card all the same, headed by
+ * its host: `cardOf` of card.ts gives every card a title, so such a
+ * page is previewed under the name of its host. LinkedIn requires a
+ * title of an article and refuses the whole post without one, so a card
+ * whose title is blank, which pigy's own reading never makes and the
+ * type of a card does not rule out, is not sent: the contract says that
+ * a post is not kept back for its card. No picture: an article takes one
+ * that was uploaded before, which comes with media.
  */
 function articleOf(content: PostContent) {
   const card = content.parts.find((part) => part.card)?.card;

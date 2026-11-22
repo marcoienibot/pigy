@@ -7,6 +7,7 @@ import {
   feed,
 } from "@pigy/simulators/world";
 import { describe, expect, it } from "vitest";
+import { cardOf } from "../card.ts";
 import { ProviderError } from "../errors.ts";
 import {
   createLinkedInProvider,
@@ -325,7 +326,27 @@ describe("publishing", () => {
     });
   });
 
-  it("posts without a preview where the page of the link named no title, which LinkedIn requires", async () => {
+  it("previews a page that names no title under its host, as its card is headed", async () => {
+    const test = setup();
+    const { credentials } = await connect(test);
+    // What `cardOf` makes of a page with a description and no title.
+    const card = cardOf(
+      "https://example.test/",
+      '<meta name="description" content="Only this">',
+    );
+    expect(card?.title).toBe("example.test");
+    await test.provider.publishStep({
+      credentials,
+      content: {
+        parts: [{ text: "See https://example.test/", ...(card && { card }) }],
+      },
+      key: "target-1",
+      progress: null,
+    });
+    expect(feed(test.world, ["linkedin"])[0]?.post.card).toEqual(card);
+  });
+
+  it("posts without a preview where a card has a blank title, which no page read by pigy has and LinkedIn refuses", async () => {
     const test = setup();
     const { credentials } = await connect(test);
     const progress = await test.provider.publishStep({
@@ -345,8 +366,8 @@ describe("publishing", () => {
       key: "target-1",
       progress: null,
     });
-    // The simulated LinkedIn refuses an article without a title: the
-    // post is there because none was sent.
+    // The simulated LinkedIn refuses an article without a title, and the
+    // post with it: the post is there because none was sent.
     expect(progress.done).toBe(true);
     expect(feed(test.world, ["linkedin"])[0]?.post.card).toBeNull();
   });

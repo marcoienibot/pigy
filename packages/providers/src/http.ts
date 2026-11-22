@@ -21,6 +21,13 @@ export type HttpLimits = {
    * the head of a page.
    */
   partial?: boolean;
+  /**
+   * Whether the body of an answer is read at all, by its status and its
+   * headers: of an answer that this refuses, nothing is read, and its
+   * text is empty. For a caller that reads only one kind of answer, so
+   * that it waits for the body of no other.
+   */
+  reads?: (status: number, headers: Headers) => boolean;
 };
 
 export type HttpAnswer = {
@@ -134,7 +141,8 @@ export async function send(
  * answers on the way is taken for anything but the way. Each address that
  * it is sent on to has to be one that pigy may ask, `publicUrl`, and there
  * are at most `hops` of them. The time of `limits` is for the whole way: a
- * host that sends pigy on gets no more time for it.
+ * host that sends pigy on gets no more time for it. `follows` can refuse
+ * an address that `publicUrl` passes.
  */
 export async function sendFollowing(
   fetch: Fetch,
@@ -142,6 +150,7 @@ export async function sendFollowing(
   init: RequestInit,
   limits: HttpLimits,
   hops: number,
+  follows: (url: string) => boolean = () => true,
 ): Promise<HttpAnswer> {
   const deadline = timeLimit(limits.timeoutMs);
   try {
@@ -164,7 +173,7 @@ export async function sendFollowing(
       } catch {
         next = null;
       }
-      if (next === null || hop >= hops) {
+      if (next === null || !follows(next) || hop >= hops) {
         throw new ProviderError(
           "fail",
           `${host} sends pigy on to an address that it does not follow.`,
@@ -187,7 +196,7 @@ async function exchange(
   host: string,
   url: string,
   init: RequestInit,
-  { maxBytes, partial = false }: HttpLimits,
+  { maxBytes, partial = false, reads }: HttpLimits,
   timeout: AbortSignal,
 ): Promise<HttpAnswer> {
   const unreachable = (cause: unknown) =>
@@ -209,7 +218,19 @@ async function exchange(
   }
   let text: string | null;
   try {
-    text = await boundedText(response, maxBytes, partial);
+    // Nothing is asked of the body of an answer that sends the request
+    // on, by whoever follows it or refuses to, nor of one that the
+    // caller does not read: it is given up, which also lets go of the
+    // connection.
+    if (
+      redirects(response.status) ||
+      reads?.(response.status, response.headers) === false
+    ) {
+      await response.body?.cancel();
+      text = "";
+    } else {
+      text = await boundedText(response, maxBytes, partial);
+    }
   } catch (cause) {
     // An answer that breaks off on the way, or takes too long. Nothing
     // else makes the reading of a body fail.

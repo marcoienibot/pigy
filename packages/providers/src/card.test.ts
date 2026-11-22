@@ -1,7 +1,8 @@
 import type { Fetch } from "@pigy/core";
 import { createWebSimulator } from "@pigy/simulators/web";
 import { describe, expect, it } from "vitest";
-import { cardLimits, cardOf, fetchLinkCard } from "./card.ts";
+import { cardLimits, cardOf, fetchLinkCard, readPage } from "./card.ts";
+import { decodeEntities } from "./html.ts";
 
 const page = (head: string) =>
   `<!doctype html><html><head>${head}</head><body><p>Text</p></body></html>`;
@@ -15,7 +16,15 @@ const html = (body: string, headers: Record<string, string> = {}) =>
  * A web of the test's own: what answers at each address, and every
  * address that was asked for, in order.
  */
-function web(pages: Record<string, (request: Request) => Response>) {
+function web(
+  pages: Record<
+    string,
+    // The signal is the one that the request was made with. The one of
+    // `request` follows it only for as long as the runtime keeps what
+    // ties the two together, which it does not promise.
+    (request: Request, signal: AbortSignal | undefined) => Response
+  >,
+) {
   const asked: Request[] = [];
   const fetch: Fetch = async (input, init) => {
     const request = new Request(input, init);
@@ -23,7 +32,7 @@ function web(pages: Record<string, (request: Request) => Response>) {
     const answer = pages[request.url];
     // What a `fetch` does for a host that is not there.
     if (!answer) throw new TypeError(`No such host: ${request.url}`);
-    return answer(request);
+    return answer(request, init?.signal ?? undefined);
   };
   return { fetch, asked, urls: () => asked.map(({ url }) => url) };
 }
@@ -141,6 +150,202 @@ describe("cardOf", () => {
     const began = performance.now();
     expect(cardOf(url, hostile)).toBeNull();
     expect(performance.now() - began).toBeLessThan(2000);
+  });
+
+  it("takes a title by where it stands in the page, whatever its letters do in lower case", () => {
+    // "İ" is one code unit, and two in lower case: a place that was
+    // found in a lowered copy of the page is one further on in the page,
+    // and the title came out with the "<" of its end.
+    expect(cardOf(url, page("<TITLE>İstanbul travel</TITLE>"))?.title).toBe(
+      "İstanbul travel",
+    );
+    expect(
+      cardOf(
+        url,
+        page(
+          "<!-- İİİİ --><SCRIPT>İİ</SCRIPT><Style>İ</sTyle><META NAME=Description CONTENT='İyi'><title>İİİ</title>",
+        ),
+      ),
+    ).toEqual({ url, title: "İİİ", description: "İyi" });
+  });
+
+  it("takes the title of the head, and none that a picture in the body has", () => {
+    const picture = "<svg><title>A circle</title><circle r=1 /></svg>";
+    expect(
+      cardOf(
+        url,
+        `<html><head><meta name="description" content="About"></head><body>${picture}</body></html>`,
+      ),
+      // The host heads the card: the page names no title.
+    ).toEqual({ url, title: "example.com", description: "About" });
+    // Also where the page does not say where its head ends.
+    expect(cardOf(url, `<p>Text</p>${picture}`)).toBeNull();
+    // A title of the page that stands after the picture's is no title
+    // of the head either: the head was over.
+    expect(cardOf(url, `<body>${picture}<title>Late</title>`)).toBeNull();
+    expect(
+      cardOf(url, `<head><title>The page</title></head><body>${picture}`)
+        ?.title,
+    ).toBe("The page");
+  });
+
+  it("goes on to the next that says something where a tag is there and empty", () => {
+    expect(
+      cardOf(
+        url,
+        page('<meta property="og:title" content=""><title>Plain</title>'),
+      )?.title,
+    ).toBe("Plain");
+  });
+
+  it("reads attributes with and without a value, quoted and not", () => {
+    expect(
+      cardOf(
+        url,
+        page(
+          "<meta data-x itemscope property = og:title content = 'One' /><meta hidden name=\"description\" content=Two>",
+        ),
+      ),
+    ).toEqual({ url, title: "One", description: "Two" });
+  });
+
+  it("has no card for a page that names another encoding than UTF-8 for itself", () => {
+    // The page was read as UTF-8, so its letters are not what it wrote.
+    for (const tag of [
+      '<meta charset="windows-1252">',
+      "<META CHARSET=Shift_JIS>",
+      '<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1">',
+    ]) {
+      expect(cardOf(url, page(`${tag}<title>Caf�</title>`))).toBeNull();
+    }
+    for (const tag of [
+      '<meta charset="utf-8">',
+      "<meta charset=UTF8>",
+      '<meta http-equiv="content-type" content="text/html; charset=UTF-8">',
+      // No word on the encoding at all.
+      '<meta http-equiv="refresh" content="5">',
+    ]) {
+      expect(cardOf(url, page(`${tag}<title>Café</title>`))?.title).toBe(
+        "Café",
+      );
+    }
+    // The answer that carried the page is the one to go by, as for a
+    // browser: where it said UTF-8, the tag is wrong.
+    expect(
+      cardOf(url, page('<meta charset="latin1"><title>Café</title>'), {
+        utf8Declared: true,
+      })?.title,
+    ).toBe("Café");
+  });
+
+  it("takes out the mark that turns Arabic letters around", () => {
+    expect(cardOf(url, page("<title>A؜B</title>"))?.title).toBe("AB");
+  });
+});
+
+describe("readPage: the work that a page makes", () => {
+  const kilobytes256 = 256 * 1024;
+  /** `unit` over and over, up to `length` characters. */
+  const filled = (unit: string, length: number) =>
+    unit.repeat(Math.ceil(length / unit.length)).slice(0, length);
+
+  // Pages that are made to make pigy work. The first three took seconds
+  // when each block set off a search of the rest of the page for the next
+  // block of every kind, and when a pattern tried every place of a run of
+  // letters as the beginning of an attribute. Their comments and styles
+  // are closed: one that is not ends the reading at once.
+  const hostile: [name: string, unit: string][] = [
+    ["closed comments", "<!---->"],
+    ["closed styles", "<style></style>"],
+    ["closed scripts", "<script></script>"],
+    ["tags with a long name and no value", `<meta ${"a".repeat(4000)}>`],
+    ["tags with a long name before a value", `<meta ${"a".repeat(4000)}=>`],
+    ["tags whose quote never closes", '<meta "'],
+    ["titles that never close", "<title>"],
+    ["titles that close", "<title></title>"],
+    ["brackets", "<"],
+    ["tags that begin and never end", '<meta "<!--<script<title'],
+    ["references that never end", "<title>&#1&#x&amp</title>"],
+  ];
+
+  it.each(hostile)(
+    "looks at each character of a page of %s a few times at most",
+    (_name, unit) => {
+      // Counted, not timed: a count is the same on a machine that is
+      // busy. Each character is looked at once, and thrice in a tag
+      // whose attributes are read.
+      for (const length of [kilobytes256 / 4, kilobytes256]) {
+        const { work } = readPage(filled(unit, length));
+        expect(work).toBeLessThanOrEqual(3 * length);
+      }
+    },
+  );
+
+  it.each(hostile)(
+    "makes a card of a page of %s, or none, in the time that its length takes",
+    (_name, unit) => {
+      // The count above is the scan's own word. This is the clock's,
+      // for what the count leaves out, such as the cutting of a title:
+      // four times the page may take four times as long, and took
+      // sixteen times as long when the work grew with the square.
+      const timeOf = (html: string) => {
+        let best = Number.POSITIVE_INFINITY;
+        for (let run = 0; run < 3; run++) {
+          const began = performance.now();
+          cardOf("https://example.com/", html);
+          best = Math.min(best, performance.now() - began);
+        }
+        // A reading that is over in no time is not measured: a part of
+        // a millisecond is the clock's noise.
+        return Math.max(best, 0.5);
+      };
+      const small = timeOf(filled(unit, kilobytes256 / 4));
+      const whole = timeOf(filled(unit, kilobytes256));
+      expect(whole / small).toBeLessThan(10);
+      // And in itself: a few milliseconds, where a tag with a long name
+      // took a second and a half of a pattern that began anew at each
+      // of its letters. That grew with the tag and not with the page,
+      // so the ratio did not show it.
+      expect(whole).toBeLessThan(700);
+    },
+  );
+
+  it("reads no more of a page than it reads of an answer, and no more tags than a page has", () => {
+    const long = `${" ".repeat(kilobytes256)}<title>Beyond</title>`;
+    expect(readPage(long).title).toBeUndefined();
+    // Every "<" is a tag to look at: after twenty thousand the page is
+    // not what this is for.
+    const many = `${"<p>".repeat(20_001)}<title>After</title>`;
+    expect(readPage(many).title).toBeUndefined();
+    expect(readPage(`${"<p>".repeat(1000)}<title>After</title>`).title).toBe(
+      "After",
+    );
+  });
+});
+
+describe("decodeEntities", () => {
+  it.each([
+    // Half of a surrogate pair is no character, and no text to send.
+    ["&#xD800;", "�"],
+    ["&#xDFFF;", "�"],
+    ["&#55357;", "�"],
+    ["&#0;", "�"],
+    ["&#x0;", "�"],
+    // Beyond Unicode, and too long to be a number.
+    ["&#x110000;", "�"],
+    [`&#${"9".repeat(400)};`, "�"],
+    // What is meant by a number of windows-1252.
+    ["&#150;", "–"],
+    ["&#x80;", "€"],
+    // A pair that is written as one number is its character.
+    ["&#x1F600;", "😀"],
+    ["&#233; &amp; &lt;b&gt;", "é & <b>"],
+  ])("resolves %s", (written, text) => {
+    expect(decodeEntities(written)).toBe(text);
+    // No half of a surrogate pair is left: what encodes as it is.
+    expect(new TextDecoder().decode(new TextEncoder().encode(text))).toBe(
+      decodeEntities(written),
+    );
   });
 });
 
@@ -278,15 +483,15 @@ describe("fetchLinkCard", () => {
 
   it("gives up on a page whose body takes too long", async () => {
     const { fetch } = web({
-      "https://slow.example/": (request) =>
+      "https://slow.example/": (_request, signal) =>
         html(
           new ReadableStream<Uint8Array>({
             start(controller) {
               controller.enqueue(new TextEncoder().encode("<title>Slow"));
               // Nothing more comes. A real body is ended by the signal
               // of its request, as this one is.
-              request.signal.addEventListener("abort", () =>
-                controller.error(request.signal.reason),
+              signal?.addEventListener("abort", () =>
+                controller.error(signal.reason),
               );
             },
           }) as unknown as string,
@@ -295,8 +500,7 @@ describe("fetchLinkCard", () => {
     const began = Date.now();
     expect(
       await fetchLinkCard(fetch, "https://slow.example/", {
-        ...cardLimits,
-        timeoutMs: 50,
+        limits: { ...cardLimits, timeoutMs: 50 },
       }),
     ).toBeNull();
     expect(Date.now() - began).toBeLessThan(2000);
@@ -311,8 +515,7 @@ describe("fetchLinkCard", () => {
       });
     expect(
       await fetchLinkCard(fetch, "https://silent.example/", {
-        ...cardLimits,
-        timeoutMs: 50,
+        limits: { ...cardLimits, timeoutMs: 50 },
       }),
     ).toBeNull();
   });
@@ -355,6 +558,85 @@ describe("fetchLinkCard", () => {
       expect(await fetchLinkCard(fetch, "https://example.com/a")).toBeNull();
     },
   );
+
+  it.each([
+    ["an error page", 404, "text/html"],
+    ["a file of another type", 200, "application/pdf"],
+    ["a page in another encoding", 200, "text/html; charset=koi8-r"],
+    ["an answer that sends it on", 302, "text/html"],
+  ])("reads nothing of the body of %s", async (_name, status, type) => {
+    let asked = 0;
+    let cancelled = false;
+    const { fetch } = web({
+      "https://example.com/a": () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            // A body that gives for as long as it is asked, and never
+            // ends: reading it would take the whole time of the request.
+            pull(controller) {
+              asked++;
+              controller.enqueue(new TextEncoder().encode("x".repeat(1024)));
+            },
+            cancel() {
+              cancelled = true;
+            },
+          }),
+          {
+            status,
+            headers: {
+              "Content-Type": type,
+              // Nowhere that it follows: the way ends with this answer.
+              ...(status === 302 && { Location: "http://example.com/" }),
+            },
+          },
+        ),
+    });
+    const began = Date.now();
+    expect(await fetchLinkCard(fetch, "https://example.com/a")).toBeNull();
+    // Given up at once, and not when the time of the request was over.
+    expect(Date.now() - began).toBeLessThan(cardLimits.timeoutMs / 2);
+    expect(cancelled).toBe(true);
+    // A stream fills its buffer before anybody reads: that much is asked
+    // of it, and nothing more.
+    expect(asked).toBeLessThanOrEqual(2);
+  });
+
+  it("has no card for a page that names another encoding for itself where its answer names none", async () => {
+    const body = page('<meta charset="windows-1252"><title>Caf\ufffd</title>');
+    const { fetch } = web({
+      "https://example.com/untold": () =>
+        new Response(body, { headers: { "Content-Type": "text/html" } }),
+      "https://example.com/told": () => html(body),
+    });
+    expect(await fetchLinkCard(fetch, "https://example.com/untold")).toBeNull();
+    // The answer said UTF-8, and the answer is what counts.
+    expect(
+      (await fetchLinkCard(fetch, "https://example.com/told"))?.title,
+    ).toBe("Caf\ufffd");
+  });
+
+  it("asks no host of pigy's own, at first or where a page sends it on", async () => {
+    const { fetch, urls } = web({
+      "https://pigy.example/": () => html(page("<title>pigy</title>")),
+      "https://short.example/x": () =>
+        new Response(null, {
+          status: 302,
+          headers: { Location: "https://pigy.example/" },
+        }),
+    });
+    const ownHosts = ["pigy.example"];
+    expect(
+      await fetchLinkCard(fetch, "https://pigy.example/", { ownHosts }),
+    ).toBeNull();
+    expect(
+      await fetchLinkCard(fetch, "https://short.example/x", { ownHosts }),
+    ).toBeNull();
+    expect(urls()).toEqual(["https://short.example/x"]);
+    // The same page is read by a pigy that it is not a page of.
+    expect((await fetchLinkCard(fetch, "https://short.example/x"))?.title).toBe(
+      "pigy",
+    );
+  });
 
   it("has no card for a host that is not there", async () => {
     const { fetch } = web({});
