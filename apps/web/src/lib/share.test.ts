@@ -47,10 +47,40 @@ it("cuts what is longer than a part of a post may be", () => {
   expect(text).toHaveLength(maxPartTextLength);
 });
 
-it("reads what was shared from an address, as text whatever it reads like", () => {
-  expect(
-    sharedFrom({ title: 2026, text: true, url: "https://example.com/", x: 1 }),
-  ).toEqual({ title: "2026", text: "true", url: "https://example.com/" });
-  // What is no text at all is left out.
-  expect(sharedFrom({ title: { a: 1 }, text: null })).toEqual({});
+/** The query of the address that a share of `shared` opens. */
+const queryOf = (shared: Record<string, string>) =>
+  `?${new URLSearchParams(shared)}`;
+
+it.each([
+  // Each reads like JSON, which is how a router reads a query: as
+  // nothing, as a list, as an object, as a number that a float cannot
+  // hold, and as a text without its quotation marks.
+  ["null"],
+  ["[1,2]"],
+  ['{"a":1}'],
+  ["9007199254740993"],
+  ['"quoted"'],
+  ["true"],
+  ["2026"],
+])("reads %s from an address as the text that it is", (text) => {
+  expect(sharedFrom(queryOf({ text }))).toEqual({ text });
+  expect(sharedFrom(queryOf({ title: text, text: "", url: text }))).toEqual({
+    title: text,
+    text: "",
+    url: text,
+  });
+  expect(sharedText(sharedFrom(queryOf({ text })))).toBe(text);
+});
+
+it("reads what was shared from an address with or without its question mark, and nothing else of it", () => {
+  const query =
+    "title=A+fine+article&url=https%3A%2F%2Fexample.com%2F%3Fa%3D1%26b%3D2&x=1";
+
+  for (const written of [query, `?${query}`]) {
+    expect(sharedFrom(written)).toEqual({
+      title: "A fine article",
+      url: "https://example.com/?a=1&b=2",
+    });
+  }
+  expect(sharedFrom("")).toEqual({});
 });

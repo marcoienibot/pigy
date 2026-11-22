@@ -72,7 +72,13 @@ export const Route = createFileRoute("/sign-in")({
       return { server: "failed", signIn: !holdsSession() } as const;
     }
     if (me) {
-      throw redirect({ href: safeReturnTo(search.returnTo), replace: true });
+      // Loaded as a page, so that the address arrives as it is written:
+      // the router would write its query anew, as it reads it.
+      throw redirect({
+        href: safeReturnTo(search.returnTo),
+        replace: true,
+        reloadDocument: true,
+      });
     }
     // Nobody is signed in, so what this device holds of a session goes
     // before somebody else signs in here, unless something needs it: on

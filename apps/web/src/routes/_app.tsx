@@ -37,10 +37,19 @@ export const Route = createFileRoute("/_app")({
       check: !preload,
     });
     if (!session) {
+      // Where to come back to after signing in: the address as the
+      // browser has it, which is this one by now, and not as the router
+      // would write it. The two differ where a value of the query reads
+      // like JSON, as a text can that was shared to pigy, and it has to
+      // come back as it went.
+      const here = preload
+        ? location.href
+        : window.location.pathname +
+          window.location.search +
+          window.location.hash;
       throw redirect({
         to: "/sign-in",
-        // Where to come back to after signing in.
-        search: location.href === "/" ? {} : { returnTo: location.href },
+        search: here === "/" ? {} : { returnTo: here },
         replace: true,
       });
     }

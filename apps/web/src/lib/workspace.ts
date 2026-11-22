@@ -57,6 +57,16 @@ export function hasScreen(environment: Environment, path: string): boolean {
 }
 
 /**
+ * Whether what the address at `path` says is of no workspace, and stays
+ * when the tab changes to the other one. That is the screen of something
+ * that was shared to pigy: it is nothing of the workspace that is left,
+ * and the person may well change workspaces to say where it goes.
+ */
+export function keepsAddress(path: string): boolean {
+  return path === "/share";
+}
+
+/**
  * The workspace that this tab shows, of `workspaces`, those of whoever is
  * signed in. Somebody who has never chosen starts in the sandbox.
  */
@@ -110,7 +120,8 @@ export function forgetWorkspaceChoice(): void {
  * The screens are given the other workspace and its data in one step, so
  * nothing of one is ever shown under the name of the other. What the
  * address says beyond the screen goes, such as the draft that is open: it
- * names something of the workspace that is left.
+ * names something of the workspace that is left. Unless it is of no
+ * workspace: `keepsAddress`.
  */
 export function useSwitchWorkspace(): (environment: Environment) => void {
   const router = useRouter();
@@ -137,6 +148,14 @@ export function useSwitchWorkspace(): (environment: Environment) => void {
       }
       showWorkspace(next);
       localStorage.setItem(storageKey, next.id);
+      const { pathname } = router.state.location;
+      if (keepsAddress(pathname)) {
+        // The same address, loaded anew with the other workspace. Not a
+        // navigation: that would write the address again as the router
+        // reads it, which is not always as it came.
+        await router.invalidate();
+        return;
+      }
       await router.navigate({
         to: hasScreen(environment, router.state.location.pathname) ? "." : "/",
         search: {},
