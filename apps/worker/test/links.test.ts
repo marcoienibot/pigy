@@ -12,6 +12,7 @@ import {
 } from "@pigy/core";
 import { entitiesOf, feed } from "@pigy/simulators/world";
 import { describe, expect, it } from "vitest";
+import { cardsAtOnce } from "../src/publish/workflow.ts";
 import {
   connectBlueskyInSandbox,
   connectBlueskyLive,
@@ -31,7 +32,14 @@ import {
   type TestSetup,
   urlOf,
 } from "./helpers.ts";
-import { ended, publishTo, started, writeDraft } from "./publishing.ts";
+import {
+  ended,
+  publishTo,
+  retry,
+  started,
+  targetOf,
+  writeDraft,
+} from "./publishing.ts";
 import { SyncClient, workspaceIds } from "./sync-client.ts";
 
 /**
@@ -117,7 +125,7 @@ async function withChannel(
 
 /** The feed of the sandbox of whoever `browser` is signed in as. */
 async function feedOf(browser: Browser): Promise<SandboxFeed> {
-  const response = await browser.fetch("/api/sandbox/feed");
+  const response = await browser.fetch("/api/sandbox/feed?marks=1");
   expect(response.status).toBe(200);
   return sandboxFeedSchema.parse(await response.json());
 }
@@ -312,6 +320,146 @@ describe("a page that cannot be read for its card", () => {
       "The card of a link was not read",
       expect.anything(),
     );
+  });
+});
+
+describe("the pages of a thread", () => {
+  /** The requests for a page of the simulated web, of those that left. */
+  const pagesAsked = (test: TestSetup) =>
+    test.network.requests.filter((request) =>
+      /^GET https:\/\/([a-z]+\.)?example\.test\//.test(request),
+    );
+
+  it("are read several at once, and no more than so many", async () => {
+    let open = 0;
+    let most = 0;
+    const context = await withChannel("bluesky", "live", {
+      interceptNetwork: (network) => async (input, init) => {
+        if (new URL(urlOf(input)).host !== "example.test") {
+          return network(input, init);
+        }
+        // A page that takes a moment, in which the others are asked for
+        // if they are not read one after the other.
+        open++;
+        most = Math.max(most, open);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        open--;
+        return network(input, init);
+      },
+    });
+    const { test, workspace, channel, client } = context;
+    const texts = Array.from(
+      { length: cardsAtOnce + 2 },
+      (_, index) => `Part ${index + 1} ${sandboxLink}?page=${index + 1}`,
+    );
+    const [first = "", ...rest] = texts;
+    const draft = await writeDraft(client, workspace, first, ...rest);
+    await publishTo(client, draft.postId, channel);
+    expect(await ended(client, draft.postId)).toMatchObject({
+      status: "sent",
+    });
+    // Every part has its card, in its place.
+    expect(pagesAsked(test)).toHaveLength(texts.length);
+    expect(
+      (await keptOn("bluesky", "live", context)).map(({ card }) => card),
+    ).toEqual(texts.map(() => "The example page"));
+    expect(most).toBe(cardsAtOnce);
+  });
+
+  it("are not read again for the parts that an attempt before has published", async () => {
+    // The network refuses the second part of the thread once, for good.
+    let refuse = true;
+    const context = await withChannel("bluesky", "live", {
+      interceptNetwork: (network) => async (input, init) => {
+        const body = typeof init?.body === "string" ? init.body : "";
+        if (
+          refuse &&
+          urlOf(input).endsWith("com.atproto.repo.createRecord") &&
+          body.includes("Second")
+        ) {
+          refuse = false;
+          return Response.json(
+            { error: "InvalidRequest", message: "Not this one" },
+            { status: 400 },
+          );
+        }
+        return network(input, init);
+      },
+    });
+    const { test, workspace, channel, client } = context;
+    const draft = await writeDraft(
+      client,
+      workspace,
+      `First ${sandboxLink}`,
+      "Second https://news.example.test/story",
+    );
+    const [targetId = ""] = await publishTo(client, draft.postId, channel);
+    await ended(client, draft.postId);
+    expect(targetOf(client, targetId)).toMatchObject({ status: "error" });
+    // The first attempt read both pages.
+    expect(pagesAsked(test)).toEqual([
+      `GET ${sandboxLink}`,
+      "GET https://news.example.test/story",
+    ]);
+
+    await retry(client, targetId);
+    expect(await ended(client, draft.postId)).toMatchObject({
+      status: "sent",
+    });
+    // The second read the page of the part that was left, and not the
+    // page of the part that is published.
+    expect(pagesAsked(test)).toEqual([
+      `GET ${sandboxLink}`,
+      "GET https://news.example.test/story",
+      "GET https://news.example.test/story",
+    ]);
+    expect(
+      (await keptOn("bluesky", "live", context)).map(({ card }) => card),
+    ).toEqual(["The example page", "A story from the simulated news"]);
+  });
+
+  it("does not keep the post back when the platform gives up on the step that reads them", async () => {
+    const errors = expectErrors();
+    const context = await withChannel("bluesky", "live");
+    const { test, workflows, workspace, channel, client } = context;
+    // The step is cut off, every time that the platform runs it: what a
+    // step looks like to the run whose time was up, or whose Worker went
+    // away under it.
+    await workflows.modifyAll(async (modifier) => {
+      await modifier.mockStepError({ name: "cards" }, new Error("Cut off"));
+      await modifier.disableRetryDelays();
+    });
+    const text = `Read ${sandboxLink}`;
+    const draft = await writeDraft(client, workspace, text);
+    await publishTo(client, draft.postId, channel);
+    // The delivery goes on to the network, and the post is there with
+    // its link and without a card.
+    expect(await ended(client, draft.postId)).toMatchObject({
+      status: "sent",
+    });
+    expect(await keptOn("bluesky", "live", context)).toEqual([
+      { text, entities: [["link", sandboxLink]], card: null },
+    ]);
+    expect(pagesAsked(test)).toEqual([]);
+    expect(errors).toHaveBeenCalledWith(
+      "The cards of a post were not read",
+      expect.anything(),
+    );
+  });
+});
+
+describe("pigy's own host", () => {
+  it("is not asked for the card of a link", async () => {
+    const { test, browser, workspaces } = await started();
+    // The address that the app of the test is reached at, which is a
+    // public one by its name.
+    const response = await askCard(
+      browser,
+      workspaces.live,
+      "https://pigy.test/",
+    );
+    expect(await cardOf(response)).toBeNull();
+    expect(test.network.requests).toEqual([]);
   });
 });
 

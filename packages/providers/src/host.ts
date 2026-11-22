@@ -8,6 +8,21 @@
  * That a name is public says nothing about the address it resolves to.
  * Cloudflare Workers cannot reach private addresses, which is what keeps a
  * public name that points to one harmless.
+ *
+ * One kind of host is public by its name and still not asked the way a
+ * stranger asks it: a host of the Cloudflare zone that pigy itself is
+ * deployed on. By default a `fetch` of a Worker to such a host goes
+ * straight to its origin, past the firewall of the zone and past
+ * Cloudflare Access. With pigy at `pigy.example.com`, somebody who is
+ * invited could then have pigy read them the title of a page at
+ * `wiki.example.com` that only Access protects, as the card of a link.
+ * Nothing in a name tells such a host from any other, so this cannot
+ * refuse it. The Worker is deployed with the compatibility flag
+ * `global_fetch_strictly_public`, apps/worker/wrangler.jsonc, which sends
+ * every `fetch` to a public host through the front door. `fetchLinkCard`
+ * of card.ts refuses the hosts of pigy itself besides, where its caller
+ * knows them. That the flag does this for the way pigy is deployed is
+ * to be confirmed on the deployment: PLAN.md section 19.
  */
 
 // Names that lead nowhere on the public internet, but may lead somewhere

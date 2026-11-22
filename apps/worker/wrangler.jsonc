@@ -3,6 +3,14 @@
   "name": "pigy",
   "main": "src/index.ts",
   "compatibility_date": "2026-11-10",
+  // A `fetch` of the Worker to a host of the zone that it is deployed on
+  // goes the way of every other request from outside, through the front
+  // door of that zone, with its firewall and Cloudflare Access. Without
+  // the flag such a request goes straight to the origin of that host,
+  // past both. pigy asks hosts that people name, for the card of a link
+  // above all, and every host that it asks is a public one: see
+  // packages/providers/src/host.ts.
+  "compatibility_flags": ["global_fetch_strictly_public"],
   "version_metadata": {
     "binding": "VERSION"
   },

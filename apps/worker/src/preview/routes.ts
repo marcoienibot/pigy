@@ -94,9 +94,14 @@ export function previewRoutes(dependencies: AppDependencies): Hono<AppEnv> {
     // The page is read with the reach of the workspace and with nothing
     // of the person: no cookie and no credentials go with it. What goes
     // wrong at the other end is no error here. The link has no card.
+    // Nor is pigy itself asked, at the address that this request came
+    // to: it has no page to make a card of, and its host is one of the
+    // zone that it is deployed on, which host.ts of @pigy/providers has
+    // a word on.
     const card = await fetchLinkCard(
       reachOf(workspace, c.env, fetch).fetch,
       url,
+      { ownHosts: [new URL(c.req.url).host] },
     );
     return c.json(linkCardResponseSchema.parse({ card }));
   });
