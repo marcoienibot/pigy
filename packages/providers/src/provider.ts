@@ -369,6 +369,11 @@ export type Provider = {
    * there a mention of a name that is nobody's is published as the text
    * that it is, and whoever writes the post can be told before.
    *
+   * It asks about each name once, and about no more of them than a post
+   * looks up for a part, `maxLookedUpMentions` of `@pigy/core`: a caller
+   * asks about the names that `lookedUpMentions` has for a text, which
+   * are the ones that a post of the text would be marked up for.
+   *
    * It asks only what is public, and takes no credentials. A name that
    * could not be looked up is left out like one that nobody has: the
    * answer is what a post would get that went out now, and may be another
