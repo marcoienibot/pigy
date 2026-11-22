@@ -458,7 +458,6 @@ describe("publishing", () => {
   it("finds a later part whose answer was lost among the replies to the part before it, and takes nobody else's", async () => {
     const test = setup();
     const { credentials } = await connect(test);
-    const grace = await connect(test, test.grace);
     // The first part is published, the second has its container.
     let progress = await step(test, credentials, ["One", "Two"]);
     progress = await step(test, credentials, ["One", "Two"], progress);
@@ -466,12 +465,15 @@ describe("publishing", () => {
     expect(progress.parts).toHaveLength(1);
     const first = progress.parts[0]?.id ?? "";
 
-    // Somebody else replies with the same words, before and after.
-    await postByHand(test, grace.credentials, "Two", first);
+    // Somebody else replies with the same words, before and after, in
+    // the app of Threads: no app replies under a post of another account.
+    const byGrace = () =>
+      test.simulator.addPost(test.grace.id, { text: "Two", replyToId: first });
+    byGrace();
     test.simulator.arm({ kind: "lost-response", operation: "publish" });
     await failure(() => step(test, credentials, ["One", "Two"], progress));
     const own = feed(test.world, ["threads"]).at(-1)?.post;
-    await postByHand(test, grace.credentials, "Two", first);
+    byGrace();
 
     test.requests.length = 0;
     const done = await step(test, credentials, ["One", "Two"], progress);
@@ -491,10 +493,23 @@ describe("publishing", () => {
     await test.provider.deletePost(credentials, post?.post.id ?? "");
 
     test.requests.length = 0;
-    // However often it is asked: the container says that it was published.
+    // The lists of Threads may be behind, so the step looks three times
+    // more, ten seconds apart, and counts that in what it records.
+    let progress = made;
+    for (let look = 1; look <= 3; look++) {
+      progress = await step(test, credentials, ["Hello"], progress);
+      expect(progress).toMatchObject({
+        parts: [],
+        done: false,
+        waitSeconds: 10,
+        state: { looks: look },
+      });
+    }
+    // Then, however often it is asked: the container says that it was
+    // published.
     for (let attempt = 0; attempt < 2; attempt++) {
       const failed = await failure(() =>
-        step(test, credentials, ["Hello"], made),
+        step(test, credentials, ["Hello"], progress),
       );
       expect(failed.kind).toBe("uncertain");
       expect(failed.message).not.toContain(credentials.accessToken);
@@ -502,6 +517,79 @@ describe("publishing", () => {
     expect(test.requests.filter(publishes)).toEqual([]);
     expect(test.requests.filter(contains)).toEqual([]);
     expect(published(test)).toEqual([]);
+  });
+
+  it("finds a part that Threads has published and lists only some seconds later", async () => {
+    const test = setup();
+    const { credentials } = await connect(test);
+    const made = await step(test, credentials, ["Hello"]);
+    test.simulator.arm({ kind: "lost-response", operation: "publish" });
+    await failure(() => step(test, credentials, ["Hello"], made));
+    const [own] = feed(test.world, ["threads"]);
+    // The container says that it is published, and the list of the
+    // account's posts does not have the post yet.
+    test.hooks.intercept = (request) =>
+      request.method === "GET" && request.url.includes("/me/threads?")
+        ? Response.json({ data: [] })
+        : undefined;
+    const waiting = await step(test, credentials, ["Hello"], made);
+    expect(waiting).toMatchObject({ parts: [], done: false, waitSeconds: 10 });
+
+    delete test.hooks.intercept;
+    const progress = await step(test, credentials, ["Hello"], waiting);
+    expect(progress).toMatchObject({
+      done: true,
+      parts: [{ id: own?.post.id }],
+    });
+    expect(published(test)).toEqual(["Hello"]);
+  });
+
+  it("takes no post of the same second from before the delivery for its own, also when the newest of then is gone", async () => {
+    const test = setup();
+    const { credentials } = await connect(test);
+    // Two posts within one second, which is as exactly as Threads says a
+    // time: the same words as the delivery's, and then the post that is
+    // the newest when the delivery begins.
+    const older = await postByHand(test, credentials, "Hello");
+    test.world.advance(100);
+    const newest = await postByHand(test, credentials, "Something else");
+    test.world.advance(100);
+
+    // The delivery begins in that second too, and so does its post.
+    const made = await step(test, credentials, ["Hello"]);
+    test.simulator.arm({ kind: "lost-response", operation: "publish" });
+    await failure(() => step(test, credentials, ["Hello"], made));
+    const own = feed(test.world, ["threads"]).at(-1)?.post;
+    expect(own?.id).not.toBe(older);
+    await test.provider.deletePost(credentials, newest);
+
+    const progress = await step(test, credentials, ["Hello"], made);
+    // Not the one from before: a thread would go on under it.
+    expect(progress.parts).toEqual([{ id: own?.id, url: own?.url }]);
+  });
+
+  it("takes no post with a photo, a quote or a poll for its own, whatever its words", async () => {
+    const test = setup();
+    const { credentials } = await connect(test);
+    const made = await step(test, credentials, ["Hello"]);
+    // The person posts the same words in the app of Threads after the
+    // delivery began and before its part is published: with a photo,
+    // quoting a post, and with a poll.
+    const byHand = [
+      test.simulator.addPost(test.ada.id, { text: "Hello", media: "IMAGE" }),
+      test.simulator.addPost(test.ada.id, { text: "Hello", quote: true }),
+      test.simulator.addPost(test.ada.id, { text: "Hello", poll: true }),
+    ].map(({ id }) => id);
+    test.world.advance(1000);
+    test.simulator.arm({ kind: "lost-response", operation: "publish" });
+    await failure(() => step(test, credentials, ["Hello"], made));
+    const own = feed(test.world, ["threads"]).at(-1)?.post;
+    expect(byHand).not.toContain(own?.id);
+
+    // The oldest post since that reads like the part is one of those
+    // three, and none of them is plain text.
+    const progress = await step(test, credentials, ["Hello"], made);
+    expect(progress.parts).toEqual([{ id: own?.id, url: own?.url }]);
   });
 
   it("says that it cannot find a part when the account has posted more since than it is willing to read", async () => {
@@ -528,6 +616,45 @@ describe("publishing", () => {
     ).toBe("uncertain");
     // It gave up, and did not read for ever.
     expect(pages).toBe(5);
+  });
+
+  it("makes no new container when Threads has forgotten the one it had and the account has posted more since than it is willing to read", async () => {
+    const test = setup();
+    const { credentials } = await connect(test);
+    const made = await step(test, credentials, ["Hello"]);
+    // Published, with the answer lost: the post is there.
+    test.simulator.arm({ kind: "lost-response", operation: "publish" });
+    await failure(() => step(test, credentials, ["Hello"], made));
+    test.requests.length = 0;
+    let pages = 0;
+    test.hooks.intercept = (request) => {
+      const url = new URL(request.url);
+      if (request.method !== "GET") return undefined;
+      // Days later Threads no longer knows the container, which says
+      // nothing of whether it was published.
+      if (url.searchParams.get("fields")?.startsWith("status")) {
+        return Response.json(
+          { error: { message: "Gone", code: 100, error_subcode: 33 } },
+          { status: 400 },
+        );
+      }
+      if (!url.pathname.endsWith("/me/threads")) return undefined;
+      // And the account has posted so much since that the step stops
+      // reading before it comes to the post.
+      pages++;
+      return Response.json({
+        data: [{ id: String(900 + pages), text: "Another post" }],
+        paging: { cursors: { after: `page-${pages}` } },
+      });
+    };
+    // Not having found the post is not knowing that there is none: a new
+    // container would be published as a second post.
+    expect(
+      (await failure(() => step(test, credentials, ["Hello"], made))).kind,
+    ).toBe("uncertain");
+    expect(pages).toBe(5);
+    expect(test.requests.filter(contains)).toEqual([]);
+    expect(published(test)).toEqual(["Hello"]);
   });
 
   it("waits for a container that Threads is still preparing, and publishes it when it is ready", async () => {
@@ -634,6 +761,125 @@ describe("publishing", () => {
     delete test.hooks.intercept;
     expect((await step(test, credentials, ["Another"], again)).done).toBe(true);
     expect(published(test)).toEqual(["Hello", "Another"]);
+  });
+
+  it("looks for the post before it makes a new container for one that says that it has expired", async () => {
+    const test = setup();
+    const { credentials } = await connect(test);
+    const made = await step(test, credentials, ["Hello"]);
+    test.simulator.arm({ kind: "lost-response", operation: "publish" });
+    await failure(() => step(test, credentials, ["Hello"], made));
+    const [own] = feed(test.world, ["threads"]);
+    // What the simulated Threads never says of a container that was
+    // published, and what nobody knows of the real one.
+    test.hooks.intercept = (request) =>
+      request.method === "GET" && request.url.includes("fields=status")
+        ? Response.json({ status: "EXPIRED" })
+        : undefined;
+    test.requests.length = 0;
+    const progress = await step(test, credentials, ["Hello"], made);
+    expect(progress).toMatchObject({
+      done: true,
+      parts: [{ id: own?.post.id }],
+    });
+    expect(test.requests.filter(contains)).toEqual([]);
+    expect(published(test)).toEqual(["Hello"]);
+  });
+
+  it("goes by the status of the container when Threads refuses to publish it: published, it finds the post", async () => {
+    const test = setup();
+    const { credentials } = await connect(test);
+    const made = await step(test, credentials, ["Hello"]);
+    // Threads says that the container is ready, and something else
+    // publishes it before the step does: a run of the same step that was
+    // taken for dead. The simulated Threads refuses the second request.
+    const container = (made.state as { container: string }).container;
+    test.hooks.intercept = async (request) => {
+      if (!publishes(request)) return undefined;
+      await test.simulator.fetch(request.clone());
+      return undefined;
+    };
+    test.requests.length = 0;
+    const progress = await step(test, credentials, ["Hello"], made);
+    const [own] = feed(test.world, ["threads"]);
+    expect(progress).toMatchObject({
+      done: true,
+      parts: [{ id: own?.post.id, url: own?.post.url }],
+    });
+    expect(published(test)).toEqual(["Hello"]);
+    // It asked for the status before and after the refusal.
+    expect(
+      test.requests.map(asked).filter((it) => it === `GET /v1.0/${container}`),
+    ).toHaveLength(2);
+  });
+
+  it("goes by the status of the container when Threads refuses to publish it: not ready after all, it waits", async () => {
+    const test = setup();
+    const { credentials } = await connect(test);
+    test.simulator.arm({ kind: "slow-processing" });
+    const made = await step(test, credentials, ["Slowly"]);
+    // Threads says once that the container is ready, too early.
+    let asks = 0;
+    test.hooks.intercept = (request) =>
+      request.method === "GET" &&
+      request.url.includes("fields=status") &&
+      asks++ === 0
+        ? Response.json({ status: "FINISHED" })
+        : undefined;
+    const waiting = await step(test, credentials, ["Slowly"], made);
+    expect(waiting).toMatchObject({ parts: [], done: false, waitSeconds: 10 });
+    expect(published(test)).toEqual([]);
+
+    const progress = await publishAll(test, credentials, ["Slowly"], waiting);
+    expect(progress.done).toBe(true);
+    expect(published(test)).toEqual(["Slowly"]);
+  });
+
+  it("fails with what Threads said when it refuses to publish a container that is still ready", async () => {
+    const test = setup();
+    const { credentials } = await connect(test);
+    const made = await step(test, credentials, ["Hello"]);
+    test.hooks.intercept = (request) =>
+      publishes(request)
+        ? Response.json(
+            { error: { message: "This post is not allowed", code: 100 } },
+            { status: 400 },
+          )
+        : undefined;
+    const failed = await failure(() =>
+      step(test, credentials, ["Hello"], made),
+    );
+    expect(failed.kind).toBe("fail");
+    expect(failed.message).toContain("This post is not allowed");
+    expect(published(test)).toEqual([]);
+  });
+
+  it("asks to try again when Threads answers with the error that it has no better word for", async () => {
+    const test = setup();
+    const { credentials } = await connect(test);
+    const made = await step(test, credentials, ["Hello"]);
+    test.hooks.intercept = (request) =>
+      publishes(request)
+        ? Response.json(
+            {
+              error: {
+                message: "An unknown error has occurred.",
+                type: "OAuthException",
+                code: 1,
+              },
+            },
+            // Not a status that says by itself that Threads is in trouble.
+            { status: 400 },
+          )
+        : undefined;
+    expect(
+      (await failure(() => step(test, credentials, ["Hello"], made))).kind,
+    ).toBe("retry");
+    // The step that is tried again looks at the container first, and
+    // publishes it once.
+    delete test.hooks.intercept;
+    expect((await step(test, credentials, ["Hello"], made)).done).toBe(true);
+    expect(published(test)).toEqual(["Hello"]);
   });
 
   it("fails with what Threads says of a container that it could not prepare", async () => {
