@@ -376,6 +376,82 @@ export const targetPartResultRowSchema = z.strictObject({
   url: httpsUrlSchema.nullable(),
 });
 
+/** What the server last learned of the stats of a delivery. */
+export const metricStatuses = [
+  /** The network said how the post is doing: the counts. */
+  "counted",
+  /**
+   * pigy has no stats of the post, `reason` says why: its network has none
+   * for pigy, as LinkedIn, the access of the channel does not reach them,
+   * as on Threads for an account that was connected before pigy asked for
+   * the permission, or the account has to be connected again. The server
+   * asks again at the next moment of `metricMoments` where that may
+   * change. It also says so where it stops reading without stats: the
+   * account was disconnected, or the network did not give them by the
+   * last moment.
+   */
+  "unavailable",
+  /**
+   * The network no longer has the post: somebody deleted it there. The
+   * server asks no more.
+   */
+  "gone",
+] as const;
+
+export const metricStatusSchema = z.enum(metricStatuses);
+
+export type MetricStatus = z.infer<typeof metricStatusSchema>;
+
+/**
+ * When the server reads the stats of a delivery, in milliseconds after it
+ * was sent: at once, which says whether the network gives any, then after
+ * ten minutes, which is when the first people have seen a post and a
+ * person who has just published looks, then after an hour, six hours, a
+ * day, three days, a week and 30 days. Never again after that: a post
+ * that is a month old has had what it gets.
+ */
+export const metricMoments = [
+  0,
+  10 * 60 * 1000,
+  60 * 60 * 1000,
+  6 * 60 * 60 * 1000,
+  24 * 60 * 60 * 1000,
+  3 * 24 * 60 * 60 * 1000,
+  7 * 24 * 60 * 60 * 1000,
+  30 * 24 * 60 * 60 * 1000,
+] as const;
+
+/** A count of the stats of a post: null where the network has none. */
+const countSchema = z.number().int().nonnegative().nullable();
+
+/**
+ * How a post that a delivery published is doing on its network, as the
+ * server last read it: of the first part, which is the post that people
+ * see in their feed and what a thread is liked and shared as. A delivery
+ * that is `sent` gets a row with the first read, soon after it was sent:
+ * until then it has none. Only the server writes it, with `metric.record`,
+ * and it goes with its target.
+ */
+export const metricRowSchema = z.strictObject({
+  /** The ID of the target that it is about: a delivery has one at most. */
+  id: idSchema,
+  status: metricStatusSchema,
+  /**
+   * The counts as the network said them at `countedAt`, each null where
+   * the network has no such count. A row that is `unavailable` or `gone`
+   * keeps the counts of the read before, if there was one.
+   */
+  likes: countSchema,
+  reposts: countSchema,
+  replies: countSchema,
+  quotes: countSchema,
+  views: countSchema,
+  /** When the counts were read. Null if they never were. */
+  countedAt: timeSchema.nullable(),
+  /** Why the stats are `unavailable`, for the person. Null otherwise. */
+  reason: z.string().min(1).max(targetLimits.errorLength).nullable(),
+});
+
 /** What a notification of the inbox is about. */
 export const notificationKinds = [
   /**
@@ -603,6 +679,7 @@ export const rowSchemas = {
   channel: channelRowSchema,
   post_target: postTargetRowSchema,
   target_part_result: targetPartResultRowSchema,
+  metric: metricRowSchema,
   notification: notificationRowSchema,
   schedule_slot: scheduleSlotRowSchema,
   settings: settingsRowSchema,

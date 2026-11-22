@@ -278,6 +278,26 @@ it("runs a pending mutation after every time that the server has put into a chan
     },
   ]);
   expect(edited(aside)?.updatedAt).toBe(7_001);
+  // The stats of a delivery, which the server counted at a time of its
+  // own: `countedAt`.
+  const counted = applyChanges(rows, false, [
+    {
+      op: "put",
+      table: "metric",
+      row: {
+        id: target.id,
+        status: "counted",
+        likes: 1,
+        reposts: 0,
+        replies: 0,
+        quotes: 0,
+        views: null,
+        countedAt: 8_000,
+        reason: null,
+      },
+    },
+  ]);
+  expect(edited(counted)?.updatedAt).toBe(8_001);
 });
 
 it("lets a pending mutation see what the ones before it did", () => {

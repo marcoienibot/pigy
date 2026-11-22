@@ -1,13 +1,13 @@
 # pigy sync protocol
 
-How a client keeps a copy of a workspace and changes it. Protocol version 2, schema version 10.
+How a client keeps a copy of a workspace and changes it. Protocol version 2, schema version 11.
 
 This document is the contract between the server and any client: the browser store of the app, or anything else. It is meant to be enough to write a client from. The message schemas, the row schemas, the mutators, the limits and the versions are code in `packages/core/src/sync`, and a client should use them rather than copy them. The server is `apps/worker/src/workspace`. `apps/worker/test/sync-client.ts` is a small client written from this document, which the tests of the server use. The client of the app is `packages/core/src/sync/client`, and what it takes from a browser is in `apps/web/src/sync`.
 
 ## 1. Model
 
 - A **workspace** is one user's data in one environment. Everybody has two, `live` and `sandbox`. `GET /api/workspaces` lists them, as `{ "workspaces": [{ "id": "…", "environment": "live" }, { "id": "…", "environment": "sandbox" }] }`, and creates them the first time.
-- The **synced tables** of a workspace are the part of it that clients hold a copy of: `post`, `post_part`, `channel`, `post_target`, `target_part_result`, `notification`, `schedule_slot`, `settings`, `media` and `part_media` so far. `packages/core/src/sync/tables.ts` describes their rows. A row has an `id`, a UUID version 7 in lowercase, that is unique in its table.
+- The **synced tables** of a workspace are the part of it that clients hold a copy of: `post`, `post_part`, `channel`, `post_target`, `target_part_result`, `metric`, `notification`, `schedule_slot`, `settings`, `media` and `part_media` so far. `packages/core/src/sync/tables.ts` describes their rows. A row has an `id`, a UUID version 7 in lowercase, that is unique in its table.
 - A client never writes rows. It sends **mutations**: the name of a mutator and its arguments, such as `post.create`. The server runs the mutator, and what it does to the rows is what counts. A client may run the same mutator, from `packages/core/src/sync/mutators.ts`, on its own copy first, to show the change before the server has answered.
 - The server applies mutations one at a time, in the order they arrive. Each mutation that changes something is one change and gets a **sequence number**: the changes of a workspace are numbered 1, 2, 3 and so on. A **cursor** is a sequence number, and a client whose cursor is N has exactly the rows that the server had after change N. Cursor 0 is the empty workspace.
 - A **client** is one local copy: its rows, its cursor, the mutations it has made that the server has not confirmed, and the ID of the last one that the server has confirmed. It has a **client ID**, a UUID version 7 that it makes up once, and it numbers its mutations 1, 2, 3 and so on. The server remembers the last mutation it has processed for each client ID, which is what makes it safe to send a mutation twice. A client keeps its copy and its client ID for one workspace: another workspace is another copy with another ID.
@@ -38,7 +38,7 @@ Every message is one text frame with one JSON object, which has a `type`. A fiel
 **`hello`** is the first message on every socket, and is sent once.
 
 ```json
-{ "type": "hello", "protocolVersion": 2, "schemaVersion": 10, "clientId": "0192…", "cursor": 42, "lastMutationId": 7 }
+{ "type": "hello", "protocolVersion": 2, "schemaVersion": 11, "clientId": "0192…", "cursor": 42, "lastMutationId": 7 }
 ```
 
 `cursor` is the `to` of the last patch that the client has applied, or `null` if it has applied no patch. `lastMutationId` is the `lastMutationId` of the last patch that the client has applied, or 0 if it has applied no patch. It says that the client knows what became of its mutations up to that one, and the server forgets what it kept to tell the client: see section 4.
@@ -95,7 +95,7 @@ Steps 1 to 4 belong in one transaction of the local store: the rows, the cursor,
 **`error`** says what the client did wrong. The server then closes the socket with the code 4400.
 
 ```json
-{ "type": "error", "code": "version_mismatch", "message": "…", "protocolVersion": 2, "schemaVersion": 10 }
+{ "type": "error", "code": "version_mismatch", "message": "…", "protocolVersion": 2, "schemaVersion": 11 }
 ```
 
 `protocolVersion` and `schemaVersion` are what the server speaks. The codes:
@@ -131,7 +131,7 @@ The mutators, their arguments and what they refuse are in `packages/core/src/syn
 | `part.add` | `id`, `postId`, `channelId`, `afterId`, `text`, and optionally `mustFollow` | Adds a part to a text of a draft: to the post's own for the `channelId` null, otherwise to the text that is written for that account. It goes after the part `afterId`, first for null, and to the end if that part is gone or not of this text. With `mustFollow` true it goes after the part `afterId` or nowhere: it is rejected with `not_found` if that part is gone or not of this text. `mustFollow` says nothing for the `afterId` null. Rejected with `not_found` if the post is gone, and for a `channelId` if the post does not go to that channel, or no longer, or if the account has no text of its own: a part for an account never goes into another text. Rejected with `not_a_draft` if the post is past being a draft, with `already_exists` if the ID is taken, with `too_many_parts` if the text has 100 parts |
 | `part.remove` | `id` | Removes a part from its text, the post's own or the one of an account. Does nothing if the part is gone. Rejected with `not_a_draft` if its post is past being a draft, and with `last_part` if it is the only part of its text |
 | `part.move` | `id`, `afterId` | Moves a part within its text, to after the part `afterId`, or to the beginning for null. Does nothing if that part is gone, not of this text or the part itself, or if the part is there already. Rejected with `not_found` if the part is gone, with `not_a_draft` if its post is past being a draft |
-| `post.delete` | `id` | Deletes a post with its parts, those that are written for single accounts included, its targets and their results. Does nothing if the post is gone. Rejected with `sending` while the post is being sent. With `ifTrashed` true it deletes only a post that was put aside, and does nothing to any other: "Scheduling" below |
+| `post.delete` | `id` | Deletes a post with its parts, those that are written for single accounts included, its targets with their results and their stats. Does nothing if the post is gone. Rejected with `sending` while the post is being sent. With `ifTrashed` true it deletes only a post that was put aside, and does nothing to any other: "Scheduling" below |
 | `target.add` | `id`, `postId`, `channelId` | Chooses a channel for a draft to go to: adds a target with the status `pending`. Does nothing if the draft goes there already. Rejected with `not_found` if the post or the channel is gone, with `not_a_draft` if the post is past being a draft, with `already_exists` if the ID is taken |
 | `target.remove` | `postId`, `channelId` | Takes a channel back from a draft, with the text that was written for it. Does nothing if the draft does not go there. Rejected with `not_found` if the post is gone, with `not_a_draft` if it is past being a draft |
 | `target.customize` | `postId`, `channelId`, `parts` | Gives an account of a draft a text of its own: `parts`, each an `id` and a `text`, in this order, at least one, at most 100, and at most 40,000 characters together. Does nothing if the account has one already, whatever `parts` says. Rejected with `not_found` if the post is gone or does not go to the channel, with `not_a_draft` if the post is past being a draft, with `already_exists` if an ID is taken or named twice: nothing of the text is stored then |
@@ -171,6 +171,7 @@ Some mutators are the server's own. A client that sends one has it rejected with
 | `target.start` | Begins the delivery of a target that waited its turn: `sending`, in a new attempt |
 | `target.progress` | Adds the results of the parts that a delivery has published |
 | `target.end` | Ends a delivery as `sent`, `error` or `uncertain`. It names the connection whose access the network refused, if it refused one, by the `connectedAt` of the channel, and marks the channel as `needs_reconnect` if that is the connection which the channel still has |
+| `metric.record` | Stores what the server has read of the stats of a delivery that is `sent`: the counts, that the network gives none, or that it no longer has the post. Does nothing if the target is gone or not `sent`. "Stats" below |
 | `channel.warnOfExpiry` | Adds the notification that the access of a channel ends within a week. Does nothing for an access that does not end within a week, has ended, or is of a channel that needs connecting again |
 | `notification.prune` | Removes the notifications that it names: the server runs it for those that are older than 30 days |
 | `media.ready` | Says that the server has an image and what it found in its bytes: the row is `ready`, with the type, the size and the dimensions that the server read. Only for a row that is `uploading` |
@@ -273,6 +274,19 @@ The statuses of a target:
 - **What cannot be changed.** A post that is not a draft cannot be edited, in none of its texts, and its channels cannot be changed. That goes for a post that is `scheduled` too: `post.unschedule` makes a draft of it again, which is edited and scheduled anew. A post that is `sending` cannot be deleted either: `post.delete` is rejected with `sending` until every target has ended. Afterwards it can, which removes the post from pigy and nothing from the networks.
 - **A channel that is disconnected.** Its `pending` targets are deleted: the drafts no longer go there, and neither do the scheduled posts. A scheduled post that goes nowhere else is a draft again, in the same change. Its targets that are `queued` or `sending` end in `error`, with `disconnected` true, which no other target has: the delivery did not fail by itself. Its targets that had ended stay as they are, with a `channelId` that names no channel any more. A client shows such a target without the account, and `target.retry` is rejected for it with `not_found`.
 - **Who writes what.** `target.start`, `target.progress` and `target.end` are the server's, like the mutators of a channel: what a delivery did is the word of whoever did it.
+
+### Stats
+
+A row of `metric` is how a post that a delivery published is doing on its network: its likes, reposts, replies, quotes and views, as the server last read them. Its `id` is the ID of the target, which has one at most. Only the server writes it, with `metric.record`, and a client receives it like any change.
+
+- **Which post.** The counts are those of the first part, which is the post that people see in their feed: a thread is liked and shared as its first post. They are what the network shows under that post, so the replies of a thread count its own parts: the second on Mastodon and Bluesky, which count the replies to the post, and every part after the first on Threads, which counts every reply in the thread under the post that begins it.
+- **When.** Only a delivery that is `sent` has stats. The server reads them soon after the delivery has ended, which says whether the network gives any, and then about ten minutes, an hour, six hours, a day, three days, a week and 30 days after `sentAt`, and never after that: `metricMoments` in `packages/core`. A delivery has no row before the first read. A network that is out of reach or asks to be asked less often is asked again later, an hour later at least, and the row stays as it was meanwhile. A post that its network does not show, yet or any more, is asked about again at the next moment. A read that comes late takes the next moment that is still ahead and leaves out the ones that passed: nothing is read twice in a row to catch up.
+- **`status`** is `counted`, `unavailable` or `gone`:
+  - `counted`: the network said the counts at `countedAt`. Each count is null where the network has none: Mastodon and Bluesky have no views, and Mastodon has quotes from version 4.5 on.
+  - `unavailable`: pigy has no stats of this post, and `reason` says why, for the person. LinkedIn has none for the posts of a member, and is never asked. A Threads account that was connected before pigy asked for the permission to read stats is another case, and so is an account that has to be connected again: the server asks again at the next moment, and at once when the account is connected again, so the stats come then. The server also says so where it stops reading without stats to show: the account was disconnected, the network still did not show the post or gave none at the last moment, or kept asking to be asked later after it, the account had to be connected again at the last moment, or the server has no record of the post. The `reason` then says that it was the last time, and promises no read that does not come. No delivery that is `sent` is left without a row for good, so a client that waits for one gets one. The one exception is a delivery that was sent before the server read stats, which has none.
+  - `gone`: the network no longer has the post, because somebody deleted it there. The server stops reading.
+  A row that is `unavailable` or `gone` keeps the counts of the read before, with their `countedAt`, which are the last that are known. Both are null where nothing was ever counted.
+- **What ends them.** The row goes with its target, which goes with its post: `post.delete`. A target that is `sent` is never tried again and never begins anew, so its row has nothing else to go with. A target whose channel was disconnected keeps its row, which becomes `unavailable` at its next read and is read no more.
 
 ### Scheduling
 

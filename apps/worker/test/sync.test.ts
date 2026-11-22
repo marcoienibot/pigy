@@ -94,6 +94,7 @@ it("answers the first hello of a client with a snapshot", async () => {
     channel: [],
     post_target: [],
     target_part_result: [],
+    metric: [],
     notification: [],
     schedule_slot: [],
     settings: [],

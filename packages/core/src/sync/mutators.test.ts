@@ -2404,3 +2404,165 @@ it.each([
     "not_allowed",
   );
 });
+
+// The stats of a delivery, which the server reads from the network.
+
+/** `sending()`, with its one delivery sent at the time 5000. */
+function sent() {
+  const workspace = sending();
+  workspace.mutate(
+    "target.end",
+    { id: targetId, attempt: 1, status: "sent" },
+    5000,
+    "server",
+  );
+  return workspace;
+}
+
+/** Counts as `metric.record` takes them, as Mastodon has them. */
+const counts = (likes: number) => ({
+  likes,
+  reposts: 2,
+  replies: 1,
+  quotes: 0,
+  views: null,
+});
+
+it("stores the stats of a delivery, with when they were read", () => {
+  const workspace = sent();
+
+  workspace.mutate(
+    "metric.record",
+    { id: targetId, status: "counted", ...counts(3) },
+    6000,
+    "server",
+  );
+  workspace.mutate(
+    "metric.record",
+    { id: targetId, status: "counted", ...counts(7) },
+    9000,
+    "server",
+  );
+
+  // One row for the delivery, under its ID: a later read replaces it.
+  expect(workspace.rows("metric")).toEqual([
+    {
+      id: targetId,
+      status: "counted",
+      ...counts(7),
+      countedAt: 9000,
+      reason: null,
+    },
+  ]);
+});
+
+it.each([
+  ["unavailable", { reason: "Connect the account again to see its stats." }],
+  ["gone", {}],
+] as const)(
+  "keeps the counts that were read before when the stats are %s now",
+  (status, fields) => {
+    const workspace = sent();
+    workspace.mutate(
+      "metric.record",
+      { id: targetId, status: "counted", ...counts(3) },
+      6000,
+      "server",
+    );
+
+    workspace.mutate(
+      "metric.record",
+      { id: targetId, status, ...fields },
+      9000,
+      "server",
+    );
+
+    // The last counts that are known stay, with the time they were read:
+    // the person still sees how the post did before.
+    expect(workspace.rows("metric")).toEqual([
+      {
+        id: targetId,
+        status,
+        ...counts(3),
+        countedAt: 6000,
+        reason: status === "unavailable" ? fields.reason : null,
+      },
+    ]);
+  },
+);
+
+it("says that a delivery has no stats where the network gives none", () => {
+  const workspace = sent();
+
+  workspace.mutate(
+    "metric.record",
+    { id: targetId, status: "unavailable", reason: "LinkedIn has none." },
+    6000,
+    "server",
+  );
+
+  expect(workspace.rows("metric")).toEqual([
+    {
+      id: targetId,
+      status: "unavailable",
+      likes: null,
+      reposts: null,
+      replies: null,
+      quotes: null,
+      views: null,
+      countedAt: null,
+      reason: "LinkedIn has none.",
+    },
+  ]);
+});
+
+it("stores no stats of a delivery that is not sent, or is gone", () => {
+  // The network can be asked while the post is deleted, and the answer
+  // arrive after.
+  const workspace = sending();
+
+  workspace.mutate(
+    "metric.record",
+    { id: targetId, status: "counted", ...counts(3) },
+    6000,
+    "server",
+  );
+  workspace.mutate(
+    "metric.record",
+    { id: otherTargetId, status: "gone" },
+    6000,
+    "server",
+  );
+
+  expect(workspace.rows("metric")).toEqual([]);
+});
+
+it("deletes the stats of a delivery with its post", () => {
+  const workspace = sent();
+  workspace.mutate(
+    "metric.record",
+    { id: targetId, status: "counted", ...counts(3) },
+    6000,
+    "server",
+  );
+
+  workspace.mutate("post.delete", { id: postId }, 7000);
+
+  expect(workspace.rows("post_target")).toEqual([]);
+  expect(workspace.rows("metric")).toEqual([]);
+});
+
+it("refuses a client that sends stats", () => {
+  const workspace = sent();
+
+  expect(
+    rejectionOf(() =>
+      workspace.mutate(
+        "metric.record",
+        { id: targetId, status: "counted", ...counts(1_000_000) },
+        6000,
+      ),
+    ),
+  ).toBe("not_allowed");
+  expect(workspace.rows("metric")).toEqual([]);
+});

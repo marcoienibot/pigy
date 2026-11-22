@@ -95,9 +95,10 @@ class ViewTransaction implements Transaction {
  * none. Mutators take the time from their transaction and keep it in these
  * columns: `createdAt` of a post and its `updatedAt`, which is that time or
  * a later one, its `heldAt` and its `trashedAt`, when a channel was
- * connected and its limits were read, and
- * when a target was asked for and sent. A mutator that writes the time of
- * its transaction to another column needs that column looked at here too.
+ * connected and its limits were read, when a target was asked for and
+ * sent, and when the stats of a delivery were counted. A mutator that
+ * writes the time of its transaction to another column needs that column
+ * looked at here too.
  */
 function latestTime(rows: Tables): number {
   let latest = 0;
@@ -117,6 +118,7 @@ function latestTime(rows: Tables): number {
     look(queuedAt);
     look(sentAt);
   }
+  for (const { countedAt } of rows.metric.values()) look(countedAt);
   for (const { createdAt, readAt } of rows.notification.values()) {
     look(createdAt);
     look(readAt);

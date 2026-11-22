@@ -183,6 +183,7 @@ export function shown(store: SyncStore) {
     channel: table("channel"),
     post_target: table("post_target"),
     target_part_result: table("target_part_result"),
+    metric: table("metric"),
     notification: table("notification"),
     schedule_slot: table("schedule_slot"),
     settings: table("settings"),

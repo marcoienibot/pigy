@@ -20,6 +20,7 @@ import {
   maxTimeZoneLength,
   maxUploading,
   mediaRowLimits,
+  metricRowSchema,
   notificationRowSchema,
   partsFor,
   type Row,
@@ -521,6 +522,8 @@ function deletePost(tx: Transaction, id: string): void {
     for (const result of tx.find("target_part_result", "targetId", target.id)) {
       tx.delete("target_part_result", result.id);
     }
+    // The stats of the delivery, which are under the ID of the target.
+    tx.delete("metric", target.id);
   }
   for (const part of tx.find("post_part", "postId", id)) {
     deletePart(tx, part.id);
@@ -2042,6 +2045,58 @@ export const mutators = {
       // Which is also where the inbox says how the post ended, once,
       // when the last of its deliveries has: not for each of them.
       settle(tx, target.postId);
+    },
+    { serverOnly: true },
+  ),
+
+  /**
+   * Stores what the server has read of the stats of a delivery that is
+   * `sent`: the counts, that the network gives none, or that it no longer
+   * has the post. The server runs this when it has asked the network, by
+   * its timer. A row that is `unavailable` or `gone` keeps the counts that
+   * were read before, with their time, which are the last that are known.
+   * Does nothing if the target is gone, which its post can be while the
+   * network is asked, and nothing for one that is not `sent`: only a post
+   * that has gone out everywhere has stats.
+   */
+  "metric.record": mutator(
+    z.discriminatedUnion("status", [
+      metricRowSchema
+        .pick({
+          id: true,
+          status: true,
+          likes: true,
+          reposts: true,
+          replies: true,
+          quotes: true,
+          views: true,
+        })
+        .extend({ status: z.literal("counted") }),
+      z.strictObject({
+        id: idSchema,
+        status: z.literal("unavailable"),
+        reason: metricRowSchema.shape.reason.unwrap(),
+      }),
+      z.strictObject({ id: idSchema, status: z.literal("gone") }),
+    ]),
+    (tx, reading) => {
+      if (tx.get("post_target", reading.id)?.status !== "sent") return;
+      if (reading.status === "counted") {
+        tx.put("metric", { ...reading, countedAt: tx.now, reason: null });
+        return;
+      }
+      const before = tx.get("metric", reading.id);
+      tx.put("metric", {
+        id: reading.id,
+        status: reading.status,
+        likes: before?.likes ?? null,
+        reposts: before?.reposts ?? null,
+        replies: before?.replies ?? null,
+        quotes: before?.quotes ?? null,
+        views: before?.views ?? null,
+        countedAt: before?.countedAt ?? null,
+        reason: reading.status === "unavailable" ? reading.reason : null,
+      });
     },
     { serverOnly: true },
   ),
