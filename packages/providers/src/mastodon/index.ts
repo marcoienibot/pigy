@@ -255,6 +255,11 @@ const notesSchema = z.strictObject({
       /** Which part they are for, counted from 0. */
       part: z.number().int().nonnegative(),
       ids: z.array(z.string().min(1)),
+      /**
+       * How often a step has waited for the instance to be done with
+       * them, which makes the next wait longer. Left out before the first.
+       */
+      waited: z.number().int().nonnegative().optional(),
     })
     .optional(),
 });
@@ -273,8 +278,17 @@ const postingScopes = ["read:statuses", "write:statuses", "write:media"];
 const outsideScopes = "This action is outside the authorized scopes";
 
 // How long a step waits for an instance that still works on a file,
-// before it asks again, in seconds.
-const mediaWaitSeconds = 2;
+// before it asks again, in seconds, by how often it has waited: each look
+// is three steps of a workflow and two requests to the instance, which
+// counts them against the limit of the account. After `mediaWaits` looks,
+// about twelve minutes, the step fails to be tried again later, as for an
+// instance that asks for that.
+const mediaWaitSeconds = [2, 5, 10, 30, 60];
+const mediaWaits = 15;
+
+// How much longer than for an answer an upload is given: the instance
+// works on an image before it answers.
+const uploadTimeFactor = 4;
 
 // Far above any answer that pigy reads. The largest is the description of
 // an instance, with its rules in many languages.
@@ -293,6 +307,8 @@ type Call = {
   headers?: Record<string, string>;
   /** What the request carries that must not show up in a message. */
   secrets?: readonly string[];
+  /** How long to wait for the answer, if not for as long as for any. */
+  timeoutMs?: number;
 };
 
 /**
@@ -335,7 +351,15 @@ export function createMastodonProvider({
   function request(
     domain: string,
     path: string,
-    { method = "GET", token, json, form, upload, headers }: Call,
+    {
+      method = "GET",
+      token,
+      json,
+      form,
+      upload,
+      headers,
+      timeoutMs: within = timeoutMs,
+    }: Call,
   ): Promise<HttpAnswer> {
     return send(
       fetch,
@@ -356,7 +380,7 @@ export function createMastodonProvider({
         // boundary between the parts.
         ...(upload && { body: upload }),
       },
-      { timeoutMs, maxBytes },
+      { timeoutMs: within, maxBytes },
     );
   }
 
@@ -1052,6 +1076,7 @@ export function createMastodonProvider({
             method: "POST",
             token: accessToken,
             upload: form,
+            timeoutMs: timeoutMs * uploadTimeFactor,
           }),
           domain,
         );
@@ -1086,7 +1111,22 @@ export function createMastodonProvider({
           ready &&= file.ready;
         }
         if (!ready) {
-          return { ...stepped(parts, notes), waitSeconds: mediaWaitSeconds };
+          const waited = notes.media?.waited ?? 0;
+          if (waited >= mediaWaits) {
+            throw new ProviderError(
+              "retry",
+              `${domain} is still working on an image of this post.`,
+            );
+          }
+          return {
+            ...stepped(parts, {
+              ...notes,
+              media: { part: index, ids: uploaded, waited: waited + 1 },
+            }),
+            waitSeconds:
+              mediaWaitSeconds[Math.min(waited, mediaWaitSeconds.length - 1)] ??
+              60,
+          };
         }
       }
       const status =

@@ -770,6 +770,90 @@ describe("publishing images", () => {
     ).toHaveLength(1);
   });
 
+  it("waits longer every time for an instance that goes on working on a file, and has the step tried again later after a while", async () => {
+    const sim = setup();
+    const { credentials } = await connect(sim);
+    let done = false;
+    // The instance goes on saying that it works on the file.
+    sim.hooks.intercept = async (request) => {
+      if (
+        done ||
+        request.method !== "GET" ||
+        !request.url.includes("/api/v1/media/")
+      ) {
+        return undefined;
+      }
+      const answer = await sim.simulator.fetch(request);
+      return new Response(await answer.text(), {
+        status: 206,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+    const content = {
+      parts: [{ text: "A GIF", media: [image("gif", "image/gif")] }],
+    };
+    const files = new Map([["gif", gifFile(9, 7, { frames: 2 })]]);
+    const waits: number[] = [];
+    let last: PublishProgress | null = null;
+    const error = await failure(() =>
+      publishAll(sim, credentials, content, {
+        files,
+        run: async (_name, step) => {
+          // Before, a step waited two seconds and asked again, for ever:
+          // three steps of a workflow, a listing of statuses and a look at
+          // the file every two seconds, until the instance's limit.
+          if (waits.length > 40) throw new Error("The steps never end");
+          last = await step();
+          waits.push(last.waitSeconds);
+          return last;
+        },
+      }),
+    );
+    expect(waits.filter((seconds) => seconds > 0)).toEqual([
+      2, 5, 10, 30, 60, 60, 60, 60, 60, 60, 60, 60, 60, 60, 60,
+    ]);
+    // For the workflow to try again later, as it does for a network that
+    // asks for that.
+    expect(error).toMatchObject({
+      kind: "retry",
+      message: `${domain} is still working on an image of this post.`,
+    });
+    expect(
+      sim.paths().filter((path) => path === "POST /api/v1/statuses"),
+    ).toEqual([]);
+
+    // Tried again, the step finds the file done, and posts.
+    done = true;
+    await publishAll(sim, credentials, content, { files, from: last });
+    expect(feed(sim.world).map(({ post }) => post.images?.length)).toEqual([1]);
+  });
+
+  it("gives an upload more time than an answer, because the instance works on the file before it answers", async () => {
+    const sim = setup({}, { timeoutMs: 100 });
+    const { credentials } = await connect(sim);
+    sim.hooks.intercept = async (request) => {
+      if (request.method === "POST" && request.url.endsWith("/api/v2/media")) {
+        // A quarter of a second, or until the adapter gives up, as a
+        // `fetch` does when its signal says so.
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(resolve, 250);
+          request.signal.addEventListener("abort", () => {
+            clearTimeout(timer);
+            reject(request.signal.reason);
+          });
+        });
+      }
+      return undefined;
+    };
+    await publishAll(
+      sim,
+      credentials,
+      { parts: [{ text: "A photo", media: [image("one", "image/png")] }] },
+      { files: new Map([["one", await pngFile(9, 7)]]) },
+    );
+    expect(feed(sim.world).map(({ post }) => post.images?.length)).toEqual([1]);
+  });
+
   it("uploads again what the instance has dropped, when a delivery is taken up a day later", async () => {
     const sim = setup();
     const { credentials } = await connect(sim);
