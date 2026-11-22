@@ -16,6 +16,7 @@ import type {
   Delivery,
   DeliveryRun,
   DisconnectChannelOutcome,
+  FinishedUpload,
   MediaUpload,
   MutationOutcome,
   RenewedChannelAccess,
@@ -415,7 +416,9 @@ export async function uploadedPart(
  * Ends the upload of the image `mediaId` of `workspace`: with what the
  * Worker read in its bytes, which makes the image `ready`, or with why
  * it has none, which makes it `failed`. With a `key` it is carried out
- * once, as for `mutateWorkspace`.
+ * once, as for `mutateWorkspace`. The answer has the status that the row
+ * has afterwards, which is how the upload ended: a call before this one
+ * may have ended it with another outcome.
  */
 export async function finishUpload(
   namespace: Bindings["WORKSPACE"],
@@ -423,7 +426,7 @@ export async function finishUpload(
   mediaId: string,
   outcome: UploadOutcome,
   key?: string,
-): Promise<MutationOutcome> {
+): Promise<FinishedUpload> {
   const ended = await namespace
     .getByName(workspace.id)
     .finishUpload(workspace, mediaId, outcome, key);

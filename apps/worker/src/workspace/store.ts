@@ -309,6 +309,16 @@ export type MediaUpload = {
 /** How an upload ended: what the server read in the bytes, or why it has none. */
 export type UploadOutcome = { facts: ImageFacts } | { error: string };
 
+/**
+ * What `finishUpload` did, and the status that the row of the image has
+ * afterwards, or null if there is no row: that, and not the outcome that
+ * the caller found, is how the upload ended. Another call may have ended
+ * it first, with another outcome.
+ */
+export type FinishedUpload = MutationOutcome & {
+  status: Row<"media">["status"] | null;
+};
+
 /** What the alarm of the object does to an image by the clock: see `dueFor`. */
 export type MediaDuty = "abandoned" | "unattached" | "outlived";
 
@@ -1312,9 +1322,24 @@ export class WorkspaceStore {
    * Ends the upload of the image `mediaId`: through the mutator
    * `media.ready` or `media.fail`, which clients hear of, and by
    * forgetting the upload in the bucket, which is over. Both in one
-   * transaction, and once for a `key`: see `once`.
+   * transaction, and once for a `key`: see `once`. Returns the status
+   * that the row has afterwards, which a call before this one may have
+   * decided: a repeat under the same key is answered as the first call
+   * was, whatever its own outcome.
    */
   finishUpload(
+    mediaId: string,
+    outcome: UploadOutcome,
+    now: number,
+    key?: string,
+  ): FinishedUpload {
+    const told = this.finishUploadOnce(mediaId, outcome, now, key);
+    // Nothing runs between the two: the object does one thing at a time,
+    // and neither waits.
+    return { ...told, status: this.mediaUpload(mediaId)?.status ?? null };
+  }
+
+  private finishUploadOnce(
     mediaId: string,
     outcome: UploadOutcome,
     now: number,

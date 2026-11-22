@@ -14,13 +14,14 @@ import {
   pngHeader,
   pngSignature,
 } from "@pigy/core/test-images";
-import { expect, test, vi } from "vitest";
+import { expect, onTestFinished, test, vi } from "vitest";
 import { imagePolicy } from "../src/security-headers.ts";
 import { WorkspaceStore } from "../src/workspace/store.ts";
 import {
   adminEmail,
   entriesOf,
   expectErrors,
+  expectWarnings,
   invite,
   setup,
   signedIn,
@@ -41,7 +42,7 @@ import {
   served,
   upload,
 } from "./media.ts";
-import { follow, writeDraft } from "./publishing.ts";
+import { follow, patience, writeDraft } from "./publishing.ts";
 import { newId, SyncClient, workspaceIds } from "./sync-client.ts";
 
 /** A signed-in admin with a client of their live workspace. */
@@ -237,6 +238,102 @@ test("two completions at once both say how the upload ended, and the file is tak
   ]);
   expect(await served(browser, workspaceId, mediaId)).toEqual(file);
 });
+
+test.each([
+  [
+    "the one that ends first takes the image in, and the other makes no small picture of it",
+    "ready",
+    ["original", "thumbnail"],
+  ],
+  [
+    "the one that ends first makes no small picture of the image, and the other takes it in",
+    "failed",
+    [],
+  ],
+] as const)(
+  "two completions at once that end differently both say what the workspace has, and the bucket keeps what that needs: %s",
+  async (_, status, files) => {
+    const { browser, client, workspaceId } = await ready();
+    const file = await pngFile(8, 8);
+    const mediaId = await createMedia(client, file);
+    await beginUpload(browser, workspaceId, mediaId);
+    await sendChunk(browser, workspaceId, mediaId, file, 1);
+    expectWarnings();
+
+    // The completion that is sent first waits, at a moment of the test's
+    // choosing, until the other has ended: a value that both look at on a
+    // timer, as `gate` of publishing.ts.
+    const held = { reached: false, open: false };
+    const hold = async () => {
+      held.reached = true;
+      while (!held.open) await new Promise((done) => setTimeout(done, 5));
+    };
+    // What draws pictures fails for the calls that `fails` names, by
+    // their order, and for the one that waits, after its wait.
+    const fails = status === "ready" ? [1, 3] : [2, 3];
+    const images = Object.getPrototypeOf(env.IMAGES) as ImagesBinding;
+    const input = images.input;
+    let calls = 0;
+    const drawing = vi.spyOn(images, "input").mockImplementation(function (
+      this: ImagesBinding,
+      stream,
+      options,
+    ) {
+      calls += 1;
+      const call = calls;
+      if (!fails.includes(call)) return input.call(this, stream, options);
+      const failing = {
+        transform: () => failing,
+        output: async () => {
+          if (status === "ready" && call === 1) await hold();
+          throw new Error(
+            "IMAGES_TRANSFORM_ERROR 9412: the image could not be drawn",
+          );
+        },
+      };
+      return failing as unknown as ImageTransformer;
+    });
+    onTestFinished(() => drawing.mockRestore());
+    // Where it is the other way round, the completion that is sent first
+    // makes its small picture and waits before it keeps it.
+    const bucket = Object.getPrototypeOf(env.MEDIA) as R2Bucket;
+    const put = bucket.put;
+    let thumbnails = 0;
+    const keeping = vi.spyOn(bucket, "put").mockImplementation(async function (
+      this: R2Bucket,
+      key,
+      ...rest
+    ) {
+      if (status === "failed" && key.endsWith("/thumbnail")) {
+        thumbnails += 1;
+        if (thumbnails === 1) await hold();
+      }
+      return put.call(this, key, ...rest);
+    });
+    onTestFinished(() => keeping.mockRestore());
+
+    const late = completeUpload(browser, workspaceId, mediaId);
+    await vi.waitFor(() => expect(held.reached).toBe(true), patience);
+    const early = await completeUpload(browser, workspaceId, mediaId);
+    expect(early.status).toBe(200);
+    expect(await early.json()).toEqual({ status });
+    held.open = true;
+    // Before, the later one went by what it found itself, which the
+    // workspace had not taken: it said the other thing, and deleted the
+    // image that the workspace has as ready, or left behind the small
+    // picture of one that failed.
+    const answer = await late;
+    expect(answer.status).toBe(200);
+    expect(await answer.json()).toEqual({ status });
+    await follow(client, () => mediaOf(client, mediaId).status === status);
+    expect(await kept(workspaceId)).toEqual(
+      files.map((name) => `${mediaId}/${name}`),
+    );
+    if (status === "ready") {
+      expect(await served(browser, workspaceId, mediaId)).toEqual(file);
+    }
+  },
+);
 
 test("a chunk is taken only as the bytes of its place in the file", async () => {
   const { browser, client, workspaceId } = await ready();

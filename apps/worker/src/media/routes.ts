@@ -303,7 +303,7 @@ export function mediaRoutes(dependencies: AppDependencies): Hono<AppEnv> {
           mediaId,
           { ...upload, uploadId },
         );
-        const told = await finishUpload(
+        const { status } = await finishUpload(
           c.env.WORKSPACE,
           workspace,
           mediaId,
@@ -311,9 +311,17 @@ export function mediaRoutes(dependencies: AppDependencies): Hono<AppEnv> {
           // An image has one upload, and it ends once.
           `upload/${mediaId}`,
         );
-        const status = told.ok && "facts" in outcome ? "ready" : "failed";
-        await forgetUpload(c.env.MEDIA, workspace.id, mediaId, status);
-        return status;
+        // What the workspace has, and not what this completion found, is
+        // how the upload ended, for what is deleted and for the answer: a
+        // completion at the same time as this one may have told it first,
+        // with another outcome, and this one was answered as that one.
+        if (status === "uploading") {
+          throw new Error("The workspace did not take how an upload ended");
+        }
+        // An image whose row is gone keeps nothing.
+        const endedAs = status ?? "failed";
+        await forgetUpload(c.env.MEDIA, workspace.id, mediaId, endedAs);
+        return endedAs;
       })();
       c.executionCtx.waitUntil(
         work.catch((error) => {

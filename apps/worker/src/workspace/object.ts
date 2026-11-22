@@ -44,6 +44,7 @@ import {
   type DisconnectChannelOutcome,
   type DueMedia,
   dropUploadAgainMs,
+  type FinishedUpload,
   type MediaUpload,
   type MutationOutcome,
   type Patch,
@@ -547,15 +548,16 @@ export function workspaceObject(
      * Ends the upload of an image with what the Worker found in its
      * bytes, or with why it has none. The clients that are connected see
      * the image as `ready` or `failed`. With a `key` it is carried out
-     * once. Returns nothing if `workspace` is not the one that the object
-     * holds.
+     * once. Returns what was done, with the status that the row has
+     * afterwards, and nothing if `workspace` is not the one that the
+     * object holds.
      */
     finishUpload(
       workspace: WorkspaceIdentity,
       mediaId: string,
       outcome: UploadOutcome,
       key?: string,
-    ): MutationOutcome | undefined {
+    ): FinishedUpload | undefined {
       if (!this.#store.bind(workspaceIdentitySchema.parse(workspace))) {
         return undefined;
       }
