@@ -1,6 +1,6 @@
 import type { PostContent } from "./content.ts";
 import { joinLinkedInParts, linkedInPartSeparator } from "./linkedin.ts";
-import { findLinks, type TextRange } from "./links.ts";
+import { apartFrom, findLinks, inOrder, type TextRange } from "./links.ts";
 import { findMastodonMentions } from "./mastodon.ts";
 import type { Network } from "./network.ts";
 
@@ -21,9 +21,13 @@ import type { Network } from "./network.ts";
  * - **Hashtags** are found the same way for every network: "#" or "＃" and
  *   then letters, marks, digits and underscores of any script, with a
  *   letter among them, so "#1" is none. It does not begin in the middle of
- *   a word or of an address. A tag is 64 characters at most, which is what
- *   Bluesky takes: a longer one is plain text. Threads takes one tag per
- *   post, so only the first hashtag of a text is one there.
+ *   a word or of an address. A tag is 64 characters and 640 bytes at most,
+ *   which is what Bluesky takes, and both hold: a tag of few characters
+ *   with many marks on each is within the first and over the second. A
+ *   larger one is plain text, on every network: the others document no
+ *   length of a tag (GUESS: PLAN.md section 19), and a tag is the same
+ *   thing wherever a text goes. Threads takes one tag per post, so only
+ *   the first hashtag of a text is one there.
  * - **Mentions** are written the way the network addresses an account:
  *   "@name" and "@name@example.com" on Mastodon, "@handle.example.com" on
  *   Bluesky, where a handle is a domain name, and "@username" on Threads.
@@ -65,6 +69,12 @@ export type TextEntity = TextRange &
 /** The longest tag, in characters: `maxGraphemes` of a tag of Bluesky. */
 export const maxHashtagLength = 64;
 
+/**
+ * The longest tag, in bytes of its UTF-8: `maxLength` of a tag of
+ * Bluesky. A PDS refuses a post with a tag that is longer.
+ */
+export const maxHashtagBytes = 640;
+
 const wordChar = String.raw`\p{L}\p{M}\p{Nd}\p{Pc}`;
 
 const hashtagPattern = new RegExp(
@@ -95,6 +105,7 @@ const threadsMentionPattern = new RegExp(
 );
 
 let graphemes: Intl.Segmenter | undefined;
+const encoder = new TextEncoder();
 
 function hashtagsOf(text: string): TextEntity[] {
   graphemes ??= new Intl.Segmenter(undefined, { granularity: "grapheme" });
@@ -102,6 +113,8 @@ function hashtagsOf(text: string): TextEntity[] {
   for (const match of text.matchAll(hashtagPattern)) {
     const [whole, before = "", tag = ""] = match;
     if (!/\p{L}/u.test(tag)) continue;
+    // Both limits: neither follows from the other.
+    if (encoder.encode(tag).length > maxHashtagBytes) continue;
     if ([...graphemes.segment(tag)].length > maxHashtagLength) continue;
     tags.push({
       kind: "hashtag",
@@ -166,24 +179,43 @@ export function detectEntities(
   const links: TextEntity[] = findLinks(text, {
     bare: network === "bluesky" || network === null,
   }).map((link) => ({ kind: "link", ...link }));
-  let hashtags = hashtagsOf(text);
-  const found: TextEntity[] = [...links];
-  const free = (entity: TextEntity) =>
-    !found.some(
-      (other) => entity.start < other.end && other.start < entity.end,
-    );
   // A mention before a hashtag, for a text such as "@ada#tag" to be read
-  // one way. Neither is taken out of a link.
-  for (const mention of mentionsOf(network, text)) {
-    if (free(mention)) found.push(mention);
-  }
-  hashtags = hashtags.filter(free);
+  // one way. Neither is taken out of a link. Each list is in the order of
+  // the text, so each is held against the ones before it in one pass.
+  const named = inOrder(links, apartFrom(mentionsOf(network, text), links));
+  const hashtags = apartFrom(hashtagsOf(text), named);
   // Threads has one tag per post: the first.
-  found.push(...(network === "threads" ? hashtags.slice(0, 1) : hashtags));
-  return found.sort((a, b) => a.start - b.start);
+  return inOrder(
+    named,
+    network === "threads" ? hashtags.slice(0, 1) : hashtags,
+  );
 }
 
-const encoder = new TextEncoder();
+/**
+ * How many accounts of a part are looked up at most, where a mention is
+ * marked up with what a lookup finds, as on Bluesky. Each takes two or
+ * three requests, and a step has its time. A mention of an account beyond
+ * these stays text, which nobody who mentions people for their attention
+ * writes.
+ */
+export const maxLookedUpMentions = 10;
+
+/**
+ * The accounts that are looked up for a text with `entities`: the names
+ * of its mentions, each once, in the order of the text, the first
+ * `maxLookedUpMentions` of them. One rule for the editor, which asks
+ * about them while somebody types, and for the adapter, which marks them
+ * up: a mention of any other name is text for both.
+ */
+export function lookedUpMentions(entities: readonly TextEntity[]): string[] {
+  const names = new Set<string>();
+  for (const entity of entities) {
+    if (entity.kind !== "mention") continue;
+    names.add(entity.name);
+    if (names.size === maxLookedUpMentions) break;
+  }
+  return [...names];
+}
 
 /**
  * Where `range` of `text` stands in the bytes of its UTF-8, which is how
@@ -222,9 +254,14 @@ export const cardMaker: { readonly [Name in Network]: "pigy" | "network" } = {
 export function cardLinks(
   network: Network,
   content: PostContent,
+  /**
+   * What finds the links: `detectEntities`, or something that hands out
+   * what it found before, for a caller that asks at every key.
+   */
+  detect: typeof detectEntities = detectEntities,
 ): (string | null)[] {
   const first = (text: string) =>
-    detectEntities(network, text).find((entity) => entity.kind === "link");
+    detect(network, text).find((entity) => entity.kind === "link");
   if (network !== "linkedin") {
     return content.parts.map(({ text }) => {
       const link = first(text);

@@ -119,34 +119,76 @@ function matchesOf(pattern: RegExp, text: string): TextRange[] {
 }
 
 /**
+ * Those of `candidates` that overlap none of `taken`. Both are in the
+ * order of the text, and those of `taken` do not overlap each other, so
+ * one pass over the two does: the work grows with their number and not
+ * with its square, which a text of thousands of them would make felt at
+ * every key.
+ */
+export function apartFrom<Range extends TextRange>(
+  candidates: readonly Range[],
+  taken: readonly TextRange[],
+): Range[] {
+  const apart: Range[] = [];
+  let next = 0;
+  for (const candidate of candidates) {
+    // What ends before the candidate begins also ends before every
+    // candidate after it.
+    while (next < taken.length && (taken[next]?.end ?? 0) <= candidate.start) {
+      next++;
+    }
+    const other = taken[next];
+    if (other === undefined || other.start >= candidate.end) {
+      apart.push(candidate);
+    }
+  }
+  return apart;
+}
+
+/** Two lists in the order of the text as one, whose ranges do not overlap. */
+export function inOrder<Range extends TextRange>(
+  a: readonly Range[],
+  b: readonly Range[],
+): Range[] {
+  const merged: Range[] = [];
+  let [i, j] = [0, 0];
+  for (;;) {
+    const [left, right] = [a[i], b[j]];
+    if (left === undefined && right === undefined) return merged;
+    if (
+      right === undefined ||
+      (left !== undefined && left.start <= right.start)
+    ) {
+      if (left !== undefined) merged.push(left);
+      i++;
+    } else {
+      merged.push(right);
+      j++;
+    }
+  }
+}
+
+/**
  * The links of `text`, in their order, none within another. With `bare`,
  * also the ones that are written without a scheme, which stand for the
  * same address with "https://".
  */
 export function findLinks(
   text: string,
-  { bare }: { bare: boolean },
+  { bare: withBare }: { bare: boolean },
 ): TextLink[] {
   const schemed = matchesOf(schemedPattern, text).map((range) => ({
     ...range,
     url: text.slice(range.start, range.end),
   }));
-  if (!bare) return schemed;
-  const found = [
-    ...schemed,
-    ...matchesOf(barePattern, text)
-      // A name within a link with a scheme is part of that link, as in
-      // "https://a.example/(b.com)".
-      .filter(
-        (range) =>
-          !schemed.some(
-            (link) => range.start < link.end && link.start < range.end,
-          ),
-      )
-      .map((range) => ({
-        ...range,
-        url: `https://${text.slice(range.start, range.end)}`,
-      })),
-  ];
-  return found.sort((a, b) => a.start - b.start);
+  if (!withBare) return schemed;
+  // A name within a link with a scheme is part of that link, as in
+  // "https://a.example/(b.com)".
+  const bare = apartFrom(matchesOf(barePattern, text), schemed).map(
+    (range) => ({
+      ...range,
+      url: `https://${text.slice(range.start, range.end)}`,
+    }),
+  );
+  return inOrder(schemed, bare);
 }

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { cardLinks, detectEntities, utf8Range } from "./entities.ts";
+import {
+  cardLinks,
+  detectEntities,
+  lookedUpMentions,
+  maxLookedUpMentions,
+  utf8Range,
+} from "./entities.ts";
 import { countMastodonCharacters } from "./mastodon.ts";
 import type { Network } from "./network.ts";
 
@@ -48,6 +54,18 @@ describe("detectEntities: hashtags", () => {
   it("takes no tag that is longer than Bluesky takes one", () => {
     expect(found("bluesky", `#${"a".repeat(64)}`)).toHaveLength(1);
     expect(found("bluesky", `#${"a".repeat(65)}`)).toEqual([]);
+  });
+
+  it("takes no tag that is within the characters and over the bytes that Bluesky takes", () => {
+    // One letter with 320 accents on it is one character and 641 bytes:
+    // a PDS refuses the facet of such a tag, and the post with it.
+    const accent = "\u0301";
+    for (const network of everyNetwork) {
+      expect(found(network, `#a${accent.repeat(319)}`)).toHaveLength(1);
+      expect(found(network, `#a${accent.repeat(320)} #small`)).toEqual([
+        "hashtag #small",
+      ]);
+    }
   });
 
   it("hands out the tag without its sign", () => {
@@ -284,5 +302,60 @@ describe("cardLinks", () => {
         parts: [{ text: "https://a.dev" }, { text: "https://b.dev" }],
       }),
     ).toEqual(["https://a.dev", null]);
+  });
+});
+
+describe("detectEntities: the work that a text makes", () => {
+  /** The shortest of a few runs, in milliseconds: the one least disturbed. */
+  const timeOf = (text: string, runs: number) => {
+    let best = Number.POSITIVE_INFINITY;
+    for (let run = 0; run < runs; run++) {
+      const began = performance.now();
+      detectEntities(null, text);
+      best = Math.min(best, performance.now() - began);
+    }
+    return best;
+  };
+
+  it("grows with the number of links, mentions and hashtags of a text, and not with its square", () => {
+    // A link, a mention and a hashtag, thousands of times: each kind is
+    // held against the ones found before it. Four times the text is four
+    // times the work where that is one pass, and sixteen times where
+    // each is compared with every other. The bound is between the two,
+    // and a ratio of two times that the same machine took holds on a
+    // slow one as on a fast one.
+    const unit = "https://example.com/a @ada #tag ";
+    const small = unit.repeat(5000);
+    expect(detectEntities(null, small)).toHaveLength(15_000);
+    // Once before the clock runs, for the patterns to be compiled.
+    timeOf(small, 1);
+    const ratio = timeOf(unit.repeat(20_000), 3) / timeOf(small, 5);
+    expect(ratio).toBeLessThan(9);
+  });
+});
+
+describe("lookedUpMentions", () => {
+  const namesOf = (text: string) =>
+    lookedUpMentions(detectEntities("bluesky", text));
+
+  it("names each account once, in the order of the text", () => {
+    expect(
+      namesOf("@zoe.example.com and @ada.example.com and @Zoe.example.com"),
+    ).toEqual(["zoe.example.com", "ada.example.com"]);
+  });
+
+  it("names the first ten of the text, however they sort", () => {
+    const handles = Array.from(
+      { length: 12 },
+      // The later a handle stands, the earlier it sorts.
+      (_, index) => `${String.fromCharCode(122 - index)}.example.com`,
+    );
+    const text = handles.map((handle) => `@${handle}`).join(" ");
+    expect(namesOf(text)).toEqual(handles.slice(0, maxLookedUpMentions));
+    // A name that is repeated takes no place of another.
+    expect(namesOf(`@a.example.com @a.example.com ${text}`)).toEqual([
+      "a.example.com",
+      ...handles.slice(0, maxLookedUpMentions - 1),
+    ]);
   });
 });

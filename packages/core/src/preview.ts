@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { linkCardSchema } from "./network/content.ts";
+import { maxLookedUpMentions } from "./network/entities.ts";
 import { networkSchema } from "./network/network.ts";
 
 /**
@@ -43,8 +44,11 @@ export const linkCardResponseSchema = z.strictObject({
 
 export type LinkCardResponse = z.infer<typeof linkCardResponseSchema>;
 
-/** How many names a `MentionsRequest` asks about at most. */
-export const maxMentionNames = 10;
+/**
+ * How many names a `MentionsRequest` asks about at most: as many as a
+ * post looks up for one part.
+ */
+export const maxMentionNames = maxLookedUpMentions;
 
 /** Body of `POST /api/workspaces/<workspace ID>/mentions`. */
 export const mentionsRequestSchema = z.strictObject({
