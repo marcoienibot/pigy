@@ -14,6 +14,7 @@ import {
   syncProtocolVersion,
   syncSchemaVersion,
 } from "../protocol.ts";
+import { unscheduled } from "../tables.ts";
 import { syncTimings } from "./connection.ts";
 import { appendMutations, type Head, type Step } from "./copy.ts";
 import type { SyncStore } from "./store.ts";
@@ -166,7 +167,13 @@ it("sends the outbox once the hello is answered, and drops a mutation when a pat
         {
           op: "put",
           table: "post",
-          row: { id, status: "draft", createdAt: 99, updatedAt: 99 },
+          row: {
+            id,
+            status: "draft",
+            createdAt: 99,
+            updatedAt: 99,
+            ...unscheduled,
+          },
         },
         {
           op: "put",

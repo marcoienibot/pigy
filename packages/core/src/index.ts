@@ -16,6 +16,7 @@ export * from "./network/threads.ts";
 export * from "./push.ts";
 export * from "./return-to.ts";
 export * from "./sandbox.ts";
+export * from "./schedule/zone.ts";
 export * from "./sync/client/connection.ts";
 export * from "./sync/client/copy.ts";
 export * from "./sync/client/memory.ts";

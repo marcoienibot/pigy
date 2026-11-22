@@ -1,4 +1,10 @@
-import { emptyTables, type Row, type TableName, type Tables } from "@pigy/core";
+import {
+  emptyTables,
+  type Row,
+  type TableName,
+  type Tables,
+  unscheduled,
+} from "@pigy/core";
 
 /**
  * Rows of the synced tables for the tests of what a screen makes of them.
@@ -39,7 +45,14 @@ export const blueskyLimits = {
 } as const;
 
 export function post(fields: Partial<Row<"post">> = {}): Row<"post"> {
-  return { id: id(), status: "draft", createdAt: 1, updatedAt: 1, ...fields };
+  return {
+    id: id(),
+    status: "draft",
+    createdAt: 1,
+    updatedAt: 1,
+    ...unscheduled,
+    ...fields,
+  };
 }
 
 export function part(

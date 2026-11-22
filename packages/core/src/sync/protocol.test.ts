@@ -113,7 +113,16 @@ it("spells a ping the way the schema reads it", () => {
   });
 });
 
-const post = { id, status: "draft", createdAt: 1, updatedAt: 2 };
+const post = {
+  id,
+  status: "draft",
+  createdAt: 1,
+  updatedAt: 2,
+  mode: null,
+  dueAt: null,
+  queuePosition: null,
+  heldAt: null,
+};
 
 it("accepts a row of the table that a change names", () => {
   const change = { op: "put", table: "post", row: post };

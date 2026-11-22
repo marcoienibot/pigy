@@ -1,19 +1,28 @@
 import { z } from "zod";
 import { idSchema } from "../id.ts";
 import { limitsSchema } from "../network/limits.ts";
+import { isTimeZone, slotTimes } from "../schedule/zone.ts";
 import {
   channelRowSchema,
+  defaultSettings,
+  defaultTimeZone,
   expiryNoticeMs,
   inReadingOrder,
+  lateMs,
   maxOwnTextLength,
   maxParts,
   maxPartTextLength,
+  maxSlots,
+  maxTimeZoneLength,
   notificationRowSchema,
   partsFor,
   type Row,
+  scheduleSlotRowSchema,
+  settingsId,
   targetLimits,
   targetPartResultRowSchema,
   targetStatusSchema,
+  unscheduled,
 } from "./tables.ts";
 import type { Transaction } from "./transaction.ts";
 
@@ -43,8 +52,18 @@ export const rejectionCodeSchema = z.enum([
   "already_exists",
   /** The row that the mutation is about does not exist, or no longer. */
   "not_found",
-  /** The post is past being a draft, so it can no longer be edited. */
+  /**
+   * The post is past being a draft, so it can no longer be edited: it is
+   * scheduled, or has gone out.
+   */
   "not_a_draft",
+  /**
+   * The post is not scheduled, or not in the queue: it has gone out, or
+   * somebody took it back.
+   */
+  "not_scheduled",
+  /** The workspace has as many slots as it can have. */
+  "too_many_slots",
   /** The part is the only one of its text, which has to keep one. */
   "last_part",
   /** The text has as many parts as a text can have. */
@@ -253,6 +272,134 @@ function announce(
 }
 
 /**
+ * The post with this ID, which has not gone out: a draft, or one that is
+ * scheduled. Only such a post is given a time, or sent.
+ */
+function unsent(tx: Transaction, id: string): Row<"post"> {
+  const post = existingPost(tx, id);
+  if (post.status !== "draft" && post.status !== "scheduled") {
+    throw new MutationRejected("not_a_draft", "This post has gone out already");
+  }
+  return post;
+}
+
+/** Whether a post is in the queue. */
+const inQueue = (post: Row<"post">) =>
+  post.status === "scheduled" && post.mode === "queue";
+
+/** The posts of the queue, in its order. */
+function queueOf(tx: Transaction): Row<"post">[] {
+  return tx
+    .find("post", "status", "scheduled")
+    .filter(inQueue)
+    .sort(
+      (a, b) =>
+        (a.queuePosition ?? 0) - (b.queuePosition ?? 0) ||
+        (a.id < b.id ? -1 : 1),
+    );
+}
+
+/** The settings of the workspace, also of one that has set nothing. */
+function settingsOf(tx: Transaction): Row<"settings"> {
+  return tx.get("settings", settingsId) ?? defaultSettings;
+}
+
+/** Every slot of the workspace. */
+function slotsOf(tx: Transaction): Row<"schedule_slot">[] {
+  return [0, 1, 2, 3, 4, 5, 6].flatMap((weekday) =>
+    tx.find("schedule_slot", "weekday", weekday),
+  );
+}
+
+/**
+ * Stores `queue` as the queue, in this order, and gives each post its
+ * time: the posts take the slots after now, one each, in their order. It
+ * is run whenever the queue, the slots, the time zone or the pause
+ * changes, so the times that are stored are always the ones that follow
+ * from them. Time passing changes nothing: the post at the front goes out
+ * at its time, and the others have theirs already.
+ *
+ * - While the queue is paused, and while the workspace has no slot, no
+ *   post of it has a time.
+ * - A post whose time has come keeps it, and takes no slot: it is as good
+ *   as gone. The server sends it before it runs another mutation, so this
+ *   is for a client, which shows such a post until the server has said
+ *   what became of it. Not while the queue is paused: that holds every
+ *   post of it.
+ *
+ * Only the posts that change are written, and `changed`, which the caller
+ * has changed otherwise.
+ */
+function requeue(
+  tx: Transaction,
+  queue: readonly Row<"post">[] = queueOf(tx),
+  changed?: Row<"post">,
+): void {
+  const { timeZone, queuePaused } = settingsOf(tx);
+  const times = queuePaused
+    ? undefined
+    : slotTimes(timeZone ?? defaultTimeZone, slotsOf(tx), tx.now);
+  queue.forEach((post, queuePosition) => {
+    const due = !queuePaused && post.dueAt !== null && post.dueAt <= tx.now;
+    const dueAt = due ? post.dueAt : (times?.next().value ?? null);
+    if (
+      post === changed ||
+      post.queuePosition !== queuePosition ||
+      post.dueAt !== dueAt
+    ) {
+      tx.put("post", { ...post, queuePosition, dueAt });
+    }
+  });
+}
+
+/**
+ * Makes a draft of a post that was scheduled: nothing says when it goes
+ * out any more. The queue closes up behind a post that was in it.
+ */
+function toDraft(tx: Transaction, post: Row<"post">): void {
+  const queued = inQueue(post);
+  tx.put("post", {
+    ...post,
+    ...unscheduled,
+    status: "draft",
+    updatedAt: tx.now,
+  });
+  if (queued) requeue(tx);
+}
+
+/**
+ * Sends a post that has not gone out to its channels: it is `sending`
+ * from here on, and its targets wait their turn. `scheduled` says what is
+ * kept of when it was to go out: nothing for a post that somebody asked to
+ * be sent at once.
+ */
+function send(
+  tx: Transaction,
+  post: Row<"post">,
+  scheduled: Pick<Row<"post">, "mode" | "dueAt"> = unscheduled,
+): void {
+  const targets = tx.find("post_target", "postId", post.id);
+  if (targets.length === 0) {
+    throw new MutationRejected(
+      "no_channels",
+      "Choose an account to publish to first",
+    );
+  }
+  const queued = inQueue(post);
+  for (const target of targets) {
+    tx.put("post_target", { ...target, status: "queued", queuedAt: tx.now });
+  }
+  tx.put("post", {
+    ...post,
+    ...unscheduled,
+    ...scheduled,
+    status: "sending",
+    updatedAt: tx.now,
+  });
+  if (queued) requeue(tx);
+}
+
+/**
  * The target that the server reports on: the one with this ID, if it is on
  * its way in the attempt that the report is from. A report that comes late
  * is rejected: the delivery was ended since, by a disconnect for example,
@@ -350,6 +497,7 @@ export const mutators = {
         status: "draft",
         createdAt: tx.now,
         updatedAt: tx.now,
+        ...unscheduled,
       });
       tx.put("post_part", {
         id: partId,
@@ -566,7 +714,10 @@ export const mutators = {
     if (tx.get("notification", id)?.postId === id) {
       tx.delete("notification", id);
     }
+    const post = tx.get("post", id);
     tx.delete("post", id);
+    // The queue closes up behind a post that was in it.
+    if (post && inQueue(post)) requeue(tx);
   }),
 
   /**
@@ -717,31 +868,229 @@ export const mutators = {
   ),
 
   /**
-   * Asks for a draft to be sent to its channels now. The post is `sending`
+   * Asks for a post to be sent to its channels now: a draft, or one that is
+   * scheduled, which then does not wait for its time. The post is `sending`
    * from here on and can no longer be edited, and its targets wait their
    * turn. The server takes it from there: a client sees the targets change
    * as they go out.
    */
   "post.publish": mutator(z.strictObject({ id: idSchema }), (tx, { id }) => {
-    const post = existingPost(tx, id);
-    if (post.status !== "draft") {
-      throw new MutationRejected(
-        "not_a_draft",
-        "Only a draft can be published",
-      );
-    }
-    const targets = tx.find("post_target", "postId", id);
-    if (targets.length === 0) {
-      throw new MutationRejected(
-        "no_channels",
-        "Choose an account to publish to first",
-      );
-    }
-    for (const target of targets) {
-      tx.put("post_target", { ...target, status: "queued", queuedAt: tx.now });
-    }
-    tx.put("post", { ...post, status: "sending", updatedAt: tx.now });
+    send(tx, unsent(tx, id));
   }),
+
+  /**
+   * Gives a post a time at which it goes out: a draft, or one that is
+   * scheduled already, whether for another time or in the queue, which it
+   * leaves. The post is `scheduled` from here on, and can no longer be
+   * edited: to change it, it is taken back to the drafts first.
+   *
+   * A time that has passed is not refused. A device can schedule a post
+   * without a connection, and the server learns of it when the time has
+   * come and gone. The server treats such a post like every post whose
+   * time it finds out late: `post.due`.
+   */
+  "post.schedule": mutator(
+    z.strictObject({
+      id: idSchema,
+      // Up to the last moment that a date can hold.
+      dueAt: z.number().int().nonnegative().max(8.64e15),
+    }),
+    (tx, { id, dueAt }) => {
+      const post = unsent(tx, id);
+      if (tx.find("post_target", "postId", id).length === 0) {
+        throw new MutationRejected(
+          "no_channels",
+          "Choose an account to publish to first",
+        );
+      }
+      const queued = inQueue(post);
+      tx.put("post", {
+        ...post,
+        status: "scheduled",
+        mode: "custom",
+        dueAt,
+        queuePosition: null,
+        heldAt: null,
+        updatedAt: tx.now,
+      });
+      if (queued) requeue(tx);
+    },
+  ),
+
+  /**
+   * Puts a post into the queue: a draft, or one that is scheduled for a
+   * time that somebody chose. It goes to the end of the queue, and gets
+   * the first slot that no post before it has, or with `first` to the
+   * front, where it gets the next slot and every other post the one after
+   * its own. The post is `scheduled` from here on.
+   *
+   * A post that is in the queue already stays where it is, and moves to
+   * the front with `first`. While the queue is paused or the workspace has
+   * no slot, the post is in the queue without a time.
+   */
+  "post.enqueue": mutator(
+    z.strictObject({ id: idSchema, first: z.boolean() }),
+    (tx, { id, first }) => {
+      const post = unsent(tx, id);
+      if (tx.find("post_target", "postId", id).length === 0) {
+        throw new MutationRejected(
+          "no_channels",
+          "Choose an account to publish to first",
+        );
+      }
+      const queued = inQueue(post);
+      if (queued && !first) return;
+      const entered: Row<"post"> = queued
+        ? post
+        : {
+            ...post,
+            status: "scheduled",
+            mode: "queue",
+            dueAt: null,
+            queuePosition: null,
+            heldAt: null,
+            updatedAt: tx.now,
+          };
+      const others = queueOf(tx).filter((other) => other.id !== id);
+      requeue(
+        tx,
+        first ? [entered, ...others] : [...others, entered],
+        queued ? undefined : entered,
+      );
+    },
+  ),
+
+  /**
+   * Moves a post within the queue: to after the post `afterId`, or to the
+   * front for null. Like `part.move`, it names a post and no position, so
+   * that two devices which reorder at once leave one order behind. If the
+   * post to go after is not in the queue, or no longer, the post stays
+   * where it is. The posts of the queue then take the slots in their new
+   * order.
+   */
+  "post.move": mutator(
+    z.strictObject({ id: idSchema, afterId: idSchema.nullable() }),
+    (tx, { id, afterId }) => {
+      const post = existingPost(tx, id);
+      if (!inQueue(post)) {
+        throw new MutationRejected(
+          "not_scheduled",
+          "This post is no longer in the queue",
+        );
+      }
+      const queue = queueOf(tx);
+      const others = queue.filter((other) => other.id !== id);
+      const after = others.findIndex((other) => other.id === afterId);
+      if (afterId !== null && after < 0) return;
+      const moved = queue.find((other) => other.id === id);
+      if (!moved) return;
+      others.splice(afterId === null ? 0 : after + 1, 0, moved);
+      if (others.every((other, index) => other === queue[index])) return;
+      requeue(tx, others);
+    },
+  ),
+
+  /**
+   * Takes a scheduled post back to the drafts: nothing says when it goes
+   * out any more, and it can be edited again. Does nothing to a draft: two
+   * devices can take the same post back.
+   */
+  "post.unschedule": mutator(z.strictObject({ id: idSchema }), (tx, { id }) => {
+    const post = existingPost(tx, id);
+    if (post.status === "draft") return;
+    if (post.status !== "scheduled") {
+      throw new MutationRejected(
+        "not_scheduled",
+        "This post has gone out already",
+      );
+    }
+    toDraft(tx, post);
+  }),
+
+  /**
+   * Adds a slot to the queue: a time of the week at which it sends its
+   * next post. Does nothing if the workspace has a slot at that time
+   * already: two devices can add the same one. The posts of the queue take
+   * the slots anew.
+   */
+  "slot.add": mutator(scheduleSlotRowSchema, (tx, slot) => {
+    const slots = slotsOf(tx);
+    if (
+      slots.some(
+        ({ weekday, minute }) =>
+          weekday === slot.weekday && minute === slot.minute,
+      )
+    ) {
+      return;
+    }
+    if (tx.get("schedule_slot", slot.id)) {
+      throw new MutationRejected("already_exists", "This slot exists already");
+    }
+    if (slots.length >= maxSlots) {
+      throw new MutationRejected(
+        "too_many_slots",
+        `A queue has at most ${maxSlots} posting times`,
+      );
+    }
+    tx.put("schedule_slot", slot);
+    requeue(tx);
+  }),
+
+  /**
+   * Removes a slot from the queue. Does nothing if it is gone. The posts
+   * of the queue take the slots that are left, and have no time when none
+   * is.
+   */
+  "slot.remove": mutator(z.strictObject({ id: idSchema }), (tx, { id }) => {
+    if (!tx.get("schedule_slot", id)) return;
+    tx.delete("schedule_slot", id);
+    requeue(tx);
+  }),
+
+  /**
+   * Pauses the queue, or lets it go on. While it is paused none of its
+   * posts goes out, and none has a time. When it goes on, the posts take
+   * the slots after that moment: a slot that passed meanwhile was not
+   * used. A post with a time that somebody chose is not concerned.
+   */
+  "queue.setPaused": mutator(
+    z.strictObject({ paused: z.boolean() }),
+    (tx, { paused }) => {
+      const settings = settingsOf(tx);
+      if (settings.queuePaused === paused) return;
+      tx.put("settings", { ...settings, queuePaused: paused });
+      requeue(tx);
+    },
+  ),
+
+  /**
+   * Sets the time zone that the slots of the queue are in. With
+   * `onlyIfUnset` it does nothing for a workspace that has one: that is
+   * how the app gives a workspace the zone of the device that first opens
+   * it. The posts of the queue take the slots as they are in the new zone.
+   *
+   * The zone has to be one that the server knows: a mutator that computed
+   * with a zone it does not know would compute with another.
+   */
+  "settings.setTimeZone": mutator(
+    z.strictObject({
+      timeZone: z.string().min(1).max(maxTimeZoneLength),
+      onlyIfUnset: z.boolean().optional(),
+    }),
+    (tx, { timeZone, onlyIfUnset }) => {
+      if (!isTimeZone(timeZone)) {
+        throw new MutationRejected(
+          "invalid_arguments",
+          "timeZone: This is not a time zone that pigy knows",
+        );
+      }
+      const settings = settingsOf(tx);
+      if (settings.timeZone === timeZone) return;
+      if (onlyIfUnset && settings.timeZone !== null) return;
+      tx.put("settings", { ...settings, timeZone });
+      requeue(tx);
+    },
+  ),
 
   /**
    * Asks for a delivery that failed to be tried again. It goes on from the
@@ -893,8 +1242,10 @@ export const mutators = {
    * it. Does nothing if the channel is gone.
    *
    * The posts that were to go to the channel no longer do. A draft loses
-   * the target, with the text that was written for it. A target that waits or is on its way fails, with what it
-   * has published so far. What has ended stays as it is, for the record:
+   * the target, with the text that was written for it, and so does a post
+   * that is scheduled, which is a draft again if that was its only
+   * account. A target that waits or is on its way fails, with what it has
+   * published so far. What has ended stays as it is, for the record:
    * its `channelId` then names a channel that is gone.
    */
   "channel.disconnect": mutator(
@@ -904,6 +1255,16 @@ export const mutators = {
         if (target.status === "pending") {
           dropOwnText(tx, target);
           tx.delete("post_target", target.id);
+          // A scheduled post goes to the accounts that are left. One that
+          // has none left would have nowhere to go when its time comes:
+          // it is a draft again, for somebody to choose.
+          const post = tx.get("post", target.postId);
+          if (
+            post?.status === "scheduled" &&
+            tx.find("post_target", "postId", post.id).length === 0
+          ) {
+            toDraft(tx, post);
+          }
         } else if (target.status === "queued" || target.status === "sending") {
           tx.put("post_target", {
             ...target,
@@ -918,6 +1279,49 @@ export const mutators = {
         tx.delete("notification", id);
       }
       tx.delete("channel", id);
+    },
+    { serverOnly: true },
+  ),
+
+  /**
+   * Takes up a scheduled post whose time has come: the server runs this
+   * when it finds one, which is at that time or as soon after it as the
+   * server can.
+   *
+   * - A post that is at most `lateMs` late is sent, the way `post.publish`
+   *   sends one: its targets wait their turn. It keeps its `mode` and its
+   *   `dueAt`, which say when it was to go out.
+   * - A post with a time that somebody chose which is later than that is
+   *   held: it stays `scheduled`, with `heldAt`, until somebody decides.
+   * - A post of the queue that is later than that takes the next slot,
+   *   behind no other post: the slot that it had passed without it.
+   */
+  "post.due": mutator(
+    z.strictObject({ id: idSchema }),
+    (tx, { id }) => {
+      const post = tx.get("post", id);
+      if (
+        post?.status !== "scheduled" ||
+        post.dueAt === null ||
+        post.dueAt > tx.now ||
+        post.heldAt !== null
+      ) {
+        throw new MutationRejected("not_current", "This post is not due");
+      }
+      if (tx.now - post.dueAt <= lateMs) {
+        send(tx, post, { mode: post.mode, dueAt: post.dueAt });
+      } else if (inQueue(post)) {
+        // Without the time that has passed, so that it is given another:
+        // a post whose time has come would keep it.
+        const late = { ...post, dueAt: null };
+        requeue(
+          tx,
+          queueOf(tx).map((other) => (other.id === id ? late : other)),
+          late,
+        );
+      } else {
+        tx.put("post", { ...post, heldAt: tx.now });
+      }
     },
     { serverOnly: true },
   ),

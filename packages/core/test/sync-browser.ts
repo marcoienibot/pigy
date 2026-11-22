@@ -9,6 +9,7 @@ import {
   type SocketEvents,
   SyncConnection,
   SyncStore,
+  unscheduled,
   uuidv7,
 } from "../src/index.ts";
 
@@ -24,6 +25,7 @@ export function draft(text: string, updatedAt = 0) {
     status: "draft",
     createdAt: 0,
     updatedAt,
+    ...unscheduled,
   };
   const part: Row<"post_part"> = {
     id: newId(),

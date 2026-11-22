@@ -9,6 +9,7 @@ import {
   maxPartTextLength,
   partsFor,
   postStatuses,
+  unscheduled,
 } from "./tables.ts";
 
 const postId = "01932c07-0000-7000-8000-000000000001";
@@ -33,7 +34,13 @@ it("creates a post as a draft with one part", () => {
   workspace.mutate("post.create", { id: postId, partId, text: "Hello" }, 1000);
 
   expect(workspace.rows("post")).toEqual([
-    { id: postId, status: "draft", createdAt: 1000, updatedAt: 1000 },
+    {
+      id: postId,
+      status: "draft",
+      createdAt: 1000,
+      updatedAt: 1000,
+      ...unscheduled,
+    },
   ]);
   expect(workspace.rows("post_part")).toEqual([
     { id: partId, postId, targetId: null, position: 0, text: "Hello" },
@@ -82,7 +89,13 @@ it("replaces the text of a part and notes when the post changed", () => {
   // Lists of posts are sorted by the last change, which a change of the
   // text of a part is.
   expect(workspace.rows("post")).toEqual([
-    { id: postId, status: "draft", createdAt: 1000, updatedAt: 5000 },
+    {
+      id: postId,
+      status: "draft",
+      createdAt: 1000,
+      updatedAt: 5000,
+      ...unscheduled,
+    },
   ]);
 });
 
@@ -105,7 +118,13 @@ it.each(postStatuses.filter((status) => status !== "draft"))(
     const workspace = memoryWorkspace();
     // No mutator moves a post out of the draft status yet, so the rows are
     // stored directly.
-    workspace.put("post", { id: postId, status, createdAt: 0, updatedAt: 0 });
+    workspace.put("post", {
+      id: postId,
+      status,
+      createdAt: 0,
+      updatedAt: 0,
+      ...unscheduled,
+    });
     workspace.put("post_part", {
       id: partId,
       postId,
@@ -677,7 +696,13 @@ it("publishes a draft: the post is sending and its targets wait their turn", () 
   workspace.mutate("post.publish", { id: postId }, 3000);
 
   expect(workspace.rows("post")).toEqual([
-    { id: postId, status: "sending", createdAt: 1000, updatedAt: 3000 },
+    {
+      id: postId,
+      status: "sending",
+      createdAt: 1000,
+      updatedAt: 3000,
+      ...unscheduled,
+    },
   ]);
   expect(workspace.rows("post_target")).toMatchObject([
     { id: targetId, status: "queued", attempt: 0, queuedAt: 3000 },
@@ -1158,7 +1183,13 @@ it("ends what was to go to an account that is disconnected", () => {
     ["01932c07-0000-7000-8000-000000000013", "sent"],
   ] as const;
   for (const [id, status] of ids) {
-    workspace.put("post", { id, status: "draft", createdAt: 0, updatedAt: 0 });
+    workspace.put("post", {
+      id,
+      status: "draft",
+      createdAt: 0,
+      updatedAt: 0,
+      ...unscheduled,
+    });
     workspace.put("post_target", {
       id,
       postId: id,

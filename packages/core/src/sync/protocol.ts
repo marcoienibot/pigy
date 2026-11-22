@@ -147,6 +147,8 @@ export const changeSchema = z.union([
   putSchema("post_target"),
   putSchema("target_part_result"),
   putSchema("notification"),
+  putSchema("schedule_slot"),
+  putSchema("settings"),
   z.strictObject({
     op: z.literal("delete"),
     table: z.enum(tableNames),

@@ -51,6 +51,18 @@ export const maxOwnTextLength = 40_000;
 /** A time, in milliseconds since the Unix epoch. */
 const timeSchema = z.number().int().nonnegative();
 
+/** How a post that is `scheduled` was given its time. */
+export const postModes = [
+  /** Somebody chose the time. */
+  "custom",
+  /** It is in the queue, which gives it the next slot that is free. */
+  "queue",
+] as const;
+
+export const postModeSchema = z.enum(postModes);
+
+export type PostMode = z.infer<typeof postModeSchema>;
+
 /** One piece of content. Its text is in its parts. */
 export const postRowSchema = z.strictObject({
   id: idSchema,
@@ -63,7 +75,51 @@ export const postRowSchema = z.strictObject({
    * after all of them had ended.
    */
   updatedAt: timeSchema,
+  /**
+   * How the post was given the time at which it goes out, for one that is
+   * `scheduled`, and for one that went out at that time. Null for a draft,
+   * and for a post that somebody asked to be sent at once.
+   */
+  mode: postModeSchema.nullable(),
+  /**
+   * When the post is due, or was. For a `scheduled` post it is null while
+   * the queue that it is in has no time for it: the queue is paused, or
+   * the workspace has no slots. The mutators keep it for the posts of the
+   * queue: a client never computes it.
+   */
+  dueAt: timeSchema.nullable(),
+  /**
+   * Where the post stands in the queue, counted from 0 and without a gap,
+   * for a `scheduled` post whose `mode` is `queue`. Null for every other.
+   */
+  queuePosition: z.number().int().nonnegative().nullable(),
+  /**
+   * When the server found that the time of the post had passed too long
+   * ago to send it still: see `lateMs`. The post stays `scheduled` and
+   * goes nowhere until somebody gives it another time, sends it or takes
+   * it back to the drafts. Null for every other post.
+   */
+  heldAt: timeSchema.nullable(),
 });
+
+/** What a post has of these when nothing says when it goes out. */
+export const unscheduled = {
+  mode: null,
+  dueAt: null,
+  queuePosition: null,
+  heldAt: null,
+} as const;
+
+/**
+ * How late a post still goes out, in milliseconds: an hour. The server
+ * sends a post when its time has come, which it can find out late: it was
+ * out of service, or the post was scheduled on a device that had no
+ * connection until after its time. Within the hour the post is sent as
+ * soon as the server knows. After it, a post with a time that somebody
+ * chose is held for them to decide, and a post of the queue takes the next
+ * slot: a post that says "in ten minutes" is not sent the next morning.
+ */
+export const lateMs = 60 * 60 * 1000;
 
 /**
  * One item of a thread. An ordinary post has a single part.
@@ -344,6 +400,62 @@ export const notificationRowSchema = z.strictObject({
   readAt: timeSchema.nullable(),
 });
 
+/**
+ * A slot of the queue: a time of the week, on the clocks of the time zone
+ * of the workspace, at which the queue sends its next post. A workspace
+ * has at most one slot per weekday and time.
+ */
+export const scheduleSlotRowSchema = z.strictObject({
+  id: idSchema,
+  /** 0 for Sunday to 6 for Saturday, as `Date.getDay()` has it. */
+  weekday: z.number().int().min(0).max(6),
+  /** Minutes since midnight: 0 to 1439. */
+  minute: z.number().int().min(0).max(1439),
+});
+
+/** The most slots that a workspace has. */
+export const maxSlots = 200;
+
+/**
+ * The ID of the one row of `settings`: every client and the server have to
+ * name the same row without having seen it.
+ */
+export const settingsId = "00000000-0000-7000-8000-000000000000";
+
+/** The longest name of a time zone. */
+export const maxTimeZoneLength = 64;
+
+/**
+ * What a workspace has set. The table has one row at most, under
+ * `settingsId`. A workspace without the row has set nothing:
+ * `defaultSettings`.
+ */
+export const settingsRowSchema = z.strictObject({
+  id: z.literal(settingsId),
+  /**
+   * The time zone that the slots of the queue are in, and that the app
+   * shows times in: an IANA name such as "Europe/Rome". Null until one is
+   * set, which the app does with the zone of the device that first opens
+   * the workspace. Until then the slots are in UTC.
+   */
+  timeZone: z.string().min(1).max(maxTimeZoneLength).nullable(),
+  /**
+   * The queue is paused: none of its posts goes out, and none has a time.
+   * A post with a time that somebody chose goes out all the same.
+   */
+  queuePaused: z.boolean(),
+});
+
+/** The settings of a workspace that has set nothing. */
+export const defaultSettings: z.infer<typeof settingsRowSchema> = {
+  id: settingsId,
+  timeZone: null,
+  queuePaused: false,
+};
+
+/** The time zone of a workspace that has set none. */
+export const defaultTimeZone = "UTC";
+
 /** The schema of a row of every synced table, by the name of the table. */
 export const rowSchemas = {
   post: postRowSchema,
@@ -352,6 +464,8 @@ export const rowSchemas = {
   post_target: postTargetRowSchema,
   target_part_result: targetPartResultRowSchema,
   notification: notificationRowSchema,
+  schedule_slot: scheduleSlotRowSchema,
+  settings: settingsRowSchema,
 } as const;
 
 export type TableName = keyof typeof rowSchemas;
