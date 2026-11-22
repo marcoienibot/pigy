@@ -40,7 +40,7 @@ const kinds: Record<string, Words> = {
   "slow-processing": {
     label: "Slow to prepare",
     description:
-      "The network takes the next post and needs half a minute to prepare it before it can be published. pigy waits, asks again every few seconds, and publishes the post when it is ready.",
+      "The network takes the next post, or the next image, and needs half a minute to prepare it before it can be published. pigy waits, asks again every few seconds, and publishes the post when it is ready.",
   },
 };
 
@@ -60,12 +60,12 @@ const kindsWithoutLooking: Record<string, Words> = {
   "server-error": {
     label: "Server error",
     description:
-      "The network fails with an error of its own. When it was asked to post, pigy cannot tell whether the post arrived: it does not try again, and asks you to look.",
+      "The network fails with an error of its own. When it was asked to post, pigy cannot tell whether the post arrived: it does not try again, and asks you to look. An image that it was sending is sent again a minute later.",
   },
   "lost-response": {
     label: "Lost answer",
     description:
-      "The network does what it is asked, and its answer never arrives. When it was asked to post, the post is there and pigy cannot know: it does not try again, and asks you to look.",
+      "The network does what it is asked, and its answer never arrives. When it was asked to post, the post is there and pigy cannot know: it does not try again, and asks you to look. An image that it was sending is sent again a minute later, and the first one is in no post.",
   },
 };
 
@@ -95,6 +95,8 @@ export const waitNote =
 const operations: Record<string, string> = {
   publish: "Posting",
   container: "Preparing a post",
+  upload: "Uploading an image",
+  image: "Asking how an image stands",
   read: "Reading posts",
   delete: "Deleting a post",
   instance: "Reading the server",

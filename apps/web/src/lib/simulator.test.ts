@@ -65,6 +65,15 @@ describe("the failure panel", () => {
     }
   });
 
+  it("has words for the requests of images on LinkedIn, and says that an image is sent again where a post is not", () => {
+    for (const operation of ["upload", "image"]) {
+      expect(faultOperation(operation)).not.toBe(operation);
+    }
+    expect(faultKind("lost-response", "linkedin").description).toContain(
+      "An image that it was sending is sent again",
+    );
+  });
+
   it("says of a fault on LinkedIn what pigy does there, where it cannot look for a post", () => {
     // On Mastodon pigy waits and tries again, and finds a post whose
     // answer was lost. On LinkedIn it does neither.
