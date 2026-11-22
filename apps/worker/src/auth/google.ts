@@ -129,7 +129,7 @@ export function signInFailure(error: unknown): Error {
   }
   // Where it was thrown, which is what a log needs of a bug. Its first
   // line is the name and the message.
-  failure.stack = error.stack;
+  if (error.stack) failure.stack = error.stack;
   return failure;
 }
 
