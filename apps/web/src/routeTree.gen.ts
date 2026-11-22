@@ -15,6 +15,7 @@ import { Route as SignInRouteImport } from './routes/sign-in'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as AppSplatRouteImport } from './routes/_app/$'
 import { Route as AppChannelsRouteImport } from './routes/_app/channels'
+import { Route as AppInboxRouteImport } from './routes/_app/inbox'
 import { Route as AppQueueRouteImport } from './routes/_app/queue'
 import { Route as AppSentRouteImport } from './routes/_app/sent'
 import { Route as AppSettingsRouteImport } from './routes/_app/settings'
@@ -52,6 +53,11 @@ const AppSplatRoute = AppSplatRouteImport.update({
 const AppChannelsRoute = AppChannelsRouteImport.update({
   id: '/channels',
   path: '/channels',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppInboxRoute = AppInboxRouteImport.update({
+  id: '/inbox',
+  path: '/inbox',
   getParentRoute: () => AppRoute,
 } as any)
 const AppQueueRoute = AppQueueRouteImport.update({
@@ -106,6 +112,7 @@ export interface FileRoutesByFullPath {
   '/sign-in': typeof SignInRoute
   '/$': typeof AppSplatRoute
   '/channels': typeof AppChannelsRoute
+  '/inbox': typeof AppInboxRoute
   '/queue': typeof AppQueueRoute
   '/sent': typeof AppSentRoute
   '/settings': typeof AppSettingsRouteWithChildren
@@ -121,6 +128,7 @@ export interface FileRoutesByTo {
   '/sign-in': typeof SignInRoute
   '/$': typeof AppSplatRoute
   '/channels': typeof AppChannelsRoute
+  '/inbox': typeof AppInboxRoute
   '/queue': typeof AppQueueRoute
   '/sent': typeof AppSentRoute
   '/': typeof AppIndexRoute
@@ -137,6 +145,7 @@ export interface FileRoutesById {
   '/sign-in': typeof SignInRoute
   '/_app/$': typeof AppSplatRoute
   '/_app/channels': typeof AppChannelsRoute
+  '/_app/inbox': typeof AppInboxRoute
   '/_app/queue': typeof AppQueueRoute
   '/_app/sent': typeof AppSentRoute
   '/_app/settings': typeof AppSettingsRouteWithChildren
@@ -156,6 +165,7 @@ export interface FileRouteTypes {
     | '/sign-in'
     | '/$'
     | '/channels'
+    | '/inbox'
     | '/queue'
     | '/sent'
     | '/settings'
@@ -171,6 +181,7 @@ export interface FileRouteTypes {
     | '/sign-in'
     | '/$'
     | '/channels'
+    | '/inbox'
     | '/queue'
     | '/sent'
     | '/'
@@ -186,6 +197,7 @@ export interface FileRouteTypes {
     | '/sign-in'
     | '/_app/$'
     | '/_app/channels'
+    | '/_app/inbox'
     | '/_app/queue'
     | '/_app/sent'
     | '/_app/settings'
@@ -246,6 +258,13 @@ declare module '@tanstack/react-router' {
       path: '/channels'
       fullPath: '/channels'
       preLoaderRoute: typeof AppChannelsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/inbox': {
+      id: '/_app/inbox'
+      path: '/inbox'
+      fullPath: '/inbox'
+      preLoaderRoute: typeof AppInboxRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/queue': {
@@ -347,6 +366,7 @@ const AppSimulatorRouteWithChildren = AppSimulatorRoute._addFileChildren(
 interface AppRouteChildren {
   AppSplatRoute: typeof AppSplatRoute
   AppChannelsRoute: typeof AppChannelsRoute
+  AppInboxRoute: typeof AppInboxRoute
   AppQueueRoute: typeof AppQueueRoute
   AppSentRoute: typeof AppSentRoute
   AppSettingsRoute: typeof AppSettingsRouteWithChildren
@@ -357,6 +377,7 @@ interface AppRouteChildren {
 const AppRouteChildren: AppRouteChildren = {
   AppSplatRoute: AppSplatRoute,
   AppChannelsRoute: AppChannelsRoute,
+  AppInboxRoute: AppInboxRoute,
   AppQueueRoute: AppQueueRoute,
   AppSentRoute: AppSentRoute,
   AppSettingsRoute: AppSettingsRouteWithChildren,

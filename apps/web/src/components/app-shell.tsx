@@ -1,5 +1,6 @@
 import { Link, linkOptions, useRouteContext } from "@tanstack/react-router";
 import {
+  Bell,
   CalendarClock,
   Globe,
   PenLine,
@@ -12,19 +13,28 @@ import {
   CommandPalette,
   useOpenCommandPalette,
 } from "@/components/command-palette";
+import { unreadLabel } from "@/components/inbox-bell";
 import { Rejections } from "@/components/rejections";
 import { SyncIndicator } from "@/components/sync-indicator";
 import { Kbd } from "@/components/ui/kbd";
 import { Toaster } from "@/components/ui/sonner";
 import { UserMenu } from "@/components/user-menu";
 import { SandboxBanner, WorkspaceSwitch } from "@/components/workspace-switch";
+import { selectUnread } from "@/lib/inbox";
 import { modKey } from "@/lib/keyboard";
 import { dismissWorkspaceNotices } from "@/lib/notices";
 import { cn } from "@/lib/utils";
 import { hasScreen } from "@/lib/workspace";
+import { useSynced } from "@/sync/react";
 
-/** The screens of the navigation. A workspace shows those that it has. */
+/**
+ * The screens of the navigation. A workspace shows those that it has. The
+ * bar of a phone has room for six and has six in the sandbox, so the inbox
+ * is in the sidebar alone: on a phone it is the bell in the header of
+ * every screen, `InboxBell`.
+ */
 const allNavItems = linkOptions([
+  { to: "/inbox", label: "Inbox", icon: Bell },
   { to: "/", label: "Drafts", icon: PenLine },
   { to: "/queue", label: "Queue", icon: CalendarClock },
   { to: "/sent", label: "Sent", icon: Send },
@@ -32,6 +42,9 @@ const allNavItems = linkOptions([
   { to: "/simulator", label: "Simulator", icon: Globe },
   { to: "/settings", label: "Settings", icon: Settings },
 ]);
+
+/** The screens that the bar of a phone leaves to the header. */
+const sidebarOnly: ReadonlySet<string> = new Set(["/inbox"]);
 
 /** Opens the command palette, and says which keys do the same. */
 function CommandsButton() {
@@ -108,6 +121,8 @@ function Shell({ children }: { children: ReactNode }) {
   const navItems = allNavItems.filter(({ to }) =>
     hasScreen(workspace.environment, to),
   );
+  const barItems = navItems.filter(({ to }) => !sidebarOnly.has(to));
+  const unread = useSynced(selectUnread);
   return (
     // The bottom of a phone's screen is the tab bar's, below.
     <div className="flex h-dvh flex-col px-safe pt-safe md:pb-safe">
@@ -138,6 +153,12 @@ function Shell({ children }: { children: ReactNode }) {
               >
                 <Icon className="size-4 shrink-0" aria-hidden="true" />
                 {label}
+                {link.to === "/inbox" && unread > 0 && (
+                  <span className="ml-auto rounded-full bg-destructive px-1.5 text-[11px] leading-4 font-medium text-white">
+                    <span aria-hidden="true">{unreadLabel(unread)}</span>
+                    <span className="sr-only">{unread} unread</span>
+                  </span>
+                )}
               </Link>
             ))}
           </nav>
@@ -153,7 +174,7 @@ function Shell({ children }: { children: ReactNode }) {
           aria-label="Main"
           className="flex shrink-0 border-t bg-background pb-safe md:hidden"
         >
-          {navItems.map(({ label, icon: Icon, ...link }) => (
+          {barItems.map(({ label, icon: Icon, ...link }) => (
             <Link
               key={link.to}
               {...link}

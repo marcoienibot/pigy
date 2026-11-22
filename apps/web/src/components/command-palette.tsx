@@ -5,6 +5,7 @@ import {
   useRouter,
 } from "@tanstack/react-router";
 import {
+  Bell,
   CalendarClock,
   Download,
   Globe,
@@ -52,6 +53,7 @@ import {
 } from "@/lib/workspace";
 
 const screens = [
+  { to: "/inbox", label: "Inbox", icon: Bell },
   { to: "/", label: "Drafts", icon: PenLine },
   { to: "/queue", label: "Queue", icon: CalendarClock },
   { to: "/sent", label: "Sent", icon: Send },

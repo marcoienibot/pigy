@@ -1,5 +1,6 @@
 import { useRouteContext } from "@tanstack/react-router";
 import { type ReactNode, type Ref, useEffect } from "react";
+import { InboxBell } from "@/components/inbox-bell";
 import { SyncIndicator } from "@/components/sync-indicator";
 import { UserMenu } from "@/components/user-menu";
 import { WorkspaceSwitch } from "@/components/workspace-switch";
@@ -51,6 +52,7 @@ export function Page({
           {actions}
           {/* On desktop these are in the sidebar. */}
           <div className="flex items-center gap-1 pl-1 md:hidden">
+            <InboxBell />
             <WorkspaceSwitch placement="header" />
             <SyncIndicator placement="header" />
             <UserMenu placement="header" />

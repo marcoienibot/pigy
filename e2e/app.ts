@@ -786,3 +786,134 @@ export function overflowOf(page: Page): Promise<number> {
       document.documentElement.clientWidth,
   );
 }
+
+/**
+ * Goes to the inbox: by the navigation of the sidebar on a desktop, and by
+ * the bell in the header on a phone, whose bar has no room for it.
+ */
+export async function openInbox(page: Page): Promise<void> {
+  await inboxLink(page).click();
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Inbox");
+}
+
+/**
+ * The way to the inbox that this viewport shows. Its name says how many
+ * notifications are unread: "Inbox, 2 unread" on a phone, and "Inbox 2
+ * unread" in the sidebar.
+ */
+export function inboxLink(page: Page): Locator {
+  return page.getByRole("link", { name: /^Inbox/ }).filter({ visible: true });
+}
+
+/** The notification of the inbox whose words have `text` in them. */
+export function inboxItem(page: Page, text: string): Locator {
+  return page
+    .getByRole("list", { name: "Notifications" })
+    .getByRole("listitem")
+    .filter({ hasText: text });
+}
+
+/** The row of Settings that says how the notifications of the device stand. */
+export function notificationsRow(page: Page): Locator {
+  return page
+    .locator("section")
+    .filter({ has: page.getByRole("heading", { name: "Notifications" }) });
+}
+
+/**
+ * Gives the browser of `context` a push service, which the Chromium of the
+ * tests has not: `pushManager.subscribe` fails there. What a page gets
+ * when it subscribes is a device that the simulated push service of the
+ * e2e build makes up, so the Worker can send to it, and the test can read
+ * what it was sent with `receivedBy`. The subscription lasts over a
+ * reload, as one of a browser does. Call it before a page of the context
+ * has opened the app.
+ *
+ * The same browser refuses notifications to every site without asking
+ * anybody, so the person is stood in for too: they are asked when the app
+ * asks the browser, and answer yes, which the browser then remembers.
+ */
+export async function withPushService(context: BrowserContext): Promise<void> {
+  await context.addInitScript(() => {
+    const kept = "test-push-subscription";
+    const answered = "test-notification-permission";
+    Object.defineProperty(Notification, "permission", {
+      get: () => localStorage.getItem(answered) ?? "default",
+    });
+    Notification.requestPermission = async () => {
+      localStorage.setItem(answered, "granted");
+      return "granted";
+    };
+    const base64Url = (bytes: ArrayBuffer) =>
+      btoa(String.fromCharCode(...new Uint8Array(bytes)))
+        .replaceAll("+", "-")
+        .replaceAll("/", "_")
+        .replaceAll("=", "");
+    const subscriptionOf = (stored: {
+      key: string;
+      json: { endpoint: string };
+    }) => ({
+      endpoint: stored.json.endpoint,
+      options: {
+        applicationServerKey: Uint8Array.from(
+          atob(stored.key.replaceAll("-", "+").replaceAll("_", "/")),
+          (char) => char.charCodeAt(0),
+        ).buffer,
+      },
+      toJSON: () => ({ ...stored.json, expirationTime: null }),
+      unsubscribe: async () => {
+        localStorage.removeItem(kept);
+        return true;
+      },
+    });
+    const manager = PushManager.prototype as unknown as {
+      subscribe(options: { applicationServerKey: ArrayBuffer }): unknown;
+      getSubscription(): unknown;
+    };
+    manager.subscribe = async ({ applicationServerKey }) => {
+      const key = base64Url(applicationServerKey);
+      const response = await fetch("/api/e2e/push/devices", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ applicationServerKey: key }),
+      });
+      const stored = { key, json: await response.json() };
+      localStorage.setItem(kept, JSON.stringify(stored));
+      return subscriptionOf(stored);
+    };
+    manager.getSubscription = async () => {
+      const stored = localStorage.getItem(kept);
+      return stored ? subscriptionOf(JSON.parse(stored)) : null;
+    };
+  });
+}
+
+/** The endpoint of the subscription that `withPushService` gave `page`. */
+export function pushEndpointOf(page: Page): Promise<string | null> {
+  return page.evaluate(() => {
+    const stored = localStorage.getItem("test-push-subscription");
+    return stored ? (JSON.parse(stored).json.endpoint as string) : null;
+  });
+}
+
+/**
+ * The push messages that the device of `page` has received from the
+ * Worker, as its browser would have decrypted them: the simulated push
+ * service has checked who sent each, and holds the keys of the device.
+ */
+export async function receivedBy(page: Page): Promise<unknown[]> {
+  const endpoint = await pushEndpointOf(page);
+  return page.evaluate(async (endpoint) => {
+    const response = await fetch("/api/e2e/push/received", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ endpoint }),
+    });
+    const { messages } = (await response.json()) as {
+      messages: { payload?: string; unreadable?: string }[];
+    };
+    return messages.map(({ payload, unreadable }) =>
+      payload === undefined ? { unreadable } : JSON.parse(payload),
+    );
+  }, endpoint);
+}
