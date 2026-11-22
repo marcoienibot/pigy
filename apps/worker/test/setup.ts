@@ -9,6 +9,11 @@ import { beforeEach } from "vitest";
 // network-guard.test.ts before the global is replaced below.
 import "./runtime-fetch.ts";
 
+// Zod compiles no schema into a function here, as in a deployed Worker and
+// on a page of the app: it knows the Workers runtime by its user agent and
+// does not try `new Function` there, which the runtime of these tests would
+// allow. The tests that run in Node tell it so in their setup.
+
 // Tests must never reach a real network host. Code that talks to external
 // services takes `fetch` as a parameter, so any call to the global `fetch`
 // during a test is a bug and fails loudly here.
