@@ -1,15 +1,8 @@
 /** What the handlers of the simulated LinkedIn answer with. */
 
-export function json(
-  status: number,
-  body: unknown,
-  headers: Record<string, string> = {},
-): Response {
-  return Response.json(body, {
-    status,
-    headers: { "Cache-Control": "no-store", ...headers },
-  });
-}
+import { json } from "../world/index.ts";
+
+export { html, json, oauthError } from "../world/index.ts";
 
 /** An answer without a body, as a post that was made or deleted gets. */
 export function empty(
@@ -29,25 +22,6 @@ export function apiError(
   more: Record<string, unknown> = {},
 ): Response {
   return json(status, { ...more, message, status });
-}
-
-/** An error of the OAuth endpoints. */
-export function oauthError(
-  status: number,
-  error: string,
-  description: string,
-): Response {
-  return json(status, { error, error_description: description });
-}
-
-export function html(status: number, body: string): Response {
-  return new Response(body, {
-    status,
-    headers: {
-      "Content-Type": "text/html; charset=utf-8",
-      "Cache-Control": "no-store",
-    },
-  });
 }
 
 /**

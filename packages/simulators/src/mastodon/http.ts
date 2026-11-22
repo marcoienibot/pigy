@@ -1,38 +1,12 @@
 /** What the handlers of the simulated Mastodon answer with. */
 
-export function json(
-  status: number,
-  body: unknown,
-  headers: Record<string, string> = {},
-): Response {
-  return Response.json(body, {
-    status,
-    headers: { "Cache-Control": "no-store", ...headers },
-  });
-}
+import { json } from "../world/index.ts";
+
+export { html, json, oauthError } from "../world/index.ts";
 
 /** An error of the API: entities/Error. */
 export function apiError(status: number, error: string): Response {
   return json(status, { error });
-}
-
-/** An error of the OAuth endpoints, which also describe it. */
-export function oauthError(
-  status: number,
-  error: string,
-  description: string,
-): Response {
-  return json(status, { error, error_description: description });
-}
-
-export function html(status: number, body: string): Response {
-  return new Response(body, {
-    status,
-    headers: {
-      "Content-Type": "text/html; charset=utf-8",
-      "Cache-Control": "no-store",
-    },
-  });
 }
 
 /** The parameters of a request: a value, or a list of values. */

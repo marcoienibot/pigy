@@ -8,6 +8,7 @@ import {
   SignJWT,
 } from "jose";
 import { base64Url } from "../world/encoding.ts";
+import { html, json, oauthError } from "../world/http.ts";
 import { consentPage, errorPage } from "./pages.ts";
 import { signingKey } from "./signing-key.ts";
 
@@ -113,29 +114,8 @@ function nameFor(email: string): string {
   return email.split("@")[0] || email;
 }
 
-function json(status: number, body: unknown): Response {
-  return Response.json(body, {
-    status,
-    headers: { "Cache-Control": "no-store" },
-  });
-}
-
-function html(status: number, body: string): Response {
-  return new Response(body, {
-    status,
-    headers: {
-      "Content-Type": "text/html; charset=utf-8",
-      "Cache-Control": "no-store",
-    },
-  });
-}
-
 function redirectTo(url: URL): Response {
   return new Response(null, { status: 302, headers: { Location: url.href } });
-}
-
-function oauthError(status: number, error: string, description: string) {
-  return json(status, { error, error_description: description });
 }
 
 /**

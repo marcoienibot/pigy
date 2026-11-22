@@ -1,17 +1,9 @@
+import { html, json } from "../world/index.ts";
 import type { Operation, State } from "./state.ts";
 
-/** What the handlers of the simulated Bluesky answer with. */
+export { html, json, oauthError } from "../world/index.ts";
 
-export function json(
-  status: number,
-  body: unknown,
-  headers: Record<string, string> = {},
-): Response {
-  return Response.json(body, {
-    status,
-    headers: { "Cache-Control": "no-store", ...headers },
-  });
-}
+/** What the handlers of the simulated Bluesky answer with. */
 
 /**
  * An error of the HTTP API, as the specification of XRPC has it: the name
@@ -24,26 +16,6 @@ export function xrpcError(
   headers: Record<string, string> = {},
 ): Response {
   return json(status, { error, message }, headers);
-}
-
-/** An error of an OAuth endpoint, as RFC 6749 has it. */
-export function oauthError(
-  status: number,
-  error: string,
-  description: string,
-  headers: Record<string, string> = {},
-): Response {
-  return json(status, { error, error_description: description }, headers);
-}
-
-export function html(status: number, body: string): Response {
-  return new Response(body, {
-    status,
-    headers: {
-      "Content-Type": "text/html; charset=utf-8",
-      "Cache-Control": "no-store",
-    },
-  });
 }
 
 export function text(status: number, body: string): Response {
