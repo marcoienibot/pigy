@@ -472,7 +472,15 @@ describe("the alarm of a workspace", () => {
     // waits for Bluesky.
     answer.held = true;
     publishing.close();
-    const looking = runDurableObjectAlarm(objectOf(workspace));
+    // The runtime runs this alarm, and not the test by hand: publishing
+    // sets the alarm for now, and the runtime runs one alarm of an object
+    // at a time, so that one waits for this one, as it does in
+    // production. Beside a look that the test ran by hand it would run
+    // at once, begin the delivery and renew a second time with the
+    // refresh token that the look had spent.
+    await runInDurableObject(objectOf(workspace), (_, state) =>
+      state.storage.setAlarm(Date.now()),
+    );
     await vi.waitFor(() => expect(answer.waiting).toBe(true), patience);
     expect(asked(test, threadsRefresh)).toBe(0);
     // Meanwhile the person publishes to the other channel.
@@ -482,7 +490,6 @@ describe("the alarm of a workspace", () => {
       threads?.id ?? "",
     );
     answer.held = false;
-    await looking;
 
     // The delivery is in the middle of its step that publishes, and the
     // access of its channel was not renewed first: the post did not wait
