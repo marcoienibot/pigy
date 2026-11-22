@@ -36,15 +36,17 @@ wrangler d1 migrations apply DB --remote
 
 Always deploy right after `pnpm build`. `pnpm e2e` and `pnpm preview:e2e` make a build with a simulated sign-in that signs anybody in as anybody, and each build points `wrangler deploy` at itself.
 
-The deploy creates everything that pigy runs on, and nothing has to be made beforehand:
+The deploy creates everything that pigy runs on, and nothing has to be made beforehand. This is what `apps/worker/wrangler.jsonc` asks for, line by line, and nothing else:
 
-- The Worker `pigy`, with the web app as its static assets.
-- A D1 database named `pigy`. It is empty until the migrations are applied, which is the last command.
-- The two Durable Object classes, `WorkspaceDO` and `SimWorldDO`, with SQLite storage.
-- The workflow `pigy-publish`.
-- Workers Logs for the Worker, section 9.
+- The Worker `pigy`, with the compatibility flag `global_fetch_strictly_public` and its version as the binding `VERSION`, which `/api/health` answers with.
+- The web app as the static assets of the Worker, bound as `ASSETS`. A path that has no file gets the app shell, and the paths under `/api/`, `/connect/`, `/sim/`, `/sync/` and `/assets/` go to the Worker first.
+- A D1 database named `pigy`, bound as `DB`. It is empty until the migrations of `apps/worker/migrations` are applied, which is the last command.
+- Two Durable Object classes with SQLite storage: `WorkspaceDO`, bound as `WORKSPACE`, and `SimWorldDO`, bound as `SIM_WORLD`.
+- The workflow `pigy-publish`, of the class `PublishWorkflow`, bound as `PUBLISH`. Workflows are part of the Workers Paid plan as pigy uses them, section 1.
+- A rate limiter, bound as `API_RATE_LIMITER`, which counts the requests of each key of the public API: 120 in 60 seconds. Its namespace is `1001`, a number of the account's own choosing that no other rate limiter of the account may use. To check, if the account has other Workers: that none of them binds a rate limiter with that number.
+- Workers Logs for what pigy writes, with the invocation logs and the traces off, section 9.
 
-There is no R2 bucket yet: media is a later phase. If the REST API has been merged by the time you read this, it may bind a rate limiting namespace: its section of `AGENTS.md`, "Deployment", says so.
+No R2 bucket, no KV namespace, no queue and no route of a zone: the configuration binds none. Media is a later phase.
 
 Check:
 
@@ -109,7 +111,7 @@ To switch it on, in the settings of the repository on GitHub:
 1. Environments → New environment, named `production`. Under "Deployment branches and tags", allow `main` alone. The secrets below are then out of reach of a pull request, which can change the workflow that it runs.
 2. In that environment, add two secrets:
    - `CLOUDFLARE_ACCOUNT_ID`: the ID of your account, which `wrangler whoami` shows.
-   - `CLOUDFLARE_API_TOKEN`: a token that you make in the Cloudflare dashboard under My Profile → API Tokens, from the template "Edit Cloudflare Workers", limited to your account, with "D1: Edit" added to it. To check, at the first run: that the template covers Workflows. If the deploy is refused for the workflow, the token lacks a permission, and the error names it.
+   - `CLOUDFLARE_API_TOKEN`: a token that you make in the Cloudflare dashboard under My Profile → API Tokens, from the template "Edit Cloudflare Workers", limited to your account, with "D1: Edit" added to it. To check, at the first run: that the template covers Workflows and the rate limiter. If the deploy is refused for one of them, the token lacks a permission, and the error names it.
 3. Secrets and variables → Actions → Variables → New repository variable: `DEPLOY`, with the value `true`.
 
 Check: the next push to `main` has a job "deploy" that ends green, and `curl https://<host>/api/health` answers with a new `version`.
@@ -118,7 +120,7 @@ What the job does, in order: it asks GitHub whether its commit is still the newe
 
 Three things that the job cannot see for you, from `AGENTS.md`, "Deployment":
 
-- **A change to the steps of the publishing workflow** is deployed when nothing is being sent, or it keeps the old names working for one deploy. The pull request of such a change says so. To merge it without deploying, put `[no deploy]` into the message of the merge commit, and deploy later by hand, with "Run workflow", at a moment when nothing is being sent. `[no deploy]` holds only until the next push to `main`: that push deploys everything up to its own commit, the change that waited among it, whatever its message says. So nothing else is merged until the change is deployed, or the next merge is one that may go out with it, at a moment of its own choosing, and says `[no deploy]` too. Only the newest commit of a push is read for the words: a push of several commits is held by the message of its last one.
+- **A change to the steps of the publishing workflow** is deployed when nothing is being sent, or it keeps the old names working for one deploy. The pull request of such a change says so. To merge it without deploying, put `[no deploy]` into the message of the merge commit, and deploy later by hand, with "Run workflow", at a moment when nothing is being sent. `[no deploy]` holds only until the next push to `main`: that push deploys everything up to its own commit, the change that waited among it. So deploy the change by hand before you merge anything else, or put `[no deploy]` into the next merge commit as well. Only the newest commit of a push is read for the marker: a push of several commits is held by the message of its last one.
 - **A migration of D1 is applied before the code that needs it**, and stays applied if the deploy then fails. So a migration only adds what the code before it can ignore: `AGENTS.md`, "Change the database schema".
 - **A new path prefix of the Worker** takes two releases: `AGENTS.md`, "A new path of the Worker".
 

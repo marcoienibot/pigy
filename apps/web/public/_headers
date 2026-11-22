@@ -20,6 +20,8 @@
 # - img-src: the app's own, and any HTTPS address. The pictures of the
 #   connected accounts are at the networks: every Mastodon server and every
 #   server of a Bluesky account is a host of its own, which nobody can list.
+#   A network sees that its picture was loaded, and gets no referrer with
+#   it. Phase 7 adds blob:, for the previews of images on the device.
 # - connect-src: the API and the sync socket, which 'self' covers as wss.
 # - worker-src and manifest-src: the service worker and the manifest.
 # - form-action: none. No form of the app is sent by the browser. Signing
