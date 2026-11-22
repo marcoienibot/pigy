@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import { activateMessage } from "@/sw/messages";
+import { activateMessage, navigateMessage } from "@/sw/messages";
 import { keeps } from "@/sw/precache";
 import { unsavedInSomeWindow, whenSaved } from "@/sync/workspace-sync";
 
@@ -225,6 +225,32 @@ export async function startServiceWorker(): Promise<void> {
   // told of a version that has come out since.
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") void checkForUpdate();
+  });
+}
+
+/**
+ * Has `go` called with a path of the app when the person has pressed a
+ * notification and the service worker has brought this window to the
+ * front for it: `navigateMessage` of src/sw/messages.ts. The window goes
+ * there itself, and is not loaded again: it may hold what it has not
+ * stored.
+ */
+export function onNotificationPressed(go: (url: string) => void): void {
+  container?.addEventListener("message", (event) => {
+    const data: unknown = event.data;
+    if (
+      typeof data !== "object" ||
+      data === null ||
+      !("type" in data) ||
+      data.type !== navigateMessage.type ||
+      !("url" in data)
+    ) {
+      return;
+    }
+    // A path of the app and nothing else, whoever says so.
+    if (typeof data.url === "string" && /^\/(?!\/)/.test(data.url)) {
+      go(data.url);
+    }
   });
 }
 

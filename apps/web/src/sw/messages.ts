@@ -10,3 +10,12 @@
  * window of the app has been closed.
  */
 export const activateMessage = { type: "activate" } as const;
+
+/**
+ * What the service worker says to a window of the app when the person has
+ * pressed a notification: go to `url`, a path of the app with what the
+ * screen there is to show. src/lib/service-worker.ts listens for it. The
+ * windows of the app run the build of the worker that answers for them,
+ * so the two change together.
+ */
+export const navigateMessage = { type: "navigate" } as const;

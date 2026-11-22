@@ -2,7 +2,10 @@ import { createRouter, RouterProvider } from "@tanstack/react-router";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { ThemeProvider } from "@/components/theme-provider";
-import { startServiceWorker } from "@/lib/service-worker";
+import {
+  onNotificationPressed,
+  startServiceWorker,
+} from "@/lib/service-worker";
 import { onSessionChange } from "@/lib/session";
 import { routeTree } from "./routeTree.gen";
 import "./styles.css";
@@ -24,6 +27,11 @@ declare module "@tanstack/react-router" {
 // The screens were given a name or a role that the server has since
 // changed: they are given the new one.
 onSessionChange(() => void router.invalidate());
+
+// The person has pressed a notification, and the service worker has
+// brought this window to the front: it goes to where the thing is dealt
+// with, without loading itself again.
+onNotificationPressed((url) => router.history.push(url));
 
 const root = document.getElementById("root");
 if (!root) throw new Error("Missing #root element");

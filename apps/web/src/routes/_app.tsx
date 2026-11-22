@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { useOnline } from "@/lib/online";
 import { checkForUpdate } from "@/lib/service-worker";
 import { checkSession, loadSession, SessionUnknown } from "@/lib/session";
-import { chosenWorkspace } from "@/lib/workspace";
+import { chosenWorkspace, showWorkspace } from "@/lib/workspace";
 import { SyncProvider } from "@/sync/react";
 import { syncUnsent, workspaceSync } from "@/sync/workspace-sync";
 
@@ -43,6 +43,31 @@ export const Route = createFileRoute("/_app")({
         search: location.href === "/" ? {} : { returnTo: location.href },
         replace: true,
       });
+    }
+    // An address can name the workspace that it is about: the one that a
+    // notification leads to, which the person has pressed on a device
+    // whose tab may show the other one. A post of the sandbox is not in
+    // the live workspace, so the tab shows the one that is named, as it
+    // does for a connection that ends: this tab alone, and the device
+    // goes on remembering what the person chose. The name is taken out
+    // of the address, so that the tab is not held to it from then on.
+    const named = (location.search as Record<string, unknown>).inWorkspace;
+    if (named !== undefined && !preload) {
+      const workspace = session.workspaces.find(({ id }) => id === named);
+      // A name that is none of this person's is somebody else's, who
+      // used the device before: it counts as none.
+      if (workspace) showWorkspace(workspace);
+      const { inWorkspace: _, ...search } = location.search as Record<
+        string,
+        unknown
+      >;
+      throw redirect({
+        to: location.pathname,
+        search,
+        replace: true,
+        // The address is the app's own, of whichever screen: the router
+        // cannot check it against the type of one.
+      } as never);
     }
     // Live or sandbox, as this tab has it: see `lib/workspace.ts`. Asked on
     // every navigation, which is how the switch between the two takes

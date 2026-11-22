@@ -2,14 +2,20 @@
 import type { Build } from "./build.ts";
 import { activateMessage } from "./messages.ts";
 import { precache } from "./precache.ts";
+import { push } from "./push.ts";
 
 /**
- * The service worker of pigy. It makes the app start without a connection,
- * and that is all it does so far: it keeps the app shell and the files of
- * its build, and answers for them. Everything else goes to the network
- * untouched. What it does is in precache.ts, where it can be tested: this
- * file only listens to the browser. Phase 9 adds its listeners here, for
- * push messages and for what is shared to pigy.
+ * The service worker of pigy. It makes the app start without a connection:
+ * it keeps the app shell and the files of its build, and answers for them.
+ * Everything else goes to the network untouched. And it shows the push
+ * messages of the Worker as notifications, and takes the person who
+ * presses one to the screen that it is about. What it does is in
+ * precache.ts and push.ts, where it can be tested: this file only listens
+ * to the browser.
+ *
+ * What is shared to pigy needs nothing here: the share target of the
+ * manifest is an address of the app, which is a navigation like any
+ * other and gets the app shell.
  *
  * It is one file, /sw.js, built apart from the app: see
  * service-worker-plugin.ts.
@@ -51,4 +57,32 @@ self.addEventListener("fetch", (event) => {
 
 self.addEventListener("message", (event) => {
   if (event.data?.type === activateMessage.type) void self.skipWaiting();
+});
+
+const notifications = push({
+  showNotification: (title, options) =>
+    self.registration.showNotification(title, options),
+  // Also the windows that this worker does not answer for yet.
+  windows: async () => [
+    ...(await self.clients.matchAll({
+      type: "window",
+      includeUncontrolled: true,
+    })),
+  ],
+  openWindow: (url) => self.clients.openWindow(url),
+});
+
+self.addEventListener("push", (event) => {
+  let text: string | undefined;
+  try {
+    text = event.data?.text();
+  } catch {
+    // Shown in general words: something is always shown.
+  }
+  event.waitUntil(notifications.received(text));
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  event.waitUntil(notifications.clicked(event.notification.data));
 });
