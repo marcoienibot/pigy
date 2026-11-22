@@ -1,0 +1,127 @@
+import {
+  type PushConfigResponse,
+  type PushStateResponse,
+  pushEndpointRequestSchema,
+  pushSubscriptionRequestSchema,
+} from "@pigy/core";
+import { drizzle } from "drizzle-orm/d1";
+import { type Context, Hono } from "hono";
+import { HTTPException } from "hono/http-exception";
+import { requireUser } from "../auth/guards.ts";
+import type { AppDependencies, AppEnv } from "../env.ts";
+import { InvalidField, parseJsonBody } from "../errors.ts";
+import { vapidKeyFor, vapidKeyOf } from "./keys.ts";
+import {
+  arePushKeys,
+  isSubscribed,
+  pushEndpoint,
+  subscribe,
+  unsubscribe,
+} from "./subscriptions.ts";
+import type { VapidKey } from "./web-push.ts";
+
+/**
+ * Under `/api/push`: turning the notifications of a device on and off.
+ * `packages/core/src/push.ts` has the requests and the answers.
+ *
+ * | Route | What it does |
+ * | --- | --- |
+ * | `GET /` | The public key that a page subscribes with. 503 for a pigy without a key |
+ * | `PUT /subscription` | Takes the subscription of this browser for the session |
+ * | `POST /subscription/state` | Whether the server sends to this browser, for this session |
+ * | `DELETE /subscription` | Forgets the subscription of this browser |
+ *
+ * A subscription is named by its endpoint, in the body of a request and
+ * never in an address: it is an address that only the browser and pigy
+ * should know.
+ */
+export function pushRoutes(dependencies: AppDependencies): Hono<AppEnv> {
+  const { now, developmentVapidKey } = dependencies;
+  const app = new Hono<AppEnv>();
+  // Also refuses a request that changes something and comes from another
+  // site.
+  app.use(requireUser(dependencies));
+
+  /** The key of this pigy, or a 503 that says that it has none. */
+  const keyFor = async (c: Context<AppEnv>): Promise<VapidKey> => {
+    const key = await vapidKeyOf(
+      vapidKeyFor(c.env, developmentVapidKey, new URL(c.req.url).origin),
+    );
+    if (!key) {
+      throw new HTTPException(503, {
+        message:
+          "Whoever runs this pigy has not set it up to send notifications.",
+      });
+    }
+    return key;
+  };
+
+  const session = (c: Context<AppEnv>) => ({
+    userId: c.var.auth.user.id,
+    sessionId: c.var.sessionId,
+  });
+
+  app.get("/", async (c) => {
+    const { publicKey } = await keyFor(c);
+    return c.json<PushConfigResponse>({ publicKey });
+  });
+
+  app.put("/subscription", async (c) => {
+    const key = await keyFor(c);
+    const { endpoint, keys } = await parseJsonBody(
+      c,
+      pushSubscriptionRequestSchema,
+    );
+    const checked = pushEndpoint(endpoint);
+    if (checked === null) {
+      throw new InvalidField(
+        "endpoint",
+        "pigy does not send notifications to this address",
+      );
+    }
+    if (!arePushKeys(keys)) {
+      throw new InvalidField(
+        "keys",
+        "These are not the keys of a push subscription",
+      );
+    }
+    await subscribe(
+      drizzle(c.env.DB),
+      session(c),
+      { endpoint: checked, ...keys },
+      {
+        vapidKey: key.publicKey,
+        origin: new URL(c.req.url).origin,
+        at: now(),
+      },
+    );
+    return c.json<PushStateResponse>({ subscribed: true });
+  });
+
+  app.post("/subscription/state", async (c) => {
+    const key = await keyFor(c);
+    const { endpoint } = await parseJsonBody(c, pushEndpointRequestSchema);
+    const checked = pushEndpoint(endpoint);
+    return c.json<PushStateResponse>({
+      subscribed:
+        checked !== null &&
+        (await isSubscribed(
+          drizzle(c.env.DB),
+          session(c),
+          checked,
+          key.publicKey,
+        )),
+    });
+  });
+
+  app.delete("/subscription", async (c) => {
+    const { endpoint } = await parseJsonBody(c, pushEndpointRequestSchema);
+    const checked = pushEndpoint(endpoint);
+    if (checked !== null) {
+      await unsubscribe(drizzle(c.env.DB), c.var.auth.user.id, checked);
+    }
+    return c.json<PushStateResponse>({ subscribed: false });
+  });
+
+  return app;
+}

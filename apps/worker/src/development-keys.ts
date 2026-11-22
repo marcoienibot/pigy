@@ -20,5 +20,15 @@ export const developmentCredentialKeys =
  * everybody to read, under the same rules as the key above: never in a
  * production build, which apps/web/scripts/check-build.mjs checks.
  */
+/**
+ * The key that a build for development and tests signs with as a sender of
+ * push messages when `VAPID_PRIVATE_KEY` is not set. A private key of
+ * P-256 in PKCS #8, for everybody to read, under the same rules as the
+ * keys above: never in a production build, which apps/web/scripts/
+ * check-build.mjs checks.
+ */
+export const developmentVapidKey =
+  "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgrcFc2MX0MRBIlLB78ZSOqneXGFezUOz3qSOjuwrzsn+hRANCAATHaygzW2aCiwiLLvHpSa8Ya2zbppIyzHGsw1FaWTr3eDakn7AVApXSGd2nro+eF5zNKo78zR6cNng8hbdiyLFF";
+
 export const developmentBlueskyClientKeys =
   "0:MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgCj+9E/o0LdQG8E+Rihsa7GEbjQ7zSIaFoQ51knoAAgGhRANCAATKD3QJ85MhWIEglaVAztVqWPYx+He7d07jTs5peuVOm1SxxgUDDtXC/jWxSy3EJQe+8xdLna01e6MHdXCridoY";

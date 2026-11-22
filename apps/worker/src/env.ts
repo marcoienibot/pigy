@@ -1,5 +1,6 @@
 import type { Clock, Fetch, Role } from "@pigy/core";
 import type { SimulatedGoogle } from "./auth/config.ts";
+import type { SimulatedPush } from "./push/simulated.ts";
 
 /**
  * Variables that are set as secrets, with `wrangler secret put` or in
@@ -51,6 +52,15 @@ type Secrets = {
    */
   THREADS_APP_ID?: string;
   THREADS_APP_SECRET?: string;
+  /**
+   * The key that pigy signs with as a sender of push messages, see
+   * src/push/keys.ts: a private key of ECDSA on P-256 in PKCS #8, in
+   * base64. A browser subscribes with its public half, so replacing it
+   * turns the notifications of every device off until they are turned on
+   * again there. Without this variable no device can turn them on, and
+   * nothing is sent. The inbox of the app works all the same.
+   */
+  VAPID_PRIVATE_KEY?: string;
 };
 
 export type Bindings = Omit<Env, keyof Secrets> & Secrets;
@@ -75,6 +85,17 @@ export type AppDependencies = {
    * form. Only builds for development and tests pass one: it is no secret.
    */
   developmentBlueskyClientKeys: string | undefined;
+  /**
+   * Stands in for `VAPID_PRIVATE_KEY` when it is not set, in the same
+   * form. Only builds for development and tests pass one: it is no secret.
+   */
+  developmentVapidKey: string | undefined;
+  /**
+   * Stands in for the push services of the browsers, in the build that the
+   * end-to-end tests run against, which reaches no real host. Only that
+   * build passes one: see src/simulated-push.ts.
+   */
+  simulatedPush: SimulatedPush | undefined;
 };
 
 /** Who is making the request. */

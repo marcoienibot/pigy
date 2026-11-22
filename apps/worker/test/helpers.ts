@@ -5,6 +5,7 @@ import { createBlueskySimulator } from "@pigy/simulators/bluesky";
 import { createGoogleSimulator } from "@pigy/simulators/google";
 import { createLinkedInSimulator } from "@pigy/simulators/linkedin";
 import { createMastodonSimulator } from "@pigy/simulators/mastodon";
+import { createPushSimulator } from "@pigy/simulators/push";
 import { createThreadsSimulator } from "@pigy/simulators/threads";
 import { createWorld } from "@pigy/simulators/world";
 import { drizzle } from "drizzle-orm/d1";
@@ -14,6 +15,7 @@ import { allowedEmails } from "../src/db/schema.ts";
 import {
   developmentBlueskyClientKeys,
   developmentCredentialKeys,
+  developmentVapidKey,
 } from "../src/development-keys.ts";
 import type { Bindings } from "../src/env.ts";
 import { createSimulatedGoogle } from "../src/simulated-google.ts";
@@ -37,7 +39,8 @@ type Secrets =
   | "LINKEDIN_CLIENT_ID"
   | "LINKEDIN_CLIENT_SECRET"
   | "THREADS_APP_ID"
-  | "THREADS_APP_SECRET";
+  | "THREADS_APP_SECRET"
+  | "VAPID_PRIVATE_KEY";
 
 /**
  * A key for `CREDENTIAL_KEYS`, as a deployment has one: 32 bytes in
@@ -59,6 +62,17 @@ export const blueskyClientKey =
 
 /** `BLUESKY_CLIENT_KEYS` of the tests, unless they say otherwise. */
 export const blueskyClientKeys = `1:${blueskyClientKey}`;
+
+/**
+ * The key that pigy signs with as a sender of push messages in the tests
+ * of those, as a deployment has one: a private key of P-256 in PKCS #8, in
+ * base64. A test that is about push messages deploys it, with
+ * `env: { VAPID_PRIVATE_KEY: vapidPrivateKey }`. The others run a pigy
+ * without it, which sends nothing: the object of a workspace then has no
+ * sending under way when a test ends.
+ */
+export const vapidPrivateKey =
+  "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgn8HzfFdn06Yd3luCfXg9Ga1rCTCA9KOaxpoY5xPod42hRANCAAQmPpw9nlZ77zULmYeBMmM5plB0FAk1DHUFr5FqDRsAxP7KpU7q7Mc7mLN/LlB8+bHH4maHxjuzTuYh03lS25WL";
 
 /**
  * The Mastodon server that stands for a real one in the tests. It is in a
@@ -101,6 +115,8 @@ export function setup(
     intercept?: (google: Fetch) => Fetch;
     /** The same between the app and the networks. */
     interceptNetwork?: (network: Fetch) => Fetch;
+    /** The same between the app and the push services of the browsers. */
+    interceptPush?: (push: Fetch) => Fetch;
   } = {},
 ) {
   clock.time = new Date("2026-11-14T10:00:00Z");
@@ -181,9 +197,21 @@ export function setup(
     return (owner ?? mastodon).fetch(input, init);
   };
   const networkFetch = options.interceptNetwork?.(networks) ?? networks;
+  // The push services of the browsers, with the devices that a test makes
+  // up, and every request that the app sent them.
+  const push = Object.assign(createPushSimulator({ now }), {
+    /** The requests that left the app for a push service. */
+    requests: [] as { url: string; headers: Headers }[],
+  });
+  const pushFetch = options.interceptPush?.(push.fetch) ?? push.fetch;
 
   const appFetch: Fetch = async (input, init) => {
     const url = urlOf(input);
+    // Before Google: the push service of Chrome is at a host of Google's.
+    if (push.owns(new URL(url).host)) {
+      push.requests.push({ url, headers: new Headers(init?.headers) });
+      return pushFetch(input, init);
+    }
     if (googleHost.test(new URL(url).hostname)) {
       return googleFetch(input, init);
     }
@@ -204,6 +232,12 @@ export function setup(
     developmentBlueskyClientKeys: options.developmentCredentialKeys
       ? developmentBlueskyClientKeys
       : undefined,
+    developmentVapidKey: options.developmentCredentialKeys
+      ? developmentVapidKey
+      : undefined,
+    // The simulated push service of the build for the end-to-end tests
+    // is not what the tests here go through: theirs is behind `fetch`.
+    simulatedPush: undefined,
   });
   const secrets = {
     ADMIN_EMAILS: adminEmail,
@@ -262,6 +296,11 @@ export function setup(
     clock,
     google,
     network,
+    /**
+     * What stands for the push services of the browsers: `subscribe`
+     * makes up a device, and `received` is what it got, decrypted.
+     */
+    push,
     db: drizzle(env.DB),
     /**
      * The work that the app has asked the runtime to keep going, with

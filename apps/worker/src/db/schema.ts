@@ -121,6 +121,54 @@ export const mastodonApps = sqliteTable(
 );
 
 /**
+ * The devices that are to get push messages: what a browser handed out when
+ * somebody turned notifications on in it. A row belongs to the session
+ * that it was made in and goes when that session ends, however it ends: a
+ * device that nobody is signed in on any more hears nothing.
+ *
+ * The keys of a subscription are what a message is encrypted with for its
+ * browser. They are not sealed: they open nothing, and whoever has them
+ * and the endpoint can send that browser a message as pigy only with the
+ * key of the Worker, which is not here. They are kept out of the logs all
+ * the same, and so is the endpoint, which is an address that nobody else
+ * should have.
+ */
+export const pushSubscriptions = sqliteTable(
+  "push_subscription",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    /**
+     * Where the push service of the browser takes messages for it. One
+     * browser has one, so a device is one row whoever turned it on last.
+     */
+    endpoint: text("endpoint").notNull().unique(),
+    /** The public key of the browser, in base64url. */
+    p256dh: text("p256dh").notNull(),
+    /** The secret that the browser shares with pigy, in base64url. */
+    auth: text("auth").notNull(),
+    /**
+     * The public key of pigy that the browser subscribed with. A push
+     * service takes messages only from that key, so a subscription that
+     * was made with another key than the Worker has now is of no use.
+     */
+    vapidKey: text("vapid_key").notNull(),
+    /**
+     * The address that pigy was reached at when the device subscribed:
+     * what the push service is told about who sends.
+     */
+    origin: text("origin").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [index("push_subscription_user_id_idx").on(table.userId)],
+);
+
+/**
  * The connections of accounts that have begun and whose answer from the
  * network is still out. A row is taken out when the answer comes, so it is
  * good for one answer.

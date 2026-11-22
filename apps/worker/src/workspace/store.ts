@@ -2,6 +2,7 @@ import {
   applyMutation,
   type Change,
   environmentSchema,
+  expiryNoticeMs,
   type Limits,
   type Mutation,
   MutationRejected,
@@ -10,6 +11,7 @@ import {
   type Network,
   type PostContent,
   partsFor,
+  type PushMessage,
   type Rejection,
   type RejectionCode,
   type Row,
@@ -26,11 +28,13 @@ import {
   gte,
   inArray,
   isNotNull,
+  isNull,
   lt,
   lte,
   min,
   ne,
   notExists,
+  or,
   sql,
 } from "drizzle-orm";
 import {
@@ -46,7 +50,9 @@ import {
   clientMutations,
   type KeyedOutcome,
   keyedCalls,
+  notifications,
   postTargets,
+  pushOutbox,
   rejections,
   targetPartResults,
   workspaceRecord,
@@ -114,6 +120,30 @@ export const stepNoteLifetimeMs = keyLifetimeMs - 24 * 60 * 60 * 1000;
  * later, and the access is a secret that nothing else has a use for.
  */
 export const handBackLifetimeMs = 5 * 60 * 1000;
+
+/**
+ * How long a notification stays in the inbox unless the person dismisses
+ * it or what it is about is dealt with, in milliseconds: 30 days. What it
+ * tells of is still on the screen that it led to after that.
+ */
+export const notificationLifetimeMs = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * How long a push message waits to be sent before it is given up, in
+ * milliseconds: an hour. It waits only while the devices of the owner
+ * cannot be read or the object does not get to it, and what it tells of
+ * is in the inbox meanwhile. Told much later, it would be news of
+ * something that the person may have dealt with.
+ */
+export const pushQueueLifetimeMs = 60 * 60 * 1000;
+
+/** A push message that waits to be sent to the devices of the owner. */
+export type QueuedPush = {
+  id: number;
+  message: PushMessage;
+  /** The notification that it goes with, which names its topic. */
+  notificationId: string;
+};
 
 /**
  * What the key of a call that stores a channel begins with in
@@ -1250,6 +1280,7 @@ export class WorkspaceStore {
         if (!(error instanceof Refused)) throw error;
         return error.refusal;
       }
+      this.queuePushes(tx, time);
       if (tx.changed.size > 0) {
         seq += 1;
         // One statement per row: a statement takes at most 100 values.
@@ -1274,6 +1305,218 @@ export class WorkspaceStore {
       this.db.update(workspaceRecord).set({ seq, logFloor, time }).run();
     }
     return outcomes;
+  }
+
+  /**
+   * Queues a push message for every notification that the mutation of
+   * `tx`, run at `time`, has made or made anew: what the inbox says, the
+   * devices of the owner are told. In the transaction of the mutation, so
+   * that a notification is never there without its message having been
+   * queued, and none is queued for a mutation that did not happen.
+   *
+   * A notification is of this mutation if it is from its time: no two
+   * mutations of a workspace are run at the same one. One that was only
+   * marked as read keeps the time that it was made at.
+   */
+  private queuePushes(tx: RecordingTransaction, time: number): void {
+    for (const { table, id } of tx.changed.values()) {
+      if (table !== "notification") continue;
+      const notification = readRow(this.db, "notification", id);
+      if (notification?.createdAt !== time) continue;
+      const message = this.pushMessageOf(notification);
+      if (!message) continue;
+      this.db
+        .insert(pushOutbox)
+        .values({ message, notificationId: id, queuedAt: time })
+        .run();
+      this.pushQueued = true;
+    }
+  }
+
+  /** What the devices of the owner are told of `notification`. */
+  private pushMessageOf(
+    notification: Row<"notification">,
+  ): PushMessage | undefined {
+    const { id: workspaceId, environment } = this.identity;
+    const about = { v: 1, workspaceId, environment } as const;
+    if (notification.kind === "post_failed") {
+      const postId = notification.postId;
+      if (!postId) return undefined;
+      // As the Sent screen says it: a post of which nothing is known to
+      // have failed, and of which a delivery is unknown, is unknown.
+      const failed = findRows(this.db, "post_target", "postId", postId).some(
+        ({ status }) => status === "error",
+      );
+      return {
+        ...about,
+        kind: failed ? "post_failed" : "post_uncertain",
+        postId,
+      };
+    }
+    const channel =
+      notification.channelId &&
+      readRow(this.db, "channel", notification.channelId);
+    if (!channel) return undefined;
+    return {
+      ...about,
+      kind: notification.kind,
+      channelId: channel.id,
+      network: channel.network,
+    };
+  }
+
+  /** Whether a mutation has queued a push message since this was asked. */
+  private pushQueued = false;
+
+  /**
+   * Whether a push message was queued since the last time this was asked:
+   * for the object, which then sends at once.
+   */
+  takePushQueued(): boolean {
+    const queued = this.pushQueued;
+    this.pushQueued = false;
+    return queued;
+  }
+
+  /**
+   * The push messages that wait to be sent, the oldest first. Those that
+   * have waited for longer than `pushQueueLifetimeMs` are given up here.
+   */
+  queuedPushes(now: number): QueuedPush[] {
+    this.db
+      .delete(pushOutbox)
+      .where(lt(pushOutbox.queuedAt, now - pushQueueLifetimeMs))
+      .run();
+    return this.db
+      .select({
+        id: pushOutbox.id,
+        message: pushOutbox.message,
+        notificationId: pushOutbox.notificationId,
+      })
+      .from(pushOutbox)
+      .orderBy(asc(pushOutbox.id))
+      .all();
+  }
+
+  /** Gives up every push message that waits: there is nothing to send with. */
+  dropQueuedPushes(): void {
+    this.db.delete(pushOutbox).run();
+  }
+
+  /** Takes note that a push message was handed to the push services. */
+  pushed(id: number): void {
+    this.db.delete(pushOutbox).where(eq(pushOutbox.id, id)).run();
+  }
+
+  /** Whether a push message waits to be sent. */
+  get pushesWait(): boolean {
+    return (
+      this.db.select({ id: pushOutbox.id }).from(pushOutbox).limit(1).get() !==
+      undefined
+    );
+  }
+
+  /**
+   * The channels whose access ends by a date and whose owner has not been
+   * told of the end of the access that they have now.
+   */
+  private readonly notWarned = and(
+    isNotNull(channels.expiresAt),
+    or(
+      isNull(channels.expiryWarnedFor),
+      ne(channels.expiryWarnedFor, channels.connectedAt),
+    ),
+  );
+
+  /**
+   * Tells the owner of every access that ends within `expiryNoticeMs`,
+   * once for each access: through the mutator `channel.warnOfExpiry`,
+   * which puts it into the inbox, and with a note next to the channel
+   * that it was said, in one transaction. The note names the access by the
+   * time of its connection, so an account that is connected again is told
+   * of the end of its new access when that comes.
+   *
+   * An access whose end has passed unsaid is noted too, and nothing is
+   * said of it: the mutator does not tell of an end that is over, and the
+   * channel says it on its own screen.
+   */
+  warnOfExpiry(now: number): void {
+    this.storage.transactionSync(() => {
+      const due = this.db
+        .select({ id: channels.id, connectedAt: channels.connectedAt })
+        .from(channels)
+        .where(
+          and(this.notWarned, lte(channels.expiresAt, now + expiryNoticeMs)),
+        )
+        .all();
+      for (const { id, connectedAt } of due) {
+        const [refusal] = this.run(
+          [{ name: "channel.warnOfExpiry", args: { id } }],
+          now,
+          "server",
+        );
+        if (refusal) throw new Error(`Not warned: ${refusal.message}`);
+        this.db
+          .update(channels)
+          .set({ expiryWarnedFor: connectedAt })
+          .where(eq(channels.id, id))
+          .run();
+      }
+    });
+  }
+
+  /**
+   * Removes the notifications that are older than `notificationLifetimeMs`,
+   * through the mutator `notification.prune`, which clients hear of.
+   */
+  pruneNotifications(now: number): void {
+    this.storage.transactionSync(() => {
+      for (;;) {
+        const old = this.db
+          .select({ id: notifications.id })
+          .from(notifications)
+          .where(lt(notifications.createdAt, now - notificationLifetimeMs))
+          // As many as the mutator takes at once.
+          .limit(100)
+          .all();
+        if (old.length === 0) return;
+        const [refusal] = this.run(
+          [
+            {
+              name: "notification.prune",
+              args: { ids: old.map(({ id }) => id) },
+            },
+          ],
+          now,
+          "server",
+        );
+        if (refusal) throw new Error(`Not pruned: ${refusal.message}`);
+      }
+    });
+  }
+
+  /**
+   * When the object next has something to do by the clock, in
+   * milliseconds since the epoch, or null if nothing is in sight: an
+   * access whose end is to be told of, or a notification that is to go.
+   */
+  get nextDueAt(): number | null {
+    const access = this.db
+      .select({ endsAt: min(channels.expiresAt) })
+      .from(channels)
+      .where(this.notWarned)
+      .get();
+    const oldest = this.db
+      .select({ madeAt: min(notifications.createdAt) })
+      .from(notifications)
+      .get();
+    const times = [
+      ...(access?.endsAt == null ? [] : [access.endsAt - expiryNoticeMs]),
+      ...(oldest?.madeAt == null
+        ? []
+        : [oldest.madeAt + notificationLifetimeMs]),
+    ];
+    return times.length > 0 ? Math.min(...times) : null;
   }
 
   /**

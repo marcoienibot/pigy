@@ -35,6 +35,7 @@ export class WorkspaceDO extends workspaceObject({
   // A test that wants the development keys deploys them as secrets.
   developmentCredentialKeys: undefined,
   developmentBlueskyClientKeys: undefined,
+  developmentVapidKey: undefined,
   providerOf: (...args) => (deployment.providerOf ?? providerOf)(...args),
 }) {
   constructor(ctx: DurableObjectState, env: Bindings) {

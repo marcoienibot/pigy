@@ -22,6 +22,13 @@
       "when": 1794718691838,
       "tag": "0002_connections",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1795312542861,
+      "tag": "0003_push_subscription",
+      "breakpoints": true
     }
   ]
 }

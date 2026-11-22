@@ -1,12 +1,13 @@
 import { healthResponseSchema } from "@pigy/core";
 import { Hono } from "hono";
 import { adminRoutes } from "./admin/routes.ts";
-import { accessConfig } from "./auth/config.ts";
+import { accessConfig, isLocal } from "./auth/config.ts";
 import { authRoutes } from "./auth/routes.ts";
 import { channelRoutes, connectCallbackRoutes } from "./channels/routes.ts";
 import type { AppDependencies, AppEnv } from "./env.ts";
 import { handleError, handleNotFound } from "./errors.ts";
 import { blueskyClientRoutes } from "./network/bluesky-client.ts";
+import { pushRoutes } from "./push/routes.ts";
 import { sandboxRoutes, simRoutes } from "./sim/routes.ts";
 import { worldPagesPath } from "./sim/world.ts";
 import { syncRoutes, workspaceRoutes } from "./workspace/routes.ts";
@@ -16,7 +17,7 @@ import { syncRoutes, workspaceRoutes } from "./workspace/routes.ts";
  * `assets.run_worker_first` in wrangler.jsonc, or it never gets here.
  */
 export function createApp(dependencies: AppDependencies): Hono<AppEnv> {
-  const { fetch, simulatedGoogle } = dependencies;
+  const { fetch, simulatedGoogle, simulatedPush } = dependencies;
   const app = new Hono<AppEnv>();
 
   // What these answer depends on who asks and changes at any time. The
@@ -39,6 +40,7 @@ export function createApp(dependencies: AppDependencies): Hono<AppEnv> {
   app.route("/api", workspaceRoutes(dependencies));
   app.route("/api", channelRoutes(dependencies));
   app.route("/api/sandbox", sandboxRoutes(dependencies));
+  app.route("/api/push", pushRoutes(dependencies));
   app.route("/sync", syncRoutes(dependencies));
   app.route("/connect", blueskyClientRoutes(dependencies));
   app.route("/connect", connectCallbackRoutes(dependencies));
@@ -58,6 +60,15 @@ export function createApp(dependencies: AppDependencies): Hono<AppEnv> {
       ? config.simulatedGoogle.handle(c.req.raw, config.adminEmails)
       : handleNotFound(c);
   });
+
+  // What the end-to-end tests ask of the simulated push services. The
+  // path exists only in the build that has them, and like the simulated
+  // Google it answers only where the app is reached locally.
+  app.all("/api/e2e/*", (c) =>
+    simulatedPush && isLocal(new URL(c.req.url).origin)
+      ? simulatedPush.handle(c.req.raw)
+      : handleNotFound(c),
+  );
 
   app.notFound(handleNotFound);
   app.onError(handleError);

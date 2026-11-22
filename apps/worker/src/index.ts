@@ -2,12 +2,14 @@ import { createApp } from "./app.ts";
 import {
   developmentBlueskyClientKeys,
   developmentCredentialKeys,
+  developmentVapidKey,
 } from "./development-keys.ts";
 import { providerOf } from "./network/providers.ts";
 import { outboundFetch } from "./outbound.ts";
 import { publishWorkflow } from "./publish/workflow.ts";
 import { simWorldObject } from "./sim/object.ts";
 import { createSimulatedGoogle } from "./simulated-google.ts";
+import { createSimulatedPush } from "./simulated-push.ts";
 import { workspaceObject } from "./workspace/object.ts";
 
 const now = () => new Date();
@@ -23,14 +25,23 @@ const simulated =
   import.meta.env.MODE === "test" ||
   import.meta.env.MODE === "e2e";
 
+// The push services of the browsers are simulated in the build that the
+// end-to-end tests run against, and in no other: `pnpm dev` and a
+// deployment send to the real ones. The same condition as above drops it
+// from a production build, and the same script checks that.
+const simulatedPush =
+  import.meta.env.MODE === "e2e" ? createSimulatedPush(now) : undefined;
+
 const dependencies = {
-  fetch: outboundFetch(import.meta.env.MODE),
+  fetch: outboundFetch(import.meta.env.MODE, simulatedPush),
   now,
   simulatedGoogle: simulated ? createSimulatedGoogle(now) : undefined,
   developmentCredentialKeys: simulated ? developmentCredentialKeys : undefined,
   developmentBlueskyClientKeys: simulated
     ? developmentBlueskyClientKeys
     : undefined,
+  developmentVapidKey: simulated ? developmentVapidKey : undefined,
+  simulatedPush,
 };
 
 export default createApp(dependencies);

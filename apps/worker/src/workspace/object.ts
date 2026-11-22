@@ -17,6 +17,7 @@ import {
   syncProtocolVersion,
   syncSchemaVersion,
 } from "@pigy/core";
+import { drizzle } from "drizzle-orm/d1";
 import type { Bindings } from "../env.ts";
 import { loggable } from "../errors.ts";
 import {
@@ -24,6 +25,8 @@ import {
   lostTrackMessage,
   release,
 } from "../publish/delivery.ts";
+import { vapidKeyOf, vapidKeyWithoutRequest } from "../push/keys.ts";
+import { pushToDevices } from "../push/notify.ts";
 import {
   type RenewalDependencies,
   renewAccess,
@@ -131,10 +134,26 @@ type SocketState = {
  * A function that returns the class, because the runtime constructs the
  * object and there is no other way to hand it what it is built with.
  */
-export function workspaceObject(dependencies: RenewalDependencies) {
-  const { now } = dependencies;
+export function workspaceObject(
+  dependencies: RenewalDependencies & {
+    /**
+     * Stands in for `VAPID_PRIVATE_KEY` when it is not set. Only builds for
+     * development and tests pass one.
+     */
+    developmentVapidKey: string | undefined;
+  },
+) {
+  // `fetch` also carries the push messages to the push services of the
+  // devices.
+  const { now, fetch, developmentVapidKey } = dependencies;
   return class WorkspaceObject extends DurableObject<Bindings> {
     readonly #store: WorkspaceStore;
+    /**
+     * The time at which the inbox next has something to do, as it was
+     * when the alarm was last set: see `#attend`. Kept in memory to spare
+     * the asking, and gone with it, which costs one question more.
+     */
+    #attended: number | null = null;
 
     constructor(ctx: DurableObjectState, env: Bindings) {
       super(ctx, env);
@@ -160,7 +179,6 @@ export function workspaceObject(dependencies: RenewalDependencies) {
       if (!this.#store.bind(identity)) {
         return new Response(null, { status: 403 });
       }
-
       const time = now().getTime();
       // Sockets that are past their time are closed here and do not count.
       const open = this.ctx
@@ -478,6 +496,15 @@ export function workspaceObject(dependencies: RenewalDependencies) {
           },
           "The deliveries of a workspace were not looked after",
         ],
+        [
+          // Before the messages are sent: what these say is queued too.
+          () => this.#keepInbox(),
+          "The inbox of a workspace was not kept",
+        ],
+        [
+          () => this.#sendPushes(),
+          "The push messages of a workspace were not sent",
+        ],
       ] as const) {
         try {
           await look();
@@ -497,21 +524,54 @@ export function workspaceObject(dependencies: RenewalDependencies) {
       }
     }
 
+    /** The key that push messages are signed with, as it is configured. */
+    #vapidKey(): string | undefined {
+      return vapidKeyWithoutRequest(this.env, developmentVapidKey);
+    }
+
+    /**
+     * What the inbox takes by the clock: telling of an access that ends
+     * within a week, and removing what is old.
+     */
+    async #keepInbox(): Promise<void> {
+      const from = this.#store.seq;
+      try {
+        this.#store.warnOfExpiry(now().getTime());
+        this.#store.pruneNotifications(now().getTime());
+      } finally {
+        this.#publish(from);
+      }
+    }
+
     /**
      * When the alarm is next needed, in milliseconds from now, or null if
-     * nothing is waited for: soon while a delivery waits or is under way,
-     * and else when the next access is due.
+     * nothing is waited for: soon while a delivery waits or is under way
+     * or a push message waits to be sent, and else when the next access is
+     * due or the inbox next has something to do by the clock.
      */
     #nextLookIn(): number | null {
       // Also for a delivery that can begin: one that became ready while
       // this alarm ran has set the alarm for itself, `#wake`, and sooner.
-      if (this.#store.deliveriesNeed(now().getTime()) !== "nothing") {
+      // A push message that is left was not sent a moment ago, and is not
+      // tried at once: what failed then fails again.
+      if (
+        this.#store.deliveriesNeed(now().getTime()) !== "nothing" ||
+        this.#store.pushesWait
+      ) {
         return deliveryWatchMs;
       }
       const renewal = this.#store.nextRenewalAt;
-      return renewal === null
-        ? null
-        : Math.max(renewalPauseMs, renewal - now().getTime());
+      const inbox = this.#store.nextDueAt;
+      this.#attended = inbox;
+      const waits = [
+        ...(renewal === null
+          ? []
+          : [Math.max(renewalPauseMs, renewal - now().getTime())]),
+        ...(inbox === null
+          ? []
+          : [Math.max(deliveryWatchMs, inbox - now().getTime())]),
+      ];
+      return waits.length > 0 ? Math.min(...waits) : null;
     }
 
     /**
@@ -599,6 +659,36 @@ export function workspaceObject(dependencies: RenewalDependencies) {
         }
         this.#publish(from);
         if (this.#store.deliveriesNeed(now().getTime()) === "begin") return;
+      }
+    }
+
+    /**
+     * Sends the push messages that wait to the devices of the owner. A
+     * message is taken off the queue when it has been handed to the push
+     * services, whatever each of them said: a device that cannot be
+     * reached is told by its push service later, or reads the inbox. It
+     * stays when the devices could not be read, and is tried with the
+     * next alarm, for as long as the store keeps it.
+     */
+    async #sendPushes(): Promise<void> {
+      const queued = this.#store.queuedPushes(now().getTime());
+      if (queued.length === 0) return;
+      const key = await vapidKeyOf(this.#vapidKey());
+      const { ownerId } = this.#store.identity;
+      for (const { id, message, notificationId } of queued) {
+        // A pigy without a key sends nothing, and keeps nothing to send.
+        if (key) {
+          await pushToDevices(
+            { db: drizzle(this.env.DB), fetch, now, key },
+            ownerId,
+            message,
+            // What a push service knows a message by, to put a later one
+            // in its place: the ID of the notification, which is 32
+            // characters without its dashes.
+            notificationId.replaceAll("-", ""),
+          );
+        }
+        this.#store.pushed(id);
       }
     }
 
@@ -1001,12 +1091,35 @@ export function workspaceObject(dependencies: RenewalDependencies) {
         );
       try {
         const need = this.#store.deliveriesNeed(now().getTime());
-        if (need === "begin" || need === "renew") {
+        // A push message that this change has queued is sent at once, for
+        // the same reason and under the same limit: one that could not be
+        // sent waits for the alarm's own time.
+        let pushQueued = this.#store.takePushQueued();
+        if (pushQueued && this.#vapidKey() === undefined) {
+          // A pigy without a key sends nothing, and keeps nothing to
+          // send: the inbox has what the message would have told of.
+          this.#store.dropQueuedPushes();
+          pushQueued = false;
+        }
+        if (need === "begin" || need === "renew" || pushQueued) {
           this.ctx.storage.setAlarm(Date.now()).catch(failed);
+        } else {
+          this.#attend();
         }
       } catch (error) {
         failed(error);
       }
+    }
+
+    /**
+     * Sees to it that the alarm runs when the inbox next has something to
+     * do by the clock: `nextDueAt` of the store, which a change can bring
+     * forward. Asked only when that time is another than the one that the
+     * alarm was last set with.
+     */
+    #attend(): void {
+      if (this.#store.nextDueAt === this.#attended) return;
+      this.#wakeForRenewals();
     }
   };
 }
