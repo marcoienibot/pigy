@@ -33,6 +33,7 @@ import {
   aboutToSend,
   channelAccess,
   deliveryOf,
+  endDelivery,
   mutateWorkspace,
   recordProgress,
   renewChannelAccess,
@@ -202,6 +203,13 @@ type Prepared = {
   content: PostContent;
   /** How far the attempts before this one have come. */
   progress: PublishProgress | null;
+  /**
+   * There, and true, if an attempt before this one ended without anybody
+   * knowing what became of what it sent: `mayHaveSent` of the delivery.
+   * Left out otherwise, as by a run that began under a version of pigy
+   * that did not have it: the result of a step outlasts a deploy.
+   */
+  mayHaveSent?: true;
 };
 
 /** How a delivery ends: the arguments of `target.end`, without the target. */
@@ -698,6 +706,7 @@ export async function deliver(
       },
       content,
       progress: publishProgressSchema.nullable().parse(delivery.progress),
+      ...(delivery.mayHaveSent && { mayHaveSent: true as const }),
     };
   };
 
@@ -753,9 +762,11 @@ export async function deliver(
         // What names the delivery to the network, the same in every
         // attempt.
         key: targetId,
-        // An attempt before this one may have sent what nobody heard of
-        // again: that is one of the ways in which an attempt ends.
-        mayHaveSentBefore: run.attempt > 1,
+        // Whether an attempt before this one ended without anybody
+        // knowing what became of what it sent, as the workspace has it.
+        // Not every attempt before this one did: one that a network
+        // refused has sent nothing.
+        mayHaveSentBefore: prepared.mayHaveSent === true,
       },
       {
         run: async (name, publishStep) => {
@@ -802,10 +813,9 @@ export async function deliver(
 
   const end: MutatorArgs<"target.end"> = { id: targetId, attempt, ...ending };
   await step.do("end", bookkeepingStep, async () => {
-    const outcome = await mutateWorkspace(
+    const outcome = await endDelivery(
       env.WORKSPACE,
       workspace,
-      "target.end",
       end,
       await key("end", end),
     );

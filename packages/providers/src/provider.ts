@@ -193,9 +193,11 @@ export type PublishRequest = {
   /**
    * Whether an attempt at this delivery before the one at hand may have
    * asked the network to publish without anybody learning what became of
-   * it: true from the second attempt on, false if left out. Within one
-   * attempt the caller sees to it that nothing is sent whose outcome is
-   * not known before the next request goes out.
+   * it: true where an attempt before this one ended that way, and false
+   * if left out. It is not true of every later attempt: one that follows
+   * attempts which the network refused, or which never asked, has sent
+   * nothing before. Within one attempt the caller sees to it that nothing
+   * is sent whose outcome is not known before the next request goes out.
    *
    * Most providers have no use for it: what a step looks for is in its
    * progress. It is for a provider that cannot look, `repeatsSafely`, and

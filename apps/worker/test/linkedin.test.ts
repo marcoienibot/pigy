@@ -1,10 +1,10 @@
-import { runInDurableObject } from "cloudflare:test";
+import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { connectErrorSchema, type Fetch, sandboxFeedSchema } from "@pigy/core";
 import { feed, type SimToken } from "@pigy/simulators/world";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { sandboxLinkedInClient } from "../src/network/linkedin-client.ts";
-import { cutOffMessage } from "../src/publish/delivery.ts";
+import { cutOffMessage, lostTrackMessage } from "../src/publish/delivery.ts";
 import { beginsWaitsMs } from "../src/publish/workflow.ts";
 import { keyLifetimeMs, WorkspaceStore } from "../src/workspace/store.ts";
 import { mutateWorkspace } from "../src/workspace/workspaces.ts";
@@ -24,9 +24,10 @@ import {
   storedAccess,
   worldEntries,
 } from "./channels.ts";
-import { adminEmail, setup, signedIn, urlOf } from "./helpers.ts";
+import { adminEmail, expectErrors, setup, signedIn, urlOf } from "./helpers.ts";
 import {
   ended,
+  follow,
   patience,
   publishedOf,
   publishTo,
@@ -498,6 +499,174 @@ describe("a delivery to LinkedIn that goes wrong", () => {
     expect(publishedOf(context.client, second.targetId, second.draft)).toEqual(
       [],
     );
+    expect(await context.posted()).toHaveLength(1);
+
+    // The person presses "Retry", which the failed delivery offers, while
+    // LinkedIn still refuses the text. A second attempt is no reason to
+    // take the post either: the first one was refused, and a refusal has
+    // sent nothing.
+    await retry(context.client, second.targetId);
+    await ended(context.client, second.draft.postId);
+    expect(targetOf(context.client, second.targetId)).toMatchObject({
+      status: "error",
+      attempt: 2,
+      error: second.target.error,
+    });
+    expect(publishedOf(context.client, second.targetId, second.draft)).toEqual(
+      [],
+    );
+    expect(await context.posted()).toHaveLength(1);
+  });
+
+  it("does not take a post that came to the account after an attempt that LinkedIn refused before it posted", async () => {
+    const context = await withChannel("live");
+    await arm(context, "live", "rate-limit");
+    const refused = await delivered(context, "Said meanwhile");
+    // Refused for a limit: nothing was posted, and nothing is in doubt.
+    expect(refused.target).toMatchObject({ status: "error", attempt: 1 });
+    expect(await context.posted()).toEqual([]);
+    // The same text comes to the account in another way: by another
+    // delivery here, as the member would post it by hand.
+    const other = await delivered(context, "Said meanwhile");
+    expect(other.target.status).toBe("sent");
+    const [there] = feed(context.test.network.world, ["linkedin"]);
+
+    await retry(context.client, refused.targetId);
+    await ended(context.client, refused.draft.postId);
+
+    expect(targetOf(context.client, refused.targetId)).toMatchObject({
+      status: "error",
+      attempt: 2,
+      error: `LinkedIn already has a post with this text, and did not publish it a second time: ${there?.post.url}`,
+    });
+    expect(
+      publishedOf(context.client, refused.targetId, refused.draft),
+    ).toEqual([]);
+    expect(await context.posted()).toHaveLength(1);
+  });
+
+  it("still takes the post that LinkedIn names when an attempt after the one that may have sent was refused for another reason", async () => {
+    const context = await withChannel("live");
+    await arm(context, "live", "lost-response");
+    const { draft, targetId, target } = await delivered(context, "Lost twice");
+    // The post is there, and pigy does not know.
+    expect(target).toMatchObject({ status: "uncertain", attempt: 1 });
+    expect(await context.posted()).toHaveLength(1);
+
+    // The second attempt is refused for a limit. It has learned nothing
+    // of what the first one sent.
+    await arm(context, "live", "rate-limit");
+    await retry(context.client, targetId);
+    await ended(context.client, draft.postId);
+    expect(targetOf(context.client, targetId)).toMatchObject({
+      status: "error",
+      attempt: 2,
+    });
+
+    // So the third still takes the post that LinkedIn names for its own.
+    await retry(context.client, targetId);
+    await ended(context.client, draft.postId);
+    expect(targetOf(context.client, targetId)).toMatchObject({
+      status: "sent",
+      attempt: 3,
+    });
+    const posts = await context.posted();
+    expect(posts).toHaveLength(1);
+    expect(publishedOf(context.client, targetId, draft)).toEqual([
+      posts[0]?.id,
+    ]);
+  });
+
+  it("takes the post that LinkedIn names after a delivery whose workflow stopped without a word, which the workspace ended", async () => {
+    const context = await withChannel("live");
+    const errors = expectErrors();
+    // The workflow posts, and then fails for good where it tells the
+    // workspace of the post: nothing of it is recorded, and the run says
+    // nothing more. The workspace is what fails, and not the step by a
+    // mock of its result, which would fail the next run in the same way.
+    const recording = vi
+      .spyOn(WorkspaceStore.prototype, "recordProgress")
+      .mockImplementation(() => {
+        throw new Error("Stopped");
+      });
+    onTestFinished(() => recording.mockRestore());
+    await context.workflows.modifyAll(async (modifier) => {
+      await modifier.disableRetryDelays();
+    });
+    const { draft, targetId } = await publish(context, "Dropped");
+    // The run exists once the object has started it, which is when the
+    // post can be there.
+    await vi.waitFor(
+      async () => expect(await context.posted()).toHaveLength(1),
+      patience,
+    );
+    const [run] = await context.workflows.get();
+    await run?.waitForStatus("errored");
+    // The delivery is still under way, as far as the workspace knows.
+    await follow(
+      context.client,
+      () => targetOf(context.client, targetId).status === "sending",
+    );
+    expect(context.client.unread).toBe(0);
+
+    // The object ends the delivery, which its alarm does every minute
+    // while one is under way. The test does not wait for that, and asks
+    // until the object has said something: the platform can take a moment
+    // to say of a run that it is over.
+    await vi.waitFor(async () => {
+      await runDurableObjectAlarm(objectOf(context.workspace));
+      expect(context.client.unread).toBeGreaterThan(0);
+    }, patience);
+    await ended(context.client, draft.postId);
+    expect(targetOf(context.client, targetId)).toMatchObject({
+      status: "uncertain",
+      attempt: 1,
+      error: lostTrackMessage,
+    });
+    expect(publishedOf(context.client, targetId, draft)).toEqual([]);
+    expect(errors).toHaveBeenCalled();
+
+    // That end says that the attempt may have sent, like an end that the
+    // workflow reports: the next attempt takes the post, with a workspace
+    // that records again.
+    recording.mockRestore();
+    await retry(context.client, targetId);
+    await ended(context.client, draft.postId);
+    expect(targetOf(context.client, targetId)).toMatchObject({
+      status: "sent",
+      attempt: 2,
+    });
+    const posts = await context.posted();
+    expect(posts).toHaveLength(1);
+    expect(publishedOf(context.client, targetId, draft)).toEqual([
+      posts[0]?.id,
+    ]);
+  });
+
+  it("does not take the post of another delivery that went out since the attempt that may have sent: the delivery begins anew", async () => {
+    const context = await withChannel("live");
+    // LinkedIn fails while it takes the post, and has not taken it.
+    await arm(context, "live", "server-error");
+    const lost = await delivered(context, "Said twice");
+    expect(lost.target).toMatchObject({ status: "uncertain", attempt: 1 });
+    expect(await context.posted()).toEqual([]);
+    // Another delivery puts the same text on the account.
+    const other = await delivered(context, "Said twice");
+    expect(other.target.status).toBe("sent");
+    const [there] = feed(context.test.network.world, ["linkedin"]);
+
+    // The post that LinkedIn names now is the other delivery's. The
+    // workspace no longer says of the first that it may have sent, so its
+    // next attempt fails, and no two deliveries share a post.
+    await retry(context.client, lost.targetId);
+    await ended(context.client, lost.draft.postId);
+
+    expect(targetOf(context.client, lost.targetId)).toMatchObject({
+      status: "error",
+      attempt: 2,
+      error: `LinkedIn already has a post with this text, and did not publish it a second time: ${there?.post.url}`,
+    });
+    expect(publishedOf(context.client, lost.targetId, lost.draft)).toEqual([]);
     expect(await context.posted()).toHaveLength(1);
   });
 

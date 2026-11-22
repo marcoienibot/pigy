@@ -358,6 +358,31 @@ export function workspaceObject({ now }: { now: Clock }) {
     }
 
     /**
+     * Ends the delivery that `end` names, as `target.end` takes it, and
+     * keeps what the next attempt has to know of this one: `endDelivery`
+     * of the store. The clients that are connected see the target end.
+     * With a `key` it is carried out once. Returns nothing if `workspace`
+     * is not the one that the object holds.
+     */
+    endDelivery(
+      workspace: WorkspaceIdentity,
+      end: MutatorArgs<"target.end">,
+      key?: string,
+    ): MutationOutcome | undefined {
+      if (!this.#store.bind(workspaceIdentitySchema.parse(workspace))) {
+        return undefined;
+      }
+      const from = this.#store.seq;
+      const outcome = this.#store.endDelivery(
+        end,
+        now().getTime(),
+        callKeySchema.optional().parse(key),
+      );
+      this.#publish(from);
+      return outcome;
+    }
+
+    /**
      * Stores the credentials that a refresh returned, sealed, in place of
      * `expected`, the ones that it started from, and returns whether it
      * did: not if the channel holds others by now. Returns nothing if
@@ -502,16 +527,13 @@ export function workspaceObject({ now }: { now: Clock }) {
         }
         if (!over) continue;
         const from = this.#store.seq;
-        const ended = this.#store.mutate(
+        const ended = this.#store.endDelivery(
           {
-            name: "target.end",
-            args: {
-              id: run.targetId,
-              attempt: run.attempt,
-              status: "uncertain",
-              error: lostTrackMessage,
-              refusedConnection: null,
-            } satisfies MutatorArgs<"target.end">,
+            id: run.targetId,
+            attempt: run.attempt,
+            status: "uncertain",
+            error: lostTrackMessage,
+            refusedConnection: null,
           },
           now().getTime(),
         );

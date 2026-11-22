@@ -28,7 +28,7 @@ import type {
  * and for the Worker's own code `mutateWorkspace`, `connectChannel`,
  * `disconnectChannel` and `channelAccess`, and what the publishing
  * workflow asks and reports: `deliveryOf`, `aboutToSend`, `stepBegins`,
- * `recordProgress` and `renewChannelAccess`.
+ * `recordProgress`, `endDelivery` and `renewChannelAccess`.
  */
 
 /**
@@ -282,6 +282,29 @@ export async function recordProgress(
   const outcome = await namespace
     .getByName(workspace.id)
     .recordProgress(workspace, run, parts, progress, key);
+  if (!outcome) throw foreign(workspace);
+  return outcome;
+}
+
+/**
+ * Ends the delivery of `workspace` that `end` names: every part is
+ * published, or it has failed, with the reason for the person. The
+ * arguments are those of the mutator `target.end`, and this is how the
+ * Worker runs it: the workspace also keeps, where clients do not see it,
+ * whether the attempt may have sent what nobody heard of again, for the
+ * attempts after it. It is refused with `not_current` if the delivery is
+ * not under way any more. `key` names the call, as for `mutateWorkspace`:
+ * it is carried out once.
+ */
+export async function endDelivery(
+  namespace: Bindings["WORKSPACE"],
+  workspace: WorkspaceIdentity,
+  end: MutatorArgs<"target.end">,
+  key: string,
+): Promise<MutationOutcome> {
+  const outcome = await namespace
+    .getByName(workspace.id)
+    .endDelivery(workspace, end, key);
   if (!outcome) throw foreign(workspace);
   return outcome;
 }

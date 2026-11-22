@@ -132,6 +132,18 @@ export const postTargets = sqliteTable(
      * ID of the run that carries the delivery.
      */
     startedAt: integer("started_at").notNull().default(0),
+    /**
+     * Whether an attempt at this delivery has ended without anybody
+     * knowing what became of what it sent: it ended `uncertain`. It stays
+     * set over the attempts after that one, whatever they end with, until
+     * the target is sent. `endDelivery` of store.ts sets it, and
+     * `aboutToSend` takes it back for a delivery that begins anew. An
+     * adapter that cannot look for its post goes by it: only where it is
+     * set can a post that the network names be the delivery's own.
+     */
+    mayHaveSent: integer("may_have_sent", { mode: "boolean" })
+      .notNull()
+      .default(false),
   },
   (table) => [
     // A post goes to a channel once.

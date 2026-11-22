@@ -210,6 +210,11 @@ export type Delivery = {
    * null if the delivery begins at the beginning.
    */
   progress: unknown;
+  /**
+   * Whether an attempt before this one ended without anybody knowing what
+   * became of what it sent: see `endDelivery` of the store.
+   */
+  mayHaveSent: boolean;
 };
 
 /** The credentials of a channel after a refresh, sealed, with their times. */
@@ -711,8 +716,21 @@ export class WorkspaceStore {
    * The progress of the others is what lets them find a first part that
    * landed unseen, and dropping it without need means posting twice.
    *
+   * The same goes for what the workspace knows of the others besides
+   * their progress: that an attempt of theirs may have sent, `mayHaveSent`
+   * of the target, which `endDelivery` sets. An adapter that cannot look
+   * for its post, as LinkedIn's, takes a post that the network names in a
+   * refusal for the delivery's own where that is set. From here on such a
+   * post can be this delivery's, where the two read the same, so the
+   * others forget it with their progress. One of them whose post did land
+   * unseen then fails when it is tried again while the network still
+   * refuses the text, with a link to the post that the network has: it
+   * says less than it could, and never "Sent" of the post of another
+   * delivery.
+   *
    * It is safe to repeat: while this delivery is under way no other to
-   * the channel is, so none has recorded anything since the first time.
+   * the channel is, so none has recorded anything since the first time,
+   * and none has ended.
    */
   aboutToSend({ targetId, attempt }: DeliveryRun): boolean {
     return this.storage.transactionSync(() => {
@@ -730,7 +748,7 @@ export class WorkspaceStore {
       }
       this.db
         .update(postTargets)
-        .set({ progress: null })
+        .set({ progress: null, mayHaveSent: false })
         .where(
           and(
             eq(postTargets.channelId, target.channelId),
@@ -882,6 +900,7 @@ export class WorkspaceStore {
         status: postTargets.status,
         attempt: postTargets.attempt,
         progress: postTargets.progress,
+        mayHaveSent: postTargets.mayHaveSent,
       })
       .from(postTargets)
       .where(eq(postTargets.id, targetId))
@@ -907,6 +926,7 @@ export class WorkspaceStore {
         ).map(({ text }) => ({ text })),
       },
       progress: target.progress ?? null,
+      mayHaveSent: target.mayHaveSent,
     };
   }
 
@@ -935,6 +955,45 @@ export class WorkspaceStore {
         .set({ progress })
         .where(eq(postTargets.id, targetId))
         .run();
+      return { ok: true };
+    });
+  }
+
+  /**
+   * Ends a delivery: the target through the mutator `target.end`, which
+   * clients hear of, and next to the row what the next attempt has to
+   * know of this one, `mayHaveSent`. Both in one transaction, and once
+   * for a `key`: see `once`. Every end of a delivery that is not the
+   * disconnect of its channel goes through here: the one that its
+   * workflow reports, and the one that the alarm of the object makes of a
+   * workflow that stopped without a word.
+   *
+   * An attempt that ends `uncertain` may have sent: a request went out, or
+   * may have, and nobody learned what became of it. That stays true of
+   * the target whatever the attempts after it end with: one that is
+   * refused, for a limit say, has learned nothing about the one before.
+   * Only a delivery that is sent has nothing left to find, and one that
+   * begins anew: `aboutToSend`.
+   */
+  endDelivery(
+    end: MutatorArgs<"target.end">,
+    now: number,
+    key?: string,
+  ): MutationOutcome {
+    return this.once(key, now, () => {
+      const [refusal] = this.run(
+        [{ name: "target.end", args: end }],
+        now,
+        "server",
+      );
+      if (refusal) return { ok: false, ...refusal };
+      if (end.status !== "error") {
+        this.db
+          .update(postTargets)
+          .set({ mayHaveSent: end.status === "uncertain" })
+          .where(eq(postTargets.id, end.id))
+          .run();
+      }
       return { ok: true };
     });
   }

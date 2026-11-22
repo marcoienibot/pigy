@@ -458,14 +458,15 @@ export function createLinkedInProvider({
      * elsewhere. So the step takes it for its own only where an attempt
      * before this one may have sent, `mayHaveSentBefore` of the request:
      * within those minutes that is how a delivery that a person tries
-     * again comes by the post of the attempt before. A first attempt has
-     * sent nothing that the refusal could mean, and fails, with a link to
-     * the post that LinkedIn has.
+     * again comes by the post of the attempt before. A delivery of which
+     * no attempt may have sent has sent nothing that the refusal could
+     * mean, and fails, with a link to the post that LinkedIn has, in a
+     * second attempt as in a first.
      *
-     * What is left: the same text sent twice through pigy within those
-     * minutes, where the second delivery is tried again, takes the post of
-     * the first. LinkedIn would not publish it a second time whatever pigy
-     * did.
+     * What is left: an attempt that may have sent and has not, after
+     * which the member posts the same text in another way and tries the
+     * delivery again within those minutes, takes that post. LinkedIn would
+     * not publish the text a second time whatever pigy did.
      */
     async publishStep({ credentials, content, progress, mayHaveSentBefore }) {
       const { accessToken, memberId } = parseCredentials(credentials);
