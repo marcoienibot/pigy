@@ -73,7 +73,8 @@ async function published(
   if (environment === "live") {
     return feed(test.network.world).map(({ post }) => post.text);
   }
-  const response = await browser.fetch("/api/sandbox/feed");
+  // With the marks, as the app asks: the shape of the feed has them.
+  const response = await browser.fetch("/api/sandbox/feed?marks=1");
   const { accounts } = sandboxFeedSchema.parse(await response.json());
   const flat = (post: SandboxPost): SandboxPost[] => [
     post,

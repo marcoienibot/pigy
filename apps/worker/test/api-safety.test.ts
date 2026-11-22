@@ -325,11 +325,15 @@ it("answers the repeat of a refused request with the refusal, whatever has chang
   ]);
 });
 
-/** Gives a workspace `count` channels that no network knows of. */
+/**
+ * Gives a workspace `count` channels that no network knows of: the first
+ * `onMastodon` of them of Mastodon, the others of Bluesky.
+ */
 async function manyChannels(
   test: Parameters<typeof identityOf>[0] & { clock: { time: Date } },
   workspaceId: string,
   count: number,
+  onMastodon: number,
 ): Promise<string[]> {
   const workspace = await identityOf(test, workspaceId);
   const ids: string[] = [];
@@ -340,7 +344,7 @@ async function manyChannels(
     expect(
       await mutateWorkspace(env.WORKSPACE, workspace, "channel.connect", {
         id,
-        network: "mastodon",
+        network: index < onMastodon ? "mastodon" : "bluesky",
         accountId: `account-${index}`,
         handle: `@account${index}@mastodon.example`,
         name: `Account ${index}`,
@@ -358,7 +362,12 @@ async function manyChannels(
 it("keeps a small record of a large post under its Idempotency-Key, and answers within its budget", async () => {
   const { test, browser, workspaces } = await startedApi();
   const api = apiClient(test, (await makeKey(browser, workspaces.live)).secret);
-  const channelIds = await manyChannels(test, workspaces.live, maxApiChannels);
+  const channelIds = await manyChannels(
+    test,
+    workspaces.live,
+    maxApiChannels,
+    5,
+  );
   const part = "x".repeat(10_000);
   const thread = Array.from({ length: 24 }, () => ({ text: part }));
   // A draft may hold anything: a thread of a quarter of a million
@@ -397,9 +406,10 @@ it("keeps a small record of a large post under its Idempotency-Key, and answers 
   expect(repeated.headers.get("Idempotent-Replayed")).toBe("true");
   expect(await repeated.json()).toEqual(post);
 
-  // Every channel is given a text of its own, as long as the post's. An
-  // answer carries a million characters of texts at most: the post's
-  // own, the texts of three channels, and null for the other 47, which
+  // The five channels of Mastodon are given a text of their own, as long
+  // as the post's. That is a million and a quarter characters with the
+  // post's own, and an answer carries a million at most: the post's, the
+  // texts of three channels, and null for the other two, which
   // `customized` says have one.
   const customized = await api.call(`/posts/${post.id}`, {
     method: "PATCH",
@@ -410,9 +420,10 @@ it("keeps a small record of a large post under its Idempotency-Key, and answers 
   const large = await customized.text();
   expect(large.length).toBeLessThan(maxApiAnswerTextLength + 50_000);
   const { targets } = apiPostSchema.parse(JSON.parse(large));
-  expect(targets.every((target) => target.customized)).toBe(true);
-  expect(targets.filter((target) => target.text !== null)).toHaveLength(3);
-  expect(targets.filter((target) => target.thread === null)).toHaveLength(47);
+  const own = targets.filter((target) => target.customized);
+  expect(own).toHaveLength(5);
+  expect(own.filter((target) => target.text !== null)).toHaveLength(3);
+  expect(own.filter((target) => target.thread === null)).toHaveLength(2);
 
   // A page ends before the post that it has no room for, and the next
   // one begins with it.
