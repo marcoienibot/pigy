@@ -136,9 +136,12 @@ async function repeatOf(
   };
 }
 
-/** The ID in the path, or a 404: no row has an ID that is not one. */
-function idOf(c: ApiContext, what: string): string {
-  const id = idSchema.safeParse(c.req.param("id"));
+/**
+ * The ID in the path, as the parameter `name`, or a 404: no row has an ID
+ * that is not one.
+ */
+function idOf(c: ApiContext, what: string, name = "id"): string {
+  const id = idSchema.safeParse(c.req.param(name));
   if (!id.success) {
     throw new HTTPException(404, { message: `There is no such ${what}` });
   }
@@ -214,6 +217,11 @@ const workspaceRoutes = {
   getChannel: (c) => ({ op: "getChannel", id: idOf(c, "channel") }),
   listPosts: (c) => ({ op: "listPosts", query: postsQuery(c) }),
   getPost: (c) => ({ op: "getPost", id: idOf(c, "post") }),
+  getPostTarget: (c) => ({
+    op: "getPostTarget",
+    id: idOf(c, "post"),
+    channelId: idOf(c, "channel", "channelId"),
+  }),
   createPost: (_, text) => {
     const body = parseBody(text, createPostRequestSchema);
     checkSharing(body, true);

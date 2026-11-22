@@ -196,6 +196,7 @@ describe.each(["live", "sandbox"] as const)(
           text: null,
           thread: null,
           customized: false,
+          textOmitted: false,
           // A simulated network of a sandbox has no page to link to.
           link: environment === "live" ? expect.stringContaining(domain) : null,
           remoteId: expect.any(String),
@@ -284,6 +285,7 @@ describe.each(["live", "sandbox"] as const)(
         targets: [
           {
             customized: true,
+            textOmitted: false,
             text: "For Mastodon",
             thread: [{ text: "Only there" }],
           },

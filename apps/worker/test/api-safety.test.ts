@@ -7,6 +7,7 @@ import {
   apiPostListSchema,
   apiPostSchema,
   apiRateLimit,
+  apiTargetSchema,
   maxApiAnswerTextLength,
   maxApiBodyBytes,
   maxApiChannels,
@@ -48,9 +49,20 @@ const runMutations = store.run;
 const listOf = async (api: ApiClient, query = "") =>
   apiPostListSchema.parse(await api.ok(`/posts${query}`));
 
+/**
+ * The delivery of the post `postId` to `channelId`, in the strict shape
+ * that the document promises. Not through `ok` of the client, which takes
+ * a body with an `error` for a refusal: a target has one, of its delivery.
+ */
+async function targetOf(api: ApiClient, postId: string, channelId: string) {
+  const response = await api.call(`/posts/${postId}/targets/${channelId}`);
+  expect(response.status).toBe(200);
+  return apiTargetSchema.parse(await response.json());
+}
+
 /** A path of `operation`, with an ID that names nothing in the place of one. */
 const pathOf = ({ path }: ApiOperation) =>
-  path.replace("{id}", "01939c2e-0000-7000-8000-000000000000");
+  path.replace(/\{\w+\}/g, "01939c2e-0000-7000-8000-000000000000");
 
 it("holds a key to its scopes, route by route", async () => {
   const { test, browser, workspaces } = await startedApi();
@@ -408,9 +420,10 @@ it("keeps a small record of a large post under its Idempotency-Key, and answers 
 
   // The five channels of Mastodon are given a text of their own, as long
   // as the post's. That is a million and a quarter characters with the
-  // post's own, and an answer carries a million at most: the post's, the
-  // texts of three channels, and null for the other two, which
-  // `customized` says have one.
+  // post's own, and an answer carries a million at most: the post's and
+  // the texts of three channels. Of the other two it says that it left
+  // their text out, which a null alone would not: a channel without a
+  // text of its own says null too, and gets the text of the post.
   const customized = await api.call(`/posts/${post.id}`, {
     method: "PATCH",
     json: { metadata: { mastodon: { text: part, thread } } },
@@ -422,8 +435,63 @@ it("keeps a small record of a large post under its Idempotency-Key, and answers 
   const { targets } = apiPostSchema.parse(JSON.parse(large));
   const own = targets.filter((target) => target.customized);
   expect(own).toHaveLength(5);
-  expect(own.filter((target) => target.text !== null)).toHaveLength(3);
-  expect(own.filter((target) => target.thread === null)).toHaveLength(2);
+  const said = own.filter((target) => !target.textOmitted);
+  const omitted = own.filter((target) => target.textOmitted);
+  expect(said).toHaveLength(3);
+  for (const target of said) {
+    expect(target).toMatchObject({ text: part, thread });
+  }
+  expect(omitted).toMatchObject([
+    { text: null, thread: null },
+    { text: null, thread: null },
+  ]);
+  // Nothing is said to be left out of a channel that has no text of its
+  // own: it has none to leave out.
+  const follows = targets.filter((target) => !target.customized);
+  expect(follows).toHaveLength(maxApiChannels - 5);
+  expect(follows.every((target) => !target.textOmitted)).toBe(true);
+
+  // What was left out can be read, a channel at a time, and is whole
+  // there: the rest of the target is as the post said it.
+  for (const target of omitted) {
+    expect(await targetOf(api, post.id, target.channelId)).toEqual({
+      ...target,
+      text: part,
+      thread,
+      textOmitted: false,
+    });
+  }
+  // The same in the other answers that have the post: a read, and the
+  // repeat of the request that changed it.
+  expect((await api.post(post.id)).targets).toEqual(targets);
+  const again = await api.call(`/posts/${post.id}`, {
+    method: "PATCH",
+    json: { metadata: { mastodon: { text: part, thread } } },
+    headers: { "Idempotency-Key": "large-2" },
+  });
+  expect(again.headers.get("Idempotent-Replayed")).toBe("true");
+  expect(apiPostSchema.parse(await again.json()).targets).toEqual(targets);
+
+  // A channel that gets the text of the post says so there too, and a
+  // channel that the post does not go to, or a post that is not there,
+  // is a 404.
+  const [follower] = follows;
+  if (!follower) throw new Error("Every channel has a text of its own");
+  expect(await targetOf(api, post.id, follower.channelId)).toEqual(follower);
+  const elsewhere = "01939c2e-0000-7000-8000-000000000000";
+  expect(
+    await api.refused(`/posts/${post.id}/targets/${elsewhere}`, {}, 404),
+  ).toEqual({
+    error: "NotFoundError",
+    message: "The post does not go to this channel",
+  });
+  expect(
+    await api.refused(
+      `/posts/${elsewhere}/targets/${omitted[0]?.channelId}`,
+      {},
+      404,
+    ),
+  ).toEqual({ error: "NotFoundError", message: "There is no such post" });
 
   // A page ends before the post that it has no room for, and the next
   // one begins with it.
@@ -436,10 +504,12 @@ it("keeps a small record of a large post under its Idempotency-Key, and answers 
   );
   const page = await next.text();
   expect(page.length).toBeLessThan(maxApiAnswerTextLength + 50_000);
-  expect(apiPostListSchema.parse(JSON.parse(page))).toMatchObject({
-    posts: [{ id: post.id }],
-    pageInfo: { hasNextPage: false },
-  });
+  // The post is whole on its page, as it is by itself: a page never has
+  // a part of a post, and what the post leaves out it says there too.
+  const listed = apiPostListSchema.parse(JSON.parse(page));
+  expect(listed.pageInfo.hasNextPage).toBe(false);
+  expect(listed.posts).toHaveLength(1);
+  expect(listed.posts[0]?.targets).toEqual(targets);
 });
 
 it("keeps nothing of a request that a bug of pigy's failed, and carries it out when it is repeated", async () => {
@@ -715,7 +785,7 @@ it("documents every route that there is, and has a route for everything that it 
     const [method = "", path = ""] = route.split(" ");
     const response = await test
       .browser()
-      .fetch(`/api/v1${path.replace("{id}", "x")}`, { method });
+      .fetch(`/api/v1${path.replace(/\{\w+\}/g, "x")}`, { method });
     expect(response.status, route).toBe(401);
   }
 

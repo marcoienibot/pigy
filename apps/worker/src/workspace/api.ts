@@ -19,6 +19,7 @@ import {
   type ApiMode,
   type ApiPost,
   type ApiPostingSchedule,
+  type ApiTarget,
   apiDays,
   apiTime,
   type CreatePostRequest,
@@ -59,6 +60,7 @@ export type ApiCall =
   | { op: "getChannel"; id: string }
   | { op: "listPosts"; query: ListPostsQuery }
   | { op: "getPost"; id: string }
+  | { op: "getPostTarget"; id: string; channelId: string }
   | { op: "createPost"; body: CreatePostRequest }
   | { op: "updatePost"; id: string; body: UpdatePostRequest }
   | { op: "deletePost"; id: string }
@@ -298,6 +300,50 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
   });
 
   /**
+   * The delivery `target` of a post with the parts `parts`, as the API
+   * says it. `room` is what is left of the answer for the texts that
+   * accounts have of their own, and is used up here. Without a `room`
+   * the text of the account is said whatever its length.
+   */
+  const targetResource = (
+    target: Row<"post_target">,
+    parts: Row<"post_part">[],
+    room?: { left: number },
+  ): ApiTarget => {
+    const customized = parts.some((part) => part.targetId === target.id);
+    const gets = partsFor(parts, target.id);
+    const [text, ...further] = gets;
+    const published = findRows(
+      db,
+      "target_part_result",
+      "targetId",
+      target.id,
+    ).find(({ partId }) => partId === text?.id);
+    // The text of an account is said where the account has one of its
+    // own, and where the answer has room for it. Every other account
+    // gets the text of the post, which the post says once. A text that
+    // has no room is said to be left out: `textOmitted`.
+    const own = customized && (!room || lengthOf(gets) <= room.left);
+    if (own && room) room.left -= lengthOf(gets);
+    return {
+      channelId: target.channelId,
+      service: readRow(db, "channel", target.channelId)?.network ?? null,
+      status: target.status,
+      text: own ? (text?.text ?? "") : null,
+      thread: own ? further.map((part) => ({ text: part.text })) : null,
+      customized,
+      textOmitted: customized && !own,
+      link: published?.url ?? null,
+      remoteId: published?.remoteId ?? null,
+      error: target.error,
+      disconnected: target.disconnected,
+      sentAt: target.sentAt === null ? null : apiTime(target.sentAt),
+      // Engagement comes with phase 10.
+      metrics: null,
+    };
+  };
+
+  /**
    * The post as the API says it. `room` is what is left of the answer for
    * the texts that accounts have of their own, and is used up here.
    */
@@ -319,37 +365,7 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
       heldAt: post.heldAt === null ? null : apiTime(post.heldAt),
       createdAt: apiTime(post.createdAt),
       updatedAt: apiTime(post.updatedAt),
-      targets: targets.map((target) => {
-        const customized = parts.some((part) => part.targetId === target.id);
-        const gets = partsFor(parts, target.id);
-        const [text, ...further] = gets;
-        const published = findRows(
-          db,
-          "target_part_result",
-          "targetId",
-          target.id,
-        ).find(({ partId }) => partId === text?.id);
-        // The text of an account is said where the account has one of
-        // its own, and where the answer has room for it. Every other
-        // account gets the text of the post, which the post says once.
-        const own = customized && lengthOf(gets) <= room.left;
-        if (own) room.left -= lengthOf(gets);
-        return {
-          channelId: target.channelId,
-          service: readRow(db, "channel", target.channelId)?.network ?? null,
-          status: target.status,
-          text: own ? (text?.text ?? "") : null,
-          thread: own ? further.map((part) => ({ text: part.text })) : null,
-          customized,
-          link: published?.url ?? null,
-          remoteId: published?.remoteId ?? null,
-          error: target.error,
-          disconnected: target.disconnected,
-          sentAt: target.sentAt === null ? null : apiTime(target.sentAt),
-          // Engagement comes with phase 10.
-          metrics: null,
-        };
-      }),
+      targets: targets.map((target) => targetResource(target, parts, room)),
     };
   };
 
@@ -578,6 +594,23 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
 
     case "getPost":
       return ok(postResource(postOf(call.id)));
+
+    case "getPostTarget": {
+      const post = postOf(call.id);
+      const target = targetsOf(post.id).find(
+        ({ channelId }) => channelId === call.channelId,
+      );
+      if (!target) {
+        throw new ApiRefusal(404, "The post does not go to this channel");
+      }
+      // Without a budget: the text of one account is at most `maxParts`
+      // parts of `maxPartTextLength` characters, which `part.add` and
+      // `target.customize` of the mutators hold it to. That is what
+      // `maxApiAnswerTextLength` is, so one text is never left out.
+      return ok(
+        targetResource(target, findRows(db, "post_part", "postId", post.id)),
+      );
+    }
 
     case "createPost": {
       const { body } = call;

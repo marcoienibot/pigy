@@ -44,9 +44,15 @@ export const maxApiBodyBytes = 256 * 1024;
  * - A page of posts ends before the post that would take it past this,
  *   and has one post at least.
  * - One post says the texts that its channels have of their own for as
- *   long as there is room, and says null for the rest of them, with
- *   `customized` true. The text of the post itself, at most `maxParts`
+ *   long as there is room. For the rest of them it says that it left
+ *   the text out, `textOmitted`, and never only null, which is what a
+ *   channel without a text of its own says: an answer that lacks
+ *   something says so. The text of the post itself, at most `maxParts`
  *   parts of `maxPartTextLength` characters, always has room.
+ * - What was left out is read with `getPostTarget`, one channel at a
+ *   time. The text of one channel always has room: it is at most
+ *   `maxParts` parts of `maxPartTextLength` characters too, by the
+ *   mutators that write it, which is this budget and no more.
  */
 export const maxApiAnswerTextLength = 1_000_000;
 
@@ -248,7 +254,7 @@ export const movePostRequestSchema = named(
 
 export type MovePostRequest = z.infer<typeof movePostRequestSchema>;
 
-const apiTargetSchema = named(
+export const apiTargetSchema = named(
   "Target",
   "The delivery of a post to one channel.",
   z.strictObject({
@@ -263,7 +269,7 @@ const apiTargetSchema = named(
       .string()
       .nullable()
       .describe(
-        `The first part of the text that the channel has of its own. Null if it has none: it gets the text of the post, \`text\` and \`metadata.thread\` of the post. Also null, with \`customized\` true, for a text that the answer has no room for: an answer carries at most ${maxApiAnswerTextLength} characters of texts.`,
+        "The first part of the text that the channel has of its own. Null if it has none: it gets the text of the post, `text` and `metadata.thread` of the post. Also null where `textOmitted` is true.",
       ),
     thread: z
       .array(threadPartSchema)
@@ -274,6 +280,11 @@ const apiTargetSchema = named(
     customized: z
       .boolean()
       .describe("True if the channel has a text of its own."),
+    textOmitted: z
+      .boolean()
+      .describe(
+        `True if the channel has a text of its own that this answer leaves out: \`text\` and \`thread\` are null, and are not what the channel gets. An answer carries at most ${maxApiAnswerTextLength} characters of texts, and a post says the texts of its channels for as long as there is room. Read the text that was left out with \`GET /posts/{id}/targets/{channelId}\`, which leaves nothing out.`,
+      ),
     link: z
       .string()
       .nullable()
@@ -330,6 +341,8 @@ export const apiPostSchema = named(
 );
 
 export type ApiPost = z.infer<typeof apiPostSchema>;
+
+export type ApiTarget = z.infer<typeof apiTargetSchema>;
 
 /** How many posts a page has at most, and when nothing is said. */
 export const maxApiPageSize = 100;
@@ -505,7 +518,7 @@ export type PutPostingScheduleRequest = z.infer<
 /** A route of the API. */
 export type ApiOperation = {
   method: "get" | "post" | "put" | "patch" | "delete";
-  /** Under `apiBasePath`, with `{id}` for a parameter. */
+  /** Under `apiBasePath`, with a parameter in braces: `{id}`. */
   path: string;
   summary: string;
   description?: string;
@@ -581,6 +594,16 @@ export const apiOperations = {
     scope: "posts:read",
     status: 200,
     response: apiPostSchema,
+  },
+  getPostTarget: {
+    method: "get",
+    path: "/posts/{id}/targets/{channelId}",
+    summary: "Get the delivery of a post to one channel",
+    description:
+      "The delivery of the post `id` to the channel `channelId`, as an entry of `targets` of the post, with the text that the channel has of its own in full: `textOmitted` is always false here. It is how to read a text that the answer of a post, or of a page of posts, had no room for. A 404 if there is no such post, or if it does not go to that channel.",
+    scope: "posts:read",
+    status: 200,
+    response: apiTargetSchema,
   },
   updatePost: {
     method: "patch",
