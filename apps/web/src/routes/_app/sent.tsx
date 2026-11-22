@@ -26,6 +26,8 @@ import { networkInfo } from "@/lib/networks";
 import {
   canDelete,
   postStatusWords,
+  postTimeWord,
+  publishedPosts,
   type SentPost,
   type SentTarget,
   type StatusWords,
@@ -276,7 +278,9 @@ function SentItem({
         <p className="flex flex-wrap items-center gap-x-2 px-3 pt-1 pb-2 text-xs text-muted-foreground">
           <Status words={words} />
           <span aria-hidden="true">·</span>
-          <span>Published {whenAgo(post.publishedAt, now)}</span>
+          <span>
+            {postTimeWord(post)} {whenAgo(post.publishedAt, now)}
+          </span>
           {post.parts.length > 1 && (
             <>
               <span aria-hidden="true">·</span>
@@ -457,50 +461,54 @@ function PartLinks({
   sandbox: boolean;
   networkLabel: string;
 }) {
-  const { published, channel } = target;
-  const one = published.length === 1;
-  const links: ReactNode[] = published.map(
-    ({ partId, remoteId, url }, index) => {
-      const label = one ? null : `Part ${index + 1}`;
-      if (sandbox) {
-        return (
-          <Link
-            key={partId}
-            to="/simulator"
-            search={{
-              ...(channel && {
-                account: channel.handle,
-                network: channel.network,
-              }),
-              post: remoteId,
-            }}
-            className={linkStyle}
-          >
-            {label ?? "See it in the simulated feed"}
-          </Link>
-        );
-      }
-      if (!url) {
-        return label ? (
-          <span key={partId} className="text-muted-foreground">
-            {label}
-          </span>
-        ) : null;
-      }
+  const { channel } = target;
+  // A post of the network is one link, however many parts are in it.
+  const posts = publishedPosts(target.published);
+  const one = posts.length === 1;
+  const links: ReactNode[] = posts.map(({ remoteId, url, first, last }) => {
+    const label = one
+      ? null
+      : first === last
+        ? `Part ${first}`
+        : `Parts ${first}–${last}`;
+    if (sandbox) {
       return (
-        <a
-          key={partId}
-          href={url}
-          target="_blank"
-          rel="noreferrer"
+        <Link
+          key={remoteId}
+          to="/simulator"
+          search={{
+            ...(channel && {
+              account: channel.handle,
+              network: channel.network,
+            }),
+            post: remoteId,
+          }}
           className={linkStyle}
         >
-          {label ?? `View on ${networkLabel}`}
-          <ExternalLink aria-hidden="true" className="size-3" />
-        </a>
+          {label ?? "See it in the simulated feed"}
+        </Link>
       );
-    },
-  );
+    }
+    if (!url) {
+      return label ? (
+        <span key={remoteId} className="text-muted-foreground">
+          {label}
+        </span>
+      ) : null;
+    }
+    return (
+      <a
+        key={remoteId}
+        href={url}
+        target="_blank"
+        rel="noreferrer"
+        className={linkStyle}
+      >
+        {label ?? `View on ${networkLabel}`}
+        <ExternalLink aria-hidden="true" className="size-3" />
+      </a>
+    );
+  });
   // A network that gives no link, for a post of one part.
   if (links.every((link) => link === null)) return null;
   return (

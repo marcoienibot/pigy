@@ -10,6 +10,8 @@ import {
 import {
   canDelete,
   postStatusWords,
+  postTimeWord,
+  publishedPosts,
   selectSent,
   targetExplanation,
 } from "@/lib/sent";
@@ -198,6 +200,26 @@ describe("postStatusWords", () => {
     );
   });
 
+  it("does not say that a post has failed whose only trouble is a delivery that nobody knows the end of", () => {
+    expect(postStatusWords(of("error", ["uncertain"]))).toEqual({
+      label: "Unknown",
+      tone: "unsure",
+    });
+    // The other delivery arrived, and nothing is known to have failed.
+    expect(postStatusWords(of("error", ["sent", "uncertain"])).label).toBe(
+      "Unknown",
+    );
+  });
+
+  it("says that a post was published only when something of it is known to be", () => {
+    expect(postTimeWord(of("sent", ["sent"]))).toBe("Published");
+    expect(postTimeWord(of("error", ["sent", "error"]))).toBe("Published");
+    // Nothing of these is anywhere, as far as anybody knows.
+    expect(postTimeWord(of("error", ["uncertain"]))).toBe("Tried");
+    expect(postTimeWord(of("error", ["error"]))).toBe("Tried");
+    expect(postTimeWord(of("sending", ["sending"]))).toBe("Started");
+  });
+
   it("offers to delete a post once it has ended, and not while it is sent", () => {
     expect(canDelete(of("sending", ["sending"]))).toBe(false);
     expect(canDelete(of("error", ["error"]))).toBe(true);
@@ -207,7 +229,10 @@ describe("postStatusWords", () => {
 
 describe("targetExplanation", () => {
   /** What the screen says under an unknown delivery to `to`. */
-  const unknownTo = (to: ReturnType<typeof channel>) => {
+  const unknownTo = (
+    to: ReturnType<typeof channel>,
+    error: string | null = null,
+  ) => {
     const published = post({ status: "error" });
     const [item] = selectSent(
       tablesOf({
@@ -215,7 +240,11 @@ describe("targetExplanation", () => {
         post_part: [part(published.id)],
         channel: [to],
         post_target: [
-          target(published.id, to.id, { status: "uncertain", queuedAt: 1 }),
+          target(published.id, to.id, {
+            status: "uncertain",
+            error,
+            queuedAt: 1,
+          }),
         ],
       }),
     );
@@ -234,5 +263,52 @@ describe("targetExplanation", () => {
     // there only when something went wrong in pigy.
     expect(unknownTo(channel())).not.toContain("no way to look");
     expect(unknownTo(channel())).toContain("Look at the account first");
+  });
+
+  it("does not say again what the reason of an unknown delivery says already", () => {
+    const linkedin = channel({
+      network: "linkedin",
+      handle: "Ada Lovelace",
+      limits: { network: "linkedin", maxCharacters: 3000 },
+    });
+    // What the adapter for LinkedIn says when no answer came. It says
+    // that pigy cannot tell, that LinkedIn gives it no way to look, and
+    // to look at the account first.
+    const reason =
+      "LinkedIn did not answer, so pigy cannot tell whether the post is on LinkedIn, and LinkedIn gives it no way to look. Look at the account before you try again.";
+    // Under it, only what it leaves out.
+    expect(unknownTo(linkedin, reason)).toBe(
+      "If the post is there, do not try again, or it may be posted twice.",
+    );
+    expect(unknownTo(channel(), "pigy lost track.")).toBe(
+      "If the post is there, do not try again, or it is posted twice.",
+    );
+  });
+});
+
+describe("publishedPosts", () => {
+  const part = (partId: string, remoteId: string) => ({
+    partId,
+    remoteId,
+    url: `https://network.example/${remoteId}`,
+  });
+
+  it("is one post for the parts of a thread that a network has joined into one, as LinkedIn does", () => {
+    expect(
+      publishedPosts([part("a", "1"), part("b", "1"), part("c", "1")]),
+    ).toEqual([
+      { remoteId: "1", url: "https://network.example/1", first: 1, last: 3 },
+    ]);
+  });
+
+  it("is a post for each part where every part is a post of its own", () => {
+    expect(
+      publishedPosts([part("a", "1"), part("b", "2")]).map(
+        ({ remoteId, first, last }) => [remoteId, first, last],
+      ),
+    ).toEqual([
+      ["1", 1, 1],
+      ["2", 2, 2],
+    ]);
   });
 });

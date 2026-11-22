@@ -174,15 +174,28 @@ export const targetStatusWords: Record<TargetStatus, StatusWords> = {
 /**
  * What a status of a delivery means, said under the target where the
  * status alone does not say it: PLAN.md section 5.
+ *
+ * A delivery that nobody knows the end of comes with the reason, which
+ * says that pigy cannot tell and asks the person to look at the account
+ * first: every such reason does. What is said under it is then only what
+ * the reason does not say, and not the same again in other words.
  */
 export function targetExplanation(target: SentTarget): string | null {
   switch (target.status) {
     case "queued":
       return "Waits its turn: posts to one account go out one after the other.";
-    case "uncertain":
-      return target.channel && networkInfo[target.channel.network].cannotLook
-        ? `pigy cannot tell whether this post reached the account, and ${networkInfo[target.channel.network].label} gives it no way to look. Look at the account first: if the post is there, do not try again, or it may be posted twice.`
-        : "pigy cannot tell whether this post reached the account. Look at the account first: if the post is there, do not try again, or it is posted twice.";
+    case "uncertain": {
+      // The network of a channel where pigy can neither look for a post
+      // nor ask a second time without posting twice, if it is one.
+      const blind =
+        target.channel && networkInfo[target.channel.network].cannotLook
+          ? networkInfo[target.channel.network].label
+          : null;
+      const advice = `If the post is there, do not try again, or it ${blind ? "may be" : "is"} posted twice.`;
+      if (target.error) return advice;
+      const why = blind ? `, and ${blind} gives it no way to look` : "";
+      return `pigy cannot tell whether this post reached the account${why}. Look at the account first: ${advice.charAt(0).toLowerCase()}${advice.slice(1)}`;
+    }
     default:
       return null;
   }
@@ -195,12 +208,60 @@ export function postStatusWords(post: SentPost): StatusWords {
       return { label: "Sending", tone: "busy" };
     case "sent":
       return { label: "Sent", tone: "good" };
-    case "error":
+    case "error": {
+      const has = (status: TargetStatus) =>
+        post.targets.some((target) => target.status === status);
+      // Nothing is known to have failed: what is wrong with the post is
+      // that nobody knows where a delivery of it ended.
+      if (!has("error") && has("uncertain")) {
+        return { label: "Unknown", tone: "unsure" };
+      }
       // Some of its targets may have arrived: they say which.
-      return post.targets.some((target) => target.status === "sent")
+      return has("sent")
         ? { label: "Partly sent", tone: "bad" }
         : { label: "Failed", tone: "bad" };
+    }
   }
+}
+
+/**
+ * What the time of a post is the time of, in a word that goes before it:
+ * "Published 5m ago". It is the time at which the post was asked to be
+ * sent, and that is when it was published only if something of it was. A
+ * post of which nothing is known to be anywhere is not said to be
+ * published.
+ */
+export function postTimeWord(post: SentPost): string {
+  const somewhere = post.targets.some(
+    ({ status, published }) => status === "sent" || published.length > 0,
+  );
+  if (somewhere) return "Published";
+  return post.status === "sending" ? "Started" : "Tried";
+}
+
+/**
+ * What a delivery has published, as the posts that it made on the
+ * network: one for each part on most networks, and one for all of them on
+ * a network that joins the parts of a thread into one post, as LinkedIn
+ * does. `first` and `last` are the parts that a post holds, counted from
+ * one.
+ */
+export type PublishedPost = {
+  remoteId: string;
+  url: string | null;
+  first: number;
+  last: number;
+};
+
+export function publishedPosts(published: PublishedPart[]): PublishedPost[] {
+  const posts: PublishedPost[] = [];
+  for (const [index, { remoteId, url }] of published.entries()) {
+    const before = posts.at(-1);
+    // The parts of one post follow each other.
+    if (before?.remoteId === remoteId) before.last = index + 1;
+    else posts.push({ remoteId, url, first: index + 1, last: index + 1 });
+  }
+  return posts;
 }
 
 /**

@@ -412,7 +412,10 @@ test("a delivery whose end nobody knows asks the person to look at the account b
         if (change.table === "post_target" && change.row.status === "sent") {
           Object.assign(change.row, {
             status: "uncertain",
-            error: "pigy lost track of this delivery.",
+            // What the Worker says of a delivery whose run stopped
+            // without a word.
+            error:
+              "Something went wrong in pigy while this was being sent, and it cannot tell how far it got. Look at the account before you try again.",
             sentAt: null,
           });
         }
@@ -433,7 +436,10 @@ test("a delivery whose end nobody knows asks the person to look at the account b
   const delivery = deliveryTo(sentPost(page, "Maybe there"), grace);
   await expect(delivery).toContainText("Unknown");
   await expect(delivery).toContainText(
-    "Look at the account first: if the post is there, do not try again",
+    "Look at the account before you try again.",
+  );
+  await expect(delivery).toContainText(
+    "If the post is there, do not try again, or it is posted twice.",
   );
   await expect(
     delivery.getByRole("button", { name: `Retry ${grace}` }),
@@ -493,7 +499,21 @@ test("a post goes out to a simulated LinkedIn account, and one whose answer is l
   await expect(unknown).toContainText(
     "LinkedIn did not answer, so pigy cannot tell whether the post is on LinkedIn",
   );
-  await expect(unknown).toContainText("LinkedIn gives it no way to look");
+  // Said once: what stands under the reason adds what to do about it,
+  // and does not say the reason again in other words.
+  await expect(unknown).toContainText(
+    "If the post is there, do not try again, or it may be posted twice.",
+  );
+  expect(
+    ((await unknown.textContent()) ?? "").match(/no way to look/g),
+  ).toHaveLength(1);
+  // Nothing is known to have failed, and nothing to be published: the
+  // post is headed as what it is.
+  const heading = sentPost(page, "Did it arrive").locator(":scope > p");
+  await expect(heading).toContainText("Unknown");
+  await expect(heading).toContainText(/Tried (just now|\d+m ago)/);
+  await expect(heading).not.toContainText("Failed");
+  await expect(heading).not.toContainText("Published");
 
   // The person looks: the post is there.
   await unknown
