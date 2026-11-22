@@ -184,17 +184,26 @@ export async function turnOnPush(
   // session that is over, or of somebody else who used this browser.
   // Saved again as it is, the first would be turned "on" and never get
   // a message.
-  if (
-    before &&
-    (!madeWith(before, key) || !(await server.state(before.endpoint)))
-  ) {
-    await before.unsubscribe();
-  }
+  const kept =
+    before !== null &&
+    madeWith(before, key) &&
+    (await server.state(before.endpoint));
+  if (before && !kept) await before.unsubscribe();
   const subscription = await manager.subscribe({
     userVisibleOnly: true,
     applicationServerKey: keyBytes(key),
   });
-  await save(server, subscription);
+  try {
+    await save(server, subscription);
+  } catch (error) {
+    // The server has not taken it: it sends to the push services that it
+    // knows, and this browser may have another. A browser that stayed
+    // subscribed would wait at its push service for what never comes.
+    // Not one that the server sends to already, which a save that
+    // failed, as without a connection, has not ended.
+    if (!kept) await subscription.unsubscribe().catch(() => undefined);
+    throw error;
+  }
   memory.write(
     session === null ? null : { session, endpoint: subscription.endpoint },
   );
@@ -225,8 +234,51 @@ async function save(
  * Does nothing for a session that turned nothing on, and nothing where
  * Settings would say something else than "on" or "off": there the person
  * has to do something first.
+ *
+ * It waits for the browser and for the server, and the person does not
+ * wait for it: "Turn off", pressed meanwhile, is what counts. So after
+ * every wait it looks at what the device remembers, which is the choice
+ * of the person in every tab, and stops if that is no longer what it
+ * began with: `standsAs`. One renewal runs at a time for a device, and
+ * the next begins when it has ended, and finds its work done.
  */
-export async function renewPush(
+export function renewPush(
+  device: PushDevice,
+  server: PushServer,
+  memory: PushMemory,
+  session: string | null,
+): Promise<void> {
+  const before = renewals.get(memory) ?? Promise.resolve();
+  const renewal = before
+    // What went wrong in the one before is its caller's to hear of.
+    .catch(() => undefined)
+    .then(() => renew(device, server, memory, session));
+  renewals.set(memory, renewal);
+  return renewal;
+}
+
+/** The last renewal that was begun for what a device remembers. */
+const renewals = new WeakMap<PushMemory, Promise<void>>();
+
+/**
+ * How the choice that the device remembers stands to `turnedOn`, which a
+ * renewal began with: the `same`, turned `off`, or made anew, by a
+ * person or by another renewal, in this tab or another: `other`.
+ */
+function standsAs(
+  memory: PushMemory,
+  turnedOn: TurnedOn,
+): "same" | "off" | "other" {
+  const now = memory.read();
+  if (!now) return "off";
+  // Of another session: somebody has signed in anew on the device and
+  // turned them on, and the subscription of the browser is theirs now.
+  return now.session === turnedOn.session && now.endpoint === turnedOn.endpoint
+    ? "same"
+    : "other";
+}
+
+async function renew(
   device: PushDevice,
   server: PushServer,
   memory: PushMemory,
@@ -241,6 +293,9 @@ export async function renewPush(
   // As it was turned on: nothing to do, and nothing to ask the server.
   if (now?.endpoint === turnedOn.endpoint) return;
   const key = await server.key();
+  // The person has turned notifications off meanwhile, or on anew, and
+  // has seen to the subscription themselves.
+  if (standsAs(memory, turnedOn) !== "same") return;
   if (key === null) return;
   // Of another key: this pigy has a new one, and Settings say "off".
   if (now && !madeWith(now, key)) return;
@@ -250,7 +305,28 @@ export async function renewPush(
       userVisibleOnly: true,
       applicationServerKey: keyBytes(key),
     }));
+  /**
+   * Takes back what this renewal did, where the person has turned
+   * notifications off while it waited: "Turn off" ended the subscription
+   * that the browser had then, and knew of none that came after. Where
+   * they were turned on anew, the subscription is the one that was turned
+   * on, and nothing is taken back.
+   */
+  const overtaken = async (saved: boolean): Promise<boolean> => {
+    const stands = standsAs(memory, turnedOn);
+    if (stands === "same") return false;
+    if (stands === "off") {
+      const left = await manager.getSubscription();
+      if (left?.endpoint === subscription.endpoint) await left.unsubscribe();
+      if (saved) {
+        await server.remove(subscription.endpoint).catch(() => undefined);
+      }
+    }
+    return true;
+  };
+  if (await overtaken(false)) return;
   await save(server, subscription);
+  if (await overtaken(true)) return;
   memory.write({ session: turnedOn.session, endpoint: subscription.endpoint });
 }
 

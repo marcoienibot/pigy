@@ -38,9 +38,14 @@ function setup(
     known?: string[];
     /** What the device remembers of notifications that were turned on. */
     turnedOn?: TurnedOn;
+    /** What the server refuses a subscription with, if it does. */
+    refusal?: Error;
   } = {},
 ) {
   const log: string[] = [];
+  // The answers of the server that a test holds back: each waits here
+  // until the test lets it go.
+  const held = new Map<"key" | "save", Promise<void>>();
   let permission = options.permission ?? "default";
   let subscription: DeviceSubscription | null = null;
   let made = 0;
@@ -87,7 +92,9 @@ function setup(
       getSubscription: async () => subscription,
       subscribe: async ({ applicationServerKey }) => {
         log.push("subscribe");
-        subscription = subscribe(applicationServerKey);
+        // A browser keeps one subscription, and hands it out again for
+        // as long as it stands.
+        subscription ??= subscribe(applicationServerKey);
         return subscription;
       },
     }),
@@ -96,12 +103,16 @@ function setup(
   const server: PushServer = {
     key: async () => {
       log.push("ask for the key");
+      await held.get("key");
       return options.serverKey === undefined ? key : options.serverKey;
     },
     state: async (endpoint) => known.has(endpoint),
     save: async (saved) => {
       log.push(`save ${JSON.stringify(saved)}`);
+      if (options.refusal) throw options.refusal;
+      // The server has it from here on, whenever its answer arrives.
       known.add(saved.endpoint);
+      await held.get("save");
     },
     remove: async (endpoint) => {
       log.push(`remove ${endpoint}`);
@@ -121,6 +132,27 @@ function setup(
     server,
     log,
     memory,
+    /** The endpoints that the server sends to. */
+    known: () => [...known],
+    /** The subscription that the browser has. */
+    subscribed: () => subscription?.endpoint ?? null,
+    /**
+     * Holds the next answers of the server to `what` back, and returns
+     * what lets them go.
+     */
+    hold(what: "key" | "save"): () => void {
+      let release = () => {};
+      held.set(
+        what,
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+      );
+      return () => {
+        held.delete(what);
+        release();
+      };
+    },
     /** The browser replaces its subscription, or takes it away. */
     browserChanges(to: "another" | "none") {
       const key = subscription?.options.applicationServerKey;
@@ -320,6 +352,41 @@ describe("turning notifications on", () => {
     });
   });
 
+  it("ends the subscription that it made when the server does not take it", async () => {
+    // The server sends to the push services that it knows, and this
+    // browser has another.
+    const refusal = new Error(
+      "pigy cannot send notifications to this browser yet.",
+    );
+    const { device, server, log, memory, subscribed } = setup({ refusal });
+
+    await expect(turnOnPush(device, server, memory, session)).rejects.toBe(
+      refusal,
+    );
+
+    // The browser is not left subscribed at a push service that nothing
+    // will ever come from.
+    expect(log.at(-1)).toBe("unsubscribe https://push.example/1");
+    expect(subscribed()).toBeNull();
+    expect(memory.kept()).toBeNull();
+  });
+
+  it("keeps a subscription that the server sends to when it cannot be saved again", async () => {
+    // Notifications are on already, and the save fails, as without a
+    // connection: what works is not taken away for that.
+    const { device, server, memory, subscribed } = setup({
+      subscribedWith: key,
+      known: ["https://push.example/1"],
+      refusal: new Error("No answer"),
+    });
+
+    await expect(turnOnPush(device, server, memory, session)).rejects.toThrow(
+      "No answer",
+    );
+
+    expect(subscribed()).toBe("https://push.example/1");
+  });
+
   it("subscribes nothing for a pigy that is not set up to send", async () => {
     const { device, server, log, memory } = setup({ serverKey: null });
 
@@ -397,6 +464,120 @@ describe("a subscription that the browser has changed by itself", () => {
 
     expect(log).toEqual([]);
     expect(await readPushState(device, server)).toBe("off");
+  });
+
+  // A renewal waits for the server, and the person does not: what they
+  // choose meanwhile is what counts when the answer comes.
+
+  it("turns nothing on again when the person turns notifications off while the renewal waits for the key", async () => {
+    const { device, server, log, memory, browserChanges, hold, subscribed } =
+      turnedOn();
+    // Taken away: the renewal subscribes anew once it has the key.
+    browserChanges("none");
+    const release = hold("key");
+    const renewal = renewPush(device, server, memory, session);
+    await expect.poll(() => log).toContain("ask for the key");
+
+    await turnOffPush(device, server, memory);
+    release();
+    await renewal;
+
+    expect(log).not.toContain("subscribe");
+    expect(subscribed()).toBeNull();
+    expect(memory.kept()).toBeNull();
+    expect(await readPushState(device, server)).toBe("off");
+  });
+
+  it("hands the server no subscription that the person has ended while the renewal waited for the key", async () => {
+    const { device, server, log, memory, browserChanges, hold, known } =
+      turnedOn();
+    // Replaced: the renewal holds the new one while it waits.
+    browserChanges("another");
+    const release = hold("key");
+    const renewal = renewPush(device, server, memory, session);
+    await expect.poll(() => log).toContain("ask for the key");
+
+    await turnOffPush(device, server, memory);
+    release();
+    await renewal;
+
+    expect(log.filter((entry) => entry.startsWith("save"))).toEqual([]);
+    expect(known()).not.toContain("https://push.example/1-2");
+    expect(memory.kept()).toBeNull();
+  });
+
+  it("takes back what it subscribed and saved when the person turns notifications off while the server saves", async () => {
+    const {
+      device,
+      server,
+      log,
+      memory,
+      browserChanges,
+      hold,
+      known,
+      subscribed,
+    } = turnedOn();
+    browserChanges("none");
+    const release = hold("save");
+    const renewal = renewPush(device, server, memory, session);
+    await expect
+      .poll(() => log.some((entry) => entry.startsWith("save")))
+      .toBe(true);
+
+    await turnOffPush(device, server, memory);
+    release();
+    await renewal;
+
+    // Whichever of the two the server heard last, it does not send here.
+    expect(known()).not.toContain("https://push.example/1-2");
+    expect(subscribed()).toBeNull();
+    expect(memory.kept()).toBeNull();
+  });
+
+  it("leaves it at what the person turned on anew while the renewal waited", async () => {
+    const { device, server, log, memory, browserChanges, hold, subscribed } =
+      turnedOn();
+    browserChanges("none");
+    const release = hold("key");
+    const renewal = renewPush(device, server, memory, session);
+    await expect.poll(() => log).toContain("ask for the key");
+
+    // Off and on again, in this tab or another: both ask for the key,
+    // and the server answers them when it answers the renewal.
+    await turnOffPush(device, server, memory);
+    const turned = turnOnPush(device, server, memory, session);
+    await expect
+      .poll(() => log.filter((entry) => entry === "ask for the key").length)
+      .toBe(2);
+    release();
+    expect(await turned).toBe("on");
+    const chosen = memory.kept();
+    await renewal;
+
+    // The renewal has not subscribed a second time, and has taken
+    // nothing away: the choice that is stored is the person's.
+    expect(log.filter((entry) => entry === "subscribe")).toHaveLength(1);
+    expect(memory.kept()).toEqual(chosen);
+    expect(subscribed()).toBe(chosen?.endpoint);
+    expect(await readPushState(device, server)).toBe("on");
+  });
+
+  it("runs one renewal at a time", async () => {
+    const { device, server, log, memory, browserChanges, hold } = turnedOn();
+    browserChanges("none");
+    const release = hold("key");
+    // The app starts, and the service worker says that the subscription
+    // has changed: two renewals of the same thing.
+    const first = renewPush(device, server, memory, session);
+    const second = renewPush(device, server, memory, session);
+    await expect.poll(() => log).toContain("ask for the key");
+    release();
+    await Promise.all([first, second]);
+
+    // The second found the work done, and asked the server nothing.
+    expect(log.filter((entry) => entry === "ask for the key")).toHaveLength(1);
+    expect(log.filter((entry) => entry === "subscribe")).toHaveLength(1);
+    expect(log.filter((entry) => entry.startsWith("save"))).toHaveLength(1);
   });
 
   it("asks nobody where the person has taken the permission back", async () => {
