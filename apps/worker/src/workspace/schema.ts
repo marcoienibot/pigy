@@ -134,8 +134,10 @@ export const postTargets = sqliteTable(
     error: text("error"),
     queuedAt: integer("queued_at"),
     sentAt: integer("sent_at"),
-    // False for the targets from before the column: none of them is
-    // waiting or under way with a notification still to be decided.
+    // The targets from before the column that a disconnect had ended are
+    // marked by the migration that adds it, by the text of their error:
+    // a post of theirs that is still being sent to another account has
+    // its notification decided after the upgrade.
     disconnected: integer("disconnected", { mode: "boolean" })
       .notNull()
       .default(false),

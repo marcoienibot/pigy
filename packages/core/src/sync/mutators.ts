@@ -324,7 +324,10 @@ function seenNotification(
   return notification?.createdAt === seen.createdAt ? notification : undefined;
 }
 
-// What a target is told when its account is disconnected under it.
+// What a target is told when its account is disconnected under it. The
+// migration that added `disconnected` to the targets of a workspace found
+// the ones from before by this text: a change of the words here does not
+// reach it, and need not.
 const disconnectedMessage =
   "The account was disconnected before the post was sent.";
 

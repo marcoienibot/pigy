@@ -252,6 +252,91 @@ it("runs the first mutation after an upgrade later than the ones before it, on a
   expect(client.table("post")[0]?.updatedAt).toBe(edited + 1);
 });
 
+it("says nothing in the inbox, after an upgrade, of a post whose other account was disconnected before the upgrade", async () => {
+  const { test, browser, workspace } = await start();
+  const identity = await identityOf(test, workspace);
+  const [postId, partId, endedId, underWayId] = [
+    newId(),
+    newId(),
+    newId(),
+    newId(),
+  ];
+  const at = test.clock.time.getTime();
+  await runInDurableObject(objectOf(workspace), async (_, state) => {
+    // The database as the Worker before the inbox left it, in the middle
+    // of a post to two accounts: the person has disconnected one of them,
+    // which ended its delivery with the words of `channel.disconnect`,
+    // and the other delivery is under way. A target did not say then
+    // that a disconnect had ended it.
+    await state.storage.deleteAll();
+    await migrate(drizzle(state.storage), {
+      ...migrations,
+      journal: {
+        ...migrations.journal,
+        entries: migrations.journal.entries.filter(({ idx }) => idx <= 11),
+      },
+    });
+    const { sql } = state.storage;
+    sql.exec(
+      "insert into workspace (id, owner_id, environment, seq, log_floor) values (?, ?, ?, 0, 0)",
+      identity.id,
+      identity.ownerId,
+      identity.environment,
+    );
+    sql.exec(
+      "insert into post (id, status, created_at, updated_at) values (?, 'sending', ?, ?)",
+      postId,
+      at,
+      at,
+    );
+    sql.exec(
+      "insert into post_part (id, post_id, position, text) values (?, ?, 0, 'To two accounts')",
+      partId,
+      postId,
+    );
+    sql.exec(
+      "insert into post_target (id, post_id, channel_id, status, attempt, error, queued_at) values (?, ?, ?, 'error', 1, 'The account was disconnected before the post was sent.', ?)",
+      endedId,
+      postId,
+      newId(),
+      at,
+    );
+    sql.exec(
+      "insert into post_target (id, post_id, channel_id, status, attempt, queued_at) values (?, ?, ?, 'sending', 1, ?)",
+      underWayId,
+      postId,
+      newId(),
+      at,
+    );
+  });
+  // The Worker of today starts the object, which brings its database up
+  // to date, and the delivery that was under way arrives.
+  await evictDurableObject(objectOf(workspace));
+  expect(
+    await mutateWorkspace(env.WORKSPACE, identity, "target.end", {
+      id: underWayId,
+      attempt: 1,
+      status: "sent",
+    }),
+  ).toEqual({ ok: true });
+
+  const client = new SyncClient();
+  await client.connect(browser, workspace);
+  // The post has not arrived everywhere, so it is in `error`, because of
+  // what the person did themselves, which the upgrade has to have marked:
+  // an unmarked target is a delivery that failed, of which the inbox
+  // tells.
+  expect(client.table("post")).toMatchObject([{ id: postId, status: "error" }]);
+  expect(
+    Object.fromEntries(
+      client
+        .table("post_target")
+        .map(({ id, disconnected }) => [id, disconnected]),
+    ),
+  ).toEqual({ [endedId]: true, [underWayId]: false });
+  expect(client.table("notification")).toEqual([]);
+});
+
 it("brings two clients to the same state after they changed the same row at once", async () => {
   const { browser, workspace, client: first } = await connected();
   const { partId } = await createPost(first, "Draft");
