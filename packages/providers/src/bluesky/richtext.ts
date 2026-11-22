@@ -64,41 +64,31 @@ export function facetsOf(
   text: string,
   dids: ReadonlyMap<string, string>,
 ): Facet[] {
-  return detectEntities("bluesky", text).flatMap((entity): Facet[] => {
+  const facets: Facet[] = [];
+  for (const entity of detectEntities("bluesky", text)) {
     const index = utf8Range(text, entity);
-    switch (entity.kind) {
-      case "link":
-        return [
-          {
-            index,
-            features: [
-              { $type: "app.bsky.richtext.facet#link", uri: entity.url },
-            ],
-          },
-        ];
-      case "hashtag":
-        return [
-          {
-            index,
-            // Without its sign: "Posts" of docs.bsky.app.
-            features: [
-              { $type: "app.bsky.richtext.facet#tag", tag: entity.tag },
-            ],
-          },
-        ];
-      case "mention": {
-        const did = dids.get(entity.name);
-        return did === undefined
-          ? []
-          : [
-              {
-                index,
-                features: [{ $type: "app.bsky.richtext.facet#mention", did }],
-              },
-            ];
+    if (entity.kind === "link") {
+      facets.push({
+        index,
+        features: [{ $type: "app.bsky.richtext.facet#link", uri: entity.url }],
+      });
+    } else if (entity.kind === "hashtag") {
+      facets.push({
+        index,
+        // Without its sign: "Posts" of docs.bsky.app.
+        features: [{ $type: "app.bsky.richtext.facet#tag", tag: entity.tag }],
+      });
+    } else {
+      const did = dids.get(entity.name);
+      if (did !== undefined) {
+        facets.push({
+          index,
+          features: [{ $type: "app.bsky.richtext.facet#mention", did }],
+        });
       }
     }
-  });
+  }
+  return facets;
 }
 
 /** The first link of `text`, or undefined. */
