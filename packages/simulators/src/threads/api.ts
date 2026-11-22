@@ -407,7 +407,7 @@ export async function createContainer(
     } catch {
       url = undefined;
     }
-    if (!url || url.protocol !== "https:") {
+    if (url?.protocol !== "https:") {
       return invalidParameter(
         state,
         "Param image_url must be an HTTPS address",
