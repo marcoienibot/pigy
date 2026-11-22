@@ -1,11 +1,15 @@
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { lateMs, type Row } from "@pigy/core";
-import { feed } from "@pigy/simulators/world";
+import { feed, type SimToken } from "@pigy/simulators/world";
 import { expect, it, vi } from "vitest";
 import { deliveryWatchMs } from "../src/workspace/object.ts";
 import { WorkspaceStore } from "../src/workspace/store.ts";
 import { device } from "./app-client.ts";
-import { connectBlueskyLive } from "./channels.ts";
+import {
+  connectBlueskyLive,
+  connectLinkedInLive,
+  connectThreadsLive,
+} from "./channels.ts";
 import { clock } from "./clock.ts";
 import { type Browser, expectErrors } from "./helpers.ts";
 import {
@@ -236,6 +240,67 @@ it("publishes a scheduled post to Mastodon and to Bluesky", async () => {
       feed(test.network.world, [network]).map(({ post }) => post.text),
     ).toEqual(["To both"]);
   }
+});
+
+it("publishes a scheduled thread to LinkedIn as the one post that it is there, and to Threads as replies", async () => {
+  const { test, browser, workspace } = await ready();
+  const linkedin = await connectLinkedInLive(test, browser, workspace);
+  const threads = await connectThreadsLive(test, browser, workspace);
+  const later = await watching(browser, workspace);
+  const { postId } = await writeDraft(later, workspace, "One", "Two");
+  await mutate(
+    later,
+    ...[linkedin, threads].map(({ channel }) =>
+      later.mutation("target.add", {
+        id: newId(),
+        postId,
+        channelId: channel ?? "",
+      }),
+    ),
+    later.mutation("post.schedule", { id: postId, dueAt: now() + 2 * minute }),
+  );
+
+  test.advance(2 * minute);
+  await alarm(workspace);
+
+  // What a post that is published at once makes of a thread on each
+  // network, a due post makes too: it goes the same way.
+  expect(await settled(later, postId)).toMatchObject({ status: "sent" });
+  const texts = (network: "linkedin" | "threads") =>
+    feed(test.network.world, [network]).map(({ post }) => post.text);
+  expect(texts("linkedin")).toEqual(["One\n\nTwo"]);
+  expect(texts("threads")).toEqual(["One", "Two"]);
+});
+
+it("fails a due post as a publish fails when the access of its account has ended by its time", async () => {
+  const { test, browser, workspace } = await ready();
+  const linkedin = await connectLinkedInLive(test, browser, workspace);
+  const client = await watching(browser, workspace);
+  const { postId, targets } = await schedule(
+    client,
+    workspace,
+    "After the access",
+    now() + 2 * minute,
+    linkedin.channel ?? "",
+  );
+  // The token ends before the time comes, as LinkedIn's does after its
+  // 60 days. The clock is not moved that far: the post would be held as
+  // one that is found too late, and nothing would be asked of LinkedIn.
+  const [token] = test.network.world.tokens<SimToken>("linkedin");
+  test.network.world.expireToken("linkedin", token?.token ?? "");
+
+  test.advance(2 * minute);
+  await alarm(workspace);
+
+  expect(await settled(client, postId)).toMatchObject({ status: "error" });
+  expect(targetOf(client, targets[0] ?? "")).toMatchObject({
+    status: "error",
+    error: expect.stringContaining("60 days"),
+  });
+  expect(
+    client.table("channel").find(({ id }) => id === linkedin.channel)?.status,
+  ).toBe("needs_reconnect");
+  expect(feed(test.network.world, ["linkedin"])).toEqual([]);
 });
 
 it("sets its alarm to the earliest scheduled post, whichever was scheduled first", async () => {

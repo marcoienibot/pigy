@@ -195,8 +195,11 @@ test("a draft is scheduled for a time from its editor, leaves the drafts for the
   await publishPanel(page).getByRole("button", { name: "Schedule…" }).click();
   const dialog = page.getByRole("dialog", { name: "Schedule this post" });
   const field = dialog.getByLabel("Date and time");
-  // The dialog names the zone that the time is in.
-  await expect(dialog).toContainText("Europe/Rome");
+  // The dialog names the zone that the time is in: the one of this
+  // device, which a workspace that has none takes with its first post.
+  await expect(dialog).toContainText(
+    "In the time zone of this device, Europe/Rome",
+  );
   // It begins with a time that is still to come, on the hour.
   await expect(field).toHaveValue(/^\d{4}-\d\d-\d\dT\d\d:00$/);
 
@@ -213,7 +216,8 @@ test("a draft is scheduled for a time from its editor, leaves the drafts for the
   await expect(editor(page)).toHaveCount(0);
   await expect(draftRow(page, text)).toHaveCount(0);
   await expect(
-    notice(page, "Scheduled for tue, 6 may 2031, 09:30"),
+    // The date as the Queue screen writes it, names and all.
+    notice(page, "Scheduled for Tue, 6 May 2031, 09:30"),
   ).toBeVisible();
 
   await openScreen(page, "Queue");
@@ -246,6 +250,83 @@ test("a draft is scheduled for a time from its editor, leaves the drafts for the
   await expectSync(page, "Synced");
   await openScreen(page, "Drafts");
   await expect(draftRow(page, text)).toBeVisible();
+});
+
+test("the Queue screen and the calendar say whose clocks their times are on, where those are not the clocks of the device", async ({
+  ownPage: page,
+}) => {
+  await openScreen(page, "Channels");
+  await connectSimulated(page, grace);
+  await openScreen(page, "Drafts");
+  const text = "Read in two zones";
+  await draftFor(page, text);
+  await publishPanel(page).getByRole("button", { name: "Schedule…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Schedule this post" });
+  await dialog.getByLabel("Date and time").fill("2031-05-06T09:30");
+  await dialog.getByRole("button", { name: "Schedule" }).click();
+  await expect(editor(page)).toHaveCount(0);
+
+  // The workspace has the zone of this device: there is nothing to say.
+  await openScreen(page, "Queue");
+  const zone = page.getByText("Times are in");
+  await expect(queueRow(page, text)).toContainText("Tue, 6 May 2031, 09:30");
+  await expect(zone).toHaveCount(0);
+
+  // Somebody sets it to another one, as from a device elsewhere.
+  await openSchedule(page);
+  await page
+    .getByRole("combobox", { name: "Time zone" })
+    .selectOption("Asia/Tokyo");
+  await openScreen(page, "Queue");
+  // The same moment, on the clocks of Tokyo, which the screen names:
+  // without that, 16:30 would be read as a time of this device.
+  await expect(queueRow(page, text)).toContainText("Tue, 6 May 2031, 16:30");
+  await expect(zone).toHaveText(
+    "Times are in Asia/Tokyo, the time zone of this workspace.",
+  );
+  expect(await overflowOf(page)).toBe(0);
+  await page
+    .getByRole("navigation", { name: "Queue" })
+    .getByRole("link", { name: "Calendar" })
+    .click();
+  await expect(page.getByRole("region", { name: "Calendar" })).toBeVisible();
+  await expect(zone).toHaveText(
+    "Times are in Asia/Tokyo, the time zone of this workspace.",
+  );
+  // And the dialog says it for the time that it asks for.
+  await page
+    .getByRole("navigation", { name: "Queue" })
+    .getByRole("link", { name: "List" })
+    .click();
+  await act(page, text, "Reschedule…");
+  await expect(
+    page.getByRole("dialog", { name: "Schedule for another time" }),
+  ).toContainText("In the time zone of this workspace, Asia/Tokyo.");
+});
+
+test("the word queue in the command palette leads to the Queue screen, and does not pause the queue", async ({
+  ownPage: page,
+}) => {
+  const palette = page.getByRole("dialog", { name: "Commands" });
+  await page.keyboard.press("ControlOrMeta+k");
+  await palette.getByRole("combobox").fill("queue");
+  // The screen is the first of what is listed, which Enter takes: before
+  // the commands that have the word in them.
+  await expect(palette.getByRole("option").first()).toHaveText("Queue");
+  await expect(
+    palette.getByRole("option", { name: "Pause the queue" }),
+  ).toBeVisible();
+  await page.keyboard.press("Enter");
+
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Queue");
+  await expect(page.getByRole("button", { name: "Pause queue" })).toBeVisible();
+  await expect(page.getByText("The queue is paused.")).toHaveCount(0);
+
+  // The command that pauses is found by what it does.
+  await page.keyboard.press("ControlOrMeta+k");
+  await palette.getByRole("combobox").fill("pause");
+  await page.keyboard.press("Enter");
+  await expect(page.getByText("The queue is paused.")).toBeVisible();
 });
 
 test("the keys and the command palette schedule the open draft, and a draft that cannot go out is not offered", async ({
