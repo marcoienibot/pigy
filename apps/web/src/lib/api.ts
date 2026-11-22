@@ -22,7 +22,9 @@ import {
   mentionsResponseSchema,
   meResponseSchema,
   type Network,
+  type PublishRecordResponse,
   type PushSubscriptionRequest,
+  publishRecordResponseSchema,
   pushConfigResponseSchema,
   pushStateResponseSchema,
   type Role,
@@ -399,6 +401,32 @@ export async function fetchMentioned(
     signal,
   });
   return mentionsResponseSchema.parse(await response.json()).known;
+}
+
+/**
+ * The record of publishing of a workspace: the newest requests, in as many
+ * pages as `pages` says, or fewer where the record has no more. Asked for
+ * from the newest each time, so that what is on screen is one answer.
+ */
+export async function fetchPublishRecord(
+  workspaceId: string,
+  pages: number,
+  signal: AbortSignal,
+): Promise<PublishRecordResponse> {
+  const record: PublishRecordResponse = { requests: [], more: true };
+  for (let page = 0; page < pages && record.more; page += 1) {
+    const before = record.requests.at(-1)?.requestedAt;
+    const response = await request(
+      `/api/workspaces/${workspaceId}/publish-record${before === undefined ? "" : `?before=${before}`}`,
+      { signal },
+    );
+    const { requests, more } = publishRecordResponseSchema.parse(
+      await response.json(),
+    );
+    record.requests.push(...requests);
+    record.more = more;
+  }
+  return record;
 }
 
 const apiKeysPath = (workspaceId: string) =>

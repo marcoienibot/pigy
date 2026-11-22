@@ -7,6 +7,7 @@ import {
   type MutateMessage,
   type MutatorArgs,
   type PatchMessage,
+  type PublishRecordResponse,
   pingMessageText,
   pongMessageText,
   type Rejection,
@@ -523,14 +524,15 @@ export function workspaceObject(
     }
 
     /**
-     * Carries out a call of the public API: `api` of the store. The
-     * clients that are connected see what it changed. With `repeat` it is
-     * carried out once for its key. Returns nothing if `workspace` is not
-     * the one that the object holds.
+     * Carries out a call of the public API that came with the key
+     * `apiKeyId`: `api` of the store. The clients that are connected see
+     * what it changed. With `repeat` it is carried out once for its key.
+     * Returns nothing if `workspace` is not the one that the object holds.
      */
     async api(
       workspace: WorkspaceIdentity,
       call: ApiCall,
+      apiKeyId: string,
       repeat?: { key: string; fingerprint: string },
     ): Promise<ApiAnswer | undefined> {
       if (!this.#store.bind(workspaceIdentitySchema.parse(workspace))) {
@@ -544,6 +546,7 @@ export function workspaceObject(
         return this.#store.api(
           call,
           now().getTime(),
+          apiKeyId,
           repeat && {
             key: callKeySchema.parse(repeat.key),
             fingerprint: callKeySchema.parse(repeat.fingerprint),
@@ -638,6 +641,22 @@ export function workspaceObject(
       );
       this.#publish(from);
       return ended;
+    }
+
+    /**
+     * The newest requests of the record of publishing, those before
+     * `before` if it is a time: `publishRecord` of the store. A read, which
+     * changes nothing. Returns nothing if `workspace` is not the one that
+     * the object holds.
+     */
+    publishRecord(
+      workspace: WorkspaceIdentity,
+      before: number | null,
+    ): PublishRecordResponse | undefined {
+      if (!this.#store.bind(workspaceIdentitySchema.parse(workspace))) {
+        return undefined;
+      }
+      return this.#store.publishRecord(now().getTime(), before);
     }
 
     /**

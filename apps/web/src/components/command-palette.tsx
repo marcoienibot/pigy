@@ -261,6 +261,13 @@ export function CommandPalette({ children }: { children: ReactNode }) {
                 API keys
               </CommandItem>
               <CommandItem
+                keywords={["audit", "history", "log", "published"]}
+                onSelect={run(() => void navigate({ to: "/settings/record" }))}
+              >
+                <Settings aria-hidden="true" />
+                Publishing record
+              </CommandItem>
+              <CommandItem
                 keywords={["month", "agenda"]}
                 onSelect={run(() => void navigate({ to: "/queue/calendar" }))}
               >

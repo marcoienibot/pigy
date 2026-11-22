@@ -347,6 +347,7 @@ export function apiRoutes(dependencies: AppDependencies): Hono<ApiEnv> {
         c.env.WORKSPACE,
         c.var.api.workspace,
         call,
+        c.var.api.key.id,
         operation.method === "get" ? undefined : await repeatOf(c, text),
       );
       // What the call was answered with before, said again: it was not

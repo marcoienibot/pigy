@@ -2,6 +2,7 @@ import {
   applyMutation,
   type Change,
   type ChannelStatus,
+  type DeliveryOutcome,
   environmentSchema,
   expiryNoticeMs,
   type ImageFacts,
@@ -10,11 +11,16 @@ import {
   MutationRejected,
   type MutationSource,
   type MutatorArgs,
+  maxPublishRecordDeliveries,
   mediaRowLimits,
   type Network,
   originalLifetimeMs,
   type PostContent,
+  type PublishRecordResponse,
+  type PublishSource,
   type PushMessage,
+  publishRecordLifetimeMs,
+  publishRecordPageSize,
   type Rejection,
   type RejectionCode,
   type Row,
@@ -29,6 +35,7 @@ import {
   and,
   asc,
   count,
+  desc,
   eq,
   gt,
   gte,
@@ -76,6 +83,7 @@ import {
   postParts,
   posts,
   postTargets,
+  publishRecords,
   pushOutbox,
   rejections,
   targetPartResults,
@@ -100,6 +108,14 @@ export type WorkspaceIdentity = z.infer<typeof workspaceIdentitySchema>;
 
 /** A mutation as it is run: where it came from does not matter here. */
 type MutatorCall = { name: string; args: unknown };
+
+/**
+ * Who asks for what a mutation that the server runs publishes, for the
+ * record of publishing: a call of the public API with its key. A mutation
+ * of a client is the app's, and a scheduled post that is due is the
+ * schedule's.
+ */
+type Requester = { source: PublishSource; apiKeyId: string | null };
 
 /** Why a mutation was refused. */
 export type Refusal = { code: RejectionCode; message: string };
@@ -895,7 +911,7 @@ export class WorkspaceStore {
   publishDue(now: number): void {
     if (this.frozenAt !== null) return;
     this.storage.transactionSync(() => {
-      this.run([], now, "server", true);
+      this.run([], now, "server", { retryDue: true });
     });
   }
 
@@ -1887,6 +1903,9 @@ export class WorkspaceStore {
    * as it takes, and what it refuses, at whatever point, undoes what it
    * did up to there. The clients hear of the whole or of nothing.
    *
+   * What it asks to be published is recorded as asked by `apiKeyId`, the
+   * ID of the key that the call came with: `recordPublishing`.
+   *
    * With `repeat` the call is carried out once for its key: see `once`.
    * What is kept under the key is small, whatever the size of the post:
    * `KeptApiAnswer` of api.ts. A repeat of a refused call is answered with
@@ -1901,13 +1920,16 @@ export class WorkspaceStore {
   api(
     call: ApiCall,
     now: number,
+    apiKeyId: string,
     repeat?: { key: string; fingerprint: string },
   ): ApiAnswer {
     const bench: ApiBench = {
       db: this.db,
       now,
       mutate: (name, args) =>
-        this.run([{ name, args }], now, "server")[0] ?? null,
+        this.run([{ name, args }], now, "server", {
+          requester: { source: "api", apiKeyId },
+        })[0] ?? null,
       pushMark: () =>
         this.db
           .select({ last: max(pushOutbox.id) })
@@ -2264,17 +2286,32 @@ export class WorkspaceStore {
    * has come with the time of that mutation. Between the mutations of
    * one message as between two messages: what becomes of a post does not
    * depend on how a client packs what it sends.
+   *
+   * What a mutation asks to be published, and how the deliveries that it
+   * ends have ended, goes into the record of publishing, in its
+   * transaction: `recordPublishing`. `requester` says who asks, for a
+   * mutation of the server's that publishes for somebody: the public API.
    */
   private run(
     mutations: MutatorCall[],
     now: number,
     source: MutationSource,
-    // Also the due posts that could not be taken up before: for the alarm.
-    retryDue = false,
+    {
+      retryDue = false,
+      requester,
+    }: {
+      // Also the due posts that could not be taken up before: for the
+      // alarm.
+      retryDue?: boolean;
+      requester?: Requester;
+    } = {},
   ): (Refusal | null)[] {
     this.forgetHandedBack(now);
     const before = this.record();
     let { seq, time } = before;
+    // Whether a request to publish was recorded, which is when the record
+    // is kept to its bounds.
+    let recorded = false;
     const due = () => {
       // A frozen workspace takes up nothing: `frozenAt`. No mutator
       // freezes or thaws it, so this holds for the whole run.
@@ -2341,6 +2378,8 @@ export class WorkspaceStore {
       ) {
         this.noteAttachments(time);
       }
+      recorded =
+        this.recordPublishing(tx, time, mutation, from, requester) || recorded;
       if (tx.changed.size > 0) {
         seq += 1;
         // One statement per row: a statement takes at most 100 values.
@@ -2362,6 +2401,8 @@ export class WorkspaceStore {
       return outcome;
     });
 
+    if (recorded) this.boundPublishRecord(time);
+
     // The log is kept from growing by dropping what is older than the
     // window. A cursor from before the floor can no longer be served from
     // the log.
@@ -2373,6 +2414,182 @@ export class WorkspaceStore {
       this.db.update(workspaceRecord).set({ seq, logFloor, time }).run();
     }
     return outcomes;
+  }
+
+  /**
+   * Writes into the record of publishing what the mutation of `tx`, run at
+   * `time`, has asked for and what it has ended, and returns whether it
+   * asked for something. Every way that a delivery is asked for queues its
+   * target with the time of its mutation, which no other mutation of the
+   * workspace has: publishing a post, a scheduled post that is due, and a
+   * delivery that is tried again, and whatever is added later. Every way
+   * that one ends leaves its target `sent`, `error` or `uncertain`. So
+   * this goes by the targets that the mutation wrote, and not by the names
+   * of mutators.
+   *
+   * The source of a request is the post's schedule where its time has
+   * come, `post.due`, and otherwise whoever ran the mutation: a client, or
+   * `requester`. Also where that mutation sends a post because its time
+   * has passed, as `post.schedule` and `post.restore` do: whoever gave
+   * the post a time that has passed asked for it to go out now, and no
+   * schedule did. A mutation of the server's own that asks for a delivery
+   * and names nobody would be a bug, which is logged.
+   */
+  private recordPublishing(
+    tx: RecordingTransaction,
+    time: number,
+    mutation: MutatorCall,
+    from: MutationSource,
+    requester: Requester | undefined,
+  ): boolean {
+    let requested = false;
+    for (const { table, id } of tx.changed.values()) {
+      if (table !== "post_target") continue;
+      const target = readRow(this.db, "post_target", id);
+      if (!target) continue;
+      if (target.status === "queued" && target.queuedAt === time) {
+        const by = this.requesterOf(mutation, target.postId, from, requester);
+        const channel = readRow(this.db, "channel", target.channelId);
+        if (!by || !channel) {
+          log.error(
+            "delivery",
+            "A delivery that was asked for was not recorded: nothing says who asked",
+            { ...this.where, targetId: id },
+          );
+          continue;
+        }
+        this.db
+          .insert(publishRecords)
+          .values({
+            postId: target.postId,
+            requestedAt: time,
+            source: by.source,
+            apiKeyId: by.apiKeyId,
+            targetId: id,
+            channelId: channel.id,
+            network: channel.network,
+          })
+          .run();
+        requested = true;
+        continue;
+      }
+      const outcome: DeliveryOutcome | undefined =
+        target.status === "error" && target.disconnected
+          ? "disconnected"
+          : target.status === "sent" ||
+              target.status === "error" ||
+              target.status === "uncertain"
+            ? target.status
+            : undefined;
+      if (outcome === undefined) continue;
+      // The request that is open for the target: a delivery is asked for
+      // again only once it has ended, so there is one at most.
+      this.db
+        .update(publishRecords)
+        .set({ outcome, endedAt: time })
+        .where(
+          and(eq(publishRecords.targetId, id), isNull(publishRecords.outcome)),
+        )
+        .run();
+    }
+    return requested;
+  }
+
+  /** Who asked for the deliveries of `postId` that `mutation` asked for. */
+  private requesterOf(
+    mutation: MutatorCall,
+    postId: string,
+    from: MutationSource,
+    requester: Requester | undefined,
+  ): Requester | undefined {
+    if (mutation.name === "post.due") {
+      const post = readRow(this.db, "post", postId);
+      return {
+        source: post?.mode === "queue" ? "queue" : "schedule",
+        apiKeyId: null,
+      };
+    }
+    if (from === "client") return { source: "app", apiKeyId: null };
+    return requester;
+  }
+
+  /**
+   * Keeps the record of publishing to its bounds at `now`: no request that
+   * is older than `publishRecordLifetimeMs`, and no more deliveries than
+   * `maxPublishRecordDeliveries`, the requests of the oldest going first,
+   * each as a whole.
+   */
+  private boundPublishRecord(now: number): void {
+    this.db
+      .delete(publishRecords)
+      .where(lt(publishRecords.requestedAt, now - publishRecordLifetimeMs))
+      .run();
+    // The first delivery past the bound, the newest first. Its request
+    // goes with it, as a whole, and every older one.
+    const beyond = this.db
+      .select({ requestedAt: publishRecords.requestedAt })
+      .from(publishRecords)
+      .orderBy(desc(publishRecords.requestedAt))
+      .limit(1)
+      .offset(maxPublishRecordDeliveries)
+      .get();
+    if (beyond) {
+      this.db
+        .delete(publishRecords)
+        .where(lte(publishRecords.requestedAt, beyond.requestedAt))
+        .run();
+    }
+  }
+
+  /**
+   * The newest requests of the record of publishing at `now`, those before
+   * `before` if it is a time, `publishRecordPageSize` at most, the newest
+   * first. A request that is older than the record keeps is not among
+   * them, also before the next request has taken it out.
+   */
+  publishRecord(now: number, before: number | null): PublishRecordResponse {
+    const kept = and(
+      gte(publishRecords.requestedAt, now - publishRecordLifetimeMs),
+      before === null ? undefined : lt(publishRecords.requestedAt, before),
+    );
+    const times = this.db
+      .selectDistinct({ at: publishRecords.requestedAt })
+      .from(publishRecords)
+      .where(kept)
+      .orderBy(desc(publishRecords.requestedAt))
+      .limit(publishRecordPageSize + 1)
+      .all();
+    const page = times.slice(0, publishRecordPageSize);
+    const oldest = page.at(-1)?.at;
+    if (oldest === undefined) return { requests: [], more: false };
+    const rows = this.db
+      .select()
+      .from(publishRecords)
+      .where(and(kept, gte(publishRecords.requestedAt, oldest)))
+      .orderBy(desc(publishRecords.requestedAt), asc(publishRecords.id))
+      .all();
+    const requests: PublishRecordResponse["requests"] = [];
+    for (const row of rows) {
+      let request = requests.at(-1);
+      if (request?.requestedAt !== row.requestedAt) {
+        request = {
+          postId: row.postId,
+          requestedAt: row.requestedAt,
+          source: row.source,
+          apiKeyId: row.apiKeyId,
+          deliveries: [],
+        };
+        requests.push(request);
+      }
+      request.deliveries.push({
+        targetId: row.targetId,
+        channelId: row.channelId,
+        network: row.network,
+        outcome: row.outcome,
+        endedAt: row.endedAt,
+      });
+    }
+    return { requests, more: times.length > publishRecordPageSize };
   }
 
   /**

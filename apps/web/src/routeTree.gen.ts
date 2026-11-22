@@ -27,6 +27,7 @@ import { Route as AppSettingsIndexRouteImport } from './routes/_app/settings/ind
 import { Route as AppSettingsAboutRouteImport } from './routes/_app/settings/about'
 import { Route as AppSettingsAccessRouteImport } from './routes/_app/settings/access'
 import { Route as AppSettingsApiRouteImport } from './routes/_app/settings/api'
+import { Route as AppSettingsRecordRouteImport } from './routes/_app/settings/record'
 import { Route as AppSettingsScheduleRouteImport } from './routes/_app/settings/schedule'
 import { Route as AppSimulatorIndexRouteImport } from './routes/_app/simulator/index'
 import { Route as AppSimulatorFailuresRouteImport } from './routes/_app/simulator/failures'
@@ -120,6 +121,11 @@ const AppSettingsApiRoute = AppSettingsApiRouteImport.update({
   path: '/api',
   getParentRoute: () => AppSettingsRoute,
 } as any)
+const AppSettingsRecordRoute = AppSettingsRecordRouteImport.update({
+  id: '/record',
+  path: '/record',
+  getParentRoute: () => AppSettingsRoute,
+} as any)
 const AppSettingsScheduleRoute = AppSettingsScheduleRouteImport.update({
   id: '/schedule',
   path: '/schedule',
@@ -152,6 +158,7 @@ export interface FileRoutesByFullPath {
   '/settings/about': typeof AppSettingsAboutRoute
   '/settings/access': typeof AppSettingsAccessRoute
   '/settings/api': typeof AppSettingsApiRoute
+  '/settings/record': typeof AppSettingsRecordRoute
   '/settings/schedule': typeof AppSettingsScheduleRoute
   '/simulator/failures': typeof AppSimulatorFailuresRoute
   '/queue/': typeof AppQueueIndexRoute
@@ -171,6 +178,7 @@ export interface FileRoutesByTo {
   '/settings/about': typeof AppSettingsAboutRoute
   '/settings/access': typeof AppSettingsAccessRoute
   '/settings/api': typeof AppSettingsApiRoute
+  '/settings/record': typeof AppSettingsRecordRoute
   '/settings/schedule': typeof AppSettingsScheduleRoute
   '/simulator/failures': typeof AppSimulatorFailuresRoute
   '/queue': typeof AppQueueIndexRoute
@@ -195,6 +203,7 @@ export interface FileRoutesById {
   '/_app/settings/about': typeof AppSettingsAboutRoute
   '/_app/settings/access': typeof AppSettingsAccessRoute
   '/_app/settings/api': typeof AppSettingsApiRoute
+  '/_app/settings/record': typeof AppSettingsRecordRoute
   '/_app/settings/schedule': typeof AppSettingsScheduleRoute
   '/_app/simulator/failures': typeof AppSimulatorFailuresRoute
   '/_app/queue/': typeof AppQueueIndexRoute
@@ -219,6 +228,7 @@ export interface FileRouteTypes {
     | '/settings/about'
     | '/settings/access'
     | '/settings/api'
+    | '/settings/record'
     | '/settings/schedule'
     | '/simulator/failures'
     | '/queue/'
@@ -238,6 +248,7 @@ export interface FileRouteTypes {
     | '/settings/about'
     | '/settings/access'
     | '/settings/api'
+    | '/settings/record'
     | '/settings/schedule'
     | '/simulator/failures'
     | '/queue'
@@ -261,6 +272,7 @@ export interface FileRouteTypes {
     | '/_app/settings/about'
     | '/_app/settings/access'
     | '/_app/settings/api'
+    | '/_app/settings/record'
     | '/_app/settings/schedule'
     | '/_app/simulator/failures'
     | '/_app/queue/'
@@ -402,6 +414,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSettingsApiRouteImport
       parentRoute: typeof AppSettingsRoute
     }
+    '/_app/settings/record': {
+      id: '/_app/settings/record'
+      path: '/record'
+      fullPath: '/settings/record'
+      preLoaderRoute: typeof AppSettingsRecordRouteImport
+      parentRoute: typeof AppSettingsRoute
+    }
     '/_app/settings/schedule': {
       id: '/_app/settings/schedule'
       path: '/schedule'
@@ -444,6 +463,7 @@ interface AppSettingsRouteChildren {
   AppSettingsAboutRoute: typeof AppSettingsAboutRoute
   AppSettingsAccessRoute: typeof AppSettingsAccessRoute
   AppSettingsApiRoute: typeof AppSettingsApiRoute
+  AppSettingsRecordRoute: typeof AppSettingsRecordRoute
   AppSettingsScheduleRoute: typeof AppSettingsScheduleRoute
   AppSettingsIndexRoute: typeof AppSettingsIndexRoute
 }
@@ -452,6 +472,7 @@ const AppSettingsRouteChildren: AppSettingsRouteChildren = {
   AppSettingsAboutRoute: AppSettingsAboutRoute,
   AppSettingsAccessRoute: AppSettingsAccessRoute,
   AppSettingsApiRoute: AppSettingsApiRoute,
+  AppSettingsRecordRoute: AppSettingsRecordRoute,
   AppSettingsScheduleRoute: AppSettingsScheduleRoute,
   AppSettingsIndexRoute: AppSettingsIndexRoute,
 }

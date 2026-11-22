@@ -37,6 +37,9 @@ function Settings() {
           <Link to="/settings/api" className={sectionLink}>
             API
           </Link>
+          <Link to="/settings/record" className={sectionLink}>
+            Record
+          </Link>
           {me.role === "admin" && (
             <Link to="/settings/access" className={sectionLink}>
               Access

@@ -2,6 +2,7 @@ import {
   environments,
   type MutatorArgs,
   type MutatorName,
+  type PublishRecordResponse,
   type Workspace,
 } from "@pigy/core";
 import { and, eq } from "drizzle-orm";
@@ -31,8 +32,8 @@ import type {
  * The Worker's side of workspaces: which there are, whose they are, and the
  * only ways into their Durable Objects: `connectWorkspace` for a client,
  * and for the Worker's own code `mutateWorkspace`, `connectChannel`,
- * `disconnectChannel`, `channelAccess`, `callWorkspaceApi` and
- * `reviewFreezeOf`, and what the publishing
+ * `disconnectChannel`, `channelAccess`, `callWorkspaceApi`,
+ * `publishRecordOf` and `reviewFreezeOf`, and what the publishing
  * workflow asks and reports: `deliveryOf`, `aboutToSend`, `stepBegins`,
  * `recordProgress`, `endDelivery` and `renewChannelAccess`.
  */
@@ -338,8 +339,9 @@ export async function renewChannelAccess(
 /**
  * Carries out a call of the public API in `workspace`: a read, or a write
  * that is one change however many mutations it takes. The caller answers
- * for `workspace` being the one that the key of the request belongs to.
- * Clients that are connected see what it changed.
+ * for `workspace` being the one that the key of the request belongs to,
+ * whose ID is `apiKeyId`: the record of publishing names it. Clients that
+ * are connected see what it changed.
  *
  * With `repeat`, the call is carried out once for `repeat.key`, and every
  * repeat is answered as the first was, for 30 days: unless it comes with
@@ -350,11 +352,12 @@ export async function callWorkspaceApi(
   namespace: Bindings["WORKSPACE"],
   workspace: WorkspaceIdentity,
   call: ApiCall,
+  apiKeyId: string,
   repeat?: { key: string; fingerprint: string },
 ): Promise<ApiAnswer> {
   const answer = await namespace
     .getByName(workspace.id)
-    .api(workspace, call, repeat);
+    .api(workspace, call, apiKeyId, repeat);
   if (!answer) throw foreign(workspace);
   return answer;
 }
@@ -434,6 +437,23 @@ export async function finishUpload(
     .finishUpload(workspace, mediaId, outcome, key);
   if (!ended) throw foreign(workspace);
   return ended;
+}
+
+/**
+ * The newest requests of the record of publishing of `workspace`, before
+ * `before` if it is a time. The caller answers for `workspace` being one
+ * of whoever asks.
+ */
+export async function publishRecordOf(
+  namespace: Bindings["WORKSPACE"],
+  workspace: WorkspaceIdentity,
+  before: number | null,
+): Promise<PublishRecordResponse> {
+  const record = await namespace
+    .getByName(workspace.id)
+    .publishRecord(workspace, before);
+  if (!record) throw foreign(workspace);
+  return record;
 }
 
 /**

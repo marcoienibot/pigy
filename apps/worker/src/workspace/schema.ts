@@ -1,5 +1,6 @@
 import {
   channelStatuses,
+  deliveryOutcomes,
   environments,
   imageTypes,
   type Limits,
@@ -10,6 +11,7 @@ import {
   type PushMessage,
   postModes,
   postStatuses,
+  publishSources,
   type RejectionCode,
   type settingsId,
   tableNames,
@@ -421,6 +423,42 @@ export const pushOutbox = sqliteTable("push_outbox", {
   notificationId: text("notification_id").notNull(),
   queuedAt: integer("queued_at").notNull(),
 });
+
+/**
+ * The record of what the workspace was asked to publish: a row for each
+ * delivery that a request asked for, written in the transaction of the
+ * mutation that asked, and given its outcome in the transaction of the
+ * mutation that ends the delivery. `recordPublishing` of store.ts. The
+ * rows of one request have its post and its time, which no other mutation
+ * of the workspace has. It holds IDs, and no text and no secret: a post is
+ * named by its ID, an account by its channel and network, a key of the API
+ * by its ID.
+ *
+ * Bounded: 90 days and `maxPublishRecordDeliveries` rows, the oldest
+ * going first, with every request that is recorded.
+ */
+export const publishRecords = sqliteTable(
+  "publish_record",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    postId: text("post_id").notNull(),
+    /** The time of the mutation that asked. */
+    requestedAt: integer("requested_at").notNull(),
+    source: text("source", { enum: publishSources }).notNull(),
+    /** The key of the public API that asked, or null. */
+    apiKeyId: text("api_key_id"),
+    targetId: text("target_id").notNull(),
+    channelId: text("channel_id").notNull(),
+    network: text("network", { enum: networks }).notNull(),
+    /** How the delivery ended, or null while it is on its way. */
+    outcome: text("outcome", { enum: deliveryOutcomes }),
+    endedAt: integer("ended_at"),
+  },
+  (table) => [
+    index("publish_record_requested_at_idx").on(table.requestedAt),
+    index("publish_record_target_id_idx").on(table.targetId),
+  ],
+);
 
 /**
  * A single row: which workspace this object holds, and how far its changes

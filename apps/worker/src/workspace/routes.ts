@@ -1,12 +1,25 @@
-import { workspaceListResponseSchema } from "@pigy/core";
+import {
+  publishRecordQuerySchema,
+  publishRecordResponseSchema,
+  workspaceListResponseSchema,
+} from "@pigy/core";
 import { drizzle } from "drizzle-orm/d1";
 import { Hono, type MiddlewareHandler } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { requireOwnOrigin, requireUser } from "../auth/guards.ts";
 import type { AppDependencies, AppEnv } from "../env.ts";
-import { connectWorkspace, ownWorkspace, workspacesOf } from "./workspaces.ts";
+import { parseInput } from "../errors.ts";
+import {
+  connectWorkspace,
+  ownWorkspace,
+  publishRecordOf,
+  workspacesOf,
+} from "./workspaces.ts";
 
-/** Under `/api`: which workspaces the caller has. */
+/**
+ * Under `/api`: which workspaces the caller has, and the record of what
+ * one of them was asked to publish.
+ */
 export function workspaceRoutes(dependencies: AppDependencies): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
 
@@ -18,6 +31,31 @@ export function workspaceRoutes(dependencies: AppDependencies): Hono<AppEnv> {
     );
     return c.json(workspaceListResponseSchema.parse({ workspaces }));
   });
+
+  // The record of publishing: for the owner, with the session. Not part of
+  // the public API, `PLAN.md` section 12.
+  app.get(
+    "/workspaces/:workspaceId/publish-record",
+    requireUser(dependencies),
+    async (c) => {
+      const { before } = parseInput(c.req.query(), publishRecordQuerySchema);
+      const workspace = await ownWorkspace(
+        drizzle(c.env.DB),
+        c.req.param("workspaceId"),
+        c.var.auth.user.id,
+      );
+      if (!workspace) {
+        throw new HTTPException(404, {
+          message: "There is no such workspace",
+        });
+      }
+      return c.json(
+        publishRecordResponseSchema.parse(
+          await publishRecordOf(c.env.WORKSPACE, workspace, before ?? null),
+        ),
+      );
+    },
+  );
 
   return app;
 }
