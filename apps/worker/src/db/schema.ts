@@ -1,4 +1,4 @@
-import { environments, networks } from "@pigy/core";
+import { type ApiScope, environments, networks } from "@pigy/core";
 import {
   index,
   integer,
@@ -215,3 +215,35 @@ export const previewUses = sqliteTable("preview_use", {
   windowStart: integer("window_start").notNull(),
   count: integer("count").notNull(),
 });
+
+/**
+ * The keys of the public API. A key is "<prefix><id>_<secret>": the prefix
+ * says the environment of its workspace, the ID names the row, and only a
+ * hash of the secret is stored, so a copy of this table calls nothing.
+ */
+export const apiKeys = sqliteTable(
+  "api_key",
+  {
+    /** Random. It is part of the key, and no secret. */
+    id: text("id").primaryKey(),
+    /** The one workspace that the key reaches, and so its environment. */
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id),
+    /** What the person called it. */
+    name: text("name").notNull(),
+    /** How the key begins, for the person to tell their keys apart. */
+    prefix: text("prefix").notNull(),
+    /** SHA-256 of the secret, as hex. */
+    secretHash: text("secret_hash").notNull(),
+    scopes: text("scopes", { mode: "json" }).$type<ApiScope[]>().notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    /** To the minute or so: it is not written with every request. */
+    lastUsedAt: integer("last_used_at", { mode: "timestamp_ms" }),
+    /** When the key stops working by itself, or null. */
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }),
+    /** When somebody revoked it, or null. The row stays, for the record. */
+    revokedAt: integer("revoked_at", { mode: "timestamp_ms" }),
+  },
+  (table) => [index("api_key_workspace_id_idx").on(table.workspaceId)],
+);

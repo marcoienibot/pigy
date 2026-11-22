@@ -27,6 +27,7 @@ import {
 } from "../publish/delivery.ts";
 import { vapidKeyOf, vapidKeyWithoutRequest } from "../push/keys.ts";
 import { pushToDevices } from "../push/notify.ts";
+import type { ApiAnswer, ApiCall } from "./api.ts";
 import {
   type RenewalDependencies,
   renewAccess,
@@ -441,6 +442,35 @@ export function workspaceObject(
       );
       this.#publish(from);
       return outcome;
+    }
+
+    /**
+     * Carries out a call of the public API: `api` of the store. The
+     * clients that are connected see what it changed. With `repeat` it is
+     * carried out once for its key. Returns nothing if `workspace` is not
+     * the one that the object holds.
+     */
+    api(
+      workspace: WorkspaceIdentity,
+      call: ApiCall,
+      repeat?: { key: string; fingerprint: string },
+    ): ApiAnswer | undefined {
+      if (!this.#store.bind(workspaceIdentitySchema.parse(workspace))) {
+        return undefined;
+      }
+      const from = this.#store.seq;
+      try {
+        return this.#store.api(
+          call,
+          now().getTime(),
+          repeat && {
+            key: callKeySchema.parse(repeat.key),
+            fingerprint: callKeySchema.parse(repeat.fingerprint),
+          },
+        );
+      } finally {
+        this.#publish(from);
+      }
     }
 
     /**

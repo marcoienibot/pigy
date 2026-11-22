@@ -44,6 +44,7 @@ import {
 } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import { z } from "zod";
+import { type ApiAnswer, type ApiCall, ApiRefusal, carryOut } from "./api.ts";
 import migrations from "./migrations/migrations.js";
 import {
   changeLog,
@@ -1228,6 +1229,56 @@ export class WorkspaceStore {
       }
       return { ok: true };
     });
+  }
+
+  /**
+   * Carries out a call of the public API, as one change: all of it or
+   * none of it. `carryOut` of api.ts makes the call with as many mutators
+   * as it takes, and what it refuses, at whatever point, undoes what it
+   * did up to there. The clients hear of the whole or of nothing.
+   *
+   * With `repeat` the call is carried out once for its key: see `once`.
+   * What is kept under the key is the answer itself, a refusal too, so a
+   * repeat is answered as the first call was, whatever has become of the
+   * post since. The key is the caller's, who sends it with a fingerprint
+   * of the request: a repeat that comes with another fingerprint is
+   * another request under the same key, which is refused and changes
+   * nothing. A call that failed, which is one that threw, has not
+   * happened and is carried out when it is repeated.
+   */
+  api(
+    call: ApiCall,
+    now: number,
+    repeat?: { key: string; fingerprint: string },
+  ): ApiAnswer {
+    const kept = this.once(repeat?.key, now, () => {
+      let answer: ApiAnswer;
+      try {
+        // A transaction within the transaction, for what a refusal undoes:
+        // the answer is kept under the key all the same.
+        answer = this.storage.transactionSync(() =>
+          carryOut(call, {
+            db: this.db,
+            now,
+            mutate: (name, args) =>
+              this.run([{ name, args }], now, "server")[0] ?? null,
+          }),
+        );
+      } catch (error) {
+        if (!(error instanceof ApiRefusal)) throw error;
+        answer = error.answer;
+      }
+      return { ok: true, fingerprint: repeat?.fingerprint ?? null, answer };
+    });
+    if (repeat && kept.fingerprint !== repeat.fingerprint) {
+      return {
+        ok: false,
+        status: 422,
+        message:
+          "This Idempotency-Key was used for another request. A new request takes a new key.",
+      };
+    }
+    return kept.answer;
   }
 
   /**

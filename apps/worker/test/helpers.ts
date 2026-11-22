@@ -118,6 +118,11 @@ export function setup(
     interceptNetwork?: (network: Fetch) => Fetch;
     /** The same between the app and the push services of the browsers. */
     interceptPush?: (push: Fetch) => Fetch;
+    /**
+     * Counts the requests of the keys of the public API in place of the
+     * limiter of the local runtime, for a test that is about the limit.
+     */
+    rateLimiter?: RateLimit;
   } = {},
 ) {
   clock.time = new Date("2026-11-14T10:00:00Z");
@@ -260,6 +265,7 @@ export function setup(
     WORKSPACE: env.WORKSPACE,
     SIM_WORLD: env.SIM_WORLD,
     PUBLISH: env.PUBLISH,
+    API_RATE_LIMITER: options.rateLimiter ?? env.API_RATE_LIMITER,
   };
   // The publishing workflow is not built here: the runtime constructs it.
   // It reads what this app was built and deployed with from `deployment`.

@@ -8,6 +8,7 @@ import { and, eq } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { workspaces } from "../db/schema.ts";
 import type { Bindings } from "../env.ts";
+import type { ApiAnswer, ApiCall } from "./api.ts";
 import type {
   ChannelAccess,
   ConnectChannelCall,
@@ -26,7 +27,7 @@ import type {
  * The Worker's side of workspaces: which there are, whose they are, and the
  * only ways into their Durable Objects: `connectWorkspace` for a client,
  * and for the Worker's own code `mutateWorkspace`, `connectChannel`,
- * `disconnectChannel` and `channelAccess`, and what the publishing
+ * `disconnectChannel`, `channelAccess` and `callWorkspaceApi`, and what the publishing
  * workflow asks and reports: `deliveryOf`, `aboutToSend`, `stepBegins`,
  * `recordProgress`, `endDelivery` and `renewChannelAccess`.
  */
@@ -327,6 +328,30 @@ export async function renewChannelAccess(
     .renewChannelAccess(workspace, channelId, expected, access);
   if (renewed === undefined) throw foreign(workspace);
   return renewed;
+}
+
+/**
+ * Carries out a call of the public API in `workspace`: a read, or a write
+ * that is one change however many mutations it takes. The caller answers
+ * for `workspace` being the one that the key of the request belongs to.
+ * Clients that are connected see what it changed.
+ *
+ * With `repeat`, the call is carried out once for `repeat.key`, and every
+ * repeat is answered as the first was, for 30 days: unless it comes with
+ * another `fingerprint`, which says that it is another request, and is
+ * refused.
+ */
+export async function callWorkspaceApi(
+  namespace: Bindings["WORKSPACE"],
+  workspace: WorkspaceIdentity,
+  call: ApiCall,
+  repeat?: { key: string; fingerprint: string },
+): Promise<ApiAnswer> {
+  const answer = await namespace
+    .getByName(workspace.id)
+    .api(workspace, call, repeat);
+  if (!answer) throw foreign(workspace);
+  return answer;
 }
 
 function foreign(workspace: WorkspaceIdentity): Error {

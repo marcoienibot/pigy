@@ -2,6 +2,7 @@ import type { ErrorName, ErrorResponse } from "@pigy/core";
 import { DrizzleQueryError } from "drizzle-orm";
 import type { Context, ErrorHandler, NotFoundHandler } from "hono";
 import { HTTPException } from "hono/http-exception";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { z } from "zod";
 
 function errorName(status: number): ErrorName {
@@ -21,15 +22,17 @@ const defaultMessages: Record<ErrorName, string> = {
 };
 
 /**
- * A 400 that is about one field of the request. The answer names the field,
- * for a form to show the message next to it.
+ * A refusal that is about one field of the request: a 400, unless `status`
+ * says otherwise. The answer names the field, for a form to show the
+ * message next to it.
  */
 export class InvalidField extends HTTPException {
   constructor(
     readonly field: string,
     message: string,
+    status: ContentfulStatusCode = 400,
   ) {
-    super(400, { message });
+    super(status, { message });
   }
 }
 
@@ -159,11 +162,19 @@ export async function parseJsonBody<T>(
   } catch {
     throw new HTTPException(400, { message: "The body must be JSON" });
   }
-  const parsed = schema.safeParse(body);
+  return parseInput(body, schema);
+}
+
+/**
+ * `input` as `schema` has it, or a 400 that says what is wrong with it, and
+ * with which of its fields if it is one.
+ */
+export function parseInput<T>(input: unknown, schema: z.ZodType<T>): T {
+  const parsed = schema.safeParse(input);
   if (!parsed.success) {
     const [issue] = parsed.error.issues;
     const path = issue?.path.join(".");
-    const message = issue?.message ?? "The body is invalid";
+    const message = issue?.message ?? "The request is invalid";
     if (path) throw new InvalidField(path, `${path}: ${message}`);
     throw new HTTPException(400, { message });
   }

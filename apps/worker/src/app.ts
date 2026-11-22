@@ -1,6 +1,8 @@
-import { healthResponseSchema } from "@pigy/core";
+import { apiBasePath, healthResponseSchema } from "@pigy/core";
 import { Hono } from "hono";
 import { adminRoutes } from "./admin/routes.ts";
+import { apiKeyRoutes } from "./api/key-routes.ts";
+import { apiRoutes } from "./api/routes.ts";
 import { accessConfig, isLocal } from "./auth/config.ts";
 import { authRoutes } from "./auth/routes.ts";
 import { channelRoutes, connectCallbackRoutes } from "./channels/routes.ts";
@@ -41,6 +43,9 @@ export function createApp(dependencies: AppDependencies): Hono<AppEnv> {
   app.route("/api", workspaceRoutes(dependencies));
   app.route("/api", channelRoutes(dependencies));
   app.route("/api", previewRoutes(dependencies));
+  app.route("/api", apiKeyRoutes(dependencies));
+  // The public API, which takes a key and never the session.
+  app.route(apiBasePath, apiRoutes(dependencies));
   app.route("/api/sandbox", sandboxRoutes(dependencies));
   app.route("/api/push", pushRoutes(dependencies));
   app.route("/sync", syncRoutes(dependencies));

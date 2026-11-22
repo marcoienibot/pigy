@@ -50,6 +50,19 @@
       "class_name": "PublishWorkflow"
     }
   ],
+  "ratelimits": [
+    // How many requests one key of the public API may make: counted per
+    // key, by its ID. The numbers are also in `apiRateLimit` of
+    // packages/core, which is what the documentation says and what
+    // `Retry-After` is made from: change both. The namespace is a number
+    // of this account's own choosing, which no other limiter of the
+    // account may share.
+    {
+      "name": "API_RATE_LIMITER",
+      "namespace_id": "1001",
+      "simple": { "limit": 120, "period": 60 }
+    }
+  ],
   "assets": {
     // No "directory": the Vite plugin in apps/web points it at the built
     // web app.

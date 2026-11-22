@@ -13,6 +13,7 @@ import m0010 from './0010_may_have_sent.sql';
 import m0011 from './0011_own_text.sql';
 import m0012 from './0012_notifications.sql';
 import m0013 from './0013_scheduling.sql';
+import m0014 from './0014_post_created_at_index.sql';
 
   export default {
     journal,
@@ -30,7 +31,8 @@ m0009,
 m0010,
 m0011,
 m0012,
-m0013
+m0013,
+m0014
     }
   }
   
