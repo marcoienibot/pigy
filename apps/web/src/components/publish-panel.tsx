@@ -7,6 +7,7 @@ import { Avatar } from "@/components/avatar";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { type Draft, restoreOwnText } from "@/lib/drafts";
+import { installOfferOnce } from "@/lib/install";
 import {
   dialogIsOpen,
   isBusy,
@@ -152,6 +153,24 @@ export function PublishPanel({
         },
       },
     );
+    // On a phone, in a browser, the one time that pigy brings installing
+    // up by itself: PLAN.md section 13.
+    const offered = installOfferOnce();
+    if (offered) {
+      toast("Install pigy on this phone", {
+        description:
+          "It opens like an app, also without a connection, and can tell you when a post could not be sent.",
+        // Longer than a notice that only says something: it is read,
+        // weighed and reached.
+        duration: 20_000,
+        action: offered.install
+          ? { label: "Install", onClick: offered.install }
+          : {
+              label: "How",
+              onClick: () => void navigate({ to: "/settings" }),
+            },
+      });
+    }
     onPublished();
   };
 

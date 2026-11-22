@@ -54,6 +54,43 @@ export function useInstall(): (() => void) | undefined {
   return available ? install : undefined;
 }
 
+/**
+ * What the device remembers of the one time that pigy brought installing
+ * up by itself: see `installOfferOnce`. It says nothing of anybody, and
+ * stays when somebody signs out: the offer was made on this device.
+ */
+const offeredKey = "pigy-install-offered";
+
+/**
+ * The one offer to install that pigy makes without being asked: on a
+ * phone, in a browser, after a post was published there, which is when
+ * somebody has found a use for pigy and when an app on the Home Screen
+ * serves them better: it opens without a connection, and on an iPhone it
+ * is the only way to get notifications. It is made once on a device and
+ * never again, whatever the person does with it: nothing nags. Settings
+ * and the command palette go on offering it to whoever looks.
+ *
+ * Returns undefined when there is nothing to offer, or it was offered
+ * before. Otherwise `install` asks the person, where the browser lets a
+ * page do that. Where it is left out, as on an iPhone, the person adds
+ * pigy to the Home Screen from the menu of the browser, which Settings
+ * explain.
+ */
+export function installOfferOnce(): { install?: () => void } | undefined {
+  if (isInstalled()) return undefined;
+  // A phone, by the width at which the app shows its phone layout.
+  if (!window.matchMedia("(max-width: 767px)").matches) return undefined;
+  if (!offer && !isIos) return undefined;
+  try {
+    if (localStorage.getItem(offeredKey) !== null) return undefined;
+    localStorage.setItem(offeredKey, "1");
+  } catch {
+    // A browser that keeps nothing would be offered it every time.
+    return undefined;
+  }
+  return offer ? { install } : {};
+}
+
 /** Whether this is pigy as an installed app, not a page in a browser. */
 export function isInstalled(): boolean {
   return (

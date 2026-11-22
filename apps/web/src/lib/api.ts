@@ -11,6 +11,9 @@ import {
   healthResponseSchema,
   type MeResponse,
   meResponseSchema,
+  type PushSubscriptionRequest,
+  pushConfigResponseSchema,
+  pushStateResponseSchema,
   type Role,
   type SandboxFault,
   type SandboxFaults,
@@ -295,4 +298,53 @@ export async function armSandboxFault(
 export async function disarmSandboxFaults(): Promise<SandboxFaults> {
   const response = await request(faultsPath, { method: "DELETE" });
   return sandboxFaultsSchema.parse(await response.json());
+}
+
+const pushPath = "/api/push";
+
+/**
+ * The public key that a page subscribes to push messages with, or null
+ * for a pigy that is not set up to send any.
+ */
+export async function fetchPushKey(
+  signal?: AbortSignal,
+): Promise<string | null> {
+  try {
+    const response = await request(pushPath, { signal });
+    return pushConfigResponseSchema.parse(await response.json()).publicKey;
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 503) return null;
+    throw error;
+  }
+}
+
+/** Whether the server sends push messages to the browser with `endpoint`. */
+export async function fetchPushState(
+  endpoint: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const response = await request(`${pushPath}/subscription/state`, {
+    method: "POST",
+    json: { endpoint },
+    signal,
+  });
+  return pushStateResponseSchema.parse(await response.json()).subscribed;
+}
+
+/** Hands the server what this browser got when it subscribed. */
+export async function savePushSubscription(
+  subscription: PushSubscriptionRequest,
+): Promise<void> {
+  await request(`${pushPath}/subscription`, {
+    method: "PUT",
+    json: subscription,
+  });
+}
+
+/** Has the server forget the subscription of this browser. */
+export async function deletePushSubscription(endpoint: string): Promise<void> {
+  await request(`${pushPath}/subscription`, {
+    method: "DELETE",
+    json: { endpoint },
+  });
 }

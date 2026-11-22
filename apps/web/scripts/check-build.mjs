@@ -1,8 +1,10 @@
 // Checks whether a build contains what is for development and tests only and
 // must never be deployed: the simulated Google sign-in, which signs anybody
-// in as anybody, and the development keys: the one that seals the
-// credentials of the channels, and the one that pigy signs with as a client
-// of Bluesky, both in the repository. Also the ID of an e2e build, which is
+// in as anybody, the development keys: the one that seals the
+// credentials of the channels, the one that pigy signs with as a client
+// of Bluesky and the one that it signs push messages with, all in the
+// repository, and the simulated push service, which hands whoever asks the
+// messages that it was sent. Also the ID of an e2e build, which is
 // harmless, but which a production build has no use for: what is deployed
 // has nothing of the tests.
 //
@@ -33,6 +35,13 @@ const markers = [
   // The development keys, apps/worker/src/development-keys.ts.
   "cGlneS1kZXZlbG9wbWVudC1rZXktbm90LXNlY3JldCE=",
   "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgCj+9E/o0LdQG8E+Rihsa7GEbjQ7zSIaFoQ51knoAAgGhRANCAATKD3QJ85MhWIEglaVAztVqWPYx+He7d07jTs5peuVOm1SxxgUDDtXC/jWxSy3EJQe+8xdLna01e6MHdXCridoY",
+  "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgrcFc2MX0MRBIlLB78ZSOqneXGFezUOz3qSOjuwrzsn+hRANCAATHaygzW2aCiwiLLvHpSa8Ya2zbppIyzHGsw1FaWTr3eDakn7AVApXSGd2nro+eF5zNKo78zR6cNng8hbdiyLFF",
+  // The simulated push service, packages/simulators/src/push/index.ts,
+  // and where the end-to-end tests reach it,
+  // apps/worker/src/simulated-push.ts. It stands in for the push services
+  // of the browsers in the e2e build alone.
+  "The simulated push services have no host",
+  "/api/e2e/push",
   // The ID of an e2e build, `e2eBuildId` in apps/web/vite.config.ts.
   "pigy-e2e-build ",
 ];
@@ -59,7 +68,7 @@ for (const [marker, places] of found) {
   if (expectation === "present" && places.length === 0) {
     failed = true;
     console.error(
-      `"${marker}" is not in the e2e build. If the simulated Google sign-in, a development key or the ID of an e2e build was changed, update the markers in apps/web/scripts/check-build.mjs.`,
+      `"${marker}" is not in the e2e build. If the simulated Google sign-in, a development key, the simulated push service or the ID of an e2e build was changed, update the markers in apps/web/scripts/check-build.mjs.`,
     );
   }
 }

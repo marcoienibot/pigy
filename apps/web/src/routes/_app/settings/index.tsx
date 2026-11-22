@@ -9,7 +9,14 @@ import {
   readKept,
   useKept,
 } from "@/lib/device-storage";
+import { failureMessage, useFetched } from "@/lib/fetched";
 import { isInstalled, isIos, useInstall } from "@/lib/install";
+import {
+  notificationWords,
+  readNotifications,
+  turnOffNotifications,
+  turnOnNotifications,
+} from "@/lib/notifications";
 import { useReloadToUpdate, useUpdateOffer } from "@/lib/reload-to-update";
 
 export const Route = createFileRoute("/_app/settings/")({
@@ -41,7 +48,6 @@ function App() {
   // iPad the person is told where the browser has it.
   const explain = isIos && !isInstalled();
   const kept = useKept();
-  if (!install && !explain && !update && !kept) return null;
 
   return (
     <section className="mt-8">
@@ -88,6 +94,103 @@ function App() {
           </div>
         )}
         {kept && <DeviceData kept={kept} />}
+        <p className="px-3 py-2">
+          Sharing to pigy
+          <span className="block text-muted-foreground">
+            On Android, once pigy is installed, other apps can share a text or a
+            link to it: it opens as a new draft. Other systems do not offer that
+            to an app like pigy.
+          </span>
+        </p>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * The notifications of this device: whether pigy may show them here, and
+ * the button that turns them on and off. What they tell of is in the inbox
+ * whatever is set here.
+ *
+ * The browser is asked for its permission when the person presses "Turn
+ * on", and at no other time: not when the app starts, and not when this
+ * screen is shown. How things stand is asked of the browser and of the
+ * server, which knows whether it sends to this device, so the row has a
+ * moment in which it does not know, and says so when the server cannot be
+ * reached.
+ */
+function Notifications() {
+  const { data, failure, loading, refresh, change } =
+    useFetched(readNotifications);
+  // A change is on its way, and what came of the last one that the state
+  // does not say.
+  const [changing, setChanging] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
+  const turn = async (on: boolean) => {
+    setChanging(true);
+    setNote(null);
+    try {
+      await change(async () => {
+        const result = await (on
+          ? turnOnNotifications()
+          : turnOffNotifications());
+        if (result !== "dismissed") return result;
+        setNote(
+          "The browser has not been given your permission, so nothing was turned on.",
+        );
+        return "off";
+      });
+    } catch (error) {
+      setNote(
+        `Notifications could not be turned ${on ? "on" : "off"}. ${failureMessage(error)}`,
+      );
+    } finally {
+      setChanging(false);
+    }
+  };
+
+  return (
+    <section className="mt-8">
+      <h2 className="font-medium">Notifications</h2>
+      <div className="mt-3 flex items-center justify-between gap-4 rounded-lg border px-3 py-2">
+        <p className="min-w-0">
+          Notifications on this device
+          <span className="block text-muted-foreground">
+            {data
+              ? notificationWords[data]
+              : failure
+                ? `pigy cannot tell how they stand. ${failureMessage(failure)}`
+                : "Looking how they stand…"}
+          </span>
+          {note && (
+            <span role="status" className="mt-1 block">
+              {note}
+            </span>
+          )}
+        </p>
+        {(data === "on" || data === "off") && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="shrink-0"
+            disabled={changing}
+            onClick={() => void turn(data === "off")}
+          >
+            {data === "on" ? "Turn off" : "Turn on"}
+          </Button>
+        )}
+        {!data && failure !== null && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="shrink-0"
+            disabled={loading}
+            onClick={refresh}
+          >
+            Try again
+          </Button>
+        )}
       </div>
     </section>
   );
@@ -147,6 +250,7 @@ function General() {
   return (
     <>
       <Appearance />
+      <Notifications />
       <App />
     </>
   );
