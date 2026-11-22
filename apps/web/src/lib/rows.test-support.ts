@@ -121,6 +121,24 @@ export function media(fields: Partial<Row<"media">> = {}): Row<"media"> {
   };
 }
 
+export function metric(
+  targetId: string,
+  fields: Partial<Row<"metric">> = {},
+): Row<"metric"> {
+  return {
+    id: targetId,
+    status: "counted",
+    likes: 0,
+    reposts: 0,
+    replies: 0,
+    quotes: 0,
+    views: null,
+    countedAt: 1,
+    reason: null,
+    ...fields,
+  };
+}
+
 export function partMedia(
   partId: string,
   mediaId: string,

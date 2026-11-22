@@ -1,5 +1,15 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { ExternalLink, LoaderCircle, Trash2 } from "lucide-react";
+import {
+  ExternalLink,
+  Eye,
+  Heart,
+  LoaderCircle,
+  type LucideIcon,
+  MessageCircle,
+  Quote,
+  Repeat2,
+  Trash2,
+} from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Avatar } from "@/components/avatar";
 import { PostImages } from "@/components/image-strip";
@@ -28,12 +38,15 @@ import { marksOf } from "@/lib/markup";
 import { networkInfo } from "@/lib/networks";
 import {
   canDelete,
+  compactCount,
   ownTextHeading,
   postStatusWords,
   postTimeWord,
   publishedPosts,
   type SentPost,
+  type SentStats,
   type SentTarget,
+  type StatName,
   type StatusWords,
   selectSent,
   targetExplanation,
@@ -369,6 +382,7 @@ function TargetRow({
             </span>
           )}
         </div>
+        {target.stats && <Stats stats={target.stats} now={now} />}
         {error && (
           <p
             className={
@@ -441,6 +455,51 @@ function TargetRow({
         </Button>
       )}
     </li>
+  );
+}
+
+/** The icon of each kind of count. */
+const statIcons: Record<StatName, LucideIcon> = {
+  likes: Heart,
+  reposts: Repeat2,
+  replies: MessageCircle,
+  quotes: Quote,
+  views: Eye,
+};
+
+/**
+ * What people did with a post that a delivery published: each count with
+ * its icon, small enough to fit the row of a phone, and when it was read.
+ * The words of each count are there for whoever does not see the icons.
+ */
+function Stats({ stats, now }: { stats: SentStats; now: number }) {
+  const { counts, countedAt, note, status } = stats;
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+      {counts.length > 0 && (
+        <ul aria-label="Stats" className="flex flex-wrap items-center gap-x-3">
+          {counts.map(({ name, count, label }) => {
+            const Icon = statIcons[name];
+            return (
+              <li
+                key={name}
+                title={label}
+                className="inline-flex items-center gap-1 tabular-nums"
+              >
+                <Icon aria-hidden className="size-3.5" />
+                <span aria-hidden>{compactCount(count)}</span>
+                <span className="sr-only">{label}</span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {countedAt !== null && <span>Counted {whenAgo(countedAt, now)}</span>}
+      {status === "unavailable" && counts.length === 0 && (
+        <span>Stats unavailable</span>
+      )}
+      {note && <p className="basis-full">{note}</p>}
+    </div>
   );
 }
 

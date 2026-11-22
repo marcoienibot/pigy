@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   channel,
+  metric,
   part,
   post,
   result,
@@ -9,11 +10,13 @@ import {
 } from "@/lib/rows.test-support";
 import {
   canDelete,
+  compactCount,
   ownTextHeading,
   postStatusWords,
   postTimeWord,
   publishedPosts,
   selectSent,
+  statsOf,
   targetExplanation,
 } from "@/lib/sent";
 
@@ -462,5 +465,130 @@ describe("publishedPosts", () => {
       ["1", 1, 1],
       ["2", 2, 2],
     ]);
+  });
+});
+
+describe("the stats of a delivery", () => {
+  it("are what the server last read, with each delivery, and nothing before the first read", () => {
+    const published = post({ status: "sent" });
+    const counted = target(published.id, ada.id, {
+      status: "sent",
+      queuedAt: 1,
+      sentAt: 2,
+    });
+    const fresh = target(published.id, grace.id, {
+      status: "sent",
+      queuedAt: 1,
+      sentAt: 2,
+    });
+    const [item] = selectSent(
+      tablesOf({
+        post: [published],
+        post_part: [part(published.id)],
+        channel: [ada, grace],
+        post_target: [counted, fresh],
+        metric: [metric(counted.id, { likes: 3, countedAt: 50 })],
+      }),
+      "en",
+    );
+    expect(item?.targets.map(({ stats }) => stats)).toEqual([
+      {
+        status: "counted",
+        counts: [
+          { name: "likes", count: 3, label: "3 likes" },
+          // Mastodon calls a repost a boost.
+          { name: "reposts", count: 0, label: "0 boosts" },
+          { name: "replies", count: 0, label: "0 replies" },
+          { name: "quotes", count: 0, label: "0 quotes" },
+        ],
+        countedAt: 50,
+        note: null,
+      },
+      // Sent a moment ago: the server has not read them yet.
+      null,
+    ]);
+  });
+
+  it("leave out what the network does not count, and say one of a kind as one", () => {
+    expect(
+      statsOf(
+        metric("t", {
+          likes: 1,
+          reposts: 2,
+          replies: 1,
+          quotes: null,
+          views: 1,
+        }),
+        "threads",
+        "en",
+      ).counts.map(({ label }) => label),
+    ).toEqual(["1 like", "2 reposts", "1 reply", "1 view"]);
+  });
+
+  it("say why there are none, or why they no longer change, and keep what was counted before", () => {
+    const linkedin = statsOf(
+      metric("t", {
+        status: "unavailable",
+        likes: null,
+        reposts: null,
+        replies: null,
+        quotes: null,
+        countedAt: null,
+        reason: "LinkedIn does not give pigy the stats of its posts.",
+      }),
+      "linkedin",
+    );
+    expect(linkedin).toEqual({
+      status: "unavailable",
+      counts: [],
+      countedAt: null,
+      note: "LinkedIn does not give pigy the stats of its posts.",
+    });
+
+    const gone = statsOf(
+      metric("t", { status: "gone", likes: 4, countedAt: 50 }),
+      "bluesky",
+    );
+    expect(gone.counts.find(({ name }) => name === "likes")?.count).toBe(4);
+    expect(gone.note).toBe(
+      "The post was deleted on Bluesky: these are the last stats that pigy read.",
+    );
+    // Of an account that was disconnected since, which names no network.
+    expect(
+      statsOf(
+        metric("t", {
+          status: "gone",
+          likes: null,
+          reposts: null,
+          replies: null,
+          quotes: null,
+          countedAt: null,
+        }),
+        null,
+      ).note,
+    ).toBe("The post was deleted on the network.");
+  });
+
+  it("are written short where they are large", () => {
+    expect(
+      [950, 1234, 15_000, 2_500_000].map((count) => compactCount(count, "en")),
+    ).toEqual(["950", "1.2K", "15K", "2.5M"]);
+  });
+
+  it("are written in the language of the browser, as the dates are", () => {
+    // Italian writes a decimal comma.
+    expect(compactCount(1234, "it")).toBe("1,2K");
+    // The words of a count say it in full, grouped as the language
+    // groups the digits.
+    expect(
+      statsOf(metric("t", { views: 12_345 }), "threads", "de").counts.find(
+        ({ name }) => name === "views",
+      )?.label,
+    ).toBe("12.345 views");
+    expect(
+      statsOf(metric("t", { views: 12_345 }), "threads", "en").counts.find(
+        ({ name }) => name === "views",
+      )?.label,
+    ).toBe("12,345 views");
   });
 });
