@@ -244,6 +244,11 @@ const apiTargetSchema = named(
       .nullable()
       .describe("The network's ID of the post, once it is published."),
     error: z.string().nullable(),
+    disconnected: z
+      .boolean()
+      .describe(
+        "True if the delivery ended because the channel was disconnected while it waited or was under way. Such a delivery is in `error`, is never tried again and is not told of in the inbox of the app.",
+      ),
     sentAt: timeSchema.nullable(),
     metrics: z
       .null()
@@ -511,7 +516,7 @@ export const apiOperations = {
     path: "/posts",
     summary: "List the posts",
     description:
-      "The newest first, by when they were created. Pass the `endCursor` of a page as `after` to get the next.",
+      "The newest first, by when they were created. Pass the `endCursor` of a page as `after` to get the next. A scheduled post that is held is listed as `scheduled`, with `heldAt`. A scheduled post that somebody is deleting in the app, while they can still undo that, is not listed, and every route answers for it with a 404.",
     scope: "posts:read",
     query: listPostsQuerySchema,
     status: 200,
@@ -541,7 +546,7 @@ export const apiOperations = {
     path: "/posts/{id}",
     summary: "Change a post",
     description:
-      "Changes a draft or a scheduled post. A post that has gone out is refused with a 409.",
+      "Changes a draft or a scheduled post. A post that has gone out is refused with a 409. A scheduled post keeps its time unless the request gives it another: one that is held is held still, and the inbox of the app says so anew.",
     scope: "posts:write",
     request: updatePostRequestSchema,
     status: 200,
@@ -552,7 +557,7 @@ export const apiOperations = {
     path: "/posts/{id}",
     summary: "Delete a post",
     description:
-      "Deletes a post from pigy. What it has published stays on the networks. A post that is being sent is refused with a 409.",
+      "Deletes a post from pigy, at once and for good, a scheduled one too: it does not go out, and the inbox of the app says nothing of it any more. What it has published stays on the networks. A post that is being sent is refused with a 409.",
     scope: "posts:write",
     status: 204,
     response: null,

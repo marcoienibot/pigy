@@ -192,6 +192,7 @@ describe.each(["live", "sandbox"] as const)(
           link: environment === "live" ? expect.stringContaining(domain) : null,
           remoteId: expect.any(String),
           error: null,
+          disconnected: false,
           sentAt: expect.any(String),
           metrics: null,
         },

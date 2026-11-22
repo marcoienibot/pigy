@@ -223,6 +223,7 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
           link: published?.url ?? null,
           remoteId: published?.remoteId ?? null,
           error: target.error,
+          disconnected: target.disconnected,
           sentAt: target.sentAt === null ? null : apiTime(target.sentAt),
           // Engagement comes with phase 10.
           metrics: null,
