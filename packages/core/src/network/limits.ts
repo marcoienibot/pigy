@@ -135,10 +135,11 @@ const megabyte = 1024 * 1024;
  * - LinkedIn: GUESS, all of it. The Images API documents JPG, PNG and GIF
  *   and 36,152,320 pixels, a description of 4086 characters, and 2 to 20
  *   images in a post of several. The bytes it takes are not documented:
- *   8 MB is what its upload took in practice.
+ *   8 MB is what its upload took in practice. A thread is one post there,
+ *   so the 20 are of all its parts together: `validateContent`.
  * - Threads: the documentation of its API has JPEG and PNG, 8 MB, a
- *   shape of ten to one at most, 20 items in a carousel and a
- *   description of 1000 characters.
+ *   shape of ten to one at most and 20 items in a carousel. GUESS: the
+ *   1000 characters of a description, which it does not document.
  */
 export const defaultMediaLimits: {
   readonly [Name in Limits["network"]]: MediaLimits;
@@ -180,14 +181,6 @@ export const defaultMediaLimits: {
     maxAspectRatio: 10,
   },
 };
-
-/**
- * The networks that pigy does not publish images to yet. A post with an
- * image is not sent to an account of one of them, and `validateContent`
- * says so: PLAN.md section 10 has what is left to build. A network leaves
- * the list when its adapter publishes images.
- */
-export const imagesNotPublishedTo: readonly Limits["network"][] = [];
 
 /** What the account of `limits` takes of images. */
 export function mediaLimitsOf(limits: Limits): MediaLimits {
@@ -327,8 +320,6 @@ export type ContentIssue = {
       characters: number;
       maxCharacters: number;
     }
-  /** The post has images, and pigy publishes none to this network yet. */
-  | { code: "images_not_published" }
   /** The image `image` of the part is of a shape that the network refuses. */
   | { code: "image_shape"; image: number }
   /**
@@ -369,13 +360,6 @@ export function validateContent(
     (count, part) => count + (part.media?.length ?? 0),
     0,
   );
-  if (images > 0 && imagesNotPublishedTo.includes(limits.network)) {
-    issues.push({
-      part: null,
-      code: "images_not_published",
-      message: `pigy does not publish images to ${network} yet. Leave this account out, or give it a text of its own without the images.`,
-    });
-  }
   if (together && images > media.maxImages) {
     issues.push({
       part: null,

@@ -286,6 +286,8 @@ export function PartImagesField({
   label,
   limits,
   hasLink,
+  parts,
+  joinedCard,
 }: {
   partId: string;
   images: readonly PartImage[];
@@ -294,11 +296,18 @@ export function PartImagesField({
   /** The limits of the accounts that get the text. */
   limits: readonly Limits[];
   hasLink: boolean;
+  /** How many parts the text has. */
+  parts: number;
+  /**
+   * Whether a network that makes one post of the parts shows a card for
+   * a link of the text, in whichever part it is.
+   */
+  joinedCard: boolean;
 }) {
   const mutate = useMutate();
   const attach = useAttach(partId, images.length);
   const input = useRef<HTMLInputElement>(null);
-  const notes = imageNotes(images, limits, hasLink);
+  const notes = imageNotes(images, limits, hasLink, { parts, joinedCard });
   const full = images.length >= maxImagesPerPart;
 
   const choose = (event: ChangeEvent<HTMLInputElement>) => {

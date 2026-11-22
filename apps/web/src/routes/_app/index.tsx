@@ -67,7 +67,7 @@ import {
   type PartImage,
   selectPartImages,
 } from "@/lib/media";
-import { connectableNetworks } from "@/lib/networks";
+import { connectableNetworks, networkInfo } from "@/lib/networks";
 import { undoMs } from "@/lib/notices";
 import {
   Answers,
@@ -786,6 +786,15 @@ function Editor({
   const texts = parts.map(({ text }) => text);
   const cardsShown = previewsOf(texts, networks);
   const previews = cardsShown.map((ofPart) => JSON.stringify(ofPart));
+  // Whether a network that makes one post of the parts shows the card of
+  // a link of the text: images in any part take its place there.
+  const joinedCard = cardsShown.some((ofPart) =>
+    ofPart.some((preview) =>
+      preview.networks.some(
+        (network) => networkInfo[network].thread === "joined",
+      ),
+    ),
+  );
   const [answers] = useState<EditorAnswers>(() => ({
     cards: new Answers({ lasts: (card) => (card === null ? noLastsMs : null) }),
     handles: new Answers({
@@ -1149,6 +1158,7 @@ function Editor({
               gauges={gauges}
               networks={networks}
               previews={previews[index] ?? "[]"}
+              joinedCard={joinedCard}
               images={imagesOf(partImages, part.id)}
               answers={answers}
               actions={stable}
@@ -1234,6 +1244,7 @@ const PartField = memo(function PartField({
   gauges,
   networks,
   previews,
+  joinedCard,
   images,
   answers,
   actions,
@@ -1254,6 +1265,11 @@ const PartField = memo(function PartField({
    * that show it: `Preview[]` of lib/markup.ts, as JSON.
    */
   previews: string;
+  /**
+   * Whether a network that makes one post of the parts shows the card of
+   * a link of the text, in whichever part it is.
+   */
+  joinedCard: boolean;
   /** The images of the part, in the order they are shown in. */
   images: readonly PartImage[];
   answers: EditorAnswers;
@@ -1501,6 +1517,8 @@ const PartField = memo(function PartField({
         label={alone ? "the post" : `part ${number}`}
         limits={limits}
         hasLink={marks.some(({ kind }) => kind === "link")}
+        parts={count}
+        joinedCard={joinedCard}
       />
       <div className="flex min-h-9 flex-wrap items-center gap-x-3 gap-y-1 px-4 pb-2 text-xs text-muted-foreground md:px-6">
         {!alone && (

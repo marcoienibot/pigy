@@ -1,4 +1,4 @@
-import { type MutatorName, maxImagesPerPart } from "@pigy/core";
+import { limitsSchema, type MutatorName, maxImagesPerPart } from "@pigy/core";
 import { jpegFile, pngFile } from "@pigy/core/test-images";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -198,6 +198,33 @@ describe("imageNotes", () => {
     ]);
     // Without a link there is no card to speak of.
     expect(imageNotes([image()], [blueskyLimits], false)).toEqual([]);
+  });
+
+  it("says of LinkedIn, which makes one post of a thread, that it gets the images of every part, and no card of a link in any of them", () => {
+    const linkedin = limitsSchema.parse({
+      network: "linkedin",
+      maxCharacters: 3000,
+    });
+    expect(imageNotes([image()], [linkedin, mastodonLimits], false)).toEqual(
+      [],
+    );
+    expect(
+      imageNotes([image()], [linkedin, mastodonLimits], false, {
+        parts: 3,
+        joinedCard: true,
+      }),
+    ).toEqual([
+      "LinkedIn gets the parts as one post, with these images and those of the other parts together.",
+      // The link is in another part, and LinkedIn shows one card of it.
+      "LinkedIn shows the images and no card for the link: a post has one or the other there.",
+    ]);
+    // Bluesky goes by the part alone: each part is a post there.
+    expect(
+      imageNotes([image()], [blueskyLimits], false, {
+        parts: 3,
+        joinedCard: true,
+      }),
+    ).toEqual([]);
   });
 
   it("says where a smaller image is made, and where one that moves is still", () => {

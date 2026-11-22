@@ -245,14 +245,8 @@ describe("validateContent with images", () => {
     network: "linkedin",
     maxCharacters: 3000,
   });
-  /**
-   * What is wrong for Threads besides that pigy publishes no images
-   * there yet, which is said of every post with an image.
-   */
   const onThreads = (content: Parameters<typeof validateContent>[1]) =>
-    validateContent(threads, content).filter(
-      ({ code }) => code !== "images_not_published",
-    );
+    validateContent(threads, content);
   const codes = (found: ReturnType<typeof validateContent>) =>
     found.map(({ code }) => code);
 
@@ -313,23 +307,14 @@ describe("validateContent with images", () => {
     ).toEqual(["too_many_images", "alt_too_long", "alt_too_long"]);
   });
 
-  it("says so for a network that pigy publishes no images to yet, once for the post", () => {
-    const found = validateContent(threads, {
-      parts: [
-        { text: "a", media: [image] },
-        { text: "b", media: [image] },
-      ],
-    });
-    expect(found).toEqual([
-      {
-        part: null,
-        code: "images_not_published",
-        message:
-          "pigy does not publish images to Threads yet. Leave this account out, or give it a text of its own without the images.",
-      },
-    ]);
-    // The text alone goes out as before.
-    expect(validateContent(threads, { parts: [{ text: "a" }] })).toEqual([]);
+  it("takes images for every network, each of a thread's parts with its own", () => {
+    const parts = [
+      { text: "a", media: [image, image] },
+      { text: "b", media: [image] },
+    ];
+    for (const network of [limits, bluesky, linkedin, threads]) {
+      expect(validateContent(network, { parts })).toEqual([]);
+    }
   });
 
   it("counts the images of all parts together where a thread is one post", () => {
@@ -337,11 +322,7 @@ describe("validateContent with images", () => {
       text: "a",
       media: [image, image, image, image],
     }));
-    expect(
-      validateContent(linkedin, { parts }).filter(
-        ({ code }) => code !== "images_not_published",
-      ),
-    ).toEqual([
+    expect(validateContent(linkedin, { parts })).toEqual([
       {
         part: null,
         code: "too_many_images",
