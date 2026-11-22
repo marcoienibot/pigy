@@ -4,9 +4,9 @@
 # use, which is right for index.html and for the icons.
 
 # Vite names these files after their content, so one never changes under
-# its name. This rule also applies to a path under /assets/ that has no
-# file, which Cloudflare answers with index.html: src/sw/precache.ts has
-# what the service worker does about that.
+# its name. A path here that has no file gets none of this: such a request
+# goes to the Worker first, which answers it with a 404 that nothing keeps,
+# `assetRoutes` in apps/worker/src/assets.ts.
 /assets/*
   Cache-Control: public, max-age=31536000, immutable
 

@@ -27,8 +27,17 @@ function withoutSecrets({
   SIM_WORLD,
   PUBLISH,
   API_RATE_LIMITER,
+  ASSETS,
 }: Bindings): Bindings {
-  return { DB, VERSION, WORKSPACE, SIM_WORLD, PUBLISH, API_RATE_LIMITER };
+  return {
+    DB,
+    VERSION,
+    WORKSPACE,
+    SIM_WORLD,
+    PUBLISH,
+    API_RATE_LIMITER,
+    ASSETS,
+  };
 }
 
 export class WorkspaceDO extends workspaceObject({

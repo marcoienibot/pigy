@@ -83,6 +83,38 @@ test("deep links and unknown paths get the app, unknown API paths do not", async
   expect(response?.headers()["content-type"]).toContain("application/json");
 });
 
+test("a path under /assets/ that has no file is not found, and nothing keeps the answer", async ({
+  page,
+  request,
+}) => {
+  await page.goto("/sign-in");
+  const script = await page
+    .locator('script[type="module"][src^="/assets/"]')
+    .getAttribute("src");
+  if (!script) throw new Error("The app shell loads no script");
+
+  // A file of the build is passed on with the lifetime of `_headers`.
+  const file = await request.get(script);
+  expect(file.status()).toBe(200);
+  expect(file.headers()["content-type"]).toContain("text/javascript");
+  expect(file.headers()["cache-control"]).toBe(
+    "public, max-age=31536000, immutable",
+  );
+
+  // The file of another build, as a browser asks for it in the moment in
+  // which a deploy has replaced it: Cloudflare has the app shell for every
+  // path without a file, with the status 200 and, here, a year to keep it.
+  const missing = await request.get(script.replace(/-[^-]+\.js$/, "-old.js"));
+  expect(missing.status()).toBe(404);
+  expect(missing.headers()["cache-control"]).toBe("no-store");
+  expect(missing.headers()["content-type"]).toContain("application/json");
+
+  // A screen is still answered with the app shell, wherever it is.
+  const screen = await request.get("/no-such-screen");
+  expect(screen.status()).toBe(200);
+  expect(screen.headers()["content-type"]).toContain("text/html");
+});
+
 test("theme follows the system until it is set by hand", async ({
   signedInPage: page,
 }) => {

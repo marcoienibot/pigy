@@ -108,8 +108,12 @@ export function precache(build: Build, { caches, fetch, origin }: Platform) {
   const fileFor = (request: Request): string | undefined => {
     if (request.method !== "GET") return undefined;
     const url = new URL(request.url);
-    if (url.origin !== origin || toWorker(url.pathname)) return undefined;
+    if (url.origin !== origin) return undefined;
+    // Before the paths of the Worker: the Worker stands before the files
+    // under /assets/ too, to say that one is not there, and passes on the
+    // ones that are. A file of this build is this build's wherever it is.
     if (files.has(url.pathname)) return url.pathname;
+    if (toWorker(url.pathname)) return undefined;
     // Every other address is a screen of the app, which the shell shows.
     // That goes for a navigation only: a script that asks for a file that
     // is not there must not be handed a page.

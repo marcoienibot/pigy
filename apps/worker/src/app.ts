@@ -4,6 +4,7 @@ import { Hono } from "hono";
 import { adminRoutes } from "./admin/routes.ts";
 import { apiKeyRoutes } from "./api/key-routes.ts";
 import { apiRoutes } from "./api/routes.ts";
+import { assetRoutes } from "./assets.ts";
 import { accessConfig, isLocal } from "./auth/config.ts";
 import { authRoutes } from "./auth/routes.ts";
 import { channelRoutes, connectCallbackRoutes } from "./channels/routes.ts";
@@ -50,6 +51,8 @@ export function createApp(dependencies: AppDependencies): Hono<AppEnv> {
   app.route("/api/sandbox", sandboxRoutes(dependencies));
   app.route("/api/push", pushRoutes(dependencies));
   app.route("/sync", syncRoutes(dependencies));
+  // The files of the web app that are named after their content.
+  app.route("/assets", assetRoutes());
   app.route("/connect", blueskyClientRoutes(dependencies));
   app.route("/connect", connectCallbackRoutes(dependencies));
   // The pages of the simulated networks of a sandbox.

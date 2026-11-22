@@ -123,8 +123,10 @@ const files = {
 const build: Build = {
   version: "2",
   files: Object.keys(files),
-  // What apps/worker/wrangler.jsonc has.
-  workerFirst: ["/api/*", "/connect/*", "/sim/*", "/sync/*"],
+  // What apps/worker/wrangler.jsonc has. The last one covers the files
+  // of the build, which the worker answers for all the same: the tests of
+  // "answers with a file of the build" below would fail if it did not.
+  workerFirst: ["/api/*", "/connect/*", "/sim/*", "/sync/*", "/assets/*"],
 };
 
 describe("installing", () => {
@@ -443,6 +445,13 @@ describe("answering", () => {
       "a request for a file that the build does not have",
       "/assets/queue-111.js",
       "cors",
+    ],
+    // The Worker says that the file is not there. The app shell would be
+    // a page under the name of a script.
+    [
+      "a navigation to a file that the build does not have",
+      "/assets/queue-111.js",
+      "navigate",
     ],
     ["a request for a path that is no file", "/queue", "cors"],
     [

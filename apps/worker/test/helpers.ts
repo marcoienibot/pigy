@@ -92,6 +92,38 @@ export const realMastodonDomain = "mastodon.test";
 export const realBlueskyHandle = "rosalind.bsky.test";
 export const realBlueskyPds = "morel.host.bsky.test";
 
+/** A file of the web app, as a build names one after its content. */
+export const builtFile = "/assets/index-Dd-RQqH9.js";
+
+/** What Cloudflare sends with `builtFile`: the rules of `_headers`. */
+export const builtFileHeaders = {
+  "Content-Type": "text/javascript; charset=utf-8",
+  "Cache-Control": "public, max-age=31536000, immutable",
+  "Content-Security-Policy": "default-src 'none'; script-src 'self'",
+  "X-Content-Type-Options": "nosniff",
+};
+
+/**
+ * The files of the web app, as the binding `ASSETS` answers for them: the
+ * tests run the Worker without a build. It has one file. Every other path
+ * gets the app shell with the status 200, which is what Cloudflare does
+ * with `not_found_handling` set to `single-page-application`, and with the
+ * headers that `_headers` gives the path.
+ */
+const assets = {
+  fetch: async (input: RequestInfo | URL) => {
+    const { pathname } = new URL(urlOf(input));
+    return pathname === builtFile
+      ? new Response("export {};", { headers: builtFileHeaders })
+      : new Response("<!doctype html><title>pigy</title>", {
+          headers: {
+            ...builtFileHeaders,
+            "Content-Type": "text/html; charset=utf-8",
+          },
+        });
+  },
+} as Fetcher;
+
 // Google's addresses. The simulated Google has the last word on which of
 // them exist.
 const googleHost = /(^|\.)(google\.com|googleapis\.com)$/;
@@ -266,6 +298,7 @@ export function setup(
     SIM_WORLD: env.SIM_WORLD,
     PUBLISH: env.PUBLISH,
     API_RATE_LIMITER: options.rateLimiter ?? env.API_RATE_LIMITER,
+    ASSETS: assets,
   };
   // The publishing workflow is not built here: the runtime constructs it.
   // It reads what this app was built and deployed with from `deployment`.
