@@ -82,6 +82,15 @@ export const maxRejectionsKept = 1000;
 export const deliveryWatchMs = 60 * 1000;
 
 /**
+ * How many push messages one pass over the queue sends at most, and how
+ * long it takes up new ones, in milliseconds: see `#pushPass` of the
+ * object. Between two passes the alarm looks after the deliveries and the
+ * accesses.
+ */
+export const pushesPerPass = 20;
+export const pushPassMs = 30 * 1000;
+
+/**
  * The least time between two alarms that are for renewing an access, in
  * milliseconds. Every renewal that does not work puts its channel off for
  * longer than this. It is here so that a mistake in that cannot make the
@@ -154,6 +163,18 @@ export function workspaceObject(
      * the asking, and gone with it, which costs one question more.
      */
     #attended: number | null = null;
+    /**
+     * The pass over the push messages that is under way, if one is: see
+     * `#sendPushes`. In memory, like the pass itself: an object that
+     * leaves memory in the middle of one sends what is left of the queue
+     * with its next alarm.
+     */
+    #pushing: Promise<void> | null = null;
+    /**
+     * Has the alarm that waits for the pass over the push messages stop
+     * waiting. Null unless an alarm does.
+     */
+    #standAside: (() => void) | null = null;
 
     constructor(ctx: DurableObjectState, env: Bindings) {
       super(ctx, env);
@@ -448,9 +469,12 @@ export function workspaceObject(
      * workflow, and ends the ones whose workflow is over without having
      * said so. Then it renews the access of every channel whose time for
      * that has come, and begins the deliveries that waited for one of
-     * those. It runs soon after anything changes that can make a delivery
-     * begin, every `deliveryWatchMs` while one is under way, and when the
-     * next access is due.
+     * those. Last it keeps the inbox, and sends the push messages that
+     * wait: `#sendPushes`, which does not keep the next alarm waiting. It
+     * runs soon after anything changes that can make a delivery begin or
+     * that queues a push message, every `deliveryWatchMs` while a
+     * delivery is under way, and when the next access or the inbox is
+     * due.
      *
      * What goes wrong in looking after them does not fail the alarm: it
      * is logged, and tried again the next time. The one thing that does
@@ -552,8 +576,10 @@ export function workspaceObject(
     #nextLookIn(): number | null {
       // Also for a delivery that can begin: one that became ready while
       // this alarm ran has set the alarm for itself, `#wake`, and sooner.
-      // A push message that is left was not sent a moment ago, and is not
-      // tried at once: what failed then fails again.
+      // A push message that is left could not be sent a moment ago, and
+      // is not tried at once: what failed then fails again. Or a pass is
+      // sending it beside this alarm, which needs no alarm. A pass that
+      // stopped at its limit has set the alarm for now, which stays.
       if (
         this.#store.deliveriesNeed(now().getTime()) !== "nothing" ||
         this.#store.pushesWait
@@ -663,32 +689,84 @@ export function workspaceObject(
     }
 
     /**
-     * Sends the push messages that wait to the devices of the owner. A
+     * Sends the push messages that wait to the devices of the owner, and
+     * waits until they are sent, unless something more urgent comes up.
+     *
+     * A push service can be slow, and one that does not answer keeps a
+     * message waiting for ten seconds for every round of devices. An
+     * alarm that waited all of that out would keep the deliveries and the
+     * accesses waiting with it: the runtime runs one alarm at a time. So
+     * the sending is a pass of its own, `#pushPass`, which the alarm
+     * begins as the last thing it does, and which it leaves to itself
+     * as soon as a change asks for the alarm: `#wake` says so here. The
+     * alarm then ends and runs again at once, for the delivery, and the
+     * pass goes on beside it. An alarm that comes while a pass is under
+     * way begins no second one.
+     */
+    async #sendPushes(): Promise<void> {
+      if (!this.#pushing && !this.#store.pushesWait) return;
+      this.#pushing ??= this.#pushPass()
+        .catch((error: unknown) =>
+          console.error(
+            "The push messages of a workspace were not sent",
+            loggable(error),
+          ),
+        )
+        .finally(() => {
+          this.#pushing = null;
+        });
+      try {
+        await Promise.race([
+          this.#pushing,
+          new Promise<void>((resolve) => {
+            this.#standAside = resolve;
+          }),
+        ]);
+      } finally {
+        this.#standAside = null;
+      }
+    }
+
+    /**
+     * One pass over the push messages that wait, the oldest first. A
      * message is taken off the queue when it has been handed to the push
      * services, whatever each of them said: a device that cannot be
      * reached is told by its push service later, or reads the inbox. It
-     * stays when the devices could not be read, and is tried with the
-     * next alarm, for as long as the store keeps it.
+     * stays when the devices could not be read, which ends the pass, and
+     * is tried with the next alarm, for as long as the store keeps it.
+     *
+     * A pass sends `pushesPerPass` messages at most and takes up no new
+     * one after `pushPassMs`. What is left then goes with the next alarm,
+     * which is asked for at once: in between, that alarm looks after the
+     * deliveries and the accesses, also where nothing has woken it.
      */
-    async #sendPushes(): Promise<void> {
-      const queued = this.#store.queuedPushes(now().getTime());
-      if (queued.length === 0) return;
+    async #pushPass(): Promise<void> {
+      // By the clock of the runtime: this is about how long the object
+      // has been at it, not about a time in the workspace.
+      const began = Date.now();
       const key = await vapidKeyOf(this.#vapidKey());
       const { ownerId } = this.#store.identity;
-      for (const { id, message, notificationId } of queued) {
+      for (let sent = 0; ; sent += 1) {
+        // Read anew each time: a message can be queued while one is sent.
+        const [next] = this.#store.queuedPushes(now().getTime());
+        if (!next) return;
+        if (sent >= pushesPerPass || Date.now() - began >= pushPassMs) {
+          await this.ctx.storage.setAlarm(Date.now());
+          return;
+        }
         // A pigy without a key sends nothing, and keeps nothing to send.
         if (key) {
           await pushToDevices(
             { db: drizzle(this.env.DB), fetch, now, key },
             ownerId,
-            message,
+            next.message,
             // What a push service knows a message by, to put a later one
             // in its place: the ID of the notification, which is 32
             // characters without its dashes.
-            notificationId.replaceAll("-", ""),
+            next.notificationId.replaceAll("-", ""),
           );
         }
-        this.#store.pushed(id);
+        this.#store.pushed(next.id);
       }
     }
 
@@ -1103,6 +1181,9 @@ export function workspaceObject(
         }
         if (need === "begin" || need === "renew" || pushQueued) {
           this.ctx.storage.setAlarm(Date.now()).catch(failed);
+          // An alarm that is sending push messages is in the way of the
+          // one that was just set: it ends here, and its sending goes on.
+          if (need === "begin" || need === "renew") this.#standAside?.();
         } else {
           this.#attend();
         }

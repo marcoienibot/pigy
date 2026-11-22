@@ -1,8 +1,11 @@
+import { runInDurableObject } from "cloudflare:test";
 import { pushHosts } from "@pigy/simulators/push";
 import type { SimToken } from "@pigy/simulators/world";
-import { describe, expect, it, onTestFinished } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { pushesAtOnce } from "../src/push/notify.ts";
 import { maxDevices, pushEndpoint } from "../src/push/subscriptions.ts";
+import { pushesPerPass } from "../src/workspace/object.ts";
+import { WorkspaceStore } from "../src/workspace/store.ts";
 import {
   connectInSandbox,
   connectLinkedInLive,
@@ -23,9 +26,11 @@ import {
   connectAccount,
   ended,
   follow,
+  patience,
   publishTo,
   retry,
   started,
+  targetOf,
   writeDraft,
 } from "./publishing.ts";
 import {
@@ -38,7 +43,17 @@ import {
   received,
   turnOn,
 } from "./push.ts";
-import { SyncClient, workspaceIds } from "./sync-client.ts";
+import { objectOf, SyncClient, workspaceIds } from "./sync-client.ts";
+
+/** A push message about a post of `workspaceId`, as the object queues one. */
+const pushMessage = (workspaceId: string, postId: string) =>
+  JSON.stringify({
+    v: 1,
+    kind: "post_failed",
+    workspaceId,
+    environment: "live",
+    postId,
+  });
 
 const day = 24 * 60 * 60 * 1000;
 
@@ -854,6 +869,87 @@ describe("the devices that are told", () => {
     });
 
     expect(await response.json()).toEqual({ subscribed: false });
+  });
+});
+
+describe("a push service that does not answer", () => {
+  it("does not keep a post that is published meanwhile from going out", async () => {
+    // A push service that takes a request and says nothing, until the
+    // test lets it. `over` says that the app has its answer, or has given
+    // the request up, which it does after ten seconds.
+    const service = { hangs: false, asked: 0, over: 0 };
+    const context = await withChannel({
+      interceptPush: (push) => async (input, init) => {
+        service.asked += 1;
+        try {
+          // Each side looks on a timer of its own: see `gate`.
+          while (service.hangs) {
+            if (init?.signal?.aborted) throw new TypeError("Given up");
+            await new Promise((resolve) => setTimeout(resolve, 5));
+          }
+          return await push(input, init);
+        } finally {
+          service.over += 1;
+        }
+      },
+    });
+    onTestFinished(() => {
+      service.hangs = false;
+    });
+    const { test, browser, client, workspace, channel } = context;
+    const phone = await turnOn(test, browser);
+    service.hangs = true;
+    // A post fails, and the alarm of the workspace is telling the device.
+    await published(context, tooLong);
+    await vi.waitFor(() => expect(service.asked).toBe(1), patience);
+
+    const { postId } = await writeDraft(client, workspace, "Hello");
+    const [targetId = ""] = await publishTo(client, postId, channel);
+    await ended(client, postId);
+
+    // It went out while the push service was still being waited for: the
+    // alarm that sent the message did not make the delivery wait for it.
+    expect(targetOf(client, targetId)).toMatchObject({ status: "sent" });
+    expect(service.over).toBe(0);
+
+    // And the message arrives when the push service answers at last.
+    service.hangs = false;
+    expect(await received(test, phone, 1)).toMatchObject([
+      { kind: "post_failed" },
+    ]);
+  });
+
+  it("sends the queue in passes, with a look at the deliveries in between", async () => {
+    const context = await withChannel();
+    const { test, browser, workspace } = context;
+    const phone = await turnOn(test, browser);
+    const alarms = vi.spyOn(WorkspaceStore.prototype, "startDeliveries");
+    onTestFinished(() => alarms.mockRestore());
+    // More messages than one pass sends, queued while nothing is sent.
+    const more = pushesPerPass + 3;
+    await runInDurableObject(objectOf(workspace), async (_, state) => {
+      // The alarm that the mutation which queues a message sets.
+      await state.storage.setAlarm(Date.now() + 60_000);
+      for (let index = 0; index < more; index += 1) {
+        // Each about a post of its own: a push service keeps one message
+        // of a topic for a device.
+        const postId = `01932c07-0000-7000-8000-${String(index).padStart(12, "0")}`;
+        state.storage.sql.exec(
+          "insert into push_outbox (message, notification_id, queued_at) values (?, ?, ?)",
+          pushMessage(workspace, postId),
+          postId,
+          test.clock.time.getTime(),
+        );
+      }
+    });
+    const before = alarms.mock.calls.length;
+
+    await attend(workspace);
+
+    expect(await received(test, phone, more)).toHaveLength(more);
+    // The first pass stopped at its limit and asked for the alarm, which
+    // looked at the deliveries before it sent the rest.
+    expect(alarms.mock.calls.length - before).toBeGreaterThanOrEqual(2);
   });
 });
 
