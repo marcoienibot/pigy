@@ -28,6 +28,32 @@ beforeEach(async () => {
   // workspace was still closing when the test ended. Deleting an object
   // from under them makes the runtime log an exception for each.
   await evictAllDurableObjects({ webSockets: "close" });
-  await reset();
+  await emptied();
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
 });
+
+/**
+ * Deletes what the test before has stored, and makes sure that it is
+ * gone. `reset()` does not always delete: now and then, on a machine
+ * under load, it returns and everything is still there, the database and
+ * the objects with it. The next test then signs in to the workspaces of
+ * the one before, with their posts, their deliveries and their clock,
+ * and fails in ways that have nothing to do with what it tests. A second
+ * `reset()` a moment later does delete. So this asks the database
+ * whether it is empty, which it is not while it has the tables of the
+ * migrations, and tries again until it is.
+ */
+async function emptied(): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    await reset();
+    const left = await env.DB.prepare(
+      "select count(*) as tables from sqlite_master where type = 'table' and name = 'workspace'",
+    ).first<{ tables: number }>();
+    if (!left?.tables) return;
+    if (attempt === 50) {
+      throw new Error("The storage of the test before could not be deleted");
+    }
+    await evictAllDurableObjects({ webSockets: "close" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
