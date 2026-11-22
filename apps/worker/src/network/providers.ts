@@ -37,12 +37,13 @@ export type ProviderContext = {
 const clientName = "pigy";
 
 /**
- * The adapter of every network that pigy can connect, made with the reach
- * of a workspace. A network joins by getting an entry here.
+ * The adapter of every network, made with the reach of a workspace. A
+ * network joins by getting an entry here, which the compiler asks for.
  */
-const adapters: {
-  [Name in Network]?: (reach: Reach, context: ProviderContext) => Provider;
-} = {
+const adapters: Record<
+  Network,
+  (reach: Reach, context: ProviderContext) => Provider
+> = {
   bluesky: (reach, { now, blueskyClientKeys }) =>
     createBlueskyProvider({
       fetch: reach.fetch,
@@ -84,24 +85,20 @@ const adapters: {
 
 /**
  * The adapter of `network` for `workspace`, with how the workspace reaches
- * the network, or undefined if pigy has no adapter for the network yet.
- * Every call of a provider in the Worker goes through here, so that
+ * the network. Every call of a provider in the Worker goes through here, so that
  * `reachOf` decides for all of them where their requests go.
  */
 export function providerOf(
   network: Network,
   workspace: WorkspaceIdentity,
   context: ProviderContext,
-): { provider: Provider; reach: Reach } | undefined {
-  const adapter = adapters[network];
-  if (!adapter) return undefined;
+): { provider: Provider; reach: Reach } {
   const reach = reachOf(workspace, context.env, context.fetch);
-  return { provider: adapter(reach, context), reach };
+  return { provider: adapters[network](reach, context), reach };
 }
 
 /**
- * Why this pigy cannot connect accounts of `network`, which has an
- * adapter, in a workspace with `reach`, or undefined if it can: a secret
+ * Why this pigy cannot connect accounts of `network` in a workspace with `reach`, or undefined if it can: a secret
  * that the network needs is not set. A network that needs one says so
  * here.
  */

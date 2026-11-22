@@ -104,15 +104,14 @@ export async function renewAccess(
       env,
       developmentBlueskyClientKeys,
     );
-    const connection = providerOf(channel.network, workspace, {
+    const { provider } = providerOf(channel.network, workspace, {
       env,
       fetch,
       now,
       vault,
       blueskyClientKeys,
     });
-    const provider = connection?.provider;
-    if (!provider?.refresh) return { kind: "never" };
+    if (!provider.refresh) return { kind: "never" };
     // A secret of this pigy's that the renewal takes is missing. The
     // adapter would say that the account has to be connected again, as
     // it does of a key that was replaced, but nothing was asked of the

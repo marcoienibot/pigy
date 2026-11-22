@@ -347,7 +347,7 @@ it("leaves a channel alone that was connected again before its delivery said tha
 function withAdapter(wrap: (provider: Provider) => Provider) {
   deployment.providerOf = (...args) => {
     const connection = providerOf(...args);
-    return connection && { ...connection, provider: wrap(connection.provider) };
+    return { ...connection, provider: wrap(connection.provider) };
   };
 }
 

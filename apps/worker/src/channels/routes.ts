@@ -165,12 +165,6 @@ export function channelRoutes(dependencies: AppDependencies): Hono<AppEnv> {
       ),
     };
     const connection = providerOf(network, workspace, context);
-    if (!connection) {
-      throw new InvalidField(
-        "network",
-        `pigy cannot connect accounts of ${network} yet.`,
-      );
-    }
     // A network that needs a secret of this pigy's, which it has not
     // been given.
     const missing = cannotConnect(network, connection.reach, context);
@@ -333,7 +327,6 @@ function giveBack(
   return givenBack(async () => {
     if (access.credentials === null) return false;
     const connection = providerOf(access.network, workspace, context);
-    if (!connection) return false;
     await connection.provider.disconnect(
       await openCredentials(
         context.vault,
@@ -482,8 +475,6 @@ export function connectCallbackRoutes(
         ),
       };
       const connection = providerOf(network, workspace, context);
-      if (!connection) return back("failed");
-
       const { provider } = connection;
       // What is given back to the network on the way, each to its end and
       // none of them rejecting. The answer does not wait for them.

@@ -433,7 +433,6 @@ export async function deliver(
         developmentBlueskyClientKeys,
       ),
     });
-    if (!connection) throw refused(`pigy cannot post to ${network} yet.`);
     return { ...connection, vault };
   };
 

@@ -1,5 +1,6 @@
 import type { Bindings } from "../env.ts";
 import type { Reach } from "./reach.ts";
+import { registrationFor } from "./registration.ts";
 
 /**
  * pigy as an application of LinkedIn's. Unlike Mastodon, where pigy
@@ -19,13 +20,10 @@ export type LinkedInClient = { clientId: string; clientSecret: string };
  * which the world of a sandbox is made with: src/sim/object.ts.
  *
  * It is here for everybody to read, and that is fine: it is good in a
- * simulated world and nowhere else. Its secret is marked as a simulated
- * one, which no real service takes, and the real LinkedIn does not know
- * the ID. It is part of every build, like the sandbox itself. The
- * application of the operator's never goes into a simulated world: a
- * simulator would refuse its secret unread, and it has no business there.
- * So a sandbox connects LinkedIn accounts in a pigy that has no
- * application at LinkedIn at all.
+ * simulated world and nowhere else, as `registrationFor` of
+ * registration.ts says, and the real LinkedIn does not know the ID. It
+ * is part of every build, like the sandbox itself. So a sandbox connects
+ * LinkedIn accounts in a pigy that has no application at LinkedIn at all.
  */
 export const sandboxLinkedInClient: LinkedInClient = {
   clientId: "pigy-sandbox",
@@ -41,8 +39,8 @@ export function linkedInClientFor(
   reach: Reach,
   env: Bindings,
 ): LinkedInClient | undefined {
-  if (reach.simulated) return sandboxLinkedInClient;
-  const { LINKEDIN_CLIENT_ID: clientId, LINKEDIN_CLIENT_SECRET: clientSecret } =
-    env;
-  return clientId && clientSecret ? { clientId, clientSecret } : undefined;
+  return registrationFor(reach, sandboxLinkedInClient, {
+    clientId: env.LINKEDIN_CLIENT_ID,
+    clientSecret: env.LINKEDIN_CLIENT_SECRET,
+  });
 }

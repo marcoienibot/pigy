@@ -85,19 +85,19 @@ export type WorldContents = { accounts: SimAccount[]; posts: SimPost[] };
 /** The faults of a world after one was armed, or which field was wrong. */
 export type ArmOutcome =
   | { ok: true; faults: SandboxFaults }
-  | { ok: false; field: "network" | "kind" | "operation"; message: string };
+  | { ok: false; field: "kind" | "operation"; message: string };
 
 /**
  * The networks that a world simulates, each with the ways it can be made
  * to fail and the kinds of request that a fault can strike, as its
  * simulator declares them. A network joins by getting an entry here.
  */
-const simulated: {
-  readonly [Name in Network]?: {
-    kinds: readonly FaultKind[];
-    operations: readonly string[];
-  };
-} = {
+const simulated: Readonly<
+  Record<
+    Network,
+    { kinds: readonly FaultKind[]; operations: readonly string[] }
+  >
+> = {
   bluesky: { kinds: blueskyFaultKinds, operations: blueskyOperations },
   linkedin: { kinds: linkedInFaultKinds, operations: linkedInOperations },
   mastodon: { kinds: mastodonFaultKinds, operations: mastodonOperations },
@@ -235,8 +235,8 @@ export function simWorldObject({
       return {
         networks: simulatedNetworks.map((network) => ({
           network,
-          kinds: [...(simulated[network]?.kinds ?? [])],
-          operations: [...(simulated[network]?.operations ?? [])],
+          kinds: [...simulated[network].kinds],
+          operations: [...simulated[network].operations],
           armed: world.faults.armed(network).map(({ kind, operation }) => ({
             kind,
             operation: operation ?? null,
@@ -259,13 +259,6 @@ export function simWorldObject({
         return undefined;
       }
       const declared = simulated[network];
-      if (!declared) {
-        return {
-          ok: false,
-          field: "network",
-          message: `The sandbox does not simulate ${network} yet.`,
-        };
-      }
       const known = declared.kinds.find((candidate) => candidate === kind);
       if (!known) {
         return {
