@@ -4,7 +4,7 @@
 
 pigy is an invite-only web app for writing a post once and publishing it to LinkedIn, Mastodon, Bluesky and Threads. It runs as a single Cloudflare Worker with a local-first React frontend.
 
-pigy is under construction. [PLAN.md](PLAN.md) holds the design and the phases it is built in. [AGENTS.md](AGENTS.md) holds the conventions for working on the code. [SYNC.md](SYNC.md) describes the protocol that keeps the app's local data in step with the server.
+pigy is under construction. [PLAN.md](PLAN.md) holds the design and the phases it is built in. [AGENTS.md](AGENTS.md) holds the conventions for working on the code. [SYNC.md](SYNC.md) describes the protocol that keeps the app's local data in step with the server. [SETUP.md](SETUP.md) is for whoever runs a pigy of their own: the Cloudflare account, the first deploy, the secrets, deployment from CI, logs and backups.
 
 ## Development
 
