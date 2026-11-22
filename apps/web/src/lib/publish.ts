@@ -317,6 +317,7 @@ function joinedText(limits: Limits, parts: readonly Text[]): string | null {
       return joinLinkedInParts({ parts: parts.map(({ text }) => ({ text })) });
     case "bluesky":
     case "mastodon":
+    case "threads":
       return null;
   }
 }

@@ -7,6 +7,7 @@ import {
   connectSimulated,
   connectSimulatedLinkedIn,
   connectSimulatedThreads,
+  counterOf,
   deliveryTo,
   draftRow,
   editor,
@@ -548,9 +549,17 @@ test("a post goes out to a simulated Threads account, which makes it in two step
   await openScreen(page, "Channels");
   await connectSimulatedThreads(page, graceOnThreads);
   await openScreen(page, "Drafts");
-  // An emoji counts as its bytes on Threads, which this text is far from
-  // feeling.
-  await publishDraft(page, "Hello Threads 👋 from pigy", graceOnThreads);
+  await page.getByRole("button", { name: "New draft" }).click();
+  await editor(page).fill("Hello Threads 👋 from pigy");
+  await channelChoice(page, graceOnThreads).click();
+  // The counter is Threads' own: its limit, and its way of counting, in
+  // which the hand is the four bytes that it takes and not one character.
+  await expect(counterOf(editor(page), "Threads")).toHaveText(
+    /^Threads 28\/500/,
+  );
+  await publishPanel(page).getByRole("button", { name: "Publish now" }).click();
+  // A draft that is published is a draft no more: the editor closes.
+  await expect(editor(page)).toHaveCount(0);
 
   await openScreen(page, "Sent");
   const sent = deliveryTo(

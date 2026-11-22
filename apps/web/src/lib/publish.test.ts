@@ -426,6 +426,65 @@ describe("the counters of a thread on a network that makes one post of it", () =
   });
 });
 
+describe("the counters of a Threads account", () => {
+  const threads = channel({
+    network: "threads",
+    handle: "@grace.sandbox",
+    limits: { network: "threads", maxCharacters: 500 },
+  });
+  const read = (meters: { label: string; count: number; max: number }[]) =>
+    meters.map(({ label, count, max }) => `${label} ${count}/${max}`);
+
+  it("counts an emoji as its bytes, as Threads does, against the limit of Threads", () => {
+    const [gauge] = gaugesOf([threads]);
+    if (!gauge) throw new Error("Threads has limits");
+    // Five letters, a space, and a hand that takes four bytes.
+    expect(meterOf(gauge, "Hello 👋")).toMatchObject({
+      label: "Threads",
+      count: 10,
+      max: 500,
+      tone: "ok",
+    });
+    // 125 hands are 125 characters to Mastodon and 500 to Threads, and
+    // one more is over.
+    expect(meterOf(gauge, "👋".repeat(125))).toMatchObject({
+      count: 500,
+      tone: "near",
+    });
+    expect(meterOf(gauge, "👋".repeat(126))).toMatchObject({
+      count: 504,
+      tone: "over",
+    });
+  });
+
+  it("does not publish what Threads would refuse, which another network takes", () => {
+    const chosen = new Set([mastodon.id, threads.id]);
+    const text = "👋".repeat(126);
+    const composer = compose(text, [mastodon, threads], chosen);
+    expect(composer.blocked).toBe("refused");
+    expect(composer.choices.map(({ refuses }) => refuses)).toEqual([
+      [],
+      ["The post is 504 characters long. The limit is 500."],
+    ]);
+    expect(
+      compose("👋".repeat(125), [mastodon, threads], chosen).blocked,
+    ).toBeNull();
+  });
+
+  it("counts each part of a thread by itself: Threads makes a chain of replies of it", () => {
+    const gauges = gaugesOf([threads]);
+    // Two parts that would be over the limit as one post.
+    const parts = [{ text: "a".repeat(300) }, { text: "b".repeat(300) }];
+    expect(read(partMetersOf(gauges, "a".repeat(300), 2))).toEqual([
+      "Threads 300/500",
+    ]);
+    expect(wholeMetersOf(gauges, parts)).toEqual([]);
+    const composer = composeParts(parts, [threads], new Set([threads.id]));
+    expect(composer.blocked).toBeNull();
+    expect(composer.choices[0]?.joined).toBe(false);
+  });
+});
+
 describe("selectOwnTexts", () => {
   it("has the text of each account of a draft that has one, in reading order, and nothing of a post that went out", () => {
     const draft = post();
