@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { ExternalLink, LoaderCircle, Trash2 } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Avatar } from "@/components/avatar";
+import { MarkedText } from "@/components/marked-text";
 import { EmptyState, Page } from "@/components/page";
 import {
   AlertDialog,
@@ -22,6 +23,7 @@ import {
 } from "@/components/ui/tooltip";
 import type { Channel } from "@/lib/channels";
 import { useShortcuts } from "@/lib/keyboard";
+import { marksOf } from "@/lib/markup";
 import { networkInfo } from "@/lib/networks";
 import {
   canDelete,
@@ -249,7 +251,19 @@ function SentItem({
             id={textId}
             className="line-clamp-6 min-w-0 flex-1 break-words whitespace-pre-wrap"
           >
-            {post.title || (
+            {post.title ? (
+              // Its links, mentions and hashtags, as the networks that
+              // got this text take them.
+              <MarkedText
+                text={post.title}
+                marks={marksOf(
+                  post.title,
+                  post.targets.flatMap(({ channel, ownText }) =>
+                    channel && !ownText ? [channel.network] : [],
+                  ),
+                )}
+              />
+            ) : (
               <span className="text-muted-foreground">Empty post</span>
             )}
           </p>
@@ -395,7 +409,10 @@ function TargetRow({
                   key={id}
                   className="line-clamp-4 break-words whitespace-pre-wrap"
                 >
-                  {text}
+                  <MarkedText
+                    text={text}
+                    marks={marksOf(text, channel ? [channel.network] : [])}
+                  />
                 </li>
               ))}
             </ol>

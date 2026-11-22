@@ -19,7 +19,7 @@ import {
 } from "@/lib/simulator";
 
 function feedPost(id: string, replies: SandboxPost[] = []): SandboxPost {
-  return { id, text: id, createdAt: 1, replies };
+  return { id, text: id, createdAt: 1, entities: [], card: null, replies };
 }
 
 describe("chainOf", () => {

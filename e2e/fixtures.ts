@@ -5,6 +5,7 @@ import {
   type BrowserContext,
   test as base,
   expect,
+  type Locator,
   type Page,
   type Route,
   type TestInfo,
@@ -394,4 +395,4 @@ export const test = pinned.extend<{
   },
 });
 
-export { expect, type Page, type Route, type WebSocketRoute };
+export { expect, type Locator, type Page, type Route, type WebSocketRoute };

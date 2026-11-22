@@ -9,8 +9,14 @@ import {
   errorResponseSchema,
   type HealthResponse,
   healthResponseSchema,
+  type LinkCard,
+  type LinkCardRequest,
+  linkCardResponseSchema,
+  type MentionsRequest,
   type MeResponse,
+  mentionsResponseSchema,
   meResponseSchema,
+  type Network,
   type PushSubscriptionRequest,
   pushConfigResponseSchema,
   pushStateResponseSchema,
@@ -347,4 +353,40 @@ export async function deletePushSubscription(endpoint: string): Promise<void> {
     method: "DELETE",
     json: { endpoint },
   });
+}
+
+/**
+ * The card of the link `url`, as pigy would send it with a post of the
+ * workspace, or null if the page cannot be read or says nothing of
+ * itself. Not synced, and kept nowhere: it is what the page says now.
+ */
+export async function fetchLinkCard(
+  workspaceId: string,
+  url: string,
+  signal: AbortSignal,
+): Promise<LinkCard | null> {
+  const response = await request(`/api/workspaces/${workspaceId}/link-card`, {
+    method: "POST",
+    json: { url } satisfies LinkCardRequest,
+    signal,
+  });
+  return linkCardResponseSchema.parse(await response.json()).card;
+}
+
+/**
+ * Which of `names` are accounts of `network`, as a post of the workspace
+ * would find them, or null on a network where pigy looks nobody up.
+ */
+export async function fetchMentioned(
+  workspaceId: string,
+  network: Network,
+  names: string[],
+  signal: AbortSignal,
+): Promise<string[] | null> {
+  const response = await request(`/api/workspaces/${workspaceId}/mentions`, {
+    method: "POST",
+    json: { network, names } satisfies MentionsRequest,
+    signal,
+  });
+  return mentionsResponseSchema.parse(await response.json()).known;
 }

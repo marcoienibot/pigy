@@ -3,6 +3,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { RefreshCw } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { Avatar } from "@/components/avatar";
+import { MarkedText } from "@/components/marked-text";
 import { EmptyState } from "@/components/page";
 import { RefreshFailure } from "@/components/refresh-failure";
 import { Button } from "@/components/ui/button";
@@ -302,7 +303,35 @@ function FeedPost({
         wanted && "bg-accent",
       )}
     >
-      <p className="break-words whitespace-pre-wrap">{post.text}</p>
+      <p className="break-words whitespace-pre-wrap">
+        {/* As the network has them: found by itself, or as the post
+            marked them. */}
+        <MarkedText
+          text={post.text}
+          marks={post.entities.map((entity) => ({
+            ...entity,
+            everywhere: true,
+          }))}
+        />
+      </p>
+      {post.card && (
+        // What the network shows of the page that the link leads to: text
+        // that the page wrote, shown as text.
+        <section
+          aria-label="Link preview"
+          className="my-1 flex max-w-md flex-col gap-0.5 rounded-md border px-3 py-2 text-xs text-muted-foreground"
+        >
+          <span className="line-clamp-2 text-sm font-medium break-words text-foreground">
+            {post.card.title}
+          </span>
+          {post.card.description && (
+            <span className="line-clamp-2 break-words">
+              {post.card.description}
+            </span>
+          )}
+          <span className="truncate">{post.card.url}</span>
+        </section>
+      )}
       <p className="text-xs text-muted-foreground">
         <time dateTime={new Date(post.createdAt).toISOString()}>
           {timeAgo(post.createdAt, now)}

@@ -231,13 +231,45 @@ export function partTexts(page: Page): Promise<string[]> {
     );
 }
 
+/** The part that `field` is the field of, with what stands under it. */
+function partOf(field: Locator): Locator {
+  return field.locator("xpath=ancestor::li[1]");
+}
+
+/**
+ * What the editor marks in the text of `field` as more than text, in the
+ * order of the text: each as its kind and how it is written, such as
+ * "link https://example.test/". One that not every account of the text
+ * takes says so: "hashtag #two (not everywhere)". They are read from the
+ * layer behind the field, which tints them.
+ */
+export function marksIn(field: Locator): Promise<string[]> {
+  return partOf(field)
+    .locator("[data-marks] [data-mark]")
+    .evaluateAll((marks) =>
+      marks.map(
+        (mark) =>
+          `${mark.getAttribute("data-mark")} ${mark.textContent}${mark.getAttribute("data-everywhere") === "false" ? " (not everywhere)" : ""}`,
+      ),
+    );
+}
+
+/** What the editor says a network takes for text, under `field`. */
+export function markNotes(field: Locator): Locator {
+  return partOf(field).locator("[data-mark-notes]");
+}
+
+/** The preview of the first link of the text of `field`, under it. */
+export function linkPreview(field: Locator): Locator {
+  return partOf(field).getByRole("region", { name: "Link preview" });
+}
+
 /**
  * The counter of a network under the field `field`: how long its text is
  * the way that network counts, against what the account takes.
  */
 export function counterOf(field: Locator, network: string): Locator {
-  return field
-    .locator("xpath=..")
+  return partOf(field)
     .locator("[data-tone]")
     .filter({ hasText: new RegExp(`^${literally(network)} `) });
 }

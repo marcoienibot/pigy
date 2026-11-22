@@ -1,7 +1,10 @@
 import {
+  maxMentionNames,
   maxOwnTextLength,
   maxParts,
   maxPartTextLength,
+  type Network,
+  sandboxLink,
   uuidv7,
 } from "@pigy/core";
 import { createFileRoute, Link } from "@tanstack/react-router";
@@ -17,6 +20,7 @@ import {
   useState,
 } from "react";
 import { toast } from "sonner";
+import { MarkLayer } from "@/components/marked-text";
 import { EmptyState, Page } from "@/components/page";
 import { PublishPanel } from "@/components/publish-panel";
 import { SyncIndicator } from "@/components/sync-indicator";
@@ -27,6 +31,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { fetchLinkCard, fetchMentioned } from "@/lib/api";
 import { type Channel, selectChannels, selectNoChannels } from "@/lib/channels";
 import {
   type Draft,
@@ -46,8 +51,16 @@ import {
   useShortcuts,
   withMod,
 } from "@/lib/keyboard";
+import {
+  blueskyHandlesOf,
+  cardNote,
+  markNotes,
+  marksOf,
+  previewLinkOf,
+} from "@/lib/markup";
 import { connectableNetworks } from "@/lib/networks";
 import { undoMs } from "@/lib/notices";
+import { useAsked } from "@/lib/preview";
 import {
   compose,
   type Gauge,
@@ -567,6 +580,14 @@ const sizesFields =
   typeof CSS !== "undefined" && CSS.supports("field-sizing", "content");
 
 /**
+ * How the text of a part is set, and the room around it: for the field
+ * and for the layer behind it, whose letters have to stand where the
+ * field's do. 16px on a phone, below which iOS zooms into a field.
+ */
+const partLetters =
+  "px-4 pt-4 pb-2 text-base leading-relaxed md:px-6 md:pt-5 md:text-[0.9375rem]";
+
+/**
  * What the field of a part asks of the editor. The object is the same for
  * as long as the editor is, so that a field renders again only when its
  * part has changed: `PartField` is kept by `memo`.
@@ -665,6 +686,21 @@ function Editor({
   const gauges = useMemo(
     () => gaugesOf(JSON.parse(readers) as Pick<Channel, "handle" | "limits">[]),
     [readers],
+  );
+
+  // The networks of the accounts that get the text, each once: what a
+  // link, a mention and a hashtag are is theirs to say. Of every account,
+  // also one whose limits are not known yet.
+  const readerNetworks = [
+    ...new Set(
+      readersOf(composer.choices, shown).map(({ network }) => network),
+    ),
+  ]
+    .sort()
+    .join(" ");
+  const networks = useMemo(
+    () => readerNetworks.split(" ").filter(Boolean) as Network[],
+    [readerNetworks],
   );
 
   const fields = useRef(new Map<string, HTMLTextAreaElement>());
@@ -999,6 +1035,7 @@ function Editor({
               count={parts.length}
               handle={reader?.channel.handle ?? null}
               gauges={gauges}
+              networks={networks}
               actions={stable}
             />
           ))}
@@ -1080,6 +1117,7 @@ const PartField = memo(function PartField({
   count,
   handle,
   gauges,
+  networks,
   actions,
 }: {
   part: Part;
@@ -1091,9 +1129,12 @@ const PartField = memo(function PartField({
   handle: string | null;
   /** The limits of the accounts that get the text. */
   gauges: readonly Gauge[];
+  /** The networks of the accounts that get the text, each once. */
+  networks: readonly Network[];
   actions: PartActions;
 }) {
   const { text } = part;
+  const { workspace } = Route.useRouteContext();
   const field = useRef<HTMLTextAreaElement>(null);
   const alone = count === 1;
   const number = index + 1;
@@ -1140,6 +1181,38 @@ const PartField = memo(function PartField({
   const meters = partMetersOf(gauges, text, count);
   const characters = countCharacters(text);
 
+  // What Bluesky has to be asked: a mention is marked there only for a
+  // handle that is an account, which the server finds out as a post
+  // would. Asked again only when the handles change, not with every key.
+  const handles = networks.includes("bluesky")
+    ? blueskyHandlesOf(text).slice(0, maxMentionNames)
+    : [];
+  const handlesKey = handles.join(" ");
+  const mentioned = useAsked(
+    handles.length > 0 ? `${workspace.id} ${handlesKey}` : null,
+    (signal) => fetchMentioned(workspace.id, "bluesky", handles, signal),
+  );
+  const known = useMemo(
+    () =>
+      mentioned.answer
+        ? {
+            asked: new Set(handlesKey.split(" ")),
+            found: new Set(mentioned.answer),
+          }
+        : null,
+    [mentioned.answer, handlesKey],
+  );
+  const marks = marksOf(text, networks, known);
+  const notes = markNotes(text, networks, known);
+
+  // The card of the first link, as far as it can be known before the
+  // post goes out: what the page says now.
+  const link = previewLinkOf(text, networks);
+  const preview = useAsked(
+    link === null ? null : `${workspace.id} ${link}`,
+    (signal) => fetchLinkCard(workspace.id, link ?? "", signal),
+  );
+
   return (
     <li
       className={cn(
@@ -1149,80 +1222,113 @@ const PartField = memo(function PartField({
         alone ? "flex-1" : "border-b",
       )}
     >
-      <textarea
-        ref={field}
-        data-part={part.id}
-        aria-label={label}
-        placeholder={index === 0 ? "Write something…" : "Go on…"}
-        value={text}
-        maxLength={maxPartTextLength}
-        rows={alone ? undefined : 2}
-        // 16px on a phone, below which iOS zooms into a field.
-        className={cn(
-          "field-sizing-content w-full resize-none bg-transparent px-4 pt-4 pb-2 text-base leading-relaxed outline-none placeholder:text-muted-foreground md:px-6 md:pt-5 md:text-[0.9375rem]",
-          alone ? "min-h-24 flex-1" : "min-h-16",
-        )}
-        onChange={(event) => {
-          typed.current = event.target.value;
-          actions.setText(part, event.target.value);
-        }}
-        onSelect={(event) => {
-          const { selectionStart, selectionEnd } = event.currentTarget;
-          selection.current = [selectionStart, selectionEnd];
-        }}
-        onKeyDown={(event) => {
-          // A key that composes a character is the input method's: ↓ and
-          // ↑ go through its candidates, ⌫ and Escape take back what it
-          // holds, Enter takes a candidate. None of them is for the
-          // thread. Safari says 229 for the key that ends a composition,
-          // after it has said that the composition is over.
-          if (event.nativeEvent.isComposing || event.keyCode === 229) return;
-          const { selectionStart, selectionEnd, value } = event.currentTarget;
-          const plain =
-            !event.shiftKey &&
-            !event.altKey &&
-            !event.metaKey &&
-            !event.ctrlKey;
-          if (event.key === "Escape") {
-            // The one key that is not for the text.
-            event.preventDefault();
-            actions.leave();
-          } else if (
-            event.key === "Enter" &&
-            withMod(event.nativeEvent) &&
-            event.shiftKey &&
-            !event.repeat
-          ) {
-            event.preventDefault();
-            actions.addAfter(part);
-          } else if (
-            event.key === "ArrowUp" &&
-            plain &&
-            selectionStart === 0 &&
-            selectionEnd === 0
-          ) {
-            // At the very beginning of a part, up is the part before.
-            if (actions.go(part, -1)) event.preventDefault();
-          } else if (
-            event.key === "ArrowDown" &&
-            plain &&
-            selectionStart === value.length &&
-            selectionEnd === value.length
-          ) {
-            if (actions.go(part, 1)) event.preventDefault();
-          } else if (
-            event.key === "Backspace" &&
-            plain &&
-            value === "" &&
-            !alone &&
-            !event.repeat
-          ) {
-            // Nothing left to delete in it: the part itself goes.
-            event.preventDefault();
-            actions.remove(part);
-          }
-        }}
-      />
+      {/* The field, and behind it the layer that tints its links,
+          mentions and hashtags: the same text in the same letters. */}
+      <div className={cn("relative flex flex-col", alone && "flex-1")}>
+        <MarkLayer text={text} marks={marks} className={partLetters} />
+        <textarea
+          ref={field}
+          data-part={part.id}
+          aria-label={label}
+          aria-describedby={notes.length > 0 ? `${part.id}-notes` : undefined}
+          placeholder={index === 0 ? "Write something…" : "Go on…"}
+          value={text}
+          maxLength={maxPartTextLength}
+          rows={alone ? undefined : 2}
+          className={cn(
+            // Over the layer, and as high as its text: a field that
+            // scrolled would move its letters away from their tints.
+            "relative field-sizing-content w-full resize-none overflow-hidden bg-transparent outline-none placeholder:text-muted-foreground",
+            partLetters,
+            alone ? "min-h-24 flex-1" : "min-h-16",
+          )}
+          onChange={(event) => {
+            typed.current = event.target.value;
+            actions.setText(part, event.target.value);
+          }}
+          onSelect={(event) => {
+            const { selectionStart, selectionEnd } = event.currentTarget;
+            selection.current = [selectionStart, selectionEnd];
+          }}
+          onKeyDown={(event) => {
+            // A key that composes a character is the input method's: ↓ and
+            // ↑ go through its candidates, ⌫ and Escape take back what it
+            // holds, Enter takes a candidate. None of them is for the
+            // thread. Safari says 229 for the key that ends a composition,
+            // after it has said that the composition is over.
+            if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+            const { selectionStart, selectionEnd, value } = event.currentTarget;
+            const plain =
+              !event.shiftKey &&
+              !event.altKey &&
+              !event.metaKey &&
+              !event.ctrlKey;
+            if (event.key === "Escape") {
+              // The one key that is not for the text.
+              event.preventDefault();
+              actions.leave();
+            } else if (
+              event.key === "Enter" &&
+              withMod(event.nativeEvent) &&
+              event.shiftKey &&
+              !event.repeat
+            ) {
+              event.preventDefault();
+              actions.addAfter(part);
+            } else if (
+              event.key === "ArrowUp" &&
+              plain &&
+              selectionStart === 0 &&
+              selectionEnd === 0
+            ) {
+              // At the very beginning of a part, up is the part before.
+              if (actions.go(part, -1)) event.preventDefault();
+            } else if (
+              event.key === "ArrowDown" &&
+              plain &&
+              selectionStart === value.length &&
+              selectionEnd === value.length
+            ) {
+              if (actions.go(part, 1)) event.preventDefault();
+            } else if (
+              event.key === "Backspace" &&
+              plain &&
+              value === "" &&
+              !alone &&
+              !event.repeat
+            ) {
+              // Nothing left to delete in it: the part itself goes.
+              event.preventDefault();
+              actions.remove(part);
+            }
+          }}
+        />
+      </div>
+      {notes.length > 0 && (
+        // What the field is described by, for whoever does not see the
+        // tints. The list has no name of its own: a name would be read
+        // in place of the notes.
+        <div
+          id={`${part.id}-notes`}
+          data-mark-notes=""
+          className="px-4 pb-1 text-xs text-muted-foreground md:px-6"
+        >
+          <span className="sr-only">What a network takes for text: </span>
+          <ul className="flex flex-col gap-0.5">
+            {notes.map((note) => (
+              <li key={note}>{note}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {link !== null && preview.settled && (
+        <LinkPreview
+          link={link}
+          card={preview.answer}
+          networks={networks}
+          sandbox={workspace.environment === "sandbox"}
+        />
+      )}
       <div className="flex min-h-9 flex-wrap items-center gap-x-3 gap-y-1 px-4 pb-2 text-xs text-muted-foreground md:px-6">
         {!alone && (
           <span className="tabular-nums">
@@ -1292,6 +1398,63 @@ const PartField = memo(function PartField({
     </li>
   );
 });
+
+/**
+ * The card of the first link of a part, as the page of the link makes it
+ * now: what pigy sends with the post where a network shows the card that
+ * it is sent. Its texts are what the page says of itself, shown as text.
+ * It has no picture: pigy sends none yet, and the browser of whoever
+ * writes a post asks the page of a link for nothing.
+ */
+function LinkPreview({
+  link,
+  card,
+  networks,
+  sandbox,
+}: {
+  link: string;
+  card: { title: string; description: string } | null;
+  networks: readonly Network[];
+  sandbox: boolean;
+}) {
+  let host = link;
+  try {
+    host = new URL(link).host;
+  } catch {
+    // Shown as it is written.
+  }
+  return (
+    <section
+      aria-label="Link preview"
+      className="mx-4 mb-2 flex flex-col gap-1 text-xs text-muted-foreground md:mx-6"
+    >
+      {card ? (
+        <>
+          <div className="flex max-w-md flex-col gap-0.5 rounded-md border px-3 py-2">
+            <span className="line-clamp-2 text-sm font-medium break-words text-foreground">
+              {card.title}
+            </span>
+            {card.description && (
+              <span className="line-clamp-2 break-words">
+                {card.description}
+              </span>
+            )}
+            <span className="truncate">{host}</span>
+          </div>
+          <p>{cardNote(networks)}</p>
+        </>
+      ) : (
+        <p>
+          No preview: pigy could not read the page at{" "}
+          <span className="break-all">{host}</span>. The post goes out with its
+          link all the same.
+          {sandbox &&
+            ` The sandbox reaches a simulated web only: ${sandboxLink} is a page of it.`}
+        </p>
+      )}
+    </section>
+  );
+}
 
 /**
  * How long a part is for the accounts of one network, against what they
