@@ -17,7 +17,8 @@ import { isLocal } from "../auth/config.ts";
 import { requireUser } from "../auth/guards.ts";
 import { uploadUses } from "../db/schema.ts";
 import type { AppDependencies, AppEnv } from "../env.ts";
-import { loggable } from "../log.ts";
+import { routeOf } from "../errors.ts";
+import { log } from "../log.ts";
 import { imagePolicy } from "../security-headers.ts";
 import type { MediaUpload, WorkspaceIdentity } from "../workspace/store.ts";
 import {
@@ -249,6 +250,13 @@ export function mediaRoutes(dependencies: AppDependencies): Hono<AppEnv> {
     async (c) => {
       const workspace = await workspaceOf(c);
       const mediaId = mediaIdOf(c);
+      // For the log, read while the request is at its route: the work
+      // below goes on after the answer.
+      const where = {
+        route: routeOf(c),
+        workspaceId: workspace.id,
+        mediaId,
+      };
       await counted(c);
       const found = await mediaUploadOf(c.env.WORKSPACE, workspace, mediaId);
       if (!found) {
@@ -261,7 +269,12 @@ export function mediaRoutes(dependencies: AppDependencies): Hono<AppEnv> {
         c.executionCtx.waitUntil(
           forgetUpload(c.env.MEDIA, workspace.id, mediaId, status).catch(
             (error) => {
-              console.error("An upload was not forgotten", loggable(error));
+              log.error(
+                "media",
+                "What the bucket had of an upload that ended was not deleted",
+                where,
+                error,
+              );
             },
           ),
         );
@@ -304,7 +317,7 @@ export function mediaRoutes(dependencies: AppDependencies): Hono<AppEnv> {
       })();
       c.executionCtx.waitUntil(
         work.catch((error) => {
-          console.error("An image was not taken in", loggable(error));
+          log.error("media", "An image was not taken in", where, error);
         }),
       );
       try {

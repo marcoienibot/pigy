@@ -19,7 +19,7 @@ import {
 } from "@pigy/core";
 import { drizzle } from "drizzle-orm/d1";
 import type { Bindings } from "../env.ts";
-import { type LogKind, log, loggable } from "../log.ts";
+import { type LogKind, log } from "../log.ts";
 import { deleteUnder, mediaKeys, noSuchUpload } from "../media/keys.ts";
 import {
   deliveryInstanceId,
@@ -820,9 +820,11 @@ export function workspaceObject(
           try {
             await look(image, mediaKeys(workspaceId, image.id));
           } catch (error) {
-            console.error(
-              `The image ${image.id} of the workspace ${workspaceId} was not looked after`,
-              loggable(error),
+            log.error(
+              "media",
+              "An image of a workspace was not looked after",
+              { ...this.#store.where, mediaId: image.id },
+              error,
             );
           } finally {
             this.#publish(from);
@@ -846,9 +848,11 @@ export function workspaceObject(
           } catch (error) {
             if (!noSuchUpload(error)) {
               this.#store.dropUploadAt(id, now().getTime() + dropUploadAgainMs);
-              console.error(
-                `The upload of the image ${id} of the workspace ${workspaceId} was not dropped, and is asked for again in an hour`,
-                loggable(error),
+              log.error(
+                "media",
+                "The upload of an image was not dropped, and is asked for again in an hour",
+                { ...this.#store.where, mediaId: id },
+                error,
               );
               return false;
             }

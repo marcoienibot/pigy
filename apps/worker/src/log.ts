@@ -33,7 +33,10 @@ export type LogKind =
   /** The scheduled posts of a workspace. */
   | "schedule"
   | "push"
-  /** Images: their uploads, and what a workspace does with their bytes. */
+  /**
+   * Images: their uploads, what a delivery makes of them, and what the
+   * alarm of a workspace does with their bytes.
+   */
   | "media"
   /** The sync protocol: a mutation, a message, a patch. */
   | "sync"
@@ -53,6 +56,8 @@ export type LogContext = {
   channelId?: string;
   targetId?: string;
   postId?: string;
+  /** An image of the workspace, by the ID of its row of `media`. */
+  mediaId?: string;
   network?: string;
   /** The host of a push service. */
   host?: string;

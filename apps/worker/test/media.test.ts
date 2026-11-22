@@ -17,7 +17,14 @@ import {
 import { expect, test, vi } from "vitest";
 import { imagePolicy } from "../src/security-headers.ts";
 import { WorkspaceStore } from "../src/workspace/store.ts";
-import { adminEmail, invite, setup, signedIn } from "./helpers.ts";
+import {
+  adminEmail,
+  entriesOf,
+  expectErrors,
+  invite,
+  setup,
+  signedIn,
+} from "./helpers.ts";
 import {
   attach,
   beginUpload,
@@ -442,9 +449,20 @@ test.each([
         return false;
       }
     };
+    const errors = expectErrors();
     try {
       app.advance(after + 1000);
       await look(workspaceId);
+      // The log names the image by its ID, for whoever runs pigy.
+      expect(entriesOf(errors)).toContainEqual(
+        expect.objectContaining({
+          kind: "media",
+          message:
+            "The upload of an image was not dropped, and is asked for again in an hour",
+          workspaceId,
+          mediaId,
+        }),
+      );
       // Given up: no chunk is taken any more. And the bucket still has the
       // parts, which pigy keeps track of.
       expect(

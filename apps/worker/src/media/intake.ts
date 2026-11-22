@@ -5,6 +5,7 @@ import {
   ImageRefused,
   scanImage,
 } from "@pigy/core";
+import { log } from "../log.ts";
 import type { MediaUpload, UploadOutcome } from "../workspace/store.ts";
 import { deleteUnder, mediaKeys } from "./keys.ts";
 import { type ImageTransformer, makeThumbnail } from "./transform.ts";
@@ -101,9 +102,11 @@ export async function takeIn(
     try {
       thumbnail = await makeThumbnail(transformer, copy.body);
     } catch (error) {
-      console.warn(
+      log.warn(
+        "media",
         "No small picture could be made of an image",
-        error instanceof Error ? error.message : error,
+        { workspaceId, mediaId },
+        error,
       );
     }
   }

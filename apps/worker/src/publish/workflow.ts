@@ -29,7 +29,7 @@ import {
 import { fetchLinkCard } from "@pigy/providers/card";
 import { openCredentials, sealCredentials } from "../channels/credentials.ts";
 import type { AppDependencies, Bindings } from "../env.ts";
-import { type LogContext, log, loggable } from "../log.ts";
+import { type LogContext, log } from "../log.ts";
 import { mediaLinksWith } from "../media/links.ts";
 import { imagesTransformer } from "../media/transform.ts";
 import { ImageUnavailable, imagesFor, mediaSource } from "../media/variants.ts";
@@ -897,9 +897,11 @@ export async function deliver(
         // what the delivery ends with if it never works is a failure
         // that says so, and nothing that anybody has to look into at
         // the account.
-        console.error(
+        log.error(
+          "media",
           "The images of a delivery could not be made ready",
-          loggable(error),
+          { ...where, step: "media" },
+          error,
         );
         throw new ProviderError("retry", mediaFailedMessage);
       }

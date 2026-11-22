@@ -11,7 +11,13 @@ import { expect, it, onTestFinished, vi } from "vitest";
 import { imagePolicy } from "../src/security-headers.ts";
 import { WorkspaceStore } from "../src/workspace/store.ts";
 import { connectBlueskyInSandbox, connectInSandbox } from "./channels.ts";
-import { type Browser, expectErrors, invite, signedIn } from "./helpers.ts";
+import {
+  type Browser,
+  entriesOf,
+  expectErrors,
+  invite,
+  signedIn,
+} from "./helpers.ts";
 import {
   attach,
   createMedia,
@@ -426,7 +432,7 @@ it("ends a delivery as failed, and as nothing that a person has to look into, wh
   await attach(client, draft.partIds[0] ?? "", image.id);
   // The bucket fails whenever the step that makes the images ready asks
   // it for one, for a reason of its own.
-  expectErrors();
+  const errors = expectErrors();
   const bucket = Object.getPrototypeOf(env.MEDIA) as R2Bucket;
   const head = bucket.head;
   const failing = vi.spyOn(bucket, "head").mockImplementation(function (
@@ -480,6 +486,20 @@ it("ends a delivery as failed, and as nothing that a person has to look into, wh
     ),
   ).toEqual({ may: 0 });
   expect(feed(test.network.world)).toEqual([]);
+  // For whoever runs pigy, what failed: the bucket, in the step of the
+  // images, of a delivery that the line names by its IDs.
+  expect(entriesOf(errors)).toContainEqual(
+    expect.objectContaining({
+      kind: "media",
+      message: "The images of a delivery could not be made ready",
+      workspaceId,
+      targetId,
+      step: "media",
+      error: expect.objectContaining({
+        message: expect.stringContaining("internal error"),
+      }),
+    }),
+  );
 });
 
 it("keeps the image of a post that did not arrive everywhere, for another try", async () => {
