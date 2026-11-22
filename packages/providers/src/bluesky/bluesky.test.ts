@@ -1096,8 +1096,13 @@ describe("publishing", () => {
     const chosen = await step(null);
     // Nothing is written by the step that looks the account up.
     expect(feed(test.world)).toEqual([]);
-    expect((chosen.state as { mentions: unknown }).mentions).toEqual([
-      { handle: "grace.bsky.test", did: grace.id },
+    // What the part is written with is noted: the mention, with the
+    // account that the handle led to.
+    expect((chosen.state as { facets: unknown }).facets).toEqual([
+      {
+        index: { byteStart: 3, byteEnd: 19 },
+        features: [{ $type: "app.bsky.richtext.facet#mention", did: grace.id }],
+      },
     ]);
     // The step writes, and its answer is lost. From then on nobody can be
     // looked up: a step that asked again would mark no mention, find a
@@ -1213,33 +1218,162 @@ describe("publishing", () => {
     });
   });
 
-  it("takes the record of a run before for its part whatever card it has, if it is a card of the part's link", async () => {
+  it("writes the card that the step which chose the key was handed, whatever a later run is handed", async () => {
     const test = await setup();
     const { access } = await connected(test);
     const text = "See https://example.test/";
-    const step = (
-      progress: PublishProgress | null,
-      card?: { url: string; title: string; description: string },
-    ) =>
+    const step = (progress: PublishProgress | null, title?: string) =>
       test.provider.publishStep({
         credentials: access.credentials,
-        content: { parts: [{ text, ...(card && { card }) }] },
+        content: {
+          parts: [
+            {
+              text,
+              ...(title && {
+                card: { url: "https://example.test/", title, description: "" },
+              }),
+            },
+          ],
+        },
         key: "target",
         progress,
       });
-    const chosen = await step(null);
-    // The first run was handed a card and wrote it, and its answer was
-    // lost. The page cannot be read when the step is run again, so this
-    // run has no card: the record is its part all the same.
-    await step(chosen, {
-      url: "https://example.test/",
-      title: "As the page was",
-      description: "",
-    });
+    const chosen = await step(null, "As the page was");
+    // The step that writes is run three times, as after answers that
+    // were lost: with no card, because the page cannot be read any
+    // more, and with what the page says later. It writes what was
+    // noted, once, and finds that record the other times.
+    await step(chosen);
+    await step(chosen, "As the page is now");
     const again = await step(chosen);
     expect(again.done).toBe(true);
     expect(feed(test.world)).toHaveLength(1);
     expect(feed(test.world)[0]?.post.card?.title).toBe("As the page was");
+  });
+
+  it("takes a part that was written before pigy marked anything up for its own, and goes on with the thread", async () => {
+    const test = await setup();
+    const { access } = await connected(test);
+    // A text in which pigy now finds a link and a tag.
+    const text = "See https://example.test/ #news";
+    const content = { parts: [{ text }, { text: "And #more" }] };
+    const step = (progress: PublishProgress | null) =>
+      test.provider.publishStep({
+        credentials: access.credentials,
+        content,
+        key: "target",
+        progress,
+      });
+    // The progress of a delivery as the pigy before this one left it:
+    // the key of the first part chosen, and nothing noted of facets,
+    // which that pigy did not have.
+    const chosen = await step(null);
+    const { did, rkey, refs } = chosen.state as {
+      did: string;
+      rkey: string;
+      refs: Json[];
+    };
+    const old: PublishProgress = { ...chosen, state: { did, rkey, refs } };
+    // That pigy wrote the part as the text that it is, and never heard
+    // the answer: the PDS has it under the key.
+    const uri = `at://${test.ada.id}/app.bsky.feed.post/${String(rkey)}`;
+    let written = 0;
+    test.intercept(async (request, simulator) => {
+      if (request.url.includes("createRecord")) written++;
+      return request.url.includes("getRecord")
+        ? Response.json({
+            uri,
+            cid: "bafyreiexample",
+            value: {
+              $type: "app.bsky.feed.post",
+              text,
+              createdAt: "2026-11-15T09:00:00.000Z",
+            },
+          })
+        : simulator(request);
+    });
+    // The step is run again by this pigy. It finds the part, and does
+    // not take it for another post because it would mark it up today,
+    // which ended the delivery for good with the rest of the thread
+    // unsent.
+    const taken = await step(old);
+    expect(taken.parts.map(({ id }) => id)).toEqual([uri]);
+    expect(written).toBe(0);
+    // The thread goes on: the next step chooses the key of the second
+    // part, and notes what this pigy marks in it.
+    test.intercept(undefined);
+    const next = await step(taken);
+    expect((next.state as { facets: unknown[] }).facets).toHaveLength(1);
+  });
+
+  it("writes a part of old progress, whose key was chosen before pigy marked anything up, as text", async () => {
+    const test = await setup();
+    const { access } = await connected(test);
+    const content = { parts: [{ text: "See https://example.test/ #news" }] };
+    const chosen = await test.provider.publishStep({
+      credentials: access.credentials,
+      content,
+      key: "target",
+      progress: null,
+    });
+    const { did, rkey, refs } = chosen.state as {
+      did: string;
+      rkey: string;
+      refs: Json[];
+    };
+    // Nothing is under the key: the pigy before this one did not get to
+    // write. The step writes what a run of that pigy would have, so
+    // that every run of the step writes and looks for the same.
+    const done = await test.provider.publishStep({
+      credentials: access.credentials,
+      content,
+      key: "target",
+      progress: { ...chosen, state: { did, rkey, refs } },
+    });
+    expect(done.done).toBe(true);
+    const kept = feed(test.world)[0]?.post;
+    expect(kept && entitiesOf(kept)).toEqual([]);
+  });
+
+  it("writes and looks for what was noted when the key was chosen, whatever pigy takes for a link by the time the step runs", async () => {
+    const test = await setup();
+    const { access } = await connected(test);
+    const content = {
+      parts: [{ text: "See example.com and https://example.test/ #news" }],
+    };
+    const step = (progress: PublishProgress | null) =>
+      test.provider.publishStep({
+        credentials: access.credentials,
+        content,
+        key: "target",
+        progress,
+      });
+    const chosen = await step(null);
+    const state = chosen.state as { facets: Json[] };
+    expect(state.facets).toHaveLength(3);
+    // The notes of a pigy that took "example.com" for no link, as one
+    // with a shorter list of top-level domains: the step that chose the
+    // key ran before a deploy, and the step that writes runs after it,
+    // with a pigy that finds three things in the text.
+    const noted = state.facets.slice(1);
+    const before: PublishProgress = {
+      ...chosen,
+      state: { ...state, facets: noted },
+    };
+    // The answer to the writing is lost, and the step is run again.
+    test.simulator.arm({ kind: "lost-response", operation: "publish" });
+    expect((await failure(() => step(before))).kind).toBe("retry");
+    const again = await step(before);
+    expect(again.done).toBe(true);
+    // One post, with what was noted and nothing that this pigy would
+    // add: a step that marked up by its own reading would have written
+    // three facets, or found the record of two to be another post.
+    const posts = feed(test.world);
+    expect(posts).toHaveLength(1);
+    expect(posts[0] && entitiesOf(posts[0].post)).toEqual([
+      ["link", "https://example.test/", "https://example.test/"],
+      ["hashtag", "#news", "news"],
+    ]);
   });
 
   it("does not go on with a thread on another account", async () => {

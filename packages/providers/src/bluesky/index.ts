@@ -4,6 +4,7 @@ import {
   type Clock,
   type Fetch,
   type Limits,
+  maxLookedUpMentions,
 } from "@pigy/core";
 import { z } from "zod";
 import { forGood, ProviderError, quotable, understanding } from "../errors.ts";
@@ -42,11 +43,12 @@ import {
   publicJwk,
 } from "./jwt.ts";
 import {
+  type External,
   embedOf,
+  externalSchema,
   type Facet,
+  facetSchema,
   facetsOf,
-  firstLink,
-  maxMentions,
   mentionedHandles,
 } from "./richtext.ts";
 
@@ -280,21 +282,8 @@ const writtenPostSchema = z.strictObject({
     .optional(),
   /** Compared with what the step writes: `sameFacets`. */
   facets: z.array(z.unknown()).optional(),
-  /**
-   * The card of a link, which may be any: a step that is run again may
-   * have been handed another than the run before it, or none. It is a
-   * card of the link that the part has, and nothing else.
-   */
-  embed: z
-    .strictObject({
-      $type: z.literal("app.bsky.embed.external"),
-      external: z.strictObject({
-        uri: z.string(),
-        title: z.string(),
-        description: z.string(),
-      }),
-    })
-    .optional(),
+  /** Compared with what the step writes: `sameEmbed`. */
+  embed: externalSchema.optional(),
 });
 
 /** `value` as JSON whose keys are in order, so that equal values read equal. */
@@ -317,6 +306,21 @@ const sameFacets = (found: unknown[] | undefined, written: Facet[]) =>
   written.length === 0
     ? found === undefined
     : canonical(found) === canonical(written);
+
+/** Whether a record has the card that a step writes, or none like it. */
+const sameEmbed = (
+  found: External | undefined,
+  written: External | undefined,
+) =>
+  found === undefined || written === undefined
+    ? found === written
+    : canonical(found) === canonical(written);
+
+/**
+ * How many facets the notes of a step hold at most: more than a text that
+ * Bluesky takes can have, each being a character and a space at least.
+ */
+const maxFacets = 1000;
 
 type Reference = z.infer<typeof referenceSchema>;
 
@@ -351,18 +355,24 @@ const notesSchema = z.strictObject({
   /** The reference of each part that is published, in order. */
   refs: z.array(referenceSchema),
   /**
-   * The accounts that the next part mentions, as the step that chose
-   * `rkey` found them: each handle with its DID. A handle that was not
-   * found to be an account is not in it, and is published as text. It is
-   * recorded so that a step that is run again marks the same mentions,
-   * whatever the handles lead to by then, and takes the record of the run
-   * before for its own. Left out by a step from before pigy marked
-   * mentions up, which is the same as none.
+   * What the next part is written with besides its text, as the step
+   * that chose `rkey` made it: the facets of its links, its tags and the
+   * mentions of the accounts that the step found, and the card of its
+   * first link. All of it is what the record says in public. The step
+   * that writes sends exactly this, and takes a record under its key
+   * for its own only if it has exactly this, in every run: whatever the
+   * handles lead to by then, whatever a page says by then, and whatever
+   * the pigy that runs the step takes for a link or a tag. A deploy
+   * between two runs of a step changes that last one, and a step that
+   * worked the facets out anew would find its own record to be another
+   * post, at every try.
+   *
+   * `facets` is left out by a step from before pigy marked anything up.
+   * The part of such progress is plain text: a run before this one may
+   * have written it so, and so does this one.
    */
-  mentions: z
-    .array(z.strictObject({ handle: z.string(), did: z.string().min(1) }))
-    .max(maxMentions)
-    .optional(),
+  facets: z.array(facetSchema).max(maxFacets).optional(),
+  embed: externalSchema.optional(),
 });
 
 type Notes = z.infer<typeof notesSchema>;
@@ -1370,7 +1380,8 @@ export function createBlueskyProvider({
           did: next.did,
           rkey: next.rkey,
           refs: next.refs,
-          ...(next.mentions && { mentions: next.mentions }),
+          ...(next.facets && { facets: next.facets }),
+          ...(next.embed && { embed: next.embed }),
         },
       });
       const index = parts.length;
@@ -1385,16 +1396,24 @@ export function createBlueskyProvider({
 
       // Two steps for each part. The first chooses the key of its record
       // and writes nothing, so that the key is recorded before anything is
-      // written under it. It also finds the accounts that the part
-      // mentions, which only reads: a mention is marked up with the DID
-      // of its account, and what a handle leads to can change. Recorded,
-      // it is the same for every run of the step that writes.
+      // written under it. It also decides what the part is written with
+      // besides its text: the facets, for which it finds the accounts
+      // that the part mentions, which only reads, and the card. Recorded,
+      // they are the same for every run of the step that writes: see
+      // `notesSchema`.
       if (notes.rkey === null) {
         const before = notes.refs.at(-1);
+        const mentions = await mentionsOf(part.text);
+        const embed = embedOf(part.text, part.card);
         return stepped(parts, {
-          ...notes,
+          did: notes.did,
+          refs: notes.refs,
           rkey: newTid(now(), before && parseRecordUri(before.uri)?.rkey),
-          mentions: await mentionsOf(part.text),
+          facets: facetsOf(
+            part.text,
+            new Map(mentions.map(({ handle, did }) => [handle, did])),
+          ),
+          ...(embed && { embed }),
         });
       }
 
@@ -1409,11 +1428,11 @@ export function createBlueskyProvider({
       // What the part replies to: the first and the previous part, by the
       // versions that were published.
       const reply = root && parent ? { root, parent } : undefined;
-      const facets = facetsOf(
-        part.text,
-        new Map((notes.mentions ?? []).map(({ handle, did }) => [handle, did])),
-      );
-      const embed = embedOf(part.text, part.card);
+      // As the step that chose the key noted them, and not as this run
+      // would make them. None, for a key that was chosen before pigy
+      // marked anything up.
+      const facets = notes.facets ?? [];
+      const { embed } = notes;
       const found = await getRecord(
         access.pds,
         access.did,
@@ -1424,20 +1443,16 @@ export function createBlueskyProvider({
       if (found) {
         // A record that is not what this step writes is not this part's:
         // at another address, with another text, replying to anything
-        // else, with other links, mentions or tags marked than this step
-        // marks, or with anything that pigy does not send, such as a
-        // picture or a language. The card of a link is the one thing
-        // that may differ: it is what a page said when it was read, and
-        // this run may have been handed another, or none. It has to be a
-        // card of the first link of the part all the same.
+        // else, with other links, mentions or tags marked or another
+        // card than the step that chose the key noted, or with anything
+        // that pigy does not send, such as a picture or a language.
         const post = writtenPostSchema.safeParse(found.value).data;
         const replies = post?.reply;
         if (
           found.uri !== uri ||
           post?.text !== part.text ||
           !sameFacets(post.facets, facets) ||
-          (post.embed !== undefined &&
-            post.embed.external.uri !== firstLink(part.text)) ||
+          !sameEmbed(post.embed, embed) ||
           (replies && reply
             ? !sameReference(replies.root, reply.root) ||
               !sameReference(replies.parent, reply.parent)
@@ -1487,9 +1502,10 @@ export function createBlueskyProvider({
     },
 
     async mentionable(names) {
+      // Each name once, and no more of them than a post looks up.
       const found = await Promise.all(
-        names
-          .slice(0, maxMentions)
+        [...new Set(names)]
+          .slice(0, maxLookedUpMentions)
           .map(async (name) => ((await mentionedDid(name)) ? [name] : [])),
       );
       return found.flat();

@@ -703,13 +703,13 @@ describe("publishing to Bluesky", () => {
           parts: written.map(({ published }) => published),
           done: false,
           waitSeconds: 0,
-          // And whom the part mentions, which the step that chose the
-          // key found out: nobody.
+          // And what the part is written with besides its text, which
+          // the step that chose the key made out: nothing.
           state: {
             did,
             rkey: key,
             refs: written.map(({ ref }) => ref),
-            mentions: [],
+            facets: [],
           },
         });
         writes.waiting = null;

@@ -1,9 +1,10 @@
 import {
   detectEntities,
   type LinkCard,
-  type TextEntity,
+  lookedUpMentions,
   utf8Range,
 } from "@pigy/core";
+import { z } from "zod";
 
 /**
  * What a post of Bluesky has besides its text: the facets that mark its
@@ -22,37 +23,43 @@ import {
  * and what is counted is what is published.
  */
 
-/** A facet, as a record holds one. */
-export type Facet = {
-  index: { byteStart: number; byteEnd: number };
-  features: [
-    | { $type: "app.bsky.richtext.facet#link"; uri: string }
-    | { $type: "app.bsky.richtext.facet#mention"; did: string }
-    | { $type: "app.bsky.richtext.facet#tag"; tag: string },
-  ];
-};
-
 /**
- * How many accounts a part is asked about at most. Each takes two or
- * three requests, and a step has its time. A mention beyond these stays
- * text, which nobody who mentions people for their attention writes.
+ * A facet, as a record holds one and as a step notes it for the step
+ * that writes: public, like everything in a record.
  */
-export const maxMentions = 10;
+export const facetSchema = z.strictObject({
+  index: z.strictObject({
+    byteStart: z.number().int().nonnegative(),
+    byteEnd: z.number().int().nonnegative(),
+  }),
+  features: z.tuple([
+    z.union([
+      z.strictObject({
+        $type: z.literal("app.bsky.richtext.facet#link"),
+        uri: z.string(),
+      }),
+      z.strictObject({
+        $type: z.literal("app.bsky.richtext.facet#mention"),
+        did: z.string().min(1),
+      }),
+      z.strictObject({
+        $type: z.literal("app.bsky.richtext.facet#tag"),
+        tag: z.string(),
+      }),
+    ]),
+  ]),
+});
 
-const mentioned = (entities: readonly TextEntity[]) =>
-  entities.flatMap((entity) =>
-    entity.kind === "mention" ? [entity.name] : [],
-  );
+export type Facet = z.infer<typeof facetSchema>;
 
 /**
- * The handles that `text` mentions, each once, in the order of the text:
- * the first `maxMentions` of them.
+ * The handles that `text` mentions and that are looked up, each once, in
+ * the order of the text: `lookedUpMentions` of `@pigy/core`, which is
+ * also what the editor asks about. A mention of a handle beyond them is
+ * text.
  */
 export function mentionedHandles(text: string): string[] {
-  return [...new Set(mentioned(detectEntities("bluesky", text)))].slice(
-    0,
-    maxMentions,
-  );
+  return lookedUpMentions(detectEntities("bluesky", text));
 }
 
 /**
@@ -100,10 +107,16 @@ export function firstLink(text: string): string | undefined {
 }
 
 /** The card of a link, as a record embeds one: without a picture. */
-export type External = {
-  $type: "app.bsky.embed.external";
-  external: { uri: string; title: string; description: string };
-};
+export const externalSchema = z.strictObject({
+  $type: z.literal("app.bsky.embed.external"),
+  external: z.strictObject({
+    uri: z.string(),
+    title: z.string(),
+    description: z.string(),
+  }),
+});
+
+export type External = z.infer<typeof externalSchema>;
 
 /**
  * The embed that a part with `text` is published with, or undefined: the

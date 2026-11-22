@@ -1,10 +1,6 @@
+import { maxLookedUpMentions as maxMentions } from "@pigy/core";
 import { describe, expect, it } from "vitest";
-import {
-  embedOf,
-  facetsOf,
-  maxMentions,
-  mentionedHandles,
-} from "./richtext.ts";
+import { embedOf, facetsOf, mentionedHandles } from "./richtext.ts";
 
 /** The bytes of `text` that a facet names, read as text. */
 const marked = (
