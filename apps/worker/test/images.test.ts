@@ -10,6 +10,7 @@ import { feed } from "@pigy/simulators/world";
 import { expect, it, onTestFinished, vi } from "vitest";
 import { imagePolicy } from "../src/security-headers.ts";
 import { WorkspaceStore } from "../src/workspace/store.ts";
+import { apiClient, makeKey, startedApi } from "./api.ts";
 import { connectBlueskyInSandbox, connectInSandbox } from "./channels.ts";
 import {
   type Browser,
@@ -522,5 +523,55 @@ it("keeps the image of a post that did not arrive everywhere, for another try", 
   expect(await kept(workspaceId)).toEqual([
     `${image.id}/original`,
     `${image.id}/thumbnail`,
+  ]);
+});
+
+it("holds a draft with images that the public API shares to what the editor holds it to", async () => {
+  const { test, browser, workspaces } = await startedApi();
+  const workspaceId = workspaces.live;
+  const channel = await connectAccount(test, browser, workspaceId);
+  const client = new SyncClient();
+  await client.connect(browser, workspaceId);
+  // Written in the app, because the API takes no image: one part, which
+  // is an image without words, and whose description is longer than
+  // Mastodon takes.
+  const draft = await writeDraft(client, workspaceId, "");
+  const image = await upload(browser, client, workspaceId, await photo());
+  const attached = await attach(
+    client,
+    draft.partIds[0] ?? "",
+    image.id,
+    "A boat. ".repeat(250),
+  );
+  const { secret } = await makeKey(browser, workspaceId);
+  const api = apiClient(test, secret);
+  const share = {
+    method: "PATCH",
+    json: { channelIds: [channel], mode: "shareNow" },
+  };
+
+  // Before, the API judged the texts alone: it refused the part for
+  // having no words, which the editor takes, and let the description
+  // through, which the editor does not.
+  expect(await api.refused(`/posts/${draft.postId}`, share, 400)).toMatchObject(
+    {
+      field: "text",
+      message: expect.stringContaining("has a description of 2000 characters"),
+    },
+  );
+
+  client.mutate("media.setAlt", { id: attached, alt: "Boats at dusk" });
+  expect((await client.patch()).rejected).toEqual([]);
+  expect(await api.ok(`/posts/${draft.postId}`, share)).toMatchObject({
+    status: "sending",
+  });
+  expect(await api.ended(draft.postId)).toMatchObject({ status: "sent" });
+  expect(feed(test.network.world)).toMatchObject([
+    {
+      post: {
+        text: "",
+        images: [{ alt: "Boats at dusk", width: 320, height: 240 }],
+      },
+    },
   ]);
 });

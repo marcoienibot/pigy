@@ -33,6 +33,7 @@ import {
 } from "@pigy/core/api";
 import { and, desc, eq, exists, isNull, sql } from "drizzle-orm";
 import type { DrizzleSqliteDODatabase } from "drizzle-orm/durable-sqlite";
+import { contentFor } from "./content.ts";
 import { posts, postTargets } from "./schema.ts";
 import { findRows, readRow, readRows } from "./synced.ts";
 
@@ -410,8 +411,10 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
    * Refuses unless the post `postId` is one that the editor would offer
    * to publish: `compose` of the web app has the same rules. It goes
    * somewhere, to no account that needs connecting again, no part of a
-   * text that an account gets is empty, and every account takes the text
-   * that it gets, by `validateContent` with the limits of the account.
+   * text that an account gets is empty, which a part with an image is
+   * not, and every account takes the text that it gets with its images,
+   * by `validateContent` with the limits of the account. The API takes
+   * no image, and a draft that was written in the app can have some.
    * The refusal names the field of the request that the text came from.
    */
   const publishable = (postId: string): void => {
@@ -443,10 +446,11 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
             ? `${base}.text`
             : "text"
           : `${base}.thread.${part - 1}.text`;
-      const content = {
-        parts: partsFor(parts, target.id).map(({ text }) => ({ text })),
-      };
-      const empty = content.parts.findIndex(({ text }) => text.trim() === "");
+      const content = contentFor(db, postId, target.id);
+      // A part with an image needs no text.
+      const empty = content.parts.findIndex(
+        ({ text, media }) => text.trim() === "" && !media?.length,
+      );
       const issue =
         empty >= 0
           ? {

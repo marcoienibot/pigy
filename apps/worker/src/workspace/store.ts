@@ -1,11 +1,9 @@
 import {
   applyMutation,
   type Change,
-  type ContentImage,
   environmentSchema,
   expiryNoticeMs,
   type ImageFacts,
-  inReadingOrder,
   type Limits,
   type Mutation,
   MutationRejected,
@@ -16,7 +14,6 @@ import {
   originalLifetimeMs,
   type PostContent,
   type PushMessage,
-  partsFor,
   type Rejection,
   type RejectionCode,
   type Row,
@@ -53,7 +50,6 @@ import {
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import { z } from "zod";
 import { type LogContext, log } from "../log.ts";
-import { contentImageId } from "../media/keys.ts";
 import {
   type ApiAnswer,
   type ApiBench,
@@ -64,6 +60,7 @@ import {
   keptOf,
   replayOf,
 } from "./api.ts";
+import { contentFor } from "./content.ts";
 import migrations from "./migrations/migrations.js";
 import {
   changeLog,
@@ -1220,56 +1217,13 @@ export class WorkspaceStore {
         limits: channel.limits,
         limitsCheckedAt: channel.limitsCheckedAt,
       },
-      content: {
-        // What this account gets: the text that was written for it, or
-        // the post's own. Neither changes once the post is published,
-        // so every attempt and every step is handed the same.
-        parts: partsFor(
-          findRows(this.db, "post_part", "postId", target.postId),
-          targetId,
-        ).map(({ id, text }) => {
-          const images = this.imagesOf(id);
-          // Left out for a part without any, so that a post without
-          // images is what it was before pigy had them.
-          return images.length > 0 ? { text, media: images } : { text };
-        }),
-      },
+      // What this account gets: the text that was written for it, or the
+      // post's own. Neither changes once the post is published, so every
+      // attempt and every step is handed the same.
+      content: contentFor(this.db, target.postId, targetId),
       progress: target.progress ?? null,
       mayHaveSent: target.mayHaveSent,
     };
-  }
-
-  /**
-   * The images of the part `partId` as a delivery publishes them, in the
-   * order they are shown in: each as the workspace keeps it, with what
-   * says so if it cannot be published as things are. `validateContent`
-   * goes by that, and a delivery makes a smaller image where its network
-   * needs one.
-   */
-  private imagesOf(partId: string): ContentImage[] {
-    return inReadingOrder(
-      findRows(this.db, "part_media", "partId", partId),
-    ).map(({ mediaId, alt }) => {
-      const image = readRow(this.db, "media", mediaId);
-      const missing =
-        !image || image.originalGoneAt !== null
-          ? "gone"
-          : image.status === "ready"
-            ? undefined
-            : image.status;
-      return {
-        id: contentImageId(mediaId, "original"),
-        // Of a row that is gone nothing is known: it is never
-        // published, and these only have to be an image's.
-        type: image?.type ?? "image/jpeg",
-        size: image?.size ?? 1,
-        width: image?.width ?? 1,
-        height: image?.height ?? 1,
-        ...(image?.animated && { animated: true }),
-        alt,
-        ...(missing && { missing }),
-      };
-    });
   }
 
   /** How far the upload of the image `mediaId` has come, if there is one. */

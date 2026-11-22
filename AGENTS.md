@@ -272,6 +272,7 @@ What publishes, in `publish/`:
 - `schema.ts` has its tables, `migrations/` what `drizzle-kit` generates from them.
 - `synced.ts` lists the columns that clients get to see, and is the only code that reads or writes them.
 - `api.ts` is what the public API does in a workspace: see "The public API" above.
+- `content.ts` is what the account of a target gets of a post, its texts with their images: `contentFor`, which a delivery is handed, and which the public API checks before a post goes out.
 - `workspaces.ts` is the Worker's side: the `workspace` table of D1, and the only ways into an object: `connectWorkspace` for a client, `mutateWorkspace`, `connectChannel`, `disconnectChannel` and `channelAccess` for the Worker's own code, `callWorkspaceApi` for the public API, and `deliveryOf`, `aboutToSend`, `stepBegins`, `recordProgress`, `endDelivery` and `renewChannelAccess` for the publishing workflow.
 - `routes.ts` has `GET /api/workspaces` and the WebSocket endpoint `/sync/<workspace ID>`.
 

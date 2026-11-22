@@ -750,7 +750,7 @@ Phase 7 built the images of that list. What was decided:
 
 **The sandbox.** A simulated network takes images as its network does and keeps the bytes in its world, the latest 48 MiB of them. The feed of a sandbox has the images of its posts, and `/api/sandbox/images/<id>` serves the bytes to the owner of the sandbox as an image, so the Simulator screen shows what a network was sent, which is how a person sees that a smaller image was made.
 
-**Not built in phase 7.** The public API takes no media yet: it was not on `main` when the phase was built. Sharing image files into pigy, section 13, is not built either. The card of a link still has no picture: the picture of a page would be one more file that pigy fetches from a host that a person named, and it waits for the API's `assets`, which need the same guards.
+**Not built in phase 7.** The public API takes no media yet: it was not on `main` when the phase was built. A draft with images that was written in the app is checked with its images when the API shares it, by what a delivery would publish, `contentFor` of `apps/worker/src/workspace/content.ts`, as the editor checks it. Sharing image files into pigy, section 13, is not built either. The card of a link still has no picture: the picture of a page would be one more file that pigy fetches from a host that a person named, and it waits for the API's `assets`, which need the same guards.
 
 ## 11. Sign-in and access
 
