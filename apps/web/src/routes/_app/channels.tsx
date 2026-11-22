@@ -46,6 +46,7 @@ import {
   type Channel,
   connectNotice,
   disconnectNotice,
+  disconnectQuestion,
   handleShown,
   keepConnectOutcome,
   type Notice,
@@ -820,15 +821,19 @@ function tellElsewhere(
     );
   } else if (outcome.revoked !== undefined) {
     const { tone, text } = disconnectNotice(channel, outcome.revoked);
+    // What leaves something to do is to be read and acted on: it stays
+    // until it is closed. As an error only where something went wrong.
+    const kept = {
+      description: where,
+      duration: Number.POSITIVE_INFINITY,
+      closeButton: true,
+    };
     keepOverSwitch(
       tone === "bad"
-        ? // To be read and acted on: it stays until it is closed.
-          toast.error(text, {
-            description: where,
-            duration: Number.POSITIVE_INFINITY,
-            closeButton: true,
-          })
-        : toast.success(text, { description: where }),
+        ? toast.error(text, kept)
+        : tone === "plain"
+          ? toast.message(text, kept)
+          : toast.success(text, { description: where }),
     );
   }
 }
@@ -940,10 +945,7 @@ function DisconnectDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>Disconnect {asked?.handle}?</AlertDialogTitle>
           <AlertDialogDescription>
-            pigy stops posting to this account, and gives the access that it has
-            back to {asked && networkInfo[asked.network].label}. What is
-            published there stays. You can connect the account again at any
-            time.
+            {asked && disconnectQuestion(asked.network)}
           </AlertDialogDescription>
         </AlertDialogHeader>
         {error && (

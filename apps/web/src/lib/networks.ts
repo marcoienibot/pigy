@@ -61,9 +61,17 @@ type NetworkInfo = {
   /**
    * pigy renews the access to an account of this network by itself, well
    * before the day on which it would end, so that day is nothing to tell
-   * a person of: PLAN.md section 6, "Threads".
+   * a person of while it is far: PLAN.md section 6, "Threads".
    */
   renewsAccess?: true;
+  /**
+   * The network gives an app no way to hand an access back, so a
+   * disconnect leaves the access standing, whatever pigy does: the
+   * question before a disconnect says so, and what follows it does not
+   * say it as something that went wrong. `endsWithin` is how long such
+   * an access lasts at most.
+   */
+  cannotGiveBack?: { endsWithin: string };
 };
 
 export const networkInfo: Record<Network, NetworkInfo> = {
@@ -123,6 +131,8 @@ export const networkInfo: Record<Network, NetworkInfo> = {
     },
     thread: "replies",
     renewsAccess: true,
+    // Meta documents no way for an app to end a token of Threads.
+    cannotGiveBack: { endsWithin: "60 days" },
   },
 };
 

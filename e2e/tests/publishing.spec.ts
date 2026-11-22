@@ -590,7 +590,11 @@ test("a post goes out to a simulated Threads account, which makes it in two step
   await expect(
     failed.getByRole("link", { name: `Reconnect ${graceOnThreads}` }),
   ).toBeVisible();
-  // And nothing was published.
+  // And nothing was published. The feed is on screen first, with the
+  // post from before: a feed that has not arrived has no post either.
   await openScreen(page, "Simulator");
+  await expect(feedOf(page, graceOnThreads)).toContainText(
+    "Hello Threads 👋 from pigy",
+  );
   await expect(feedOf(page, graceOnThreads)).not.toContainText("Not this one");
 });

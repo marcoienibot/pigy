@@ -5,6 +5,7 @@ import {
   connectionOf,
   connectSimulated,
   connectSimulatedLinkedIn,
+  connectSimulatedThreads,
   draftRow,
   editor,
   expectElsewhere,
@@ -645,6 +646,35 @@ test("disconnecting asks first, and says that the network took the access back",
   // workspace has heard of it by the time the app has synced again.
   await page.reload();
   await expectSync(page, "Synced");
+  await expect(channelRows(page)).toHaveCount(0);
+});
+
+test("disconnecting a Threads account promises nothing that Threads cannot do, and says where the person ends the access themselves", async ({
+  ownPage: page,
+}) => {
+  await openScreen(page, "Channels");
+  await connectSimulatedThreads(page, graceOnThreads);
+  await page
+    .getByRole("button", { name: `Disconnect ${graceOnThreads}` })
+    .click();
+
+  // Threads has no way for an app to hand an access back. The question
+  // says so before the click, and not that pigy gives it back.
+  const dialog = page.getByRole("alertdialog");
+  const left =
+    "it ends by itself within 60 days. To end it sooner, remove pigy in the settings of the account at Threads, under Settings → Account → Website permissions.";
+  await expect(dialog).toContainText(
+    `pigy stops posting to this account. Threads offers no way to hand back the access that pigy has: ${left}`,
+  );
+  await expect(dialog).not.toContainText("gives the access");
+  await dialog.getByRole("button", { name: "Disconnect" }).click();
+
+  // What follows is what the question said, and not a failure: nothing
+  // on the screen interrupts as an alert, or says that pigy could not.
+  await expect(notice(page)).toHaveText(
+    `${graceOnThreads} is disconnected. Threads offers no way to hand back the access that pigy had: ${left}`,
+  );
+  await expect(alert(page)).toHaveCount(0);
   await expect(channelRows(page)).toHaveCount(0);
 });
 

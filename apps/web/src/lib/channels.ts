@@ -19,6 +19,14 @@ export function selectChannels(tables: Tables): Channel[] {
 }
 
 /**
+ * How long before its end an access that pigy renews is said to end, in
+ * milliseconds. pigy renews such an access weeks before its end, and
+ * tries again every hour or every day when that does not work, so an end
+ * that is this near is one that the timer is not going to put off.
+ */
+export const renewalWarningMs = 14 * 24 * 60 * 60 * 1000;
+
+/**
  * What the Channels screen says of a channel whose access ends by itself,
  * as LinkedIn's does after 60 days, or null for one whose access lasts or
  * is renewed. An access that has ended is said to have: the network
@@ -26,9 +34,10 @@ export function selectChannels(tables: Tables): Channel[] {
  * connecting again.
  *
  * An access that pigy renews has an end too, as that of Threads has, and
- * that end moves with every renewal: nothing is said of it while it is
- * to come. It is said to have ended when it has, which is when pigy could
- * not renew it in all its weeks.
+ * that end moves with every renewal, which comes weeks before it: nothing
+ * is said of it while it is far. Once it is less than `renewalWarningMs`
+ * away, pigy has not been able to renew the access for weeks, and the
+ * person hears of the day while they can still do something about it.
  */
 export function accessEnds(
   { network, expiresAt }: Pick<Channel, "network" | "expiresAt">,
@@ -38,9 +47,12 @@ export function accessEnds(
   if (expiresAt <= now) {
     return "Its access has ended: connect the account again.";
   }
-  return networkInfo[network].renewsAccess
-    ? null
-    : `Its access ends on ${dayOf(expiresAt, now)}: connect the account again before then.`;
+  if (!networkInfo[network].renewsAccess) {
+    return `Its access ends on ${dayOf(expiresAt, now)}: connect the account again before then.`;
+  }
+  return expiresAt - now < renewalWarningMs
+    ? `pigy could not renew its access, which ends on ${dayOf(expiresAt, now)}: connect the account again before then.`
+    : null;
 }
 
 /**
@@ -182,16 +194,48 @@ export function connectNotice(
   }
 }
 
+/**
+ * Where the owner of an account at `network` ends the access of pigy
+ * themselves, as the end of a sentence.
+ */
+function removeItYourself(network: Channel["network"]): string {
+  const { label, connect } = networkInfo[network];
+  return `remove pigy in the settings of the account at ${label}${
+    connect ? `, under ${connect.revoke}` : ""
+  }`;
+}
+
+/**
+ * What the question before a disconnect says that a disconnect of an
+ * account at `network` does: nothing that the network cannot do.
+ */
+export function disconnectQuestion(network: Channel["network"]): string {
+  const { label, cannotGiveBack } = networkInfo[network];
+  const rest =
+    "What is published there stays. You can connect the account again at any time.";
+  return cannotGiveBack
+    ? `pigy stops posting to this account. ${label} offers no way to hand back the access that pigy has: it ends by itself within ${cannotGiveBack.endsWithin}. To end it sooner, ${removeItYourself(network)}. ${rest}`
+    : `pigy stops posting to this account, and gives the access that it has back to ${label}. ${rest}`;
+}
+
 /** What to say of the channel of `handle`, which has been disconnected. */
 export function disconnectNotice(
   { network, handle }: Pick<Channel, "network" | "handle">,
   revoked: boolean,
 ): Notice {
-  const { label, connect } = networkInfo[network];
+  const { label, connect, cannotGiveBack } = networkInfo[network];
   if (revoked) {
     return {
       tone: "good",
       text: `${handle} is disconnected. ${label} has taken back the access that pigy had.`,
+    };
+  }
+  if (cannotGiveBack) {
+    // Nothing went wrong: it is what the question said would happen.
+    // Something is left for the person to do all the same.
+    return {
+      tone: "plain",
+      text: `${handle} is disconnected. ${label} offers no way to hand back the access that pigy had: it ends by itself within ${cannotGiveBack.endsWithin}. To end it sooner, ${removeItYourself(network)}.`,
     };
   }
   return {
