@@ -470,7 +470,11 @@ describe("an access that ends by its date", () => {
 
     // Dismissed, it does not come back, however often the object looks:
     // an access is told of once.
-    client.mutate("notification.dismiss", { id: channel });
+    const [shown] = client.table("notification");
+    client.mutate("notification.dismiss", {
+      id: channel,
+      createdAt: shown?.createdAt ?? 0,
+    });
     await client.patch();
     await pass(test, browser, 1);
     await attend(workspace);

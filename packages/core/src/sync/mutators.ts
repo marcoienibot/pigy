@@ -8,6 +8,7 @@ import {
   maxOwnTextLength,
   maxParts,
   maxPartTextLength,
+  notificationRowSchema,
   partsFor,
   type Row,
   targetLimits,
@@ -207,8 +208,47 @@ function settle(tx: Transaction, postId: string): void {
     : targets.every((target) => target.status === "sent")
       ? "sent"
       : "error";
-  if (status !== post.status) {
-    tx.put("post", { ...post, status, updatedAt: tx.now });
+  if (status === post.status) return;
+  tx.put("post", { ...post, status, updatedAt: tx.now });
+  // Its deliveries have all ended: this is where the inbox says how, once
+  // for the post, and nowhere else.
+  if (post.status === "sending") announce(tx, post, status, targets);
+}
+
+/**
+ * Tells the person, in the inbox, how the post `post` has ended, which was
+ * `sending` until now and is `status` from now on. There is a
+ * notification if a delivery has ended badly by itself since the post
+ * last began to be sent: failed, or ended with nobody knowing how.
+ *
+ * Not for a delivery that ended because the person disconnected its
+ * account: they did that themselves. And not for one that had failed
+ * before: the person was told of it then, and has tried other deliveries
+ * again since, which is all that happened now. If those arrived, nothing
+ * is new.
+ */
+function announce(
+  tx: Transaction,
+  post: Row<"post">,
+  status: Row<"post">["status"],
+  targets: Row<"post_target">[],
+): void {
+  // Nothing changes a post while it is sending, so this is when it last
+  // began to be: when it was published, or when a delivery of it was
+  // tried again after all had ended. The deliveries that were asked for
+  // then, or since, are the ones that have ended now.
+  const since = post.updatedAt;
+  const endedBadly = targets.some(
+    (target) =>
+      (target.status === "error" || target.status === "uncertain") &&
+      !target.disconnected &&
+      target.queuedAt !== null &&
+      target.queuedAt >= since,
+  );
+  if (status === "error" && endedBadly) {
+    notifyOfPost(tx, post.id);
+  } else if (tx.get("notification", post.id)?.postId === post.id) {
+    tx.delete("notification", post.id);
   }
 }
 
@@ -267,6 +307,21 @@ function notifyOfChannel(
     createdAt: tx.now,
     readAt: null,
   });
+}
+
+/** A notification as a device has seen it: see `notification.read`. */
+const seenNotificationSchema = notificationRowSchema.pick({
+  id: true,
+  createdAt: true,
+});
+
+/** The notification that `seen` names, if it is still the one that was seen. */
+function seenNotification(
+  tx: Transaction,
+  seen: z.infer<typeof seenNotificationSchema>,
+): Row<"notification"> | undefined {
+  const notification = tx.get("notification", seen.id);
+  return notification?.createdAt === seen.createdAt ? notification : undefined;
 }
 
 // What a target is told when its account is disconnected under it.
@@ -551,6 +606,7 @@ export const mutators = {
         error: null,
         queuedAt: null,
         sentAt: null,
+        disconnected: false,
       });
       tx.put("post", { ...post, updatedAt: tx.now });
     },
@@ -850,6 +906,7 @@ export const mutators = {
             ...target,
             status: "error",
             error: disconnectedMessage,
+            disconnected: true,
           });
           settle(tx, target.postId);
         }
@@ -988,18 +1045,9 @@ export const mutators = {
           notifyOfChannel(tx, channel.id, "channel_needs_reconnect");
         }
       }
+      // Which is also where the inbox says how the post ended, once,
+      // when the last of its deliveries has: not for each of them.
       settle(tx, target.postId);
-      // The inbox says how a post ended, once, when the last of its
-      // deliveries has: not for each of them.
-      const post = tx.get("post", target.postId);
-      if (post?.status === "error") {
-        notifyOfPost(tx, post.id);
-      } else if (
-        post?.status === "sent" &&
-        tx.get("notification", post.id)?.postId === post.id
-      ) {
-        tx.delete("notification", post.id);
-      }
     },
     { serverOnly: true },
   ),
@@ -1038,12 +1086,19 @@ export const mutators = {
   /**
    * Marks notifications as read, on every device. One that is gone or
    * read already is left as it is: two devices can read the same one.
+   *
+   * Each is named with its `createdAt`, as the device saw it: what was
+   * told of can happen again, which puts a new, unread notification under
+   * the same ID. A device that was away meanwhile has read the one before
+   * and not this one, which is left as it is.
    */
   "notification.read": mutator(
-    z.strictObject({ ids: z.array(idSchema).min(1).max(100) }),
-    (tx, { ids }) => {
-      for (const id of ids) {
-        const notification = tx.get("notification", id);
+    z.strictObject({
+      notifications: z.array(seenNotificationSchema).min(1).max(100),
+    }),
+    (tx, { notifications }) => {
+      for (const seen of notifications) {
+        const notification = seenNotification(tx, seen);
         if (notification && notification.readAt === null) {
           tx.put("notification", { ...notification, readAt: tx.now });
         }
@@ -1053,14 +1108,12 @@ export const mutators = {
 
   /**
    * Takes a notification out of the inbox. What it was about stays as it
-   * is. Does nothing if the notification is gone.
+   * is. Does nothing if the notification is gone, or if another has come
+   * in its place since the device saw it: see `notification.read`.
    */
-  "notification.dismiss": mutator(
-    z.strictObject({ id: idSchema }),
-    (tx, { id }) => {
-      tx.delete("notification", id);
-    },
-  ),
+  "notification.dismiss": mutator(seenNotificationSchema, (tx, seen) => {
+    if (seenNotification(tx, seen)) tx.delete("notification", seen.id);
+  }),
 
   /**
    * Removes notifications that the person has not dismissed: the server

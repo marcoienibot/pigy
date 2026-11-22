@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "a825a1cc-a49f-4298-9efd-fb60798f1f48",
+  "id": "321da52f-bd25-45ee-8a04-f2d7d933b445",
   "prevId": "f33f6db8-f86f-4d28-96ec-2245c16d6f63",
   "tables": {
     "change_log": {
@@ -436,6 +436,14 @@
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
+        },
+        "disconnected": {
+          "name": "disconnected",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
         },
         "progress": {
           "name": "progress",

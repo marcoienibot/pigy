@@ -15,4 +15,5 @@ CREATE TABLE `push_outbox` (
 	`queued_at` integer NOT NULL
 );
 --> statement-breakpoint
-ALTER TABLE `channel` ADD `expiry_warned_for` integer;
+ALTER TABLE `channel` ADD `expiry_warned_for` integer;--> statement-breakpoint
+ALTER TABLE `post_target` ADD `disconnected` integer DEFAULT false NOT NULL;

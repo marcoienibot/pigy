@@ -56,7 +56,12 @@ export const postRowSchema = z.strictObject({
   id: idSchema,
   status: postStatusSchema,
   createdAt: timeSchema,
-  /** When the post or one of its parts last changed. */
+  /**
+   * When the post or one of its parts last changed. Nothing changes a
+   * post while it is `sending`, so this is then when it last began to be
+   * sent: when it was published, or when a delivery was tried again
+   * after all of them had ended.
+   */
   updatedAt: timeSchema,
 });
 
@@ -256,6 +261,13 @@ export const postTargetRowSchema = z.strictObject({
   queuedAt: timeSchema.nullable(),
   /** When the last part was published. Null unless the status is `sent`. */
   sentAt: timeSchema.nullable(),
+  /**
+   * Whether the delivery ended because the person disconnected its
+   * account while it waited or was under way, and not by itself. Such a
+   * target is in `error`, is never tried again, and is nothing that the
+   * inbox tells of: the person did it.
+   */
+  disconnected: z.boolean(),
 });
 
 /**

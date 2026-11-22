@@ -70,6 +70,7 @@ export function target(
     error: null,
     queuedAt: null,
     sentAt: null,
+    disconnected: false,
     ...fields,
   };
 }

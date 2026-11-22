@@ -70,6 +70,7 @@ const synced = {
       error: postTargets.error,
       queuedAt: postTargets.queuedAt,
       sentAt: postTargets.sentAt,
+      disconnected: postTargets.disconnected,
     },
   },
   target_part_result: {

@@ -3,7 +3,7 @@ import { CircleAlert, Clock, Unplug, X } from "lucide-react";
 import { useRef } from "react";
 import { EmptyState, Page } from "@/components/page";
 import { Button } from "@/components/ui/button";
-import { type InboxItem, inboxWords, selectInbox } from "@/lib/inbox";
+import { type InboxItem, inboxWords, readAll, selectInbox } from "@/lib/inbox";
 import { timeAgo, useNow } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { useMutate, useSynced } from "@/sync/react";
@@ -32,7 +32,7 @@ function Inbox() {
   const items = useSynced(selectInbox);
   const mutate = useMutate();
   const now = useNow();
-  const unread = items.filter((item) => item.unread).map(({ id }) => id);
+  const anyUnread = items.some((item) => item.unread);
   const heading = useRef<HTMLHeadingElement>(null);
 
   return (
@@ -40,15 +40,16 @@ function Inbox() {
       title="Inbox"
       heading={heading}
       actions={
-        unread.length > 0 && (
+        anyUnread && (
           <Button
             variant="outline"
             size="sm"
-            // A hundred at a time is what the mutator takes, and more than
-            // the inbox holds: a post and a channel have one each.
-            onClick={() =>
-              mutate("notification.read", { ids: unread.slice(0, 100) })
-            }
+            // All of them, in as many mutations as that takes.
+            onClick={() => {
+              for (const args of readAll(items)) {
+                mutate("notification.read", args);
+              }
+            }}
           >
             Mark all read
           </Button>
@@ -73,10 +74,18 @@ function Inbox() {
                 item={item}
                 now={now}
                 onRead={() =>
-                  item.unread && mutate("notification.read", { ids: [item.id] })
+                  item.unread &&
+                  mutate("notification.read", {
+                    notifications: [{ id: item.id, createdAt: item.createdAt }],
+                  })
                 }
                 onDismiss={() => {
-                  mutate("notification.dismiss", { id: item.id });
+                  // As it is on screen: one that has come in its place
+                  // on another device meanwhile stays.
+                  mutate("notification.dismiss", {
+                    id: item.id,
+                    createdAt: item.createdAt,
+                  });
                   // The button that had the focus is gone with its item.
                   heading.current?.focus();
                 }}

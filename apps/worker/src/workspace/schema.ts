@@ -134,6 +134,11 @@ export const postTargets = sqliteTable(
     error: text("error"),
     queuedAt: integer("queued_at"),
     sentAt: integer("sent_at"),
+    // False for the targets from before the column: none of them is
+    // waiting or under way with a notification still to be decided.
+    disconnected: integer("disconnected", { mode: "boolean" })
+      .notNull()
+      .default(false),
 
     // The columns below are not synced: they are the bookkeeping of the
     // deliveries, which store.ts reads and writes.

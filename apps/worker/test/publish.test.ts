@@ -44,6 +44,7 @@ it("publishes a post to a simulated account in the sandbox", async () => {
     attempt: 1,
     error: null,
     sentAt: expect.any(Number),
+    disconnected: false,
   });
   const statuses = await statusesOf(workspaces.sandbox);
   expect(statuses.map(({ text }) => text)).toEqual(["Hello, sandbox"]);
@@ -305,6 +306,7 @@ it("does not send what an account may not post, and sends it to the others", asy
     // What `validateContent` found, for the person to act on.
     error: "The post is 38 characters long. The limit is 20.",
     sentAt: null,
+    disconnected: false,
   });
   expect(feed(test.network.world).map(({ post }) => post.text)).toEqual([text]);
   // The server that would have refused the post was not asked to take it.

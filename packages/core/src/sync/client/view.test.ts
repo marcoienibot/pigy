@@ -213,6 +213,7 @@ it("runs a pending mutation after every time that the server has put into a chan
     error: null,
     queuedAt: 4_000,
     sentAt: 5_000,
+    disconnected: false,
   } as const;
   const edit = [setText(part.id, "Edited", 10)];
   const edited = (rows: Tables) => viewOf(rows, edit).post.get(post.id);

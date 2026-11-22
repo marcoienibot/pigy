@@ -420,6 +420,7 @@ test("a delivery whose end nobody knows asks the person to look at the account b
             error:
               "Something went wrong in pigy while this was being sent, and it cannot tell how far it got. Look at the account before you try again.",
             sentAt: null,
+            disconnected: false,
           });
         }
         if (change.table === "post" && change.row.status === "sent") {

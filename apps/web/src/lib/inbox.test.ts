@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { inboxWords, selectInbox, selectUnread } from "./inbox.ts";
+import { inboxWords, readAll, selectInbox, selectUnread } from "./inbox.ts";
 import {
   channel,
   id,
@@ -103,6 +103,105 @@ describe("the inbox", () => {
     expect(selectInbox(tables)).toEqual([]);
     expect(selectUnread(tables)).toBe(0);
   });
+
+  it("counts the unread ones about posts and about channels, and only those that it shows", () => {
+    const failed = post({ status: "error" });
+    const account = channel();
+    const tables = tablesOf({
+      post: [failed],
+      channel: [account],
+      notification: [
+        ofPost(failed.id),
+        ofChannel(account.id, "channel_needs_reconnect"),
+        // Unread, and about a post and a channel that the copy lacks.
+        ofPost(id()),
+        ofChannel(id(), "channel_expiring"),
+        // Read.
+        ofPost(post({ status: "error" }).id, { readAt: 1500 }),
+      ],
+    });
+
+    expect(selectUnread(tables)).toBe(2);
+    // The count is what the list has, which is made another way.
+    expect(selectInbox(tables).filter(({ unread }) => unread)).toHaveLength(2);
+  });
+
+  it("shows the first part of the post's own text and the deliveries of each post, with many posts in the inbox", () => {
+    // The parts and the targets of all posts are found in one pass, so
+    // each has to end up with its own post.
+    const posts = [post({ status: "error" }), post({ status: "error" })];
+    const account = channel({ handle: "@ada" });
+    const [first, second] = posts.map(({ id: postId }, index) => ({
+      targetId: target(postId, account.id, { status: "error" }),
+      parts: [
+        part(postId, { text: `Second part ${index}`, position: 1 }),
+        part(postId, { text: `First part ${index}`, position: 0 }),
+      ],
+    }));
+    const tables = tablesOf({
+      post: posts,
+      channel: [account],
+      post_part: [...(first?.parts ?? []), ...(second?.parts ?? [])],
+      post_target: [first?.targetId, second?.targetId].filter(
+        (row) => row !== undefined,
+      ),
+      notification: posts.map(({ id: postId }, index) =>
+        ofPost(postId, { createdAt: 1000 + index }),
+      ),
+    });
+
+    expect(
+      selectInbox(tables).map((item) =>
+        item.kind === "post_failed"
+          ? [item.text, item.deliveries.length]
+          : null,
+      ),
+    ).toEqual([
+      ["First part 1", 1],
+      ["First part 0", 1],
+    ]);
+  });
+});
+
+describe("marking all as read", () => {
+  it("names every unread notification as it was seen, in mutations of a hundred at most", () => {
+    const posts = Array.from({ length: 102 }, () => post({ status: "error" }));
+    const tables = tablesOf({
+      post: posts,
+      notification: posts.map(({ id: postId }, index) =>
+        // One is read already, which leaves 101.
+        ofPost(postId, {
+          createdAt: 1000 + index,
+          readAt: index === 0 ? 1500 : null,
+        }),
+      ),
+    });
+
+    const mutations = readAll(selectInbox(tables));
+
+    // The mutator takes a hundred at once: the 101st goes in a second.
+    expect(mutations.map(({ notifications }) => notifications.length)).toEqual([
+      100, 1,
+    ]);
+    const named = mutations.flatMap(({ notifications }) => notifications);
+    expect(new Set(named.map(({ id: named }) => named)).size).toBe(101);
+    // Each with the time that the device saw, which is what keeps a
+    // newer notification under the same ID from being read by this.
+    expect(named).toContainEqual({ id: posts[1]?.id, createdAt: 1001 });
+    expect(named).not.toContainEqual(
+      expect.objectContaining({ id: posts[0]?.id }),
+    );
+  });
+
+  it("makes no mutation when everything is read", () => {
+    const failed = post({ status: "error" });
+    const tables = tablesOf({
+      post: [failed],
+      notification: [ofPost(failed.id, { readAt: 1500 })],
+    });
+
+    expect(readAll(selectInbox(tables))).toEqual([]);
+  });
 });
 
 describe("what a notification says", () => {
@@ -193,6 +292,24 @@ describe("what a notification says", () => {
     // The day, in the words of the device.
     expect(words?.detail).toMatch(
       /^It ends on .*21.*, and LinkedIn does not let pigy renew it\./,
+    );
+  });
+
+  it("says of an access that pigy renews that it could not, and when it ends", () => {
+    const account = channel({
+      network: "threads",
+      handle: "@ada",
+      name: "Ada",
+      expiresAt: now + 6 * day,
+    });
+    const tables = tablesOf({
+      channel: [account],
+      notification: [ofChannel(account.id, "channel_expiring")],
+    });
+
+    // Not that Threads does not let pigy renew: it does, every week.
+    expect(wordsOf(tables)[0]?.detail).toMatch(
+      /^pigy could not renew it, and it ends on .*20.*\. Connect the account again before then/,
     );
   });
 

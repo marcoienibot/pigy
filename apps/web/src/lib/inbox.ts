@@ -1,4 +1,4 @@
-import type { Row, Tables } from "@pigy/core";
+import type { MutatorArgs, Row, Tables } from "@pigy/core";
 import type { Channel } from "@/lib/channels";
 import { networkInfo } from "@/lib/networks";
 import { dayOf } from "@/lib/time";
@@ -35,31 +35,58 @@ function accountOf(channel: Channel | undefined): string {
   return channel ? channel.handle : "an account that is no longer connected";
 }
 
+/**
+ * Whether the inbox shows `notification`: not while the copy has not
+ * heard of the post or the channel that it is about, or has heard that it
+ * is gone before it heard the same of the notification.
+ */
+function isShown(tables: Tables, notification: Row<"notification">): boolean {
+  return notification.kind === "post_failed"
+    ? notification.postId !== null && tables.post.has(notification.postId)
+    : notification.channelId !== null &&
+        tables.channel.has(notification.channelId);
+}
+
 /** The notifications of the workspace, the newest first. */
 export function selectInbox(tables: Tables): InboxItem[] {
+  const shown = [...tables.notification.values()].filter((notification) =>
+    isShown(tables, notification),
+  );
+  // The parts and the targets of the posts that the inbox tells of, found
+  // in one pass over each table, however many notifications there are.
+  const parts = new Map<string, Row<"post_part">[]>();
+  const targets = new Map<string, Row<"post_target">[]>();
+  for (const { kind, postId } of shown) {
+    if (kind !== "post_failed" || postId === null) continue;
+    parts.set(postId, []);
+    targets.set(postId, []);
+  }
+  if (parts.size > 0) {
+    for (const part of tables.post_part.values()) {
+      // The text of the post itself, not what is written for one account
+      // in its place.
+      if (part.targetId === null) parts.get(part.postId)?.push(part);
+    }
+    for (const target of tables.post_target.values()) {
+      targets.get(target.postId)?.push(target);
+    }
+  }
   const items: InboxItem[] = [];
-  for (const notification of tables.notification.values()) {
+  for (const notification of shown) {
     const { id, createdAt, readAt } = notification;
     const about = { id, createdAt, unread: readAt === null };
     if (notification.kind === "post_failed") {
       const postId = notification.postId;
-      // The copy has not heard of the post yet, or has heard that it is
-      // gone before it heard the same of the notification.
-      if (!postId || !tables.post.has(postId)) continue;
-      const parts = [...tables.post_part.values()]
-        // The text of the post itself, not what is written for one
-        // account in its place.
-        .filter((part) => part.postId === postId && part.targetId === null)
-        .sort((a, b) => a.position - b.position || (a.id < b.id ? -1 : 1));
-      const targets: Row<"post_target">[] = [
-        ...tables.post_target.values(),
-      ].filter((target) => target.postId === postId);
+      if (postId === null) continue;
+      const [first] = (parts.get(postId) ?? []).sort(
+        (a, b) => a.position - b.position || (a.id < b.id ? -1 : 1),
+      );
       items.push({
         ...about,
         kind: "post_failed",
         postId,
-        text: parts[0]?.text ?? "",
-        deliveries: targets.map((target) => ({
+        text: first?.text ?? "",
+        deliveries: (targets.get(postId) ?? []).map((target) => ({
           account: accountOf(tables.channel.get(target.channelId)),
           arrived: target.status === "sent",
           unknown: target.status === "uncertain",
@@ -77,9 +104,43 @@ export function selectInbox(tables: Tables): InboxItem[] {
   );
 }
 
-/** How many notifications the person has not read. */
+/**
+ * How many notifications the person has not read, of those that the
+ * inbox shows. The shell counts them on every screen and with every
+ * change of the copy, a keystroke included, so this looks at the
+ * notifications alone and builds nothing.
+ */
 export function selectUnread(tables: Tables): number {
-  return selectInbox(tables).filter(({ unread }) => unread).length;
+  let unread = 0;
+  for (const notification of tables.notification.values()) {
+    if (notification.readAt === null && isShown(tables, notification)) {
+      unread += 1;
+    }
+  }
+  return unread;
+}
+
+/** How many notifications one `notification.read` takes. */
+const readAtOnce = 100;
+
+/**
+ * The mutations that mark every unread one of `items` as read:
+ * `notification.read` with these arguments, one after the other, each
+ * with as many notifications as the mutator takes. Each notification is
+ * named as it was seen, with its `createdAt`: one that has come in its
+ * place since is not read by this.
+ */
+export function readAll(
+  items: InboxItem[],
+): MutatorArgs<"notification.read">[] {
+  const unread = items
+    .filter((item) => item.unread)
+    .map(({ id, createdAt }) => ({ id, createdAt }));
+  const mutations: MutatorArgs<"notification.read">[] = [];
+  for (let from = 0; from < unread.length; from += readAtOnce) {
+    mutations.push({ notifications: unread.slice(from, from + readAtOnce) });
+  }
+  return mutations;
 }
 
 /** Up to three names, as a list in a sentence, and how many more. */
