@@ -4,6 +4,7 @@ import {
   channelRows,
   connectionOf,
   connectSimulated,
+  connectSimulatedLinkedIn,
   draftRow,
   editor,
   expectElsewhere,
@@ -951,6 +952,50 @@ test("a channel that needs reconnecting says so and offers it", async ({
   await expect(notice(page)).toHaveText(
     `Grace Hopper (${grace}) is connected.`,
   );
+  await expect(channelRows(page)).toHaveCount(1);
+});
+
+test("a channel whose access has ended by its date says so and offers to connect it again", async ({
+  page,
+  ownEmail,
+}) => {
+  // LinkedIn's access ends 60 days after the connection, by a date that
+  // the row of the channel has. The test puts that date into the past on
+  // its way to the page, which is what the page finds on the 61st day.
+  // The status of the channel stays `connected`: nothing has been refused
+  // yet.
+  await page.routeWebSocket(/\/sync\//, (socket) => {
+    const server = socket.connectToServer();
+    socket.onMessage((message) => server.send(message));
+    server.onMessage((message) =>
+      socket.send(
+        typeof message === "string"
+          ? message.replaceAll(/"expiresAt":\d+/g, '"expiresAt":1')
+          : message,
+      ),
+    );
+  });
+  await signIn(page, ownEmail);
+  await openScreen(page, "Channels");
+  await connectSimulatedLinkedIn(page, graceOnLinkedIn);
+
+  const row = channelRows(page);
+  await expect(row).toContainText(
+    "Its access has ended: connect the account again.",
+  );
+  await expect(row).toContainText("Needs reconnecting");
+  // What the row asks for is one press away.
+  await page
+    .getByRole("button", { name: `Reconnect ${graceOnLinkedIn}` })
+    .click();
+
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText(`Reconnect ${graceOnLinkedIn}`);
+  await dialog.getByRole("button", { name: "Continue to LinkedIn" }).click();
+  await page.getByRole("button", { name: graceOnLinkedIn }).click();
+
+  // The same member again: one channel, not two.
+  await expect(notice(page)).toHaveText("Grace Hopper is connected.");
   await expect(channelRows(page)).toHaveCount(1);
 });
 

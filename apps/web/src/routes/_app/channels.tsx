@@ -46,8 +46,10 @@ import {
   type Channel,
   connectNotice,
   disconnectNotice,
+  handleShown,
   keepConnectOutcome,
   type Notice,
+  needsReconnecting,
   overChannels,
   selectChannels,
   takeConnectOutcome,
@@ -363,10 +365,13 @@ function ChannelRow({
   onDisconnect: () => void;
 }) {
   const { label } = networkInfo[channel.network];
-  const broken = channel.status === "needs_reconnect";
   const now = useNow();
-  // Not for a channel that says already that it needs connecting again.
-  const ends = broken ? null : accessEnds(channel, now);
+  const broken = needsReconnecting(channel, now);
+  // Not for a channel whose network has said that it needs connecting
+  // again: an access that has ended by its date is said to have.
+  const ends =
+    channel.status === "needs_reconnect" ? null : accessEnds(channel, now);
+  const shown = handleShown(channel);
 
   return (
     <li
@@ -396,22 +401,18 @@ function ChannelRow({
         </div>
         <div className="truncate text-muted-foreground">
           {label}
-          {
-            // A network that addresses an account by its name has it said
-            // once, above.
-            channel.handle !== channel.name && " · "
-          }
-          {channel.handle === channel.name ? null : channel.profileUrl ? (
+          {shown && " · "}
+          {shown?.url ? (
             <a
-              href={channel.profileUrl}
+              href={shown.url}
               target="_blank"
               rel="noreferrer"
               className="underline-offset-4 outline-none hover:underline focus-visible:underline"
             >
-              {channel.handle}
+              {shown.handle}
             </a>
           ) : (
-            channel.handle
+            shown?.handle
           )}
         </div>
         {ends && <div className="text-xs text-muted-foreground">{ends}</div>}

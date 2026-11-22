@@ -35,6 +35,42 @@ export function accessEnds(
     : `Its access ends on ${dayOf(expiresAt, now)}: connect the account again before then.`;
 }
 
+/**
+ * Whether a channel has to be connected again before it can be posted to,
+ * which is when the Channels screen offers that: its network has refused
+ * its access, or the access has ended by its date. The second is not in
+ * the status of the channel before a post has been refused for it, and
+ * the person need not send one to be offered what the row asks them to do.
+ */
+export function needsReconnecting(
+  { status, expiresAt }: Pick<Channel, "status" | "expiresAt">,
+  now: number,
+): boolean {
+  return (
+    status === "needs_reconnect" || (expiresAt !== null && expiresAt <= now)
+  );
+}
+
+/**
+ * The handle of a channel as its row shows it under the name, with the
+ * address that it links to, or null where the row has nothing to add to
+ * the name: a network that addresses an account by its name, as LinkedIn
+ * does, has it said once. A handle that leads somewhere is shown also
+ * where it reads like the name, as that of a Bluesky account without a
+ * display name does: it is the only link to the profile.
+ */
+export function handleShown({
+  handle,
+  name,
+  profileUrl,
+}: Pick<Channel, "handle" | "name" | "profileUrl">): {
+  handle: string;
+  url: string | null;
+} | null {
+  if (handle === name && profileUrl === null) return null;
+  return { handle, url: profileUrl };
+}
+
 /** Whether a workspace has no channel. */
 export function selectNoChannels(tables: Tables): boolean {
   return tables.channel.size === 0;
