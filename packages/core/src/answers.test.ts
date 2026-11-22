@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { uploadCompleteSchema, uploadStateSchema } from "./media/upload.ts";
 import { linkCardResponseSchema, mentionsResponseSchema } from "./preview.ts";
 import { sandboxFaultsSchema, sandboxFeedSchema } from "./sandbox.ts";
 
@@ -19,6 +20,7 @@ describe("the schemas of answers that a client fetches", () => {
         description: "",
         later: 1,
       },
+      images: [{ id: "blob1", alt: "", width: 4, height: 3, later: 1 }],
       replies: [],
       later: "a field of a later release",
     };
@@ -37,6 +39,32 @@ describe("the schemas of answers that a client fetches", () => {
     });
     expect(JSON.stringify(feed)).not.toContain("later");
     expect(feed.accounts[0]?.posts[0]?.replies[0]?.card?.title).toBe("T");
+
+    expect(feed.accounts[0]?.posts[0]?.images).toEqual([
+      { id: "blob1", alt: "", width: 4, height: 3 },
+    ]);
+    // A feed of a server from before posts had images is read too.
+    const { images: _, ...older } = post;
+    expect(
+      sandboxFeedSchema.parse({
+        accounts: [
+          {
+            network: "mastodon",
+            id: "a",
+            handle: "@a",
+            name: "A",
+            posts: [older],
+          },
+        ],
+      }).accounts[0]?.posts[0]?.images,
+    ).toBeUndefined();
+
+    expect(
+      uploadStateSchema.parse({ chunkBytes: 5, received: [1], later: 1 }),
+    ).toEqual({ chunkBytes: 5, received: [1] });
+    expect(uploadCompleteSchema.parse({ status: "ready", later: 1 })).toEqual({
+      status: "ready",
+    });
 
     expect(
       sandboxFaultsSchema.parse({
