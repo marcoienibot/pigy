@@ -7,8 +7,9 @@ import { dayOf } from "@/lib/time";
  * What the inbox shows: the notifications of the workspace, each with what
  * it is about, read from the local copy like everything synced. The server
  * adds one when a post has ended and has not arrived everywhere, when a
- * network no longer takes the access of an account, and a week before an
- * access ends by its date. It takes one away when what it told of is dealt
+ * scheduled post was not sent at its time and waits for somebody to
+ * decide, when a network no longer takes the access of an account, and a
+ * week before an access ends by its date. It takes one away when what it told of is dealt
  * with: PLAN.md section 13.
  */
 export type InboxItem = {
@@ -22,6 +23,16 @@ export type InboxItem = {
       text: string;
       /** Where the post was to go, with how each delivery ended. */
       deliveries: { account: string; arrived: boolean; unknown: boolean }[];
+      postId: string;
+    }
+  | {
+      /**
+       * A scheduled post that the server holds, because it found its time
+       * more than an hour late: the Queue screen has what can be done.
+       */
+      kind: "post_held";
+      /** The first words of the post, as it was written. */
+      text: string;
       postId: string;
     }
   | {
@@ -41,7 +52,8 @@ function accountOf(channel: Channel | undefined): string {
  * is gone before it heard the same of the notification.
  */
 function isShown(tables: Tables, notification: Row<"notification">): boolean {
-  return notification.kind === "post_failed"
+  return notification.kind === "post_failed" ||
+    notification.kind === "post_held"
     ? notification.postId !== null && tables.post.has(notification.postId)
     : notification.channelId !== null &&
         tables.channel.has(notification.channelId);
@@ -57,9 +69,11 @@ export function selectInbox(tables: Tables): InboxItem[] {
   const parts = new Map<string, Row<"post_part">[]>();
   const targets = new Map<string, Row<"post_target">[]>();
   for (const { kind, postId } of shown) {
-    if (kind !== "post_failed" || postId === null) continue;
+    if (postId === null) continue;
+    if (kind !== "post_failed" && kind !== "post_held") continue;
     parts.set(postId, []);
-    targets.set(postId, []);
+    // Only a post that has gone out has deliveries to tell of.
+    if (kind === "post_failed") targets.set(postId, []);
   }
   if (parts.size > 0) {
     for (const part of tables.post_part.values()) {
@@ -75,12 +89,24 @@ export function selectInbox(tables: Tables): InboxItem[] {
   for (const notification of shown) {
     const { id, createdAt, readAt } = notification;
     const about = { id, createdAt, unread: readAt === null };
-    if (notification.kind === "post_failed") {
+    if (
+      notification.kind === "post_failed" ||
+      notification.kind === "post_held"
+    ) {
       const postId = notification.postId;
       if (postId === null) continue;
       const [first] = (parts.get(postId) ?? []).sort(
         (a, b) => a.position - b.position || (a.id < b.id ? -1 : 1),
       );
+      if (notification.kind === "post_held") {
+        items.push({
+          ...about,
+          kind: "post_held",
+          postId,
+          text: first?.text ?? "",
+        });
+        continue;
+      }
       items.push({
         ...about,
         kind: "post_failed",
@@ -170,6 +196,14 @@ export function inboxWords(
         : `A post was not sent to ${where || "its account"}`,
       detail: item.text || "Empty post",
       action: "See the post",
+    };
+  }
+  if (item.kind === "post_held") {
+    return {
+      // As the Queue screen says it, where the post is marked "Missed".
+      title: "A scheduled post missed its time and was not sent",
+      detail: item.text || "Empty post",
+      action: "Decide in the queue",
     };
   }
   const { channel } = item;

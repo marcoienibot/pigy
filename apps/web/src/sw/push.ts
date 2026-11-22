@@ -190,6 +190,17 @@ export function shownFor(text: string | undefined, now: number): Shown {
       url: inWorkspace("/sent", { post: postId }, workspaceId),
     };
   }
+  if (kind === "post_held" && isId(postId)) {
+    return {
+      title: title("A scheduled post was not sent"),
+      body: "pigy got to it more than an hour after its time. Open pigy to send it now or to give it another time.",
+      // One tag for a post, whatever is said of it: a post that is sent
+      // after it was held and fails has what is said later in this place.
+      tag: `post:${postId}`,
+      // The Queue screen, which has the post with what can be done.
+      url: inWorkspace("/queue", {}, workspaceId),
+    };
+  }
   if (
     (kind === "channel_needs_reconnect" || kind === "channel_expiring") &&
     isId(channelId)

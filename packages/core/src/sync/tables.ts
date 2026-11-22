@@ -383,6 +383,12 @@ export const notificationKinds = [
    */
   "post_failed",
   /**
+   * A scheduled post was not sent at its time: the server found the time
+   * more than `lateMs` late, and holds the post until somebody sends it,
+   * gives it another time or takes it back. `postId` names the post.
+   */
+  "post_held",
+  /**
    * A network no longer takes the access of a channel, which has to be
    * connected again. `channelId` names the channel.
    */

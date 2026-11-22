@@ -163,6 +163,73 @@ describe("the inbox", () => {
   });
 });
 
+describe("a scheduled post that was held", () => {
+  /** A post that the server holds, with the notification that says so. */
+  function held() {
+    const late = post({
+      status: "scheduled",
+      mode: "custom",
+      dueAt: 500,
+      heldAt: 1000,
+    });
+    const account = channel({ handle: "@ada" });
+    return {
+      late,
+      tables: tablesOf({
+        post: [late],
+        // The text of an account is not what the inbox quotes.
+        post_part: [
+          part(late.id, { text: "Second", position: 1 }),
+          part(late.id, { text: "Out on Monday", position: 0 }),
+        ],
+        channel: [account],
+        // Not sent yet: its target has no outcome to tell of.
+        post_target: [target(late.id, account.id, { status: "pending" })],
+        notification: [ofPost(late.id, { kind: "post_held" as const })],
+      }),
+    };
+  }
+
+  it("is in the inbox with the words of the post, and counts as unread", () => {
+    const { tables, late } = held();
+
+    expect(selectInbox(tables)).toEqual([
+      {
+        id: late.id,
+        kind: "post_held",
+        postId: late.id,
+        text: "Out on Monday",
+        createdAt: 1000,
+        unread: true,
+      },
+    ]);
+    expect(selectUnread(tables)).toBe(1);
+  });
+
+  it("says that the post missed its time, and offers the queue, where it is decided", () => {
+    const { tables } = held();
+
+    // Not the words of a post that failed: nothing was sent, and no
+    // account refused anything.
+    expect(wordsOf(tables)).toEqual([
+      {
+        title: "A scheduled post missed its time and was not sent",
+        detail: "Out on Monday",
+        action: "Decide in the queue",
+      },
+    ]);
+  });
+
+  it("is left out while the copy does not have the post", () => {
+    const tables = tablesOf({
+      notification: [ofPost(id(), { kind: "post_held" as const })],
+    });
+
+    expect(selectInbox(tables)).toEqual([]);
+    expect(selectUnread(tables)).toBe(0);
+  });
+});
+
 describe("marking all as read", () => {
   it("names every unread notification as it was seen, in mutations of a hundred at most", () => {
     const posts = Array.from({ length: 102 }, () => post({ status: "error" }));

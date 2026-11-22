@@ -414,12 +414,15 @@ export const requeues = { count: 0 };
 
 /**
  * Makes a draft of a post that was scheduled: nothing says when it goes
- * out any more. The queue closes up behind a post that was in it, unless
- * the caller does that itself, `closeUp`, for all the posts that it takes
- * out of the queue at once.
+ * out any more, and the inbox no longer says that it was held. The queue
+ * closes up behind a post that was in it, unless the caller does that
+ * itself, `closeUp`, for all the posts that it takes out of the queue at
+ * once.
  */
 function toDraft(tx: Transaction, post: Row<"post">, closeUp = true): void {
   const queued = inQueue(post);
+  // Nobody has to decide about a post that was held any more.
+  forgetNoticeOfPost(tx, post.id);
   tx.put("post", {
     ...post,
     ...unscheduled,
@@ -445,9 +448,7 @@ function deletePost(tx: Transaction, id: string): void {
   }
   for (const target of targets) tx.delete("post_target", target.id);
   // What the inbox says of the post, which is under the ID of the post.
-  if (tx.get("notification", id)?.postId === id) {
-    tx.delete("notification", id);
-  }
+  forgetNoticeOfPost(tx, id);
   const post = tx.get("post", id);
   tx.delete("post", id);
   // The queue closes up behind a post that was in it.
@@ -476,7 +477,10 @@ function roomFor(tx: Transaction, post: Row<"post">): void {
  *   sends one: its targets wait their turn. It keeps its `mode` and its
  *   `dueAt`, which say when it was to go out.
  * - A post with a time that somebody chose which is later than that is
- *   held: it stays `scheduled`, with `heldAt`, until somebody decides.
+ *   held: it stays `scheduled`, with `heldAt`, until somebody decides,
+ *   and the inbox tells them that they have to, with a notification of
+ *   the kind `post_held`. Here and nowhere else: this is where a post
+ *   comes to be held.
  * - Of the queue, one post goes out at a time. When the time of several
  *   has come, because nobody looked for a while, the first of them is
  *   sent if it is at most `lateMs` late, and the others take the slots
@@ -490,6 +494,7 @@ function takeUp(tx: Transaction, post: Row<"post"> & { dueAt: number }): void {
   if (!inQueue(post)) {
     if (late(post.dueAt)) {
       tx.put("post", { ...post, heldAt: tx.now, updatedAt: tx.now });
+      notifyOfPost(tx, post.id, "post_held");
     } else {
       send(tx, post, { mode: post.mode, dueAt: post.dueAt });
     }
@@ -518,7 +523,8 @@ function takeUp(tx: Transaction, post: Row<"post"> & { dueAt: number }): void {
  * Sends a post that has not gone out to its channels: it is `sending`
  * from here on, and its targets wait their turn. `scheduled` says what is
  * kept of when it was to go out: nothing for a post that somebody asked to
- * be sent at once.
+ * be sent at once. What the inbox said of the post goes: that it was
+ * held, which is all that the inbox says of a post that has not gone out.
  */
 function send(
   tx: Transaction,
@@ -534,6 +540,7 @@ function send(
     );
   }
   const queued = inQueue(post);
+  forgetNoticeOfPost(tx, post.id);
   for (const target of targets) {
     tx.put("post_target", { ...target, status: "queued", queuedAt: tx.now });
   }
@@ -569,19 +576,36 @@ function currentTarget(
 }
 
 /**
- * Tells the person, in the inbox, that the post `postId` has ended and has
- * not arrived everywhere, or tells them again: the notification is new and
- * unread. A post has one, under its own ID.
+ * Tells the person something about the post `postId`, in the inbox, or
+ * tells them again: the notification is new and unread. A post has one,
+ * under its own ID. It says that the post has ended and has not arrived
+ * everywhere, `post_failed`, or that the post was not sent at its time
+ * and waits for them to decide, `post_held`: a post is never both, because
+ * one that is held has not gone out.
  */
-function notifyOfPost(tx: Transaction, postId: string): void {
+function notifyOfPost(
+  tx: Transaction,
+  postId: string,
+  kind: "post_failed" | "post_held" = "post_failed",
+): void {
   tx.put("notification", {
     id: postId,
-    kind: "post_failed",
+    kind,
     postId,
     channelId: null,
     createdAt: tx.now,
     readAt: null,
   });
+}
+
+/**
+ * Takes what the inbox says of the post `postId` away, if it says
+ * anything: what it told of is dealt with, or the post is gone.
+ */
+function forgetNoticeOfPost(tx: Transaction, postId: string): void {
+  if (tx.get("notification", postId)?.postId === postId) {
+    tx.delete("notification", postId);
+  }
 }
 
 /**
@@ -1054,6 +1078,10 @@ export const mutators = {
         updatedAt: tx.now,
       } as const;
       tx.put("post", scheduled);
+      // A post that was held has a time again: the inbox need not say
+      // that somebody has to decide. If the new time is too late as
+      // well, it says so anew, below.
+      forgetNoticeOfPost(tx, id);
       if (queued) requeue(tx);
       if (dueAt <= tx.now) takeUp(tx, scheduled);
     },
@@ -1083,6 +1111,9 @@ export const mutators = {
       }
       const queued = inQueue(post);
       if (queued && !first) return;
+      // A post that was held is in the queue from here on, and no longer
+      // held: only a post with a time that somebody chose is.
+      forgetNoticeOfPost(tx, id);
       const entered: Row<"post"> = queued
         ? post
         : {
@@ -1195,6 +1226,11 @@ export const mutators = {
       );
     }
     const queued = inQueue(post);
+    // As good as gone, so the inbox says nothing of it any more. If it
+    // was held and comes back, it is held still, and the inbox does not
+    // say so a second time: whoever takes the deletion back has the post
+    // before them, on the Queue screen, which says it.
+    forgetNoticeOfPost(tx, id);
     tx.put("post", {
       ...post,
       // A post of the queue has no time while it is put aside, and is
@@ -1219,7 +1255,9 @@ export const mutators = {
    * - A post with a time that somebody chose has that time. If it has
    *   passed meanwhile, the post is taken up as `post.schedule` takes up
    *   one that is scheduled for the past: sent, or held if it is too
-   *   late for that. One that was held is held still.
+   *   late for that, which the inbox then tells of. One that was held
+   *   before it was put aside is held still, and the inbox says nothing
+   *   of it again: `post.trash` has why.
    * - A post that has no account left, because its accounts were
    *   disconnected meanwhile, is a draft. So is one for which the
    *   workspace has no room, because as many posts were scheduled

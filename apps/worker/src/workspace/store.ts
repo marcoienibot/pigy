@@ -1565,6 +1565,10 @@ export class WorkspaceStore {
         postId,
       };
     }
+    if (notification.kind === "post_held") {
+      const postId = notification.postId;
+      return postId ? { ...about, kind: "post_held", postId } : undefined;
+    }
     const channel =
       notification.channelId &&
       readRow(this.db, "channel", notification.channelId);

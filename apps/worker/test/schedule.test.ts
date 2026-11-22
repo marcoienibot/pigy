@@ -1,9 +1,12 @@
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { lateMs, type Row, trashMs } from "@pigy/core";
 import { feed, type SimToken } from "@pigy/simulators/world";
-import { expect, it, vi } from "vitest";
+import { expect, it, onTestFinished, vi } from "vitest";
 import { deliveryWatchMs } from "../src/workspace/object.ts";
-import { WorkspaceStore } from "../src/workspace/store.ts";
+import {
+  notificationLifetimeMs,
+  WorkspaceStore,
+} from "../src/workspace/store.ts";
 import { device } from "./app-client.ts";
 import {
   connectBlueskyLive,
@@ -11,7 +14,7 @@ import {
   connectThreadsLive,
 } from "./channels.ts";
 import { clock } from "./clock.ts";
-import { type Browser, expectErrors } from "./helpers.ts";
+import { type Browser, expectErrors, vapidPrivateKey } from "./helpers.ts";
 import {
   connectAccount,
   follow,
@@ -23,6 +26,7 @@ import {
   targetOf,
   writeDraft,
 } from "./publishing.ts";
+import { idle, messagesOf, received, turnOn } from "./push.ts";
 import { newId, objectOf, SyncClient } from "./sync-client.ts";
 
 /**
@@ -557,9 +561,13 @@ it("publishes a post that an alarm finds late, and holds one that it finds more 
   });
   expect(targetOf(later, early.targets[0] ?? "").status).toBe("pending");
   // A held post is nothing to come back for: the alarm that looked
-  // after the delivery comes once more, and sets none after it.
+  // after the delivery comes once more, and the one that it sets after
+  // it is for the inbox alone, which tells of the held post and removes
+  // what it says when that is old.
   await alarm(workspace);
-  expect(await alarmOf(workspace)).toBeNull();
+  const ahead = ((await alarmOf(workspace)) ?? 0) - Date.now();
+  expect(ahead).toBeGreaterThan(notificationLifetimeMs - minute);
+  expect(ahead).toBeLessThanOrEqual(notificationLifetimeMs);
 
   // The person sends it after all.
   await mutate(later, later.mutation("post.publish", { id: early.postId }));
@@ -959,4 +967,142 @@ it("comes back for a due post that it could not take up, a minute later and not 
   );
   expect(await settled(later, postId)).toMatchObject({ status: "sent" });
   expect(posts()).toEqual(["Second try"]);
+});
+
+/**
+ * `ready()`, for a pigy that has a key to send push messages with, and a
+ * device of the person that has notifications turned on. Such a test
+ * ends with nothing left to send: `withPush` of push.test.ts has why.
+ */
+async function readyWithDevice() {
+  onTestFinished(idle);
+  const context = await ready({ env: { VAPID_PRIVATE_KEY: vapidPrivateKey } });
+  const subscription = await turnOn(context.test, context.browser);
+  return { ...context, subscription };
+}
+
+it("tells the inbox and the devices of a scheduled post that fails at its time, like of any post that failed", async () => {
+  const { test, workspace, channel, client, subscription } =
+    await readyWithDevice();
+  const { postId } = await schedule(
+    client,
+    workspace,
+    "Refused",
+    now() + minute,
+    channel,
+  );
+  // The network takes the access back before the time comes, which is
+  // two things to tell of: the post and the account.
+  test.network.mastodon.arm({ kind: "token-revoked", operation: "publish" });
+
+  test.advance(minute);
+  await alarm(workspace);
+
+  expect(await settled(client, postId)).toMatchObject({ status: "error" });
+  // The post was taken up by the server, at its time, and its delivery
+  // was asked for then: that is the round that the inbox tells of.
+  expect(
+    client
+      .table("notification")
+      .map(({ id, kind }) => ({ id, kind }))
+      .sort((a, b) => (a.kind < b.kind ? -1 : 1)),
+  ).toEqual([
+    { id: channel, kind: "channel_needs_reconnect" },
+    { id: postId, kind: "post_failed" },
+  ]);
+  const messages = await received(test, subscription, 2);
+  expect(messages.map(({ kind }) => kind).sort()).toEqual([
+    "channel_needs_reconnect",
+    "post_failed",
+  ]);
+  expect(messages.find(({ kind }) => kind === "post_failed")).toEqual({
+    v: 1,
+    kind: "post_failed",
+    workspaceId: workspace,
+    environment: "live",
+    postId,
+  });
+});
+
+it("tells the inbox and the devices of a post that it holds, and takes that back when the post is sent after all", async () => {
+  const { test, browser, workspace, channel, client, posts, subscription } =
+    await readyWithDevice();
+  const { postId } = await schedule(
+    client,
+    workspace,
+    "Too late",
+    now() + minute,
+    channel,
+  );
+
+  // The object could not run for two hours: it finds the post too late.
+  test.advance(2 * hour);
+  await alarm(workspace);
+
+  const later = await watching(browser, workspace);
+  const { heldAt } = postOf(later, postId);
+  expect(heldAt).toEqual(expect.any(Number));
+  // One notification, of a kind of its own, made with the hold.
+  expect(later.table("notification")).toEqual([
+    {
+      id: postId,
+      kind: "post_held",
+      postId,
+      channelId: null,
+      createdAt: heldAt,
+      readAt: null,
+    },
+  ]);
+  // And one message, with IDs and no words, which the device makes.
+  expect(await received(test, subscription, 1)).toEqual([
+    {
+      v: 1,
+      kind: "post_held",
+      workspaceId: workspace,
+      environment: "live",
+      postId,
+    },
+  ]);
+  expect(posts()).toEqual([]);
+
+  // The person sends it after all: nothing is left to decide.
+  await mutate(later, later.mutation("post.publish", { id: postId }));
+  expect(await settled(later, postId)).toMatchObject({ status: "sent" });
+  expect(later.table("notification")).toEqual([]);
+  expect(posts()).toEqual(["Too late"]);
+  // The device was told of nothing more.
+  await idle();
+  expect(messagesOf(test, subscription)).toHaveLength(1);
+});
+
+it("takes what the inbox says of a held post with the post when it is put aside, and deletes the post a day later", async () => {
+  const { test, browser, workspace, channel, client } = await ready();
+  const { postId } = await schedule(
+    client,
+    workspace,
+    "Too late",
+    now() + minute,
+    channel,
+  );
+  test.advance(2 * hour);
+  await alarm(workspace);
+  const later = await watching(browser, workspace);
+  expect(later.table("notification").map(({ kind }) => kind)).toEqual([
+    "post_held",
+  ]);
+
+  await mutate(later, later.mutation("post.trash", { id: postId }));
+
+  expect(later.table("notification")).toEqual([]);
+  // The alarm is for the post that was put aside alone, a day from now:
+  // the inbox has nothing left to do by the clock.
+  const ahead = ((await alarmOf(workspace)) ?? 0) - Date.now();
+  expect(ahead).toBeGreaterThan(trashMs - minute);
+  // A second of room: a mutation has a time of its own, some
+  // milliseconds after what the clock of the test said.
+  expect(ahead).toBeLessThanOrEqual(trashMs + 1000);
+  test.advance(trashMs + minute);
+  await alarm(workspace);
+  expect(await stored(workspace)).toEqual([]);
+  expect(await alarmOf(workspace)).toBeNull();
 });

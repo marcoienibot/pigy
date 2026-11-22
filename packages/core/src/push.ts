@@ -15,6 +15,11 @@ export const pushKinds = [
   "post_failed",
   /** A post has ended, and nobody knows how a delivery of it ended. */
   "post_uncertain",
+  /**
+   * A scheduled post was not sent at its time, and waits for somebody to
+   * decide what becomes of it.
+   */
+  "post_held",
   /** A network no longer takes the access of a channel. */
   "channel_needs_reconnect",
   /** The access of a channel ends within a week. */

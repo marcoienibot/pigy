@@ -1320,3 +1320,243 @@ it("takes a disconnected account off a scheduled post, and makes a draft of one 
     queuePosition: null,
   });
 });
+
+/** A post with a time that somebody chose, held since `heldAt`. */
+function held(workspace: Workspace, number = 1) {
+  const post = draft(workspace, number);
+  const dueAt = start + 1000;
+  workspace.mutate("post.schedule", { id: post, dueAt }, start + 1);
+  const heldAt = dueAt + lateMs + 1;
+  due(workspace, post, heldAt);
+  return { post, dueAt, heldAt };
+}
+
+it("tells in the inbox of a post that is held, and not of one that goes out late", () => {
+  const workspace = scheduled();
+  const onTime = draft(workspace, 2);
+  workspace.mutate("post.schedule", { id: onTime, dueAt: start + 1000 }, start);
+  due(workspace, onTime, start + 1000 + lateMs);
+  // Sent an hour late: nothing for anybody to decide.
+  expect(workspace.rows("notification")).toEqual([]);
+
+  const { post, heldAt } = held(workspace);
+
+  // Under the ID of the post, like what the inbox says of a post that
+  // failed: a post is never both.
+  expect(workspace.rows("notification")).toEqual([
+    {
+      id: post,
+      kind: "post_held",
+      postId: post,
+      channelId: null,
+      createdAt: heldAt,
+      readAt: null,
+    },
+  ]);
+});
+
+it.each([
+  ["sent now", "post.publish", {}],
+  ["given another time", "post.schedule", { dueAt: start + 9 * lateMs }],
+  ["put into the queue", "post.enqueue", { first: false }],
+  ["taken back to the drafts", "post.unschedule", {}],
+  ["put aside", "post.trash", {}],
+  ["deleted", "post.delete", {}],
+] as const)(
+  "takes what the inbox says of a held post away when the post is %s",
+  (_, name, args) => {
+    const workspace = scheduled();
+    const { post, heldAt } = held(workspace);
+    // Another post is held too, and stays so: only the one that is
+    // released loses its notification.
+    const other = held(workspace, 2).post;
+
+    workspace.mutate(name, { id: post, ...args }, heldAt + 1000);
+
+    expect(workspace.rows("notification").map(({ id }) => id)).toEqual([other]);
+  },
+);
+
+it("takes what the inbox says of a held post away when its only account is disconnected", () => {
+  const workspace = scheduled();
+  const { post, heldAt } = held(workspace);
+
+  workspace.mutate(
+    "channel.disconnect",
+    { id: channelId },
+    heldAt + 1,
+    "server",
+  );
+
+  // The post is a draft again, with nothing to decide about its time.
+  expect(postOf(workspace, post)).toMatchObject({
+    status: "draft",
+    heldAt: null,
+  });
+  expect(workspace.rows("notification")).toEqual([]);
+});
+
+it("tells anew of a held post that is given a time which is too late as well", () => {
+  const workspace = scheduled();
+  const { post, heldAt } = held(workspace);
+  workspace.mutate(
+    "notification.read",
+    { notifications: [{ id: post, createdAt: heldAt }] },
+    heldAt + 1,
+  );
+
+  // As a device does that was without a connection for hours.
+  const again = heldAt + 10 * lateMs;
+  workspace.mutate("post.schedule", { id: post, dueAt: heldAt + 2 }, again);
+
+  expect(postOf(workspace, post).heldAt).toBe(again);
+  // A new one, unread: what was read was about the time before.
+  expect(workspace.rows("notification")).toMatchObject([
+    { id: post, kind: "post_held", createdAt: again, readAt: null },
+  ]);
+});
+
+it("says nothing a second time of a held post that comes back from being put aside", () => {
+  const workspace = scheduled();
+  const { post, heldAt } = held(workspace);
+  workspace.mutate("post.trash", { id: post }, heldAt + 1);
+
+  workspace.mutate("post.restore", { id: post }, heldAt + 2);
+
+  // Held as it was, by the time at which it was first held.
+  expect(postOf(workspace, post)).toMatchObject({
+    status: "scheduled",
+    heldAt,
+    trashedAt: null,
+  });
+  expect(workspace.rows("notification")).toEqual([]);
+});
+
+it("tells of a post whose time passed by more than an hour while it was put aside", () => {
+  const workspace = scheduled();
+  const post = draft(workspace, 1);
+  const dueAt = start + 1000;
+  workspace.mutate("post.schedule", { id: post, dueAt }, start + 1);
+  workspace.mutate("post.trash", { id: post }, start + 2);
+  const back = dueAt + lateMs + 1;
+
+  workspace.mutate("post.restore", { id: post }, back);
+
+  expect(postOf(workspace, post).heldAt).toBe(back);
+  expect(workspace.rows("notification")).toMatchObject([
+    { id: post, kind: "post_held", createdAt: back },
+  ]);
+});
+
+it("tells of a post that goes out at its time and fails like of any post that failed", () => {
+  const workspace = scheduled();
+  const post = draft(workspace, 1);
+  const dueAt = start + 1000;
+  workspace.mutate("post.schedule", { id: post, dueAt }, start + 1);
+  due(workspace, post, dueAt);
+  workspace.mutate("target.start", { id: id(201) }, dueAt + 1, "server");
+
+  workspace.mutate(
+    "target.end",
+    {
+      id: id(201),
+      attempt: 1,
+      status: "error",
+      error: "No",
+      refusedConnection: null,
+    },
+    dueAt + 2,
+    "server",
+  );
+
+  // The delivery is of the round that began when the post was taken up:
+  // that is what the inbox goes by.
+  expect(workspace.rows("notification")).toEqual([
+    {
+      id: post,
+      kind: "post_failed",
+      postId: post,
+      channelId: null,
+      createdAt: dueAt + 2,
+      readAt: null,
+    },
+  ]);
+});
+
+it("says that a post failed in the place of that it was held, when a held post is sent and fails", () => {
+  const workspace = scheduled();
+  const { post, heldAt } = held(workspace);
+  workspace.mutate("post.publish", { id: post }, heldAt + 1);
+  workspace.mutate("target.start", { id: id(201) }, heldAt + 2, "server");
+
+  workspace.mutate(
+    "target.end",
+    {
+      id: id(201),
+      attempt: 1,
+      status: "error",
+      error: "No",
+      refusedConnection: null,
+    },
+    heldAt + 3,
+    "server",
+  );
+
+  expect(workspace.rows("notification")).toMatchObject([
+    { id: post, kind: "post_failed", createdAt: heldAt + 3 },
+  ]);
+});
+
+it("leaves a post that is being sent as it is, whatever is done to the queue, the slots and the settings", () => {
+  // The inbox tells of a delivery by whether it was asked for since the
+  // post last began to be sent, which `updatedAt` of the post says:
+  // nothing may write it while the post is `sending`.
+  const workspace = scheduled();
+  const sending = draft(workspace, 1);
+  workspace.mutate("post.enqueue", { id: sending, first: false }, start + 1);
+  const queued = draft(workspace, 2);
+  workspace.mutate("post.enqueue", { id: queued, first: false }, start + 2);
+  // It goes out at its slot, and the other post stays in the queue.
+  due(workspace, sending, at(firstMonday));
+  const before = postOf(workspace, sending);
+  expect(before).toMatchObject({
+    status: "sending",
+    updatedAt: at(firstMonday),
+  });
+
+  let time = at(firstMonday);
+  const run = (
+    name: Parameters<Workspace["mutate"]>[0],
+    args: object,
+    source: "client" | "server" = "client",
+  ) => {
+    time += 1;
+    try {
+      // The arguments are those of the mutator that is named.
+      workspace.mutate(name, args as never, time, source);
+    } catch (error) {
+      // Refusing is one way to leave the post alone.
+      if (!(error instanceof MutationRejected)) throw error;
+    }
+  };
+  // Everything that scheduling has, about the post itself:
+  run("post.schedule", { id: sending, dueAt: time + lateMs });
+  run("post.enqueue", { id: sending, first: true });
+  run("post.move", { id: sending, afterId: queued });
+  run("post.unschedule", { id: sending });
+  run("post.trash", { id: sending });
+  run("post.restore", { id: sending });
+  run("post.due", { id: sending }, "server");
+  // And about the queue around it, which gives its posts their times anew:
+  run("post.move", { id: queued, afterId: null });
+  run("slot.add", { id: id(303), weekday: 5, minute: 600 });
+  run("slot.remove", { id: id(301) });
+  run("queue.setPaused", { paused: true });
+  run("queue.setPaused", { paused: false });
+  run("settings.setTimeZone", { timeZone: "America/New_York" });
+  run("post.unschedule", { id: queued });
+
+  // The queue did change: the mutations were not all refused.
+  expect(postOf(workspace, queued).status).toBe("draft");
+  expect(postOf(workspace, sending)).toEqual(before);
+});

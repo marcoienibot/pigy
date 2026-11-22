@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { CircleAlert, Clock, Unplug, X } from "lucide-react";
+import { CalendarClock, CircleAlert, Clock, Unplug, X } from "lucide-react";
 import { useRef } from "react";
 import { EmptyState, Page } from "@/components/page";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,7 @@ export const Route = createFileRoute("/_app/inbox")({
 
 const icons = {
   post_failed: CircleAlert,
+  post_held: CalendarClock,
   channel_needs_reconnect: Unplug,
   channel_expiring: Clock,
 } as const;
@@ -60,7 +61,7 @@ function Inbox() {
         {items.length === 0 ? (
           <EmptyState
             title="Nothing needs your attention"
-            description="pigy tells you here when a post could not be sent, when an account has to be connected again, and a week before the access to an account ends."
+            description="pigy tells you here when a post could not be sent, when a scheduled post missed its time, when an account has to be connected again, and a week before the access to an account ends."
           >
             <Link to="/settings" className="underline underline-offset-4">
               Get notifications on this device
@@ -156,10 +157,15 @@ function Item({
         item.unread && "border-primary/40 bg-accent/30",
       )}
     >
-      {/* Where the thing is dealt with: the post on the Sent screen, the
-          account on the Channels screen, in the dialog that connects it
-          again. Going there is reading it. */}
-      {item.kind === "post_failed" ? (
+      {/* Where the thing is dealt with: the post on the Sent screen, or
+          on the Queue screen if it was held there, the account on the
+          Channels screen, in the dialog that connects it again. Going
+          there is reading it. */}
+      {item.kind === "post_held" ? (
+        <Link to="/queue" onClick={onRead} className={link}>
+          {body}
+        </Link>
+      ) : item.kind === "post_failed" ? (
         <Link
           to="/sent"
           search={{ post: item.postId }}

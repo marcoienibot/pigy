@@ -50,6 +50,21 @@ describe("what a push message is shown as", () => {
     });
   });
 
+  it("says that a scheduled post was not sent, and leads to the queue of its workspace", () => {
+    expect(
+      shownFor(sent({ kind: "post_held", environment: "live", postId })),
+    ).toEqual({
+      title: "A scheduled post was not sent",
+      body: "pigy got to it more than an hour after its time. Open pigy to send it now or to give it another time.",
+      // The tag of the post: if it is sent then and fails, that is said
+      // in this place.
+      tag: `post:${postId}`,
+      // The Queue screen has the post with what can be done about it:
+      // the Sent screen does not have a post that has not gone out.
+      url: `/queue?inWorkspace=${workspaceId}`,
+    });
+  });
+
   it("names the sandbox, where nothing happened for real", () => {
     expect(
       shownFor(sent({ kind: "post_failed", environment: "sandbox", postId }))
