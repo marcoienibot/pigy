@@ -77,6 +77,9 @@ async function invite(
   });
   try {
     const strayRequests = await guardNetwork(context, new URL(baseURL).origin);
+    // The pages of this browser are pages of the test, the sign-in page and
+    // the consent page of the simulated Google among them.
+    const violations = await watchPolicy(context);
     const page = await context.newPage();
     await signIn(page, adminEmail);
     const response = await page.request.post("/api/admin/allowed-emails", {
@@ -86,6 +89,7 @@ async function invite(
     });
     expect(response.status()).toBe(204);
     expect(strayRequests).toEqual([]);
+    expect(violations, policyRefused).toEqual([]);
   } finally {
     await context.close();
   }
@@ -111,11 +115,14 @@ async function signInElsewhere(
       elsewhere,
       new URL(baseURL).origin,
     );
+    // As in `invite`: the pages of this browser are the test's too.
+    const violations = await watchPolicy(elsewhere);
     const page = await elsewhere.newPage();
     await signIn(page, email);
     await expect(page.getByRole("navigation", { name: "Main" })).toBeVisible();
     await context.addCookies(await elsewhere.cookies());
     expect(strayRequests).toEqual([]);
+    expect(violations, policyRefused).toEqual([]);
   } finally {
     await elsewhere.close();
   }
@@ -160,6 +167,9 @@ async function guardNetwork(
   );
   return strayRequests;
 }
+
+const policyRefused =
+  "The content security policy of the app refused something that a page did.";
 
 /**
  * Notes what the pages of `context` do that the content security policy of
@@ -372,10 +382,7 @@ export const test = pinned.extend<{
         // this failure for the one that it expects.
         testInfo.expectedStatus = "passed";
       }
-      expect(
-        violations,
-        "The content security policy of the app refused something that a page did.",
-      ).toEqual([]);
+      expect(violations, policyRefused).toEqual([]);
     },
     { auto: true },
   ],
@@ -458,10 +465,7 @@ export const test = pinned.extend<{
     });
 
     for (const context of contexts) await context.close();
-    expect(
-      violations.flat(),
-      "The content security policy of the app refused something that a page did.",
-    ).toEqual([]);
+    expect(violations.flat(), policyRefused).toEqual([]);
     expect(
       strayRequests.flat(),
       "Requests to hosts other than the app. Tests must not use the network.",
