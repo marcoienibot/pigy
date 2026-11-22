@@ -228,6 +228,7 @@ test("keeps the keys of the two workspaces apart, and a new key off the screen o
 
 test("serves the page that describes the API, and its document", async ({
   page,
+  request,
 }) => {
   // To anybody: nothing of anybody's is in either. The service worker of
   // the app leaves the address to the server, as every path under /api/.
@@ -236,10 +237,10 @@ test("serves the page that describes the API, and its document", async ({
   await expect(page.getByText("/api/v1/posts/{id}/move")).toBeVisible();
   expect(await overflowOf(page)).toBe(0);
 
-  const document = await page.evaluate(async () => {
-    const response = await fetch("/api/v1/openapi.json");
-    return response.json();
-  });
+  // Read as a script of somebody else's reads it, from outside the page:
+  // the page has no script and asks for nothing, and its content security
+  // policy refuses a request made from it.
+  const document = await (await request.get("/api/v1/openapi.json")).json();
   expect(document).toMatchObject({ openapi: "3.1.0" });
   expect(Object.keys(document.paths)).toContain("/posts");
 });
