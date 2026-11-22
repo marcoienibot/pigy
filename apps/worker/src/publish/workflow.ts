@@ -148,6 +148,15 @@ const cardStep = {
 } as const;
 
 /**
+ * Whether what a step threw is the platform stopping the run, and not a
+ * step that failed: the engine of Workflows aborts a run that is paused,
+ * restarted or terminated with an error whose message begins this way,
+ * in the local runtime and, by its source, on the platform.
+ */
+const stopsRun = (error: unknown) =>
+  error instanceof Error && error.message.includes("Aborting engine");
+
+/**
  * How old the limits of a channel may be before a delivery asks the
  * network again, in milliseconds.
  */
@@ -818,13 +827,18 @@ export async function deliver(
         return { cards };
       });
     } catch (error) {
-      // Nothing in the step throws, so this is the platform: it has given
-      // up on the step, which was cut off or took too long, twice. A
-      // delivery does not end for a card, so it goes on without any. If
-      // the platform is stopping the run instead, to pause it or to start
-      // it again, the run does not go on by going on here: the platform
-      // stops a run as a whole, and the next step is not begun. PLAN.md
-      // section 19 has that as something to confirm.
+      // Nothing in the step throws, so this is the platform. If it is
+      // stopping the run, to pause it, to start it again or to end it,
+      // that is thrown on like everywhere else: a run that is being
+      // stopped must not go on to publish.
+      if (stopsRun(error)) throw error;
+      // Otherwise it has given up on the step, which was cut off or took
+      // too long, twice. A delivery does not end for a card, so it goes
+      // on without any. Should the platform stop a run in a way that
+      // `stopsRun` does not know, the run still does not go on by going
+      // on here: the platform refuses the next step of a run that it is
+      // stopping, and nothing catches that. PLAN.md section 19 has both
+      // as something to confirm.
       console.error("The cards of a post were not read", loggable(error));
       return content;
     }

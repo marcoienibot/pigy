@@ -11,7 +11,7 @@ import {
   sandboxLink,
 } from "@pigy/core";
 import { entitiesOf, feed } from "@pigy/simulators/world";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { cardsAtOnce } from "../src/publish/workflow.ts";
 import {
   connectBlueskyInSandbox,
@@ -34,8 +34,11 @@ import {
 } from "./helpers.ts";
 import {
   ended,
+  gate,
+  patience,
   publishTo,
   retry,
+  runOf,
   started,
   targetOf,
   writeDraft,
@@ -445,6 +448,52 @@ describe("the pages of a thread", () => {
       "The cards of a post were not read",
       expect.anything(),
     );
+  });
+});
+
+describe("a run that is paused while the pages are read", () => {
+  it("publishes nothing until it is resumed, though the workflow goes on when the step that reads them fails", async () => {
+    // The workflow catches what the step `cards` throws and goes on
+    // without cards. That must not carry a run on that the platform is
+    // stopping, and a pause is not a card that was not read: nothing is
+    // logged as one.
+    const errors = vi.spyOn(console, "error");
+    onTestFinished(() => errors.mockRestore());
+    const held = gate((request) => request === `GET ${sandboxLink}`);
+    const context = await withChannel("bluesky", "live", {
+      interceptNetwork: held.intercept,
+    });
+    const { test, workspace, channel, client } = context;
+    const draft = await writeDraft(client, workspace, `Read ${sandboxLink}`);
+    held.close();
+    const [targetId = ""] = await publishTo(client, draft.postId, channel);
+    // The page is being read, and the run is paused in that moment.
+    await held.reached();
+    using run = await runOf(workspace, targetId);
+    await run.pause();
+    held.open();
+    await vi.waitFor(
+      async () => expect((await run.status()).status).toBe("paused"),
+      patience,
+    );
+    expect(feed(test.network.world, ["bluesky"])).toEqual([]);
+    // Nor has the delivery ended in any way.
+    expect(["sent", "error", "uncertain"]).not.toContain(
+      targetOf(client, targetId).status,
+    );
+
+    await run.resume();
+    expect(await ended(client, draft.postId)).toMatchObject({
+      status: "sent",
+    });
+    expect(errors).not.toHaveBeenCalledWith(
+      "The cards of a post were not read",
+      expect.anything(),
+    );
+    // Once, and with the card that the step had read.
+    expect(await keptOn("bluesky", "live", context)).toMatchObject([
+      { card: "The example page" },
+    ]);
   });
 });
 
