@@ -21,6 +21,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { uploadsFor } from "@/lib/media";
 import { signOutAndForget } from "@/lib/session";
 import { cn } from "@/lib/utils";
 import { countUnsynced } from "@/sync/indexed-db";
@@ -60,9 +61,11 @@ export function UserMenu({ placement }: { placement: "sidebar" | "header" }) {
 
   // Signing out deletes the local copy, and with it what the server has
   // not got yet: only the person can say whether that may go. That is what
-  // the copies hold, and what a window could not store in its copy, which
-  // a count of the copies does not have: this window, or another one,
-  // which starts again when this one has signed out.
+  // the copies hold, with the images that wait to be uploaded from the
+  // device, whichever window uploads them, and what a window could not
+  // store in its copy, which a count of the copies does not have: this
+  // window, or another one, which starts again when this one has signed
+  // out. And an image of this window whose file the device could not keep.
   const askOrSignOut = async () => {
     // In this order. A change that a window stores in between is counted
     // twice, which only makes the question more likely. Counted the other
@@ -70,7 +73,8 @@ export function UserMenu({ placement }: { placement: "sidebar" | "header" }) {
     // copies are counted, and no longer unsaved when the windows answer.
     const unsaved = await store.unsavedInAllTabs();
     const stored = await countUnsynced(user.id).catch(() => 0);
-    if (stored + unsaved > 0) setUnsynced(stored + unsaved);
+    const all = unsaved + stored + uploadsFor(user.id).unkept();
+    if (all > 0) setUnsynced(all);
     else await signOutAndLeave();
   };
 

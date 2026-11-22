@@ -1,4 +1,5 @@
 import {
+  backToList,
   channelChoice,
   connectionOf,
   connectSimulated,
@@ -9,6 +10,7 @@ import {
   feedOf,
   grace,
   graceOnLinkedIn,
+  localData,
   openScreen,
   overflowOf,
   partField,
@@ -244,6 +246,43 @@ test("an upload asks nothing until the server has the row of its image", async (
   connection.release();
   await uploaded(page, 1);
   expect(answers).toEqual(["POST / 200", "PUT /1 200", "POST /complete 200"]);
+});
+
+test("signing out while an image is on its way asks first, and counts the image", async ({
+  ownPage: page,
+  isMobile,
+}) => {
+  // The chunks of the upload get no answer: the file waits on the device.
+  await page.route(/\/media\/[^/]+\/upload\/\d+$/, (route) =>
+    route.abort("connectionfailed"),
+  );
+  await page.getByRole("button", { name: "New draft" }).click();
+  await editor(page).fill("Not uploaded yet");
+  await choose(page, [file("boats.png", png(320, 240))]);
+  await expect(image(page, 1).getByRole("status")).toHaveText(
+    "Waiting for a connection",
+    { timeout: 30_000 },
+  );
+  // Every change is synced: the image alone is not on the server.
+  await expectSync(page, "Synced");
+  await backToList(page, isMobile);
+  const account = page
+    .getByRole("button", { name: "Account" })
+    .filter({ visible: true });
+
+  await account.click();
+  await page.getByRole("menuitem", { name: "Sign out" }).click();
+  // Before, nothing was asked, and the file went with the copies.
+  const dialog = page.getByRole("alertdialog");
+  await expect(dialog).toContainText("1 change has not been synced");
+  await dialog.getByRole("button", { name: "Stay signed in" }).click();
+  await expect(draftRow(page, "Not uploaded yet")).toBeVisible();
+
+  await account.click();
+  await page.getByRole("menuitem", { name: "Sign out" }).click();
+  await dialog.getByRole("button", { name: "Sign out and delete" }).click();
+  await expect(page).toHaveURL("/sign-in");
+  expect(await localData(page)).toEqual({ copies: [], session: null });
 });
 
 test("an upload that loses its connection waits, says so, and goes on with what is missing, also after the page was loaded again", async ({

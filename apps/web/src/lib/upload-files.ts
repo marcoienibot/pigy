@@ -92,6 +92,40 @@ export function indexedDbFiles(userId: string): FileStore {
   };
 }
 
+/**
+ * How many files of `userId` wait to be uploaded, by the ID of the
+ * workspace of each, for the database `name` of them, which the caller
+ * has found on the device: images that the server does not have, which
+ * whatever deletes the copies deletes with them. The database is closed
+ * afterwards, so that nobody who deletes it waits.
+ */
+export async function waitingFiles(name: string): Promise<Map<string, number>> {
+  const db = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(name, 1);
+    // Deleted after it was found: it is made again, empty, as by
+    // `indexedDbFiles`.
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore("files");
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  try {
+    const keys = await done(
+      db.transaction("files").objectStore("files").getAllKeys(),
+    );
+    const counts = new Map<string, number>();
+    for (const key of keys) {
+      if (typeof key !== "string") continue;
+      const [workspaceId = ""] = key.split("/");
+      counts.set(workspaceId, (counts.get(workspaceId) ?? 0) + 1);
+    }
+    return counts;
+  } finally {
+    db.close();
+  }
+}
+
 /** Files in memory, for a test and for a device without IndexedDB. */
 export function memoryFiles(): FileStore {
   const files = new Map<string, Blob>();

@@ -263,6 +263,39 @@ test("an upload asks for nothing until the server has the row of its image, and 
   expect(requests.filter((request) => request.includes("/two/"))).toEqual([]);
 });
 
+test("an upload whose file the device could not keep is counted until it ends: signing out would lose it", async () => {
+  const { api, completed } = server((request) =>
+    // The server does not answer yet, so the upload goes on.
+    request.startsWith("PUT ")
+      ? new Unanswered("Failed to fetch", undefined)
+      : undefined,
+  );
+  // The device has no room for the first file, and room for the second.
+  const files = memoryFiles();
+  const full = {
+    ...files,
+    put: async (key: string, file: Blob) => {
+      if (key.endsWith("/unkept")) {
+        throw new DOMException("The disk is full", "QuotaExceededError");
+      }
+      await files.put(key, file);
+    },
+  };
+  const { uploads } = uploadsOf(api, full);
+  await uploads.add(workspaceId, "unkept", fileOf(10));
+  await until(() => uploads.progress("unkept")?.waiting === "connection");
+  expect(uploads.unkept()).toBe(1);
+  // A file that the device kept is not counted here: whoever counts what
+  // the device holds counts it.
+  await uploads.add(workspaceId, "kept", fileOf(10));
+  expect(uploads.unkept()).toBe(1);
+
+  // The row says that the upload has ended.
+  await uploads.resume(workspaceId, ["kept"]);
+  expect(uploads.unkept()).toBe(0);
+  expect(completed).toEqual([]);
+});
+
 test("a tab that is loaded again goes on with the files that the device kept, and says which it does not have", async () => {
   const { api, completed } = server();
   const files = memoryFiles();

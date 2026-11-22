@@ -8,7 +8,7 @@ import type {
   StoredRow,
   Write,
 } from "@pigy/core";
-import { isFilesName } from "@/lib/upload-files";
+import { isFilesName, waitingFiles } from "@/lib/upload-files";
 
 /**
  * The local copies in IndexedDB: one database per user and workspace, so
@@ -173,20 +173,30 @@ async function copyNames(): Promise<string[]> {
 }
 
 /**
- * How many mutations the server has not confirmed in each copy of `userId`
- * on this device, by the ID of its workspace.
+ * How many changes of `userId` on this device the server does not have,
+ * by the ID of the workspace of each: the mutations that it has not
+ * confirmed in each copy, and the images whose files wait to be uploaded
+ * next to the copies, lib/upload-files.ts. Each such image is one change:
+ * whatever deletes the copies deletes its file, and the person would
+ * have to choose it again.
  */
 async function unsynced(userId: string): Promise<Map<string, number>> {
   const ofUser = `${prefix}${userId}/`;
   const counts = new Map<string, number>();
+  const add = (workspaceId: string, count: number) =>
+    counts.set(workspaceId, (counts.get(workspaceId) ?? 0) + count);
   for (const name of await copyNames()) {
-    // The files that wait to be uploaded are next to the copies, and
-    // are no copy: lib/upload-files.ts.
-    if (!name.startsWith(ofUser) || isFilesName(name)) continue;
+    if (!name.startsWith(ofUser)) continue;
+    if (isFilesName(name)) {
+      for (const [workspaceId, files] of await waitingFiles(name)) {
+        add(workspaceId, files);
+      }
+      continue;
+    }
     const db = await open(name);
     try {
       const outbox = db.transaction("outbox").objectStore("outbox").count();
-      counts.set(
+      add(
         name.slice(ofUser.length),
         await new Promise<number>((resolve, reject) => {
           outbox.onsuccess = () => resolve(outbox.result);
@@ -201,9 +211,9 @@ async function unsynced(userId: string): Promise<Map<string, number>> {
 }
 
 /**
- * How many mutations of `userId` on this device the server has not
- * confirmed, in all their copies: those of the workspace on screen and of
- * the other one.
+ * How many changes of `userId` on this device the server does not have, in
+ * all their copies, those of the workspace on screen and of the other one,
+ * and in the files that wait to be uploaded: see `unsynced`.
  */
 export async function countUnsynced(userId: string): Promise<number> {
   let count = 0;
@@ -213,7 +223,8 @@ export async function countUnsynced(userId: string): Promise<number> {
 
 /**
  * The IDs of the workspaces of `userId` whose copies on this device hold
- * mutations that the server has not confirmed.
+ * mutations that the server has not confirmed, or whose images wait to be
+ * uploaded from this device.
  */
 export async function unsyncedWorkspaces(userId: string): Promise<string[]> {
   return [...(await unsynced(userId))].flatMap(([workspaceId, count]) =>

@@ -155,6 +155,11 @@ export class Uploads {
   private readonly asked = new Set<string>();
   /** What the rows of each workspace said last of the images on their way. */
   private readonly uploading = new Map<string, ReadonlySet<string>>();
+  /**
+   * The images whose file the device could not keep: their uploads go on
+   * from the memory of the tab, and end with it.
+   */
+  private readonly unkeptFiles = new Set<string>();
 
   constructor(
     private readonly deps: {
@@ -211,6 +216,15 @@ export class Uploads {
     return this.missing.has(mediaId);
   }
 
+  /**
+   * How many uploads of the tab run from its memory alone, because the
+   * device could not keep their files: what closing the tab or signing
+   * out loses besides what the device keeps.
+   */
+  unkept(): number {
+    return this.unkeptFiles.size;
+  }
+
   /** Whether another tab of the device uploads the image. */
   elsewhere(mediaId: string): boolean {
     return this.others.has(mediaId);
@@ -237,6 +251,7 @@ export class Uploads {
     } catch {
       // The device could not keep it: the upload goes on from the memory
       // of the tab, and does not outlast it.
+      if (this.running.has(mediaId)) this.unkeptFiles.add(mediaId);
     }
   }
 
@@ -405,6 +420,7 @@ export class Uploads {
     upload.wake?.();
     upload.halt?.();
     this.running.delete(mediaId);
+    this.unkeptFiles.delete(mediaId);
     const url = this.urls.get(mediaId);
     if (url !== undefined) {
       this.fileUrls.revoke(url);
