@@ -30,7 +30,7 @@ import { fetchLinkCard } from "@pigy/providers/card";
 import { openCredentials, sealCredentials } from "../channels/credentials.ts";
 import type { AppDependencies, Bindings } from "../env.ts";
 import { type LogContext, log } from "../log.ts";
-import { mediaLinksWith } from "../media/links.ts";
+import { mediaLinksWith, sandboxMediaOrigin } from "../media/links.ts";
 import { imagesTransformer } from "../media/transform.ts";
 import { ImageUnavailable, imagesFor, mediaSource } from "../media/variants.ts";
 import { blueskyKeysWithoutRequest } from "../network/bluesky-client.ts";
@@ -158,14 +158,6 @@ const cardStep = {
 /** What a delivery says whose images could not be made ready for it. */
 const mediaFailedMessage =
   "pigy could not make the images of this post ready to send.";
-
-/**
- * The address that the links to the images of a sandbox are made with.
- * No host answers at it, and nothing asks it yet: no simulated network
- * fetches an image so far. The simulated Threads will, from the world of
- * its sandbox and never from the internet: PLAN.md section 10.
- */
-export const sandboxMediaOrigin = "https://pigy.invalid";
 
 /**
  * How old the limits of a channel may be before a delivery asks the

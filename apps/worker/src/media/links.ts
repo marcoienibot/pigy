@@ -29,6 +29,14 @@ export const mediaLinkLifetimeMs = 15 * 60 * 1000;
 /** The path that the links are served under, which a session is not asked at. */
 export const mediaLinkPath = "/api/media-links";
 
+/**
+ * The address that the links to the images of a sandbox are made with.
+ * No host answers at it: the simulated Threads of the sandbox fetches
+ * them from its world, which reads them from the bucket inside the Worker
+ * with `linkedImage`, and never from the internet. PLAN.md section 10.
+ */
+export const sandboxMediaOrigin = "https://pigy.invalid";
+
 const encoder = new TextEncoder();
 
 async function signingKey(configured: string): Promise<CryptoKey> {
@@ -111,6 +119,29 @@ export function mediaLinks(configured: string): MediaLinks {
       return contentImageKey(workspaceId, image);
     },
   };
+}
+
+/**
+ * The file of the bucket that the link `url` leads to, as a network gets
+ * it: what the route that serves the links answers with, and what the
+ * simulated world of a sandbox reads for its Threads. Null for a link that
+ * this pigy did not sign, that has expired by `now`, or that names what is
+ * not there, and with `workspaceId` for one of another workspace: all of
+ * them alike, so that nothing tells which files exist.
+ */
+export async function linkedImage(
+  bucket: R2Bucket,
+  links: MediaLinks | undefined,
+  url: URL,
+  now: Date,
+  workspaceId?: string,
+): Promise<R2ObjectBody | null> {
+  const key = await links?.check(url, now);
+  if (key === undefined) return null;
+  if (workspaceId !== undefined && !key.startsWith(`${workspaceId}/`)) {
+    return null;
+  }
+  return bucket.get(key);
 }
 
 /**

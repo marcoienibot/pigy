@@ -38,6 +38,11 @@ import {
 } from "@pigy/simulators/world";
 import type { Bindings } from "../env.ts";
 import {
+  linkedImage,
+  mediaLinksWith,
+  sandboxMediaOrigin,
+} from "../media/links.ts";
+import {
   blueskyClientMetadataPath,
   blueskyKeysWithoutRequest,
   pigyClientMetadata,
@@ -146,10 +151,17 @@ const seededThreadsKey = "object/seeded/threads";
 export function simWorldObject({
   now,
   developmentBlueskyClientKeys,
+  developmentCredentialKeys,
 }: {
   now: Clock;
   /** See `AppDependencies`. */
   developmentBlueskyClientKeys: string | undefined;
+  /**
+   * See `AppDependencies`: what the links to the images of a sandbox are
+   * signed with where `CREDENTIAL_KEYS` is not set, as the workflow signs
+   * them.
+   */
+  developmentCredentialKeys: string | undefined;
 }) {
   return class SimWorldObject extends DurableObject<Bindings> {
     /**
@@ -376,7 +388,38 @@ export function simWorldObject({
         for (const [, name] of seedAccounts) linkedin.addMember(name);
         kv.put(seededLinkedInKey, true);
       }
-      const threads = createThreadsSimulator(world);
+      const threads = createThreadsSimulator(world, {
+        // What the simulated Threads fetches the image of a container
+        // from. The only address that it is handed is a link of pigy's
+        // to an image of this sandbox, which the world reads from the
+        // bucket as the route that serves the links does, with the same
+        // check. Nothing else is fetched, and nothing from the internet:
+        // any other address is a host out of reach.
+        web: async (input) => {
+          const url = new URL(input instanceof Request ? input.url : input);
+          if (url.origin !== sandboxMediaOrigin) {
+            throw new TypeError(`The web of a sandbox has no ${url.origin}`);
+          }
+          const bound = kv.get<{ id: string }>(workspaceKey);
+          const file = bound
+            ? await linkedImage(
+                this.env.MEDIA,
+                mediaLinksWith(this.env, developmentCredentialKeys),
+                url,
+                now(),
+                bound.id,
+              )
+            : null;
+          if (!file)
+            return new Response("There is nothing here", { status: 404 });
+          return new Response(await file.arrayBuffer(), {
+            headers: {
+              "Content-Type":
+                file.httpMetadata?.contentType ?? "application/octet-stream",
+            },
+          });
+        },
+      });
       if (!kv.get(seededThreadsKey)) {
         // As for LinkedIn: pigy is an app of the world's own here, whose
         // redirect address `request` enters.

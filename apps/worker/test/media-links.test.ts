@@ -3,6 +3,7 @@ import { pngFile } from "@pigy/core/test-images";
 import { expect, test } from "vitest";
 import { contentImageId, mediaKeys } from "../src/media/keys.ts";
 import {
+  linkedImage,
   mediaLinkLifetimeMs,
   mediaLinkPath,
   mediaLinks,
@@ -153,4 +154,19 @@ test("the app serves an image at its link without a session, and nothing at a li
 
   app.advance(mediaLinkLifetimeMs);
   expect((await stranger.fetch(path(link))).status).toBe(404);
+});
+
+test("the world of a sandbox reads a link only to an image of its own workspace", async () => {
+  const { links, link, now, file } = await linked();
+  const read = async (of?: string) => {
+    const found = await linkedImage(env.MEDIA, links, link, now, of);
+    return found && new Uint8Array(await found.arrayBuffer());
+  };
+  // As the route reads it, for whoever has the link, and as the world of
+  // the workspace reads it.
+  expect(await read()).toEqual(file);
+  expect(await read(workspaceId)).toEqual(file);
+  // The world of another workspace is handed no link of this one's by
+  // pigy, and reads nothing at one if it were.
+  expect(await read("7c2b1f9e-5d3a-4e8b-9a0c-1f2e3d4c5b6a")).toBeNull();
 });
