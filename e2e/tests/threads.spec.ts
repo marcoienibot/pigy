@@ -6,6 +6,7 @@ import {
   counterOf,
   deliveryTo,
   draftRow,
+  draftRows,
   editor,
   expectSync,
   feedOf,
@@ -17,6 +18,7 @@ import {
   partTexts,
   publishPanel,
   sentPost,
+  writeDraft,
 } from "../app.ts";
 import { expect, type Page, test } from "../fixtures.ts";
 
@@ -368,4 +370,248 @@ test("a thread that is deleted comes back with all its parts in their order, and
   await backToList(page, isMobile);
   await expect(draftRow(page, "First")).toHaveCount(1);
   await expect(draftRow(page, "First")).toContainText("3 parts");
+});
+
+test("a draft with nothing of its own and a text for an account is no empty draft: New draft makes another, and the list calls it by that text", async ({
+  ownPage: page,
+  isMobile,
+}) => {
+  await openScreen(page, "Channels");
+  await connectSimulated(page, grace);
+  await openScreen(page, "Drafts");
+  await page.getByRole("button", { name: "New draft" }).click();
+  await editor(page).fill("To begin with");
+  await channelChoice(page, grace).click();
+  await draftEditor(page)
+    .getByRole("button", { name: `Customize for ${grace}` })
+    .click();
+  await page
+    .getByRole("textbox", { name: `Text for ${grace}` })
+    .fill("Written for Grace");
+  // The post's own text is emptied: the one account has its own.
+  await draftEditor(page)
+    .getByRole("group", { name: "Text to edit" })
+    .getByRole("button", { name: "Post text" })
+    .click();
+  await editor(page).fill("");
+
+  // The list has the draft by what is written in it.
+  await backToList(page, isMobile);
+  await expect(draftRows(page)).toHaveCount(1);
+  await expect(draftRow(page, "Written for Grace")).toBeVisible();
+  await expect(draftRows(page)).not.toContainText(["Empty draft"]);
+
+  // "New draft" does not take it for a draft that nobody has begun.
+  await page.getByRole("button", { name: "New draft" }).click();
+  await expect(editor(page)).toBeFocused();
+  await expect(channelChoice(page, grace)).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+  await backToList(page, isMobile);
+  await expect(draftRows(page)).toHaveCount(2);
+});
+
+test("a text for an account that has grown longer than one step carries comes back whole, with the account that was left out and with the draft that was deleted", async ({
+  ownPage: page,
+}) => {
+  // Five long parts are typed in.
+  test.setTimeout(90_000);
+  await openScreen(page, "Channels");
+  await connectSimulated(page, grace);
+  await openScreen(page, "Drafts");
+  await writeThread(page, "1", "2", "3", "4", "5");
+  await channelChoice(page, grace).click();
+  await draftEditor(page)
+    .getByRole("button", { name: `Customize for ${grace}` })
+    .click();
+  // The text begins within what `target.customize` carries, and grows
+  // past it by ordinary edits: 45,000 characters, where 40,000 is the
+  // most that one mutation gives an account.
+  const long = Array.from({ length: 5 }, (_, index) =>
+    `Part ${index + 1} `.padEnd(9000, "x"),
+  );
+  const forGrace = (number: number) =>
+    page.getByRole("textbox", { name: `Part ${number} for ${grace}` });
+  for (const [index, text] of long.entries()) {
+    await forGrace(index + 1).fill(text);
+  }
+  await expectSync(page, "Synced");
+
+  // The account is left out, and its text goes with it.
+  await channelChoice(page, grace).click();
+  await expect(channelChoice(page, grace)).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+  await notice(page, `${grace} left out, and its own text with it`)
+    .getByRole("button", { name: "Undo" })
+    .click();
+  // It is back, with all of its text, part by part.
+  await expect(channelChoice(page, grace)).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  const texts = draftEditor(page).getByRole("group", { name: "Text to edit" });
+  await texts.getByRole("button", { name: grace }).click();
+  await expect(forGrace(5)).toHaveValue(long[4] ?? "");
+  expect(await partTexts(page)).toEqual(long);
+  // And the server has taken it: nothing was refused, and nothing waits
+  // in front of what comes after.
+  await expectSync(page, "Synced");
+  await expect(notice(page, "was not")).toHaveCount(0);
+
+  // The same for the draft as a whole.
+  await page.getByRole("button", { name: "Delete draft" }).click();
+  await notice(page, "Draft deleted")
+    .getByRole("button", { name: "Undo" })
+    .click();
+  await expect(partField(page, 5)).toHaveValue("5");
+  await draftEditor(page)
+    .getByRole("group", { name: "Text to edit" })
+    .getByRole("button", { name: grace })
+    .click();
+  await expect(forGrace(5)).toHaveValue(long[4] ?? "");
+  expect(await partTexts(page)).toEqual(long);
+  await expectSync(page, "Synced");
+  await expect(notice(page, "was not")).toHaveCount(0);
+});
+
+test("the keys of a part are left to an input method while it composes a character", async ({
+  ownPage: page,
+}) => {
+  await writeThread(page, "One", "", "Three");
+  /**
+   * Presses `key` in the part `number` as a browser reports it while an
+   * input method composes: with `isComposing`, or with `keyCode` 229,
+   * which is what Safari says for the key that ends a composition.
+   * Returns whether the app took the key for its own.
+   */
+  const composing = (
+    number: number,
+    key: string,
+    init: Record<string, boolean | number> = { isComposing: true },
+  ): Promise<boolean> =>
+    partField(page, number).evaluate(
+      (field, { key: pressed, init: extra }) =>
+        !field.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: pressed,
+            bubbles: true,
+            cancelable: true,
+            ...extra,
+          }),
+        ),
+      { key, init },
+    );
+
+  // ↓ at the end of a part goes through the candidates of the input
+  // method: the keyboard stays in the part.
+  await partField(page, 1).focus();
+  await partField(page, 1).press("ControlOrMeta+End");
+  expect(await composing(1, "ArrowDown")).toBe(false);
+  await expect(partField(page, 1)).toBeFocused();
+  // ↑ at the beginning of a part.
+  await partField(page, 3).focus();
+  await partField(page, 3).press("ControlOrMeta+Home");
+  expect(await composing(3, "ArrowUp")).toBe(false);
+  await expect(partField(page, 3)).toBeFocused();
+  // ⌫ in an empty part takes back what is being composed, and the part
+  // stays. So it does when the browser says 229 and nothing else.
+  await partField(page, 2).focus();
+  expect(await composing(2, "Backspace")).toBe(false);
+  expect(await composing(2, "Backspace", { keyCode: 229 })).toBe(false);
+  // The keys that add a part, and Escape, which closes the candidates and
+  // not the text.
+  expect(
+    await composing(2, "Enter", {
+      isComposing: true,
+      ctrlKey: true,
+      metaKey: true,
+      shiftKey: true,
+    }),
+  ).toBe(false);
+  expect(await composing(2, "Escape")).toBe(false);
+  await expect(partField(page, 2)).toBeFocused();
+  expect(await partTexts(page)).toEqual(["One", "", "Three"]);
+
+  // The same keys without a composition are the thread's: the test would
+  // pass for a page that takes no key at all otherwise.
+  expect(await composing(2, "Backspace", {})).toBe(true);
+  expect(await partTexts(page)).toEqual(["One", "Three"]);
+});
+
+test("the keyboard stays in the draft when what was pressed leaves the page: a text of its own, the post's text again, and what a notice brings back", async ({
+  ownPage: page,
+  isMobile,
+}) => {
+  await openScreen(page, "Channels");
+  await connectSimulated(page, grace);
+  await openScreen(page, "Drafts");
+  // A draft next to the one of the test: where the list is on screen, its
+  // row gets the keyboard when the other is deleted, and a notice hands
+  // the keyboard back to where it was.
+  await writeDraft(page, isMobile, "A neighbour");
+  await writeThread(page, "First", "Second");
+  await channelChoice(page, grace).click();
+  const forGrace = (number: number) =>
+    page.getByRole("textbox", { name: `Part ${number} for ${grace}` });
+
+  // "Customize" is gone once the account has its text. The keyboard is in
+  // the first part of that text, and not on the page, where the next key
+  // would open another draft or delete this one.
+  await draftEditor(page)
+    .getByRole("button", { name: `Customize for ${grace}` })
+    .click();
+  await expect(forGrace(1)).toBeFocused();
+  // Typing shows it: at the end of the part.
+  await page.keyboard.type("!");
+  await expect(forGrace(1)).toHaveValue("First!");
+
+  // "Use the post's text" goes with the text that it drops.
+  await draftEditor(page)
+    .getByRole("button", { name: "Use the post's text" })
+    .click();
+  await expect(partField(page, 1)).toBeFocused();
+
+  // The notice of an account that was left out goes when its "Undo" is
+  // pressed: the keyboard is on the choice that is back.
+  await draftEditor(page)
+    .getByRole("button", { name: `Customize for ${grace}` })
+    .click();
+  await expect(forGrace(1)).toBeFocused();
+  await channelChoice(page, grace).click();
+  await notice(page, `${grace} left out, and its own text with it`)
+    .getByRole("button", { name: "Undo" })
+    .click();
+  await expect(channelChoice(page, grace)).toBeFocused();
+  await expect(channelChoice(page, grace)).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+
+  // A part that is brought back has the keyboard. The editor shows the
+  // text of the account again, which is what it showed when the account
+  // was left out.
+  await expect(forGrace(2)).toHaveValue("Second");
+  await draftEditor(page)
+    .getByRole("button", { name: "Remove part 2" })
+    .click();
+  await notice(page, "Part removed")
+    .getByRole("button", { name: "Undo" })
+    .click();
+  await expect(forGrace(2)).toBeFocused();
+  await expect(forGrace(2)).toHaveValue("Second");
+
+  // And so has the text of a draft that is brought back: ⌫ then deletes
+  // a character, and not the draft a second time.
+  await page.getByRole("button", { name: "Delete draft" }).click();
+  await notice(page, "Draft deleted")
+    .getByRole("button", { name: "Undo" })
+    .click();
+  await expect(partField(page, 1)).toBeFocused();
+  await page.keyboard.press("Backspace");
+  expect(await partTexts(page)).toEqual(["Firs", "Second"]);
+  await backToList(page, isMobile);
+  await expect(draftRow(page, "A neighbour")).toBeVisible();
 });
