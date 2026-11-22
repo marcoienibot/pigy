@@ -568,6 +568,66 @@ describe("publishing", () => {
     expect(progress.parts).toEqual([{ id: own?.id, url: own?.url }]);
   });
 
+  it("takes no post of the same second from before the delivery for its own when that second has more posts than one list holds", async () => {
+    const test = setup();
+    const { credentials } = await connect(test);
+    // 101 posts in one second, which an import or another tool can make:
+    // the oldest has the words of the delivery, and one list of Threads
+    // holds the 100 after it.
+    const older = test.simulator.addPost(test.ada.id, { text: "Hello" }).id;
+    for (let number = 1; number <= 100; number++) {
+      test.simulator.addPost(test.ada.id, { text: `Other ${number}` });
+    }
+
+    // The delivery begins in that second too, and so does its post.
+    const made = await step(test, credentials, ["Hello"]);
+    test.simulator.arm({ kind: "lost-response", operation: "publish" });
+    await failure(() => step(test, credentials, ["Hello"], made));
+    const own = feed(test.world, ["threads"]).at(-1)?.post;
+    expect(own?.id).not.toBe(older);
+
+    const progress = await step(test, credentials, ["Hello"], made);
+    // Not the one from before, which the first list did not have.
+    expect(progress.parts).toEqual([{ id: own?.id, url: own?.url }]);
+  });
+
+  it("cannot tell a post of the second in which the delivery began from its own when that second has more posts than it reads through", async () => {
+    const test = setup();
+    const { credentials } = await connect(test);
+    const older = test.simulator.addPost(test.ada.id, { text: "Hello" }).id;
+    // More in that second than the step reads when it notes where the
+    // posts of the account stand: three lists of a hundred.
+    for (let number = 1; number <= 300; number++) {
+      test.simulator.addPost(test.ada.id, { text: `Other ${number}` });
+    }
+    test.requests.length = 0;
+    const made = await step(test, credentials, ["Hello"]);
+    // It gave up, and did not read for ever.
+    expect(
+      test.requests.filter(
+        (request) => asked(request) === "GET /v1.0/me/threads",
+      ),
+    ).toHaveLength(3);
+
+    // A second later, so that the post of the delivery is not of that
+    // second: only the one from before is.
+    test.world.advance(1000);
+    test.simulator.arm({ kind: "lost-response", operation: "publish" });
+    await failure(() => step(test, credentials, ["Hello"], made));
+    expect(published(test).filter((text) => text === "Hello")).toHaveLength(2);
+    // The own post is gone, and the one from before is left, which the
+    // step did not note: it must not be taken, and a thread go on under it.
+    const own = feed(test.world, ["threads"]).at(-1)?.post;
+    expect(own?.id).not.toBe(older);
+    await test.provider.deletePost(credentials, own?.id ?? "");
+
+    // The look that follows reads that second to its end, which is
+    // within what it reads through, and finds the one from before.
+    const error = await failure(() => step(test, credentials, ["Hello"], made));
+    expect(error.kind).toBe("uncertain");
+    expect(published(test).filter((text) => text === "Hello")).toHaveLength(1);
+  });
+
   it("takes no post with a photo, a quote or a poll for its own, whatever its words", async () => {
     const test = setup();
     const { credentials } = await connect(test);
@@ -611,11 +671,42 @@ describe("publishing", () => {
         paging: { cursors: { after: `page-${pages}` } },
       });
     };
-    expect(
-      (await failure(() => step(test, credentials, ["Hello"], made))).kind,
-    ).toBe("uncertain");
+    const error = await failure(() => step(test, credentials, ["Hello"], made));
+    expect(error.kind).toBe("uncertain");
     // It gave up, and did not read for ever.
     expect(pages).toBe(5);
+    // Threads has said that the post is published, so the message does
+    // not doubt that, and does not advise to publish it anew, which
+    // would post it twice.
+    expect(error.message).toBe(
+      "Threads says that it has published the post. pigy could not look through enough of the account to find it, and does not post it a second time: look at the account.",
+    );
+  });
+
+  it("says the same when a post of the account has no time that pigy can read, which is where it stops looking", async () => {
+    const test = setup();
+    const { credentials } = await connect(test);
+    // The account has a post, so the delivery notes a time to look back to.
+    await postByHand(test, credentials, "From before");
+    test.world.advance(1000);
+    const made = await step(test, credentials, ["Hello"]);
+    test.simulator.arm({ kind: "lost-response", operation: "publish" });
+    await failure(() => step(test, credentials, ["Hello"], made));
+    test.hooks.intercept = (request) => {
+      const url = new URL(request.url);
+      if (request.method !== "GET" || !url.pathname.endsWith("/me/threads")) {
+        return undefined;
+      }
+      // One post, and nothing that says when it was made: the account
+      // has not posted more than pigy reads.
+      return Response.json({ data: [{ id: "901", text: "Another post" }] });
+    };
+    const error = await failure(() => step(test, credentials, ["Hello"], made));
+    expect(error.kind).toBe("uncertain");
+    expect(error.message).toBe(
+      "Threads says that it has published the post. pigy could not look through enough of the account to find it, and does not post it a second time: look at the account.",
+    );
+    expect(published(test)).toEqual(["From before", "Hello"]);
   });
 
   it("makes no new container when Threads has forgotten the one it had and the account has posted more since than it is willing to read", async () => {

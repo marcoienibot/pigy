@@ -90,11 +90,16 @@ const stateSchema = z.strictObject({
    * for after. `timestamp` is that of its newest post then. Threads says
    * a time to the second, so a post of that same second can be from
    * before the delivery or from after it began: `ids` are the posts of
-   * that second that were there, the newest among them. Null for the
-   * later parts too, which are found as replies.
+   * that second that were there, the newest among them, or null where
+   * that second had more posts than a step reads through: a post of that
+   * second is then one that nobody can place. Null for the later parts
+   * too, which are found as replies.
    */
   after: z
-    .strictObject({ timestamp: z.string(), ids: z.array(idSchema) })
+    .strictObject({
+      timestamp: z.string(),
+      ids: z.array(idSchema).nullable(),
+    })
     .nullable(),
   /** How often in a row the container was found not to be ready. */
   polls: z.number().int().nonnegative(),
@@ -165,6 +170,9 @@ const standingSchema = z.object({
       timestamp: z.string().refine((value) => !Number.isNaN(timeOf(value))),
     }),
   ),
+  paging: z
+    .object({ cursors: z.object({ after: z.string().optional() }).optional() })
+    .optional(),
 });
 
 const listSchema = z.object({
@@ -224,6 +232,11 @@ const refreshAfterMs = 7 * dayMs;
 // step reads when it looks for a post.
 const pageSize = 100;
 const maxPages = 5;
+// How many lists a step reads when it notes where the posts of an account
+// stand before a delivery. Fewer than it reads when it looks for a post:
+// what it could not note here, a later look can still come to, and say
+// that it cannot tell.
+const standingPages = 3;
 
 // How often a step finds a container not ready and waits, and for how
 // long, before it asks to be tried again later.
@@ -724,28 +737,55 @@ export function createThreadsProvider({
         if (before) return contain(null);
         // The first part: where the posts of the account stand, so that a
         // step which has to look for the part takes nothing from before.
-        // One list is enough for the newest second of them: an account
-        // does not post a hundred times in a second.
-        const { data } = understood(
-          standingSchema,
-          await call(`/${version}/me/threads`, {
-            token,
-            params: { fields: "id,timestamp", limit: String(pageSize) },
-          }),
-          "Threads",
-        );
-        const [newest] = data
-          .map((media) => ({ ...media, time: timeOf(media.timestamp) }))
-          .sort((a, b) => b.time - a.time);
+        // One list is nearly always enough for the newest second of
+        // them. Where a list ends within that second, the second may go
+        // on in the next one, and the step reads on, a few lists at most:
+        // a post of that second which it did not note would pass for one
+        // that came after the delivery began.
+        const standing: { id: string; timestamp: string; time: number }[] = [];
+        let newest: (typeof standing)[number] | undefined;
+        let whole = false;
+        let after: string | undefined;
+        for (let page = 0; page < standingPages && !whole; page++) {
+          const { data, paging } = understood(
+            standingSchema,
+            await call(`/${version}/me/threads`, {
+              token,
+              params: {
+                fields: "id,timestamp",
+                limit: String(pageSize),
+                ...(after !== undefined && { after }),
+              },
+            }),
+            "Threads",
+          );
+          for (const media of data) {
+            const post = { ...media, time: timeOf(media.timestamp) };
+            standing.push(post);
+            if (!newest || post.time > newest.time) newest = post;
+          }
+          after = paging?.cursors?.after;
+          // The second is read whole once a list has a post from before
+          // it, or the lists have ended.
+          whole =
+            data.length === 0 ||
+            after === undefined ||
+            data.some(
+              ({ timestamp }) => timeOf(timestamp) < (newest?.time ?? 0),
+            );
+        }
+        const { time, timestamp } = newest ?? {};
         return contain(
-          newest
-            ? {
-                timestamp: newest.timestamp,
-                ids: data
-                  .filter(({ timestamp }) => timeOf(timestamp) === newest.time)
-                  .map(({ id }) => id),
-              }
-            : null,
+          timestamp === undefined
+            ? null
+            : {
+                timestamp,
+                ids: whole
+                  ? standing
+                      .filter((post) => post.time === time)
+                      .map(({ id }) => id)
+                  : null,
+              },
         );
       }
       const container = state.container;
@@ -757,8 +797,10 @@ export function createThreadsProvider({
        * the part before it, the first part among what the account has
        * posted since the delivery began. "none" if the account has no
        * such post, and "unknown" if that cannot be told: the list goes on
-       * beyond what a step reads, or has a post without a time. The two
-       * are not the same to a caller that would publish after "none".
+       * beyond what a step reads, or has a post without a time, or a post
+       * that reads like the part is of the second in which the delivery
+       * began, of which the step could not note every post. The two are
+       * not the same to a caller that would publish after "none".
        */
       const find = async (): Promise<PublishedPart | "none" | "unknown"> => {
         const fields = `id,text,permalink,timestamp,is_reply_owned_by_me,${plainFields}`;
@@ -787,30 +829,50 @@ export function createThreadsProvider({
               },
             );
         if (listedPosts === undefined || unreadable) return "unknown";
-        // The oldest that reads like the part: the deliveries to an
-        // account run one after the other, so what a later one has posted
-        // is newer than what this container became.
-        const found = listedPosts.findLast(
+        const candidates = listedPosts.filter(
           (media) =>
             media.text?.trim() === text.trim() &&
             plain(media) &&
             // A post of the second in which the delivery began that was
             // there before it: the times of Threads do not tell it from
             // one that came after.
-            !since?.ids.includes(media.id) &&
+            !since?.ids?.includes(media.id) &&
             (!before || media.is_reply_owned_by_me === true),
         );
+        // That second had more posts than the step noted, and one of it
+        // reads like the part: from before the delivery, or its own.
+        if (
+          since?.ids === null &&
+          candidates.some(({ timestamp }) => timeOf(timestamp) === sinceTime)
+        ) {
+          return "unknown";
+        }
+        // The oldest that reads like the part: the deliveries to an
+        // account run one after the other, so what a later one has posted
+        // is newer than what this container became.
+        const found = candidates.at(-1);
         return found ? partOf(found) : "none";
       };
 
       const cannotTell = () =>
         new ProviderError(
           "uncertain",
-          `pigy cannot tell whether Threads has published ${which}: ${
+          `pigy cannot tell whether Threads has published ${which}: it could not look through enough of ${
             before
-              ? "the part before it has more replies"
-              : "the account has posted more since"
-          } than pigy reads through. pigy does not post it a second time. Look at the account, and to post it again, publish it anew.`,
+              ? "the replies to the part before it"
+              : "what the account has posted"
+          } to know. pigy does not post it a second time. Look at the account, and to post it again, publish it anew.`,
+        );
+
+      /**
+       * The same for a container that Threads says it has published.
+       * There is nothing to doubt then, and nothing to publish anew: that
+       * would be a second post.
+       */
+      const cannotFind = () =>
+        new ProviderError(
+          "uncertain",
+          `Threads says that it has published ${which}. pigy could not look through enough of the account to find it, and does not post it a second time: look at the account.`,
         );
 
       /**
@@ -820,7 +882,7 @@ export function createThreadsProvider({
        */
       const wasPublished = async (): Promise<PublishProgress> => {
         const part = await find();
-        if (part === "unknown") throw cannotTell();
+        if (part === "unknown") throw cannotFind();
         if (part !== "none") return published(part);
         // Not listed yet, perhaps: the step looks again a few times.
         if (state.looks < maxLooks) {
