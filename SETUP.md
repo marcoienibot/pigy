@@ -100,7 +100,7 @@ In the Google Cloud console, under APIs & Services:
 
 ### 4.3 The Threads app
 
-`AGENTS.md`, "Deployment", the entry for `THREADS_APP_ID`, and `PLAN.md` section 18. In short: an app at https://developers.facebook.com/apps with the use case "Access the Threads API", its five permissions, and the redirect callback address `https://<host>/connect/threads/callback`. The two secrets are the Threads app ID and the Threads app secret of the use case, not those of the Meta app around it. Until Meta has reviewed the app, every person who posts to Threads has to be added as a Threads tester and accept the invitation in the settings of their Threads account. The fields for an uninstall and a delete callback address are entered as `AGENTS.md` says, and nothing answers at them yet.
+`AGENTS.md`, "Deployment", the entry for `THREADS_APP_ID`, and `PLAN.md` section 18. In short: an app at https://developers.facebook.com/apps with the use case "Access the Threads API", its six permissions, and the redirect callback address `https://<host>/connect/threads/callback`. The two secrets are the Threads app ID and the Threads app secret of the use case, not those of the Meta app around it. Until Meta has reviewed the app, every person who posts to Threads has to be added as a Threads tester and accept the invitation in the settings of their Threads account. The fields for an uninstall and a delete callback address are entered as `AGENTS.md` says, and nothing answers at them yet.
 
 ## 5. Invite people
 
