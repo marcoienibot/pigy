@@ -7,7 +7,6 @@ import {
   cardLinks,
   cardMaker,
   channelLimits,
-  type LinkCard,
   linkCardSchema,
   type MutatorArgs,
   type Network,
@@ -44,6 +43,7 @@ import {
   renewChannelAccess,
   stepBegins,
 } from "../workspace/workspaces.ts";
+import { type Deadline, readCards } from "./cards.ts";
 import {
   cutOffMessage,
   type DeliveryParams,
@@ -75,11 +75,12 @@ import { retryWaitSeconds } from "./retry.ts";
  *    `cardMaker` of @pigy/core, as Bluesky and LinkedIn: several at
  *    once, and none for a part that an attempt before has published. It
  *    asks nothing of the network and changes nothing anywhere, and it
- *    cannot fail a delivery. A page that cannot be read leaves its link
- *    without a card, and a step that the platform gives up on, because
- *    it was cut off twice, leaves every link without one: the delivery
- *    goes on. A delivery to a network that makes its cards itself skips
- *    the step, and so does one without a link.
+ *    does not fail: a page that cannot be read leaves its link without
+ *    a card, and after a time of its own the step is over with what it
+ *    has read, `readCards` of cards.ts. So nothing is caught around it.
+ *    What comes out of it all the same is the platform's, as out of
+ *    every step. A delivery to a network that makes its cards itself
+ *    skips the step, and so does one without a link.
  * 4. `publish` of @pigy/providers drives the adapter of the network: each
  *    of its steps is a step here, `publish-1`, `publish-2` and so on, with
  *    at most one request that changes something on the network. After
@@ -110,6 +111,8 @@ export type PublishDependencies = Pick<
    * the workspace cannot be told what has to reach it.
    */
   pause: (milliseconds: number) => Promise<void>;
+  /** The time that a step gives its own work: see `readCards`. */
+  deadline: Deadline;
 };
 
 /**
@@ -124,37 +127,18 @@ export type PublishDependencies = Pick<
 export const stepResultBytes = 1024 * 1024;
 
 /**
- * How many pages a delivery reads for the cards of its links at most, and
- * how many of them at once. Each has its seconds and its bytes,
- * `cardLimits` of @pigy/providers, and what a page can make pigy work
- * has a bound there too. So the step is over within
- * `maxCardsPerDelivery / cardsAtOnce` times the seconds of one page,
- * which is ten seconds, whatever the pages are. A thread with more links
- * than this goes out with cards for the first of them.
- */
-export const maxCardsPerDelivery = 8;
-export const cardsAtOnce = 4;
-
-/**
  * The step that reads the pages of links. It talks to hosts that a person
- * named, and nothing in it fails as a step. The platform runs it again
- * only when it was cut off, once, and gives up soon: a delivery does not
- * wait for a card. Its time is three times what the reading takes at the
- * longest.
+ * named, and nothing in it fails as a step: `readCards` is over within
+ * `cardsDeadlineMs`, half of the time that the step has, with what it has
+ * read. So the platform runs it again only when it was cut off, as by a
+ * deploy, and that it does a few times: a step that the platform gives
+ * up on ends the run like any other, with nothing to say that it was
+ * for a card.
  */
 const cardStep = {
-  retries: { limit: 1, delay: "5 seconds", backoff: "constant" },
+  retries: { limit: 3, delay: "5 seconds", backoff: "constant" },
   timeout: "30 seconds",
 } as const;
-
-/**
- * Whether what a step threw is the platform stopping the run, and not a
- * step that failed: the engine of Workflows aborts a run that is paused,
- * restarted or terminated with an error whose message begins this way,
- * in the local runtime and, by its source, on the platform.
- */
-const stopsRun = (error: unknown) =>
-  error instanceof Error && error.message.includes("Aborting engine");
 
 /**
  * How old the limits of a channel may be before a delivery asks the
@@ -415,6 +399,7 @@ export async function deliver(
     developmentBlueskyClientKeys,
     providerOf,
     pause,
+    deadline,
   }: PublishDependencies,
   env: Bindings,
   { workspace, targetId, attempt }: DeliveryParams,
@@ -794,54 +779,23 @@ export async function deliver(
     const links = cardLinks(channel.network, content).map((link, index) =>
       index < published ? null : link,
     );
-    // The first of them, in the order of the parts.
-    const wanted = links
-      .flatMap((link, index) => (link === null ? [] : [{ link, index }]))
-      .slice(0, maxCardsPerDelivery);
-    if (wanted.length === 0) return content;
-    let read: { cards: (LinkCard | null)[] };
-    try {
-      read = await step.do("cards", cardStep, async () => {
-        const cards: (LinkCard | null)[] = links.map(() => null);
-        // Several at once, each taking the next link that nobody has
-        // taken: a thread does not wait for its pages one after the
-        // other, and no more than `cardsAtOnce` requests are open.
-        let next = 0;
-        const reader = async () => {
-          for (;;) {
-            const taken = wanted[next++];
-            if (taken === undefined) return;
-            try {
-              cards[taken.index] = await fetchLinkCard(reach.fetch, taken.link);
-            } catch (error) {
-              // No failure of the page, which `fetchLinkCard` takes for
-              // a link without a card, but of pigy. It is logged, and
-              // the post goes out without the card all the same.
-              console.error("The card of a link was not read", loggable(error));
-            }
-          }
-        };
-        await Promise.all(
-          Array.from({ length: Math.min(cardsAtOnce, wanted.length) }, reader),
-        );
-        return { cards };
-      });
-    } catch (error) {
-      // Nothing in the step throws, so this is the platform. If it is
-      // stopping the run, to pause it, to start it again or to end it,
-      // that is thrown on like everywhere else: a run that is being
-      // stopped must not go on to publish.
-      if (stopsRun(error)) throw error;
-      // Otherwise it has given up on the step, which was cut off or took
-      // too long, twice. A delivery does not end for a card, so it goes
-      // on without any. Should the platform stop a run in a way that
-      // `stopsRun` does not know, the run still does not go on by going
-      // on here: the platform refuses the next step of a run that it is
-      // stopping, and nothing catches that. PLAN.md section 19 has both
-      // as something to confirm.
-      console.error("The cards of a post were not read", loggable(error));
-      return content;
-    }
+    if (links.every((link) => link === null)) return content;
+    // Nothing is caught here. The step does not fail by itself: what a
+    // page does is no card, what goes wrong in the reading is logged in
+    // it, and it is over within a time of its own. So what is thrown
+    // out of it is the platform's: it is stopping the run, to pause it,
+    // to start it again or to end it, or it has given up on the step.
+    // Neither is a card that was not read, and neither is told from the
+    // other here by the words of an error: both are thrown on, like out
+    // of every step, and a run that is being stopped does not go on to
+    // publish.
+    const read = await step.do("cards", cardStep, async () => ({
+      cards: await readCards(
+        links,
+        (link) => fetchLinkCard(reach.fetch, link),
+        deadline,
+      ),
+    }));
     // What a step returned is read like everything that was stored.
     const cards = linkCardSchema.nullable().array().safeParse(read.cards);
     return {

@@ -6,6 +6,7 @@ import {
 } from "./development-keys.ts";
 import { providerOf } from "./network/providers.ts";
 import { outboundFetch } from "./outbound.ts";
+import { deadlineByTimer } from "./publish/cards.ts";
 import { publishWorkflow } from "./publish/workflow.ts";
 import { simWorldObject } from "./sim/object.ts";
 import { createSimulatedGoogle } from "./simulated-google.ts";
@@ -76,4 +77,5 @@ export class PublishWorkflow extends publishWorkflow({
   ...dependencies,
   providerOf,
   pause: (milliseconds) => scheduler.wait(milliseconds),
+  deadline: deadlineByTimer,
 }) {}

@@ -1,3 +1,4 @@
+import { runDurableObjectAlarm } from "cloudflare:test";
 import {
   detectEntities,
   type Fetch,
@@ -12,7 +13,8 @@ import {
 } from "@pigy/core";
 import { entitiesOf, feed } from "@pigy/simulators/world";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
-import { cardsAtOnce } from "../src/publish/workflow.ts";
+import { cardsAtOnce } from "../src/publish/cards.ts";
+import { lostTrackMessage } from "../src/publish/delivery.ts";
 import {
   connectBlueskyInSandbox,
   connectBlueskyLive,
@@ -34,6 +36,7 @@ import {
 } from "./helpers.ts";
 import {
   ended,
+  follow,
   gate,
   patience,
   publishTo,
@@ -43,7 +46,7 @@ import {
   targetOf,
   writeDraft,
 } from "./publishing.ts";
-import { SyncClient, workspaceIds } from "./sync-client.ts";
+import { objectOf, SyncClient, workspaceIds } from "./sync-client.ts";
 
 /**
  * What a post has besides its words, from the editor's question to what a
@@ -421,80 +424,100 @@ describe("the pages of a thread", () => {
     ).toEqual(["The example page", "A story from the simulated news"]);
   });
 
-  it("does not keep the post back when the platform gives up on the step that reads them", async () => {
+  it("ends a delivery as one that nobody knows the outcome of when the platform gives up on the step that reads them, and posts nothing", async () => {
     const errors = expectErrors();
-    const context = await withChannel("bluesky", "live");
+    const context = await withChannel("linkedin", "live");
     const { test, workflows, workspace, channel, client } = context;
     // The step is cut off, every time that the platform runs it: what a
-    // step looks like to the run whose time was up, or whose Worker went
-    // away under it.
+    // step looks like to the run whose Worker went away under it. The
+    // step itself does not fail, so this is all that can come out of it.
     await workflows.modifyAll(async (modifier) => {
       await modifier.mockStepError({ name: "cards" }, new Error("Cut off"));
       await modifier.disableRetryDelays();
     });
-    const text = `Read ${sandboxLink}`;
-    const draft = await writeDraft(client, workspace, text);
-    await publishTo(client, draft.postId, channel);
-    // The delivery goes on to the network, and the post is there with
-    // its link and without a card.
-    expect(await ended(client, draft.postId)).toMatchObject({
-      status: "sent",
+    const draft = await writeDraft(client, workspace, `Read ${sandboxLink}`);
+    const [targetId = ""] = await publishTo(client, draft.postId, channel);
+    const [run] = await workflows.get();
+    await run?.waitForStatus("errored");
+    // The workflow has not taken that for a card that was not read and
+    // gone on to post: on LinkedIn the step after `cards` is the one
+    // that posts.
+    expect(feed(test.network.world, ["linkedin"])).toEqual([]);
+    // The delivery is still under way, as far as the workspace knows,
+    // and the client has read everything that says so: what it hears
+    // next is the end.
+    await follow(client, () => targetOf(client, targetId).status === "sending");
+    expect(client.unread).toBe(0);
+    // The object of the workspace ends the delivery, as it ends every
+    // one whose run stopped without a word: asked until it has, because
+    // the platform can take a moment to say of a run that it is over.
+    await vi.waitFor(async () => {
+      await runDurableObjectAlarm(objectOf(workspace));
+      expect(client.unread).toBeGreaterThan(0);
+    }, patience);
+    await ended(client, draft.postId);
+    expect(targetOf(client, targetId)).toMatchObject({
+      status: "uncertain",
+      error: lostTrackMessage,
     });
-    expect(await keptOn("bluesky", "live", context)).toEqual([
-      { text, entities: [["link", sandboxLink]], card: null },
-    ]);
+    expect(feed(test.network.world, ["linkedin"])).toEqual([]);
     expect(pagesAsked(test)).toEqual([]);
-    expect(errors).toHaveBeenCalledWith(
-      "The cards of a post were not read",
-      expect.anything(),
-    );
+    expect(errors).toHaveBeenCalled();
   });
 });
 
 describe("a run that is paused while the pages are read", () => {
-  it("publishes nothing until it is resumed, though the workflow goes on when the step that reads them fails", async () => {
-    // The workflow catches what the step `cards` throws and goes on
-    // without cards. That must not carry a run on that the platform is
-    // stopping, and a pause is not a card that was not read: nothing is
-    // logged as one.
-    const errors = vi.spyOn(console, "error");
-    onTestFinished(() => errors.mockRestore());
-    const held = gate((request) => request === `GET ${sandboxLink}`);
-    const context = await withChannel("bluesky", "live", {
-      interceptNetwork: held.intercept,
-    });
-    const { test, workspace, channel, client } = context;
-    const draft = await writeDraft(client, workspace, `Read ${sandboxLink}`);
-    held.close();
-    const [targetId = ""] = await publishTo(client, draft.postId, channel);
-    // The page is being read, and the run is paused in that moment.
-    await held.reached();
-    using run = await runOf(workspace, targetId);
-    await run.pause();
-    held.open();
-    await vi.waitFor(
-      async () => expect((await run.status()).status).toBe("paused"),
-      patience,
-    );
-    expect(feed(test.network.world, ["bluesky"])).toEqual([]);
-    // Nor has the delivery ended in any way.
-    expect(["sent", "error", "uncertain"]).not.toContain(
-      targetOf(client, targetId).status,
-    );
+  // On Bluesky the step after `cards` only chooses the key of a record,
+  // so a run that went on for one step would still have posted nothing.
+  // On LinkedIn the step after `cards` posts: that is where a workflow
+  // which took the pause for cards that were not read, and went on,
+  // would show.
+  it.each(["bluesky", "linkedin"] as const)(
+    "publishes nothing to %s until it is resumed",
+    async (network) => {
+      // What the platform throws out of the step `cards` to stop the run
+      // is caught nowhere, and a pause is not a card that was not read:
+      // nothing is logged as one.
+      const errors = vi.spyOn(console, "error");
+      onTestFinished(() => errors.mockRestore());
+      const held = gate((request) => request === `GET ${sandboxLink}`);
+      const context = await withChannel(network, "live", {
+        interceptNetwork: held.intercept,
+      });
+      const { test, workspace, channel, client } = context;
+      const draft = await writeDraft(client, workspace, `Read ${sandboxLink}`);
+      held.close();
+      const [targetId = ""] = await publishTo(client, draft.postId, channel);
+      // The page is being read, and the run is paused in that moment.
+      await held.reached();
+      using run = await runOf(workspace, targetId);
+      await run.pause();
+      held.open();
+      await vi.waitFor(
+        async () => expect((await run.status()).status).toBe("paused"),
+        patience,
+      );
+      expect(feed(test.network.world, [network])).toEqual([]);
+      // Nor has the delivery ended in any way.
+      expect(["sent", "error", "uncertain"]).not.toContain(
+        targetOf(client, targetId).status,
+      );
 
-    await run.resume();
-    expect(await ended(client, draft.postId)).toMatchObject({
-      status: "sent",
-    });
-    expect(errors).not.toHaveBeenCalledWith(
-      "The cards of a post were not read",
-      expect.anything(),
-    );
-    // Once, and with the card that the step had read.
-    expect(await keptOn("bluesky", "live", context)).toMatchObject([
-      { card: "The example page" },
-    ]);
-  });
+      await run.resume();
+      expect(await ended(client, draft.postId)).toMatchObject({
+        status: "sent",
+      });
+      expect(errors).not.toHaveBeenCalledWith(
+        "The card of a link was not read",
+        expect.anything(),
+      );
+      // Once, and with the card that the step had read.
+      expect(await keptOn(network, "live", context)).toMatchObject([
+        { card: "The example page" },
+      ]);
+      expect(await keptOn(network, "live", context)).toHaveLength(1);
+    },
+  );
 });
 
 describe("pigy's own host", () => {
