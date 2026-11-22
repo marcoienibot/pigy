@@ -433,9 +433,12 @@ export function workspaceObject(dependencies: RenewalDependencies) {
      * delivery begin, every `deliveryWatchMs` while one is under way, and
      * when the next access is due.
      *
-     * It never fails: the runtime gives up on an alarm that keeps failing,
-     * and the deliveries would wait for ever. What goes wrong is logged,
-     * and tried again the next time.
+     * What goes wrong in looking after them does not fail the alarm: it
+     * is logged, and tried again the next time. The one thing that does
+     * is that the next alarm could not be set. Nothing would look after
+     * the workspace then, until something else woke its object, so the
+     * alarm fails and leaves it to the runtime to run it again, which it
+     * does some times, with a growing pause.
      */
     override async alarm(): Promise<void> {
       // Each by itself: a platform that does not say how its runs are
@@ -471,6 +474,8 @@ export function workspaceObject(dependencies: RenewalDependencies) {
           "The next look at a workspace was not set",
           loggable(error),
         );
+        // Without its secrets: this goes into the log of the runtime.
+        throw new Error("The next look at a workspace was not set");
       }
     }
 
@@ -508,6 +513,11 @@ export function workspaceObject(dependencies: RenewalDependencies) {
      * renewal.ts. Each outcome is stored before the next channel is
      * turned to, and each leaves its channel with a later time to renew
      * at, or with none.
+     *
+     * A renewal waits for a network, for up to half a minute, and no
+     * delivery begins meanwhile. So it stops after a channel when a
+     * delivery has become ready to begin: the alarm that the change set
+     * for it, `#wake`, begins it and takes the rest of the channels.
      */
     async #renewAccesses(): Promise<void> {
       const workspace = this.#store.identity;
@@ -566,6 +576,7 @@ export function workspaceObject(dependencies: RenewalDependencies) {
           );
         }
         this.#publish(from);
+        if (this.#store.deliveriesNeed === "begin") return;
       }
     }
 
@@ -822,6 +833,7 @@ export function workspaceObject(dependencies: RenewalDependencies) {
         ...state,
         clientId: hello.clientId,
       } satisfies SocketState);
+      this.#wakeForRenewals();
       send(
         socket,
         this.#store.changesSince(hello.cursor),
@@ -926,6 +938,23 @@ export function workspaceObject(dependencies: RenewalDependencies) {
     }
 
     /**
+     * Has the alarm run when the next access is due, after a change that
+     * may have named a time for one: a connection, or a refresh. Not
+     * after every change: the alarm sets itself for the access that comes
+     * after this one. Also when a client says hello: a workspace whose
+     * channels were connected before pigy had this timer has no alarm,
+     * and gets one when somebody next opens it.
+     */
+    #wakeForRenewals(): void {
+      this.#setNextAlarm().catch((error: unknown) =>
+        console.error(
+          "The next look at a workspace was not set",
+          loggable(error),
+        ),
+      );
+    }
+
+    /**
      * Has the alarm run at once if a change has made a delivery ready to
      * begin: a post was published, or the delivery before it has ended.
      * The alarm is stored with the change that it follows, so it runs also
@@ -938,21 +967,6 @@ export function workspaceObject(dependencies: RenewalDependencies) {
      * it, the alarm would run at every message of a client, a keystroke
      * included, for as long as the platform does not create workflows.
      */
-    /**
-     * Has the alarm run when the next access is due, after a change that
-     * may have named a time for one: a connection, or a refresh. Not
-     * after every change: the alarm sets itself for the access that comes
-     * after this one.
-     */
-    #wakeForRenewals(): void {
-      this.#setNextAlarm().catch((error: unknown) =>
-        console.error(
-          "The next look at a workspace was not set",
-          loggable(error),
-        ),
-      );
-    }
-
     #wake(): void {
       // The change that led here is committed. If this fails, the
       // deliveries wait for the next change or the next alarm.

@@ -122,3 +122,21 @@ export function cannotConnect(
   }
   return undefined;
 }
+
+/**
+ * Why this pigy cannot renew an access of `network` now, whatever the
+ * network would say, or undefined if it can: a secret that the renewal is
+ * made with is not set. That is no word of the network about the access,
+ * which is as good as it was once the secret is back: whoever renews by a
+ * timer waits. A network whose renewal takes a secret of pigy's says so
+ * here. Threads is not among them: its renewal takes the token alone.
+ */
+export function cannotRenew(
+  network: Network,
+  { blueskyClientKeys }: Pick<ProviderContext, "blueskyClientKeys">,
+): string | undefined {
+  if (network === "bluesky" && blueskyClientKeys === undefined) {
+    return "This pigy has no key to sign its requests to Bluesky with.";
+  }
+  return undefined;
+}

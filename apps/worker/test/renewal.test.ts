@@ -9,6 +9,7 @@ import {
 } from "./channels.ts";
 import {
   adminEmail,
+  blueskyClientKeys,
   credentialKeys,
   expectErrors,
   expectWarnings,
@@ -302,6 +303,40 @@ describe("the access of a Bluesky channel", () => {
     ).toEqual(["After a quiet week"]);
   });
 
+  it("waits a day when this pigy has lost the key that it signs with, and renews when the key is back", async () => {
+    const context = await withChannel("bluesky");
+    const { test, workspace } = context;
+    const warnings = expectWarnings();
+    const before = await kept(workspace);
+    const exchanges = asked(test, blueskyToken);
+    test.redeploy({ BLUESKY_CLIENT_KEYS: undefined });
+    test.advance(week);
+
+    await look(workspace);
+
+    // Nothing was asked of Bluesky, so nothing is spent there, and the
+    // channel is not one to connect again: the session is as good as it
+    // was once the key is back.
+    expect(asked(test, blueskyToken)).toBe(exchanges);
+    expect(await kept(workspace)).toEqual({
+      credentials: before.credentials,
+      refresh_at: test.clock.time.getTime() + renewalBrokenMs,
+    });
+    expect((await context.channel()).status).toBe("connected");
+    expect(warnings).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /^The access of the bluesky channel .* was not renewed: /,
+      ),
+    );
+
+    test.redeploy({ BLUESKY_CLIENT_KEYS: blueskyClientKeys });
+    test.advance(renewalBrokenMs);
+    await look(workspace);
+    expect(asked(test, blueskyToken)).toBeGreaterThan(exchanges);
+    expect((await kept(workspace)).credentials).not.toBe(before.credentials);
+    expect((await context.channel()).status).toBe("connected");
+  });
+
   it("gives back a renewed session that nothing holds, when the channel was disconnected while Bluesky was asked", async () => {
     // Holds the answer to a refresh back, after Bluesky has carried the
     // refresh out. The test and the object look at this on timers of
@@ -345,5 +380,120 @@ describe("the access of a Bluesky channel", () => {
     // Asked more than once: the first asking is refused for its nonce.
     expect(asked(test, blueskyRevoke)).toBeGreaterThan(revocations);
     expect(await nextLookIn(workspace)).toBeNull();
+  });
+});
+
+describe("the alarm of a workspace", () => {
+  it("fails when it cannot set the next one, so that the runtime runs it again, and sets it then", async () => {
+    const context = await withChannel("threads");
+    const { workspace } = context;
+    expectErrors();
+    // The storage of the object refuses once to set an alarm: the last
+    // thing that the alarm does.
+    await runInDurableObject(objectOf(workspace), (_, state) => {
+      vi.spyOn(state.storage, "setAlarm").mockRejectedValueOnce(
+        new Error("The storage is out of reach"),
+      );
+    });
+
+    // An alarm that ended without a failure and without a next one would
+    // be the last: nothing would renew an access or watch a delivery
+    // until something else woke the object. The runtime runs an alarm
+    // again that failed.
+    await expect(runDurableObjectAlarm(objectOf(workspace))).rejects.toThrow(
+      "The next look at a workspace was not set",
+    );
+    expect(await nextLookIn(workspace)).toBeNull();
+
+    // The storage is back when the runtime tries again.
+    await runInDurableObject(objectOf(workspace), (instance) =>
+      instance.alarm(),
+    );
+    expect(await nextLookIn(workspace)).toBeGreaterThan(week - slack);
+  });
+
+  it("is set when a client says hello, for a workspace whose channel was connected before there was a timer", async () => {
+    const context = await withChannel("threads");
+    const { workspace } = context;
+    // What such a workspace has: a channel with a time to renew at, and
+    // no alarm.
+    await runInDurableObject(objectOf(workspace), (_, state) =>
+      state.storage.deleteAlarm(),
+    );
+    expect(await nextLookIn(workspace)).toBeNull();
+
+    await context.channel();
+
+    await vi.waitFor(
+      async () =>
+        expect(await nextLookIn(workspace)).toBeGreaterThan(week - slack),
+      patience,
+    );
+  });
+
+  it("leaves the accesses that are still due for later when a post waits to go out", async () => {
+    const answer = { held: false, waiting: false };
+    const publishing = gate((request) => request === threadsPublish);
+    const context = await withChannel("bluesky", {
+      interceptNetwork: (network) => {
+        const gated = publishing.intercept(network);
+        return async (input, init) => {
+          const response = await gated(input, init);
+          // Holds the answer of Bluesky to a refresh, as in the test of
+          // a session that is given back.
+          if (
+            answer.held &&
+            response.ok &&
+            urlOf(input).endsWith("/oauth/token")
+          ) {
+            answer.waiting = true;
+            while (answer.held) {
+              await new Promise((resolve) => setTimeout(resolve, 5));
+            }
+          }
+          return response;
+        };
+      },
+    });
+    const { test, browser, workspace, client } = context;
+    // A second channel, which the object turns to after the first.
+    expect((await connectThreadsLive(test, browser, workspace)).connect).toBe(
+      "connected",
+    );
+    await Promise.all(test.keptAlive);
+    test.advance(week);
+    await context.channel();
+    const threads = client
+      .table("channel")
+      .find(({ network }) => network === "threads");
+    const draft = await writeDraft(client, workspace, "Cannot wait");
+
+    // Both are due. The object is in the middle of the first, which
+    // waits for Bluesky.
+    answer.held = true;
+    publishing.close();
+    const looking = runDurableObjectAlarm(objectOf(workspace));
+    await vi.waitFor(() => expect(answer.waiting).toBe(true), patience);
+    expect(asked(test, threadsRefresh)).toBe(0);
+    // Meanwhile the person publishes to the other channel.
+    const [targetId = ""] = await publishTo(
+      client,
+      draft.postId,
+      threads?.id ?? "",
+    );
+    answer.held = false;
+    await looking;
+
+    // The delivery is in the middle of its step that publishes, and the
+    // access of its channel was not renewed first: the post did not wait
+    // for the renewal of the channel after the one that was under way.
+    await publishing.reached();
+    expect(asked(test, threadsRefresh)).toBe(0);
+
+    // The rest is taken when the delivery has ended.
+    publishing.open();
+    await follow(client, () => targetOf(client, targetId).status === "sent");
+    await look(workspace);
+    expect(asked(test, threadsRefresh)).toBe(1);
   });
 });

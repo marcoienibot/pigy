@@ -3,7 +3,7 @@ import { openCredentials, sealCredentials } from "../channels/credentials.ts";
 import type { AppDependencies, Bindings } from "../env.ts";
 import { loggable } from "../errors.ts";
 import { blueskyKeysWithoutRequest } from "../network/bluesky-client.ts";
-import type { providerOf } from "../network/providers.ts";
+import { cannotRenew, type providerOf } from "../network/providers.ts";
 import { VaultError, vaultWithoutRequest } from "../vault.ts";
 import type {
   DueRenewal,
@@ -99,19 +99,30 @@ export async function renewAccess(
     // Nothing opens without the keys, which only whoever runs this pigy
     // can bring back.
     if (!vault) return later(renewalBrokenMs);
+    // Renewing an access to Bluesky is signed with them.
+    const blueskyClientKeys = blueskyKeysWithoutRequest(
+      env,
+      developmentBlueskyClientKeys,
+    );
     const connection = providerOf(channel.network, workspace, {
       env,
       fetch,
       now,
       vault,
-      // Renewing an access to Bluesky is signed with them.
-      blueskyClientKeys: blueskyKeysWithoutRequest(
-        env,
-        developmentBlueskyClientKeys,
-      ),
+      blueskyClientKeys,
     });
     const provider = connection?.provider;
     if (!provider?.refresh) return { kind: "never" };
+    // A secret of this pigy's that the renewal takes is missing. The
+    // adapter would say that the account has to be connected again, as
+    // it does of a key that was replaced, but nothing was asked of the
+    // network and nothing is spent there: the access is renewed when
+    // the secret is back.
+    const missing = cannotRenew(channel.network, { blueskyClientKeys });
+    if (missing) {
+      console.warn(`The access of ${of} was not renewed: ${missing}`);
+      return later(renewalBrokenMs);
+    }
 
     let renewed: Awaited<ReturnType<typeof provider.refresh>>;
     try {
