@@ -18,7 +18,10 @@ function Settings() {
   return (
     <Page title="Settings">
       <div className="mx-auto max-w-xl">
-        <nav aria-label="Settings" className="mb-6 flex gap-4 border-b">
+        <nav
+          aria-label="Settings"
+          className="mb-6 flex gap-4 overflow-x-auto border-b whitespace-nowrap"
+        >
           <Link
             to="/settings"
             // Without this it would also be current on the other sections,
@@ -27,6 +30,9 @@ function Settings() {
             className={sectionLink}
           >
             General
+          </Link>
+          <Link to="/settings/schedule" className={sectionLink}>
+            Posting schedule
           </Link>
           {me.role === "admin" && (
             <Link to="/settings/access" className={sectionLink}>

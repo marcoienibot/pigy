@@ -9,9 +9,13 @@ import {
   CalendarClock,
   Download,
   Globe,
+  ListPlus,
+  ListStart,
   Monitor,
   Moon,
+  Pause,
   PenLine,
+  Play,
   Plus,
   RefreshCw,
   Send,
@@ -37,6 +41,7 @@ import { Kbd } from "@/components/ui/kbd";
 import { environmentIcons } from "@/components/workspace-switch";
 import { overChannels } from "@/lib/channels";
 import { useNewDraft } from "@/lib/drafts";
+import { useEditorCommands } from "@/lib/editor-commands";
 import { useInstall } from "@/lib/install";
 import {
   dialogIsOpen,
@@ -45,12 +50,14 @@ import {
   useShortcuts,
   withMod,
 } from "@/lib/keyboard";
+import { selectSchedule } from "@/lib/queue";
 import { useReloadToUpdate, useUpdateOffer } from "@/lib/reload-to-update";
 import {
   environmentLabels,
   hasScreen,
   useSwitchWorkspace,
 } from "@/lib/workspace";
+import { useMutate, useSynced } from "@/sync/react";
 
 const screens = [
   { to: "/inbox", label: "Inbox", icon: Bell },
@@ -103,6 +110,11 @@ export function CommandPalette({ children }: { children: ReactNode }) {
   const install = useInstall();
   const update = useUpdateOffer();
   const { reload } = useReloadToUpdate();
+  // What the editor offers for the draft that is open, if one is and it
+  // can go out.
+  const editor = useEditorCommands();
+  const { paused } = useSynced(selectSchedule);
+  const mutate = useMutate();
 
   useKeyDown((event) => {
     if (withMod(event) && event.key.toLowerCase() === "k") {
@@ -146,6 +158,67 @@ export function CommandPalette({ children }: { children: ReactNode }) {
                 <CommandShortcut>
                   <Kbd>C</Kbd>
                 </CommandShortcut>
+              </CommandItem>
+            </CommandGroup>
+            <CommandGroup heading="Schedule">
+              {editor && (
+                <>
+                  <CommandItem
+                    keywords={["time", "date", "later"]}
+                    onSelect={run(editor.schedule)}
+                  >
+                    <CalendarClock aria-hidden="true" />
+                    Schedule…
+                    <CommandShortcut>
+                      <Kbd>{modKey}</Kbd>
+                      <Kbd>⇧</Kbd>
+                      <Kbd>S</Kbd>
+                    </CommandShortcut>
+                  </CommandItem>
+                  <CommandItem
+                    keywords={["slot", "later"]}
+                    onSelect={run(editor.enqueue)}
+                  >
+                    <ListPlus aria-hidden="true" />
+                    Add to queue
+                  </CommandItem>
+                  <CommandItem
+                    keywords={["queue", "first", "slot"]}
+                    onSelect={run(editor.shareNext)}
+                  >
+                    <ListStart aria-hidden="true" />
+                    Share next
+                  </CommandItem>
+                </>
+              )}
+              <CommandItem
+                keywords={["hold", "stop", "resume", "continue"]}
+                onSelect={run(() =>
+                  mutate("queue.setPaused", { paused: !paused }),
+                )}
+              >
+                {paused ? (
+                  <Play aria-hidden="true" />
+                ) : (
+                  <Pause aria-hidden="true" />
+                )}
+                {paused ? "Resume the queue" : "Pause the queue"}
+              </CommandItem>
+              <CommandItem
+                keywords={["slots", "times", "time zone", "timezone"]}
+                onSelect={run(
+                  () => void navigate({ to: "/settings/schedule" }),
+                )}
+              >
+                <Settings aria-hidden="true" />
+                Posting schedule
+              </CommandItem>
+              <CommandItem
+                keywords={["month", "agenda"]}
+                onSelect={run(() => void navigate({ to: "/queue/calendar" }))}
+              >
+                <CalendarClock aria-hidden="true" />
+                Calendar
               </CommandItem>
             </CommandGroup>
             <CommandGroup heading="Channels">

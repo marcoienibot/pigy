@@ -2,6 +2,7 @@ import { settingsId } from "@pigy/core";
 import { expect, it } from "vitest";
 import {
   addMonths,
+  claimTimeZone,
   entriesByDay,
   minuteFromInput,
   minuteLabel,
@@ -57,13 +58,31 @@ function tablesWith(...made: ReturnType<typeof scheduledPost>[]) {
   };
 }
 
-it("reads the schedule of a workspace that has set nothing: UTC, not paused, no slots", () => {
-  expect(selectSchedule(tablesOf({}))).toEqual({
-    timeZone: "UTC",
+it("reads the schedule of a workspace that has set nothing: the zone of the device, not paused, no slots", () => {
+  expect(selectSchedule(tablesOf({}), "Asia/Tokyo")).toEqual({
+    timeZone: "Asia/Tokyo",
     zoneSet: false,
     paused: false,
     slots: [],
   });
+});
+
+it("gives a workspace the zone of the device before the first thing that goes by it, and only a workspace that has none", () => {
+  const made: unknown[] = [];
+  const mutate = (name: string, args: unknown) => made.push([name, args]);
+
+  claimTimeZone(mutate, tablesOf({}), "Asia/Tokyo");
+  claimTimeZone(
+    mutate,
+    tablesOf({
+      settings: [{ id: settingsId, timeZone: rome, queuePaused: false }],
+    }),
+    "Asia/Tokyo",
+  );
+
+  expect(made).toEqual([
+    ["settings.setTimeZone", { timeZone: "Asia/Tokyo", onlyIfUnset: true }],
+  ]);
 });
 
 it("lists the slots Monday first, each day in the order of its times", () => {

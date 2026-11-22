@@ -4,7 +4,11 @@ import {
   defaultTimeZone,
   type LocalDate,
   localTimeAt,
+  type MutatorArgs,
+  type MutatorName,
   ownParts,
+  ownTextMutations,
+  partsFor,
   type Row,
   settingsId,
   slotTimes,
@@ -27,9 +31,13 @@ export type Slot = Row<"schedule_slot">;
 
 /** The posting schedule of a workspace. */
 export type Schedule = {
-  /** The time zone that the slots are in, and that times are shown in. */
+  /**
+   * The time zone that the slots are in, and that times are shown in:
+   * the one that the workspace has set, or until it has one, the zone of
+   * this device, which is the one that it will get: `claimTimeZone`.
+   */
   timeZone: string;
-  /** Somebody, or the app for them, has set that zone. */
+  /** The workspace has a zone: somebody, or the app for them, has set it. */
   zoneSet: boolean;
   /** The queue is paused. */
   paused: boolean;
@@ -40,10 +48,22 @@ export type Schedule = {
 /** Monday first: the place of a weekday of `Date.getDay()` in a week. */
 const inWeek = (weekday: number) => (weekday + 6) % 7;
 
-export function selectSchedule(tables: Tables): Schedule {
+/** The time zone of this device, as the browser names it. */
+export function deviceTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || defaultTimeZone;
+  } catch {
+    return defaultTimeZone;
+  }
+}
+
+export function selectSchedule(
+  tables: Tables,
+  device = deviceTimeZone(),
+): Schedule {
   const settings = tables.settings.get(settingsId) ?? defaultSettings;
   return {
-    timeZone: settings.timeZone ?? defaultTimeZone,
+    timeZone: settings.timeZone ?? device,
     zoneSet: settings.timeZone !== null,
     paused: settings.queuePaused,
     slots: [...tables.schedule_slot.values()].sort(
@@ -53,6 +73,29 @@ export function selectSchedule(tables: Tables): Schedule {
         (a.id < b.id ? -1 : 1),
     ),
   };
+}
+
+/** `mutate` of `@/sync/react`, as the functions here take it. */
+type Mutate = <Name extends MutatorName>(
+  name: Name,
+  args: MutatorArgs<Name>,
+) => void;
+
+/**
+ * Gives a workspace that has no time zone the one of this device, before
+ * the first thing is done that goes by it: a slot is added, a post is
+ * queued or scheduled. So the zone of a workspace is that of the device
+ * that it was first scheduled on, and what that device showed is what
+ * the server computes. A workspace that has a zone keeps it, also when
+ * another device gave it one in the meantime: the mutation says so.
+ */
+export function claimTimeZone(
+  mutate: Mutate,
+  tables: Tables,
+  device = deviceTimeZone(),
+): void {
+  if (tables.settings.get(settingsId)?.timeZone) return;
+  mutate("settings.setTimeZone", { timeZone: device, onlyIfUnset: true });
 }
 
 /** The days of a week, Monday first, as `Date.getDay()` numbers them. */
@@ -494,4 +537,111 @@ export function dayName(
     day: "numeric",
     month: "long",
   }).format(Date.UTC(year, month - 1, day));
+}
+
+// Deleting a scheduled post, and bringing it back.
+
+/** What a scheduled post was, for the Undo of its deletion. */
+export type TakenPost = {
+  /** The texts of its parts, in order. */
+  texts: string[];
+  /** Where it went, each account with the text that was written for it. */
+  targets: { channelId: string; own: string[] | null }[];
+  /** When it was to go out: a time, or its place in the queue. */
+  when:
+    | { mode: "custom"; dueAt: number | null }
+    | { mode: "queue"; afterId: string | null };
+};
+
+/** Reads what the scheduled post `id` is, before it is deleted. */
+export function takePost(tables: Tables, id: string): TakenPost | undefined {
+  const post = tables.post.get(id);
+  if (!post) return undefined;
+  const parts = [...tables.post_part.values()].filter(
+    (part) => part.postId === id,
+  );
+  const targets = [...tables.post_target.values()].filter(
+    (target) => target.postId === id,
+  );
+  const queue = inQueueOrder(selectQueue(tables));
+  const place = queue.findIndex((item) => item.id === id);
+  return {
+    texts: ownParts(parts).map(({ text }) => text),
+    targets: targets.map((target) => {
+      const own = partsFor(parts, target.id);
+      return {
+        channelId: target.channelId,
+        own: own.some((part) => part.targetId === target.id)
+          ? own.map(({ text }) => text)
+          : null,
+      };
+    }),
+    when:
+      post.mode === "queue"
+        ? { mode: "queue", afterId: queue[place - 1]?.id ?? null }
+        : { mode: "custom", dueAt: post.dueAt },
+  };
+}
+
+/**
+ * Brings a scheduled post that was deleted back: a post that is deleted
+ * is gone for every device, so this is a new one with the same text,
+ * which goes to the same accounts, those that are still connected, and
+ * at the same time or to the same place in the queue. Returns the ID of
+ * the new post, and whether it is scheduled again: not if no account of
+ * it is left, or its time has passed. It is a draft then.
+ */
+export function bringBack(
+  mutate: Mutate,
+  tables: Tables,
+  taken: TakenPost,
+  now: number,
+  newId: () => string,
+): { id: string; scheduled: boolean } {
+  const id = newId();
+  const [first = "", ...more] = taken.texts;
+  let last = newId();
+  mutate("post.create", { id, partId: last, text: first });
+  for (const text of more) {
+    const partId = newId();
+    mutate("part.add", {
+      id: partId,
+      postId: id,
+      channelId: null,
+      afterId: last,
+      text,
+    });
+    last = partId;
+  }
+  let chosen = 0;
+  for (const { channelId, own } of taken.targets) {
+    if (!tables.channel.has(channelId)) continue;
+    chosen += 1;
+    mutate("target.add", { id: newId(), postId: id, channelId });
+    if (!own) continue;
+    for (const mutation of ownTextMutations(id, channelId, own, newId)) {
+      if (mutation.name === "target.customize") {
+        mutate(mutation.name, mutation.args);
+      } else {
+        mutate(mutation.name, mutation.args);
+      }
+    }
+  }
+  if (chosen === 0) return { id, scheduled: false };
+  if (taken.when.mode === "queue") {
+    mutate("post.enqueue", { id, first: false });
+    // Back to where it was, if the post before it is still in the queue.
+    const { afterId } = taken.when;
+    if (
+      afterId === null ||
+      inQueueOrder(selectQueue(tables)).some((item) => item.id === afterId)
+    ) {
+      mutate("post.move", { id, afterId });
+    }
+    return { id, scheduled: true };
+  }
+  const { dueAt } = taken.when;
+  if (dueAt === null || dueAt <= now) return { id, scheduled: false };
+  mutate("post.schedule", { id, dueAt });
+  return { id, scheduled: true };
 }

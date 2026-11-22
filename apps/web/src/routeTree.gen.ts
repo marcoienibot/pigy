@@ -21,9 +21,12 @@ import { Route as AppSentRouteImport } from './routes/_app/sent'
 import { Route as AppSettingsRouteImport } from './routes/_app/settings'
 import { Route as AppShareRouteImport } from './routes/_app/share'
 import { Route as AppSimulatorRouteImport } from './routes/_app/simulator'
+import { Route as AppQueueIndexRouteImport } from './routes/_app/queue/index'
+import { Route as AppQueueCalendarRouteImport } from './routes/_app/queue/calendar'
 import { Route as AppSettingsIndexRouteImport } from './routes/_app/settings/index'
 import { Route as AppSettingsAboutRouteImport } from './routes/_app/settings/about'
 import { Route as AppSettingsAccessRouteImport } from './routes/_app/settings/access'
+import { Route as AppSettingsScheduleRouteImport } from './routes/_app/settings/schedule'
 import { Route as AppSimulatorIndexRouteImport } from './routes/_app/simulator/index'
 import { Route as AppSimulatorFailuresRouteImport } from './routes/_app/simulator/failures'
 
@@ -86,6 +89,16 @@ const AppSimulatorRoute = AppSimulatorRouteImport.update({
   path: '/simulator',
   getParentRoute: () => AppRoute,
 } as any)
+const AppQueueIndexRoute = AppQueueIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => AppQueueRoute,
+} as any)
+const AppQueueCalendarRoute = AppQueueCalendarRouteImport.update({
+  id: '/calendar',
+  path: '/calendar',
+  getParentRoute: () => AppQueueRoute,
+} as any)
 const AppSettingsIndexRoute = AppSettingsIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -99,6 +112,11 @@ const AppSettingsAboutRoute = AppSettingsAboutRouteImport.update({
 const AppSettingsAccessRoute = AppSettingsAccessRouteImport.update({
   id: '/access',
   path: '/access',
+  getParentRoute: () => AppSettingsRoute,
+} as any)
+const AppSettingsScheduleRoute = AppSettingsScheduleRouteImport.update({
+  id: '/schedule',
+  path: '/schedule',
   getParentRoute: () => AppSettingsRoute,
 } as any)
 const AppSimulatorIndexRoute = AppSimulatorIndexRouteImport.update({
@@ -119,14 +137,17 @@ export interface FileRoutesByFullPath {
   '/$': typeof AppSplatRoute
   '/channels': typeof AppChannelsRoute
   '/inbox': typeof AppInboxRoute
-  '/queue': typeof AppQueueRoute
+  '/queue': typeof AppQueueRouteWithChildren
   '/sent': typeof AppSentRoute
   '/settings': typeof AppSettingsRouteWithChildren
   '/share': typeof AppShareRoute
   '/simulator': typeof AppSimulatorRouteWithChildren
+  '/queue/calendar': typeof AppQueueCalendarRoute
   '/settings/about': typeof AppSettingsAboutRoute
   '/settings/access': typeof AppSettingsAccessRoute
+  '/settings/schedule': typeof AppSettingsScheduleRoute
   '/simulator/failures': typeof AppSimulatorFailuresRoute
+  '/queue/': typeof AppQueueIndexRoute
   '/settings/': typeof AppSettingsIndexRoute
   '/simulator/': typeof AppSimulatorIndexRoute
 }
@@ -136,13 +157,15 @@ export interface FileRoutesByTo {
   '/$': typeof AppSplatRoute
   '/channels': typeof AppChannelsRoute
   '/inbox': typeof AppInboxRoute
-  '/queue': typeof AppQueueRoute
   '/sent': typeof AppSentRoute
   '/share': typeof AppShareRoute
   '/': typeof AppIndexRoute
+  '/queue/calendar': typeof AppQueueCalendarRoute
   '/settings/about': typeof AppSettingsAboutRoute
   '/settings/access': typeof AppSettingsAccessRoute
+  '/settings/schedule': typeof AppSettingsScheduleRoute
   '/simulator/failures': typeof AppSimulatorFailuresRoute
+  '/queue': typeof AppQueueIndexRoute
   '/settings': typeof AppSettingsIndexRoute
   '/simulator': typeof AppSimulatorIndexRoute
 }
@@ -154,15 +177,18 @@ export interface FileRoutesById {
   '/_app/$': typeof AppSplatRoute
   '/_app/channels': typeof AppChannelsRoute
   '/_app/inbox': typeof AppInboxRoute
-  '/_app/queue': typeof AppQueueRoute
+  '/_app/queue': typeof AppQueueRouteWithChildren
   '/_app/sent': typeof AppSentRoute
   '/_app/settings': typeof AppSettingsRouteWithChildren
   '/_app/share': typeof AppShareRoute
   '/_app/simulator': typeof AppSimulatorRouteWithChildren
   '/_app/': typeof AppIndexRoute
+  '/_app/queue/calendar': typeof AppQueueCalendarRoute
   '/_app/settings/about': typeof AppSettingsAboutRoute
   '/_app/settings/access': typeof AppSettingsAccessRoute
+  '/_app/settings/schedule': typeof AppSettingsScheduleRoute
   '/_app/simulator/failures': typeof AppSimulatorFailuresRoute
+  '/_app/queue/': typeof AppQueueIndexRoute
   '/_app/settings/': typeof AppSettingsIndexRoute
   '/_app/simulator/': typeof AppSimulatorIndexRoute
 }
@@ -180,9 +206,12 @@ export interface FileRouteTypes {
     | '/settings'
     | '/share'
     | '/simulator'
+    | '/queue/calendar'
     | '/settings/about'
     | '/settings/access'
+    | '/settings/schedule'
     | '/simulator/failures'
+    | '/queue/'
     | '/settings/'
     | '/simulator/'
   fileRoutesByTo: FileRoutesByTo
@@ -192,13 +221,15 @@ export interface FileRouteTypes {
     | '/$'
     | '/channels'
     | '/inbox'
-    | '/queue'
     | '/sent'
     | '/share'
     | '/'
+    | '/queue/calendar'
     | '/settings/about'
     | '/settings/access'
+    | '/settings/schedule'
     | '/simulator/failures'
+    | '/queue'
     | '/settings'
     | '/simulator'
   id:
@@ -215,9 +246,12 @@ export interface FileRouteTypes {
     | '/_app/share'
     | '/_app/simulator'
     | '/_app/'
+    | '/_app/queue/calendar'
     | '/_app/settings/about'
     | '/_app/settings/access'
+    | '/_app/settings/schedule'
     | '/_app/simulator/failures'
+    | '/_app/queue/'
     | '/_app/settings/'
     | '/_app/simulator/'
   fileRoutesById: FileRoutesById
@@ -314,6 +348,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSimulatorRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/queue/': {
+      id: '/_app/queue/'
+      path: '/'
+      fullPath: '/queue/'
+      preLoaderRoute: typeof AppQueueIndexRouteImport
+      parentRoute: typeof AppQueueRoute
+    }
+    '/_app/queue/calendar': {
+      id: '/_app/queue/calendar'
+      path: '/calendar'
+      fullPath: '/queue/calendar'
+      preLoaderRoute: typeof AppQueueCalendarRouteImport
+      parentRoute: typeof AppQueueRoute
+    }
     '/_app/settings/': {
       id: '/_app/settings/'
       path: '/'
@@ -335,6 +383,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSettingsAccessRouteImport
       parentRoute: typeof AppSettingsRoute
     }
+    '/_app/settings/schedule': {
+      id: '/_app/settings/schedule'
+      path: '/schedule'
+      fullPath: '/settings/schedule'
+      preLoaderRoute: typeof AppSettingsScheduleRouteImport
+      parentRoute: typeof AppSettingsRoute
+    }
     '/_app/simulator/': {
       id: '/_app/simulator/'
       path: '/'
@@ -352,15 +407,31 @@ declare module '@tanstack/react-router' {
   }
 }
 
+interface AppQueueRouteChildren {
+  AppQueueCalendarRoute: typeof AppQueueCalendarRoute
+  AppQueueIndexRoute: typeof AppQueueIndexRoute
+}
+
+const AppQueueRouteChildren: AppQueueRouteChildren = {
+  AppQueueCalendarRoute: AppQueueCalendarRoute,
+  AppQueueIndexRoute: AppQueueIndexRoute,
+}
+
+const AppQueueRouteWithChildren = AppQueueRoute._addFileChildren(
+  AppQueueRouteChildren,
+)
+
 interface AppSettingsRouteChildren {
   AppSettingsAboutRoute: typeof AppSettingsAboutRoute
   AppSettingsAccessRoute: typeof AppSettingsAccessRoute
+  AppSettingsScheduleRoute: typeof AppSettingsScheduleRoute
   AppSettingsIndexRoute: typeof AppSettingsIndexRoute
 }
 
 const AppSettingsRouteChildren: AppSettingsRouteChildren = {
   AppSettingsAboutRoute: AppSettingsAboutRoute,
   AppSettingsAccessRoute: AppSettingsAccessRoute,
+  AppSettingsScheduleRoute: AppSettingsScheduleRoute,
   AppSettingsIndexRoute: AppSettingsIndexRoute,
 }
 
@@ -386,7 +457,7 @@ interface AppRouteChildren {
   AppSplatRoute: typeof AppSplatRoute
   AppChannelsRoute: typeof AppChannelsRoute
   AppInboxRoute: typeof AppInboxRoute
-  AppQueueRoute: typeof AppQueueRoute
+  AppQueueRoute: typeof AppQueueRouteWithChildren
   AppSentRoute: typeof AppSentRoute
   AppSettingsRoute: typeof AppSettingsRouteWithChildren
   AppShareRoute: typeof AppShareRoute
@@ -398,7 +469,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppSplatRoute: AppSplatRoute,
   AppChannelsRoute: AppChannelsRoute,
   AppInboxRoute: AppInboxRoute,
-  AppQueueRoute: AppQueueRoute,
+  AppQueueRoute: AppQueueRouteWithChildren,
   AppSentRoute: AppSentRoute,
   AppSettingsRoute: AppSettingsRouteWithChildren,
   AppShareRoute: AppShareRoute,
