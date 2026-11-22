@@ -6,6 +6,7 @@ import {
   requeues,
   type SandboxPost,
   sandboxFeedSchema,
+  sandboxLink,
   sandboxMastodonDomain,
 } from "@pigy/core";
 import {
@@ -20,7 +21,7 @@ import { describe, expect, it } from "vitest";
 import { postsPage } from "../src/workspace/api.ts";
 import { farthestLookMs } from "../src/workspace/object.ts";
 import { type ApiClient, apiClient, makeKey, startedApi } from "./api.ts";
-import { connectInSandbox } from "./channels.ts";
+import { connectInSandbox, connectLinkedInInSandbox } from "./channels.ts";
 import { type Browser, realMastodonDomain, type TestSetup } from "./helpers.ts";
 import { connectAccount, gate, postStatus } from "./publishing.ts";
 import { identityOf, objectOf, SyncClient } from "./sync-client.ts";
@@ -295,6 +296,35 @@ describe.each(["live", "sandbox"] as const)(
     });
   },
 );
+
+it("publishes a post of the API with the card of its link, as a post of the app", async () => {
+  const { test, browser, workspaces } = await startedApi();
+  const workspace = workspaces.sandbox;
+  // LinkedIn reads no page for a post of an application: a card on a post
+  // there is one that the publishing workflow read, in its step for
+  // that, which a post of the API goes through like every other.
+  const { channel } = await connectLinkedInInSandbox(browser, workspace);
+  const api = apiClient(test, (await makeKey(browser, workspace)).secret);
+  const text = `Read this: ${sandboxLink}`;
+
+  const post = await api.create({
+    text,
+    channelIds: [channel],
+    mode: "shareNow",
+  });
+  expect((await api.ended(post.id)).status).toBe("sent");
+
+  const response = await browser.fetch("/api/sandbox/feed?marks=1");
+  const { accounts } = sandboxFeedSchema.parse(await response.json());
+  expect(
+    accounts
+      .flatMap(({ posts }) => posts)
+      .map((shown) => ({ text: shown.text, card: shown.card?.title ?? null })),
+  ).toEqual([{ text, card: "The example page" }]);
+  // The page is one of the simulated web of the sandbox: nothing left
+  // the Worker for it.
+  expect(test.network.requests).toEqual([]);
+});
 
 it("keeps as a draft what it would not publish, and says what keeps a post from going out", async () => {
   const { api, channel, test, browser, workspace } = await ready();
