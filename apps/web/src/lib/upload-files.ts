@@ -73,10 +73,22 @@ export function indexedDbFiles(userId: string): FileStore {
     delete: async (key) => {
       await done((await store("readwrite")).delete(key));
     },
-    keys: async () =>
-      (await done((await store("readonly")).getAllKeys())).filter(
+    keys: async () => {
+      // Looked through without making the database, which opening it
+      // would: a person who never attached an image has none.
+      if (
+        !opened &&
+        "databases" in indexedDB &&
+        !(await indexedDB.databases()).some(
+          ({ name }) => name === filesName(userId),
+        )
+      ) {
+        return [];
+      }
+      return (await done((await store("readonly")).getAllKeys())).filter(
         (key): key is string => typeof key === "string",
-      ),
+      );
+    },
   };
 }
 
