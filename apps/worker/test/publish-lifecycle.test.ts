@@ -782,7 +782,7 @@ it("finds the workflow of a delivery that it had created before it could take no
   // Nothing was logged but the failure that the test made: the second
   // look did not fail.
   expect(errors.mock.calls.map(([message]) => message)).toEqual([
-    "The deliveries of a workspace were not looked after",
+    "The posts and deliveries of a workspace were not looked after",
   ]);
 
   // One workflow carried the delivery, and posted once.

@@ -5,8 +5,10 @@ import {
   networks,
   notificationKinds,
   type PushMessage,
+  postModes,
   postStatuses,
   type RejectionCode,
+  type settingsId,
   tableNames,
   targetStatuses,
 } from "@pigy/core";
@@ -32,12 +34,26 @@ import {
 // lists, which are the fields of the rows in @pigy/core. Times are
 // milliseconds since the Unix epoch.
 
-export const posts = sqliteTable("post", {
-  id: text("id").primaryKey(),
-  status: text("status", { enum: postStatuses }).notNull(),
-  createdAt: integer("created_at").notNull(),
-  updatedAt: integer("updated_at").notNull(),
-});
+export const posts = sqliteTable(
+  "post",
+  {
+    id: text("id").primaryKey(),
+    status: text("status", { enum: postStatuses }).notNull(),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+    // The four below came with scheduling. All can be null, which is what
+    // they are for every post from before.
+    mode: text("mode", { enum: postModes }),
+    dueAt: integer("due_at"),
+    queuePosition: integer("queue_position"),
+    heldAt: integer("held_at"),
+  },
+  (table) => [
+    // For the scheduled posts, which the mutators of the queue and every
+    // look at what is due ask for, among all that were ever published.
+    index("post_status_idx").on(table.status),
+  ],
+);
 
 export const postParts = sqliteTable(
   "post_part",
@@ -234,6 +250,30 @@ export const notifications = sqliteTable(
   // For the oldest, which is the next to go.
   (table) => [index("notification_created_at_idx").on(table.createdAt)],
 );
+
+/** A slot of the queue: a time of the week. */
+export const scheduleSlots = sqliteTable(
+  "schedule_slot",
+  {
+    id: text("id").primaryKey(),
+    weekday: integer("weekday").notNull(),
+    minute: integer("minute").notNull(),
+  },
+  (table) => [
+    // A time of the week is one slot.
+    uniqueIndex("schedule_slot_weekday_minute_idx").on(
+      table.weekday,
+      table.minute,
+    ),
+  ],
+);
+
+/** What the workspace has set: one row at most, under `settingsId`. */
+export const settings = sqliteTable("settings", {
+  id: text("id").$type<typeof settingsId>().primaryKey(),
+  timeZone: text("time_zone"),
+  queuePaused: integer("queue_paused", { mode: "boolean" }).notNull(),
+});
 
 // The tables below never leave the object.
 

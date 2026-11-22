@@ -75,7 +75,18 @@ it("answers the first hello of a client with a snapshot", async () => {
   expect(snapshot).toMatchObject({ from: null, to: 1, lastMutationId: 0 });
   const createdAt = Date.parse("2026-11-14T10:00:00Z");
   expect(client.copy).toEqual({
-    post: [{ id: postId, status: "draft", createdAt, updatedAt: createdAt }],
+    post: [
+      {
+        id: postId,
+        status: "draft",
+        createdAt,
+        updatedAt: createdAt,
+        mode: null,
+        dueAt: null,
+        queuePosition: null,
+        heldAt: null,
+      },
+    ],
     post_part: [
       { id: partId, postId, targetId: null, position: 0, text: "Hello" },
     ],
@@ -83,6 +94,8 @@ it("answers the first hello of a client with a snapshot", async () => {
     post_target: [],
     target_part_result: [],
     notification: [],
+    schedule_slot: [],
+    settings: [],
   });
 });
 

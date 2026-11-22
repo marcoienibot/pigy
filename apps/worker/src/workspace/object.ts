@@ -158,12 +158,6 @@ export function workspaceObject(
   return class WorkspaceObject extends DurableObject<Bindings> {
     readonly #store: WorkspaceStore;
     /**
-     * The time at which the inbox next has something to do, as it was
-     * when the alarm was last set: see `#attend`. Kept in memory to spare
-     * the asking, and gone with it, which costs one question more.
-     */
-    #attended: number | null = null;
-    /**
      * The pass over the push messages that is under way, if one is: see
      * `#sendPushes`. In memory, like the pass itself: an object that
      * leaves memory in the middle of one sends what is left of the queue
@@ -175,6 +169,19 @@ export function workspaceObject(
      * waiting. Null unless an alarm does.
      */
     #standAside: (() => void) | null = null;
+    /**
+     * True when the last pass over the push messages stopped at its limit
+     * and left messages for the next one, until that begins: see
+     * `#nextLookIn`.
+     */
+    #passStopped = false;
+    /**
+     * True while the alarm runs. It sets the next alarm when it is done,
+     * from what it finds then, so a change in the meantime sets none.
+     */
+    #looking = false;
+    /** How often the alarm has begun to run since the object was made. */
+    #alarms = 0;
 
     constructor(ctx: DurableObjectState, env: Bindings) {
       super(ctx, env);
@@ -286,9 +293,9 @@ export function workspaceObject(
           handBack: call.handBack === true,
         },
       );
+      // The access of the channel may name a time to renew it at, which
+      // the alarm is set for with every change.
       this.#publish(from);
-      // The access of the channel may name a time to renew it at.
-      this.#wakeForRenewals();
       return outcome;
     }
 
@@ -459,22 +466,23 @@ export function workspaceObject(
         now().getTime(),
       );
       this.#publish(from);
-      this.#wakeForRenewals();
       return renewed;
     }
 
     /**
-     * Looks after the deliveries and the accesses. It begins the
-     * deliveries whose turn has come, each as a run of the publishing
-     * workflow, and ends the ones whose workflow is over without having
-     * said so. Then it renews the access of every channel whose time for
-     * that has come, and begins the deliveries that waited for one of
-     * those. Last it keeps the inbox, and sends the push messages that
-     * wait: `#sendPushes`, which does not keep the next alarm waiting. It
-     * runs soon after anything changes that can make a delivery begin or
-     * that queues a push message, every `deliveryWatchMs` while a
-     * delivery is under way, and when the next access or the inbox is
-     * due.
+     * Looks after what the workspace does by itself. It takes up the
+     * scheduled posts whose time has come. It ends the deliveries whose
+     * workflow is over without having said so, and begins the ones whose
+     * turn has come, each as a run of the publishing workflow. Then it
+     * renews the access of every channel whose time for that has come,
+     * and begins the deliveries that waited for one of those. Last it
+     * keeps the inbox, and sends the push messages that wait:
+     * `#sendPushes`, which does not keep a delivery waiting. It runs at
+     * the moment that `#nextLookIn` names: when the next scheduled post
+     * is due, soon after anything changes that can make a delivery begin
+     * or that queues a push message, every `deliveryWatchMs` while a
+     * delivery is under way or a push message waits, and when the next
+     * access or the inbox is due.
      *
      * What goes wrong in looking after them does not fail the alarm: it
      * is logged, and tried again the next time. The one thing that does
@@ -484,67 +492,105 @@ export function workspaceObject(
      * does some times, with a growing pause.
      */
     override async alarm(): Promise<void> {
-      // Each by itself: a platform that does not say how its runs are
-      // doing must not keep the next delivery from beginning. The
-      // accesses come last: a post that waits to go out is more urgent
-      // than an access that is good for weeks. The runtime runs one alarm
-      // of an object at a time, and deliveries begin here alone, so none
-      // begins while an access is being renewed. One access goes before
-      // the post all the same: one whose renewal is overdue, which the
-      // deliveries to its channel have kept waiting. No delivery begins
-      // there before it was renewed, and the ones that waited for that
-      // begin last, in the same alarm.
-      // The runs that this alarm could not create, which its second look
-      // at the deliveries does not try again: the next alarm does.
-      const uncreated = new Set<string>();
-      for (const [look, failed] of [
-        [
-          () => this.#watchDeliveries(),
-          "The deliveries of a workspace were not looked after",
-        ],
-        [
-          () => this.#startDeliveries(uncreated),
-          "The deliveries of a workspace were not looked after",
-        ],
-        [
-          () => this.#renewAccesses(),
-          "The accesses of a workspace were not renewed",
-        ],
-        [
-          // Only for a delivery that can begin now: one that waited for
-          // its access, or that became ready while an access was renewed.
-          async () => {
-            if (this.#store.deliveriesNeed(now().getTime()) === "begin") {
-              await this.#startDeliveries(uncreated);
-            }
-          },
-          "The deliveries of a workspace were not looked after",
-        ],
-        [
-          // Before the messages are sent: what these say is queued too.
-          () => this.#keepInbox(),
-          "The inbox of a workspace was not kept",
-        ],
-        [
-          () => this.#sendPushes(),
-          "The push messages of a workspace were not sent",
-        ],
-      ] as const) {
-        try {
-          await look();
-        } catch (error) {
-          console.error(failed, loggable(error));
-        }
-      }
+      this.#looking = true;
+      this.#alarms += 1;
       try {
-        await this.#setNextAlarm();
-      } catch (error) {
-        console.error(
-          "The next look at a workspace was not set",
-          loggable(error),
-        );
-        // Without its secrets: this goes into the log of the runtime.
-        throw new Error("The next look at a workspace was not set");
+        // Each by itself: a platform that does not say how its runs are
+        // doing must not keep the next delivery from beginning, and
+        // neither may a post that cannot be taken up. The accesses come
+        // last: a post that waits to go out is more urgent than an access
+        // that is good for weeks. The runtime runs one alarm of an object
+        // at a time, and deliveries begin here alone, so none begins
+        // while an access is being renewed. One access goes before the
+        // post all the same: one whose renewal is overdue, which the
+        // deliveries to its channel have kept waiting. No delivery begins
+        // there before it was renewed, and the ones that waited for that
+        // begin last, in the same alarm.
+        // The runs that this alarm could not create, which its second
+        // look at the deliveries does not try again: the next alarm does.
+        const uncreated = new Set<string>();
+        // True if the accesses that are due were not all turned to,
+        // because a delivery was ready to begin: the next alarm takes
+        // the rest, and comes at once.
+        let unfinished = false;
+        // True if the alarm stopped waiting for the push messages to be
+        // sent, because a delivery asked to begin: it comes back at once.
+        let stoodAside = false;
+        for (const [look, failed] of [
+          [
+            () => this.#publishDue(),
+            "The scheduled posts of a workspace were not taken up",
+          ],
+          [
+            () => this.#watchDeliveries(),
+            "The deliveries of a workspace were not looked after",
+          ],
+          [
+            () => this.#startDeliveries(uncreated),
+            "The deliveries of a workspace were not looked after",
+          ],
+          [
+            async () => {
+              unfinished = await this.#renewAccesses();
+            },
+            "The accesses of a workspace were not renewed",
+          ],
+          [
+            // Only for a delivery that can begin now: one that waited for
+            // its access, or that became ready while an access was
+            // renewed.
+            async () => {
+              if (this.#store.deliveriesNeed(now().getTime()) === "begin") {
+                await this.#startDeliveries(uncreated);
+              }
+            },
+            "The deliveries of a workspace were not looked after",
+          ],
+          [
+            // Before the messages are sent: what these say is queued too.
+            () => this.#keepInbox(),
+            "The inbox of a workspace was not kept",
+          ],
+          [
+            // Last: this waits for the push services, and leaves as soon
+            // as a delivery asks to begin.
+            async () => {
+              stoodAside = await this.#sendPushes();
+            },
+            "The push messages of a workspace were not sent",
+          ],
+        ] as const) {
+          try {
+            await look();
+          } catch (error) {
+            console.error(failed, loggable(error));
+          }
+        }
+        // Nothing is awaited between the last look above and this one, so
+        // nothing can have come in between: the sending of the push
+        // messages is over, or the alarm stood aside, and says so. And
+        // nothing else has set the alarm while this one ran, `#looking`,
+        // so none is set, and the runtime does not have to be asked.
+        const wait = this.#nextLookIn("alarm", { unfinished, stoodAside });
+        const set =
+          wait === null
+            ? undefined
+            : // By the clock of the runtime, which alarms go by.
+              this.ctx.storage.setAlarm(Date.now() + wait);
+        // From here on a change sets the alarm for itself again.
+        this.#looking = false;
+        try {
+          await set;
+        } catch (error) {
+          console.error(
+            "The next look at a workspace was not set",
+            loggable(error),
+          );
+          // Without its secrets: this goes into the log of the runtime.
+          throw new Error("The next look at a workspace was not set");
+        }
+      } finally {
+        this.#looking = false;
       }
     }
 
@@ -567,51 +613,134 @@ export function workspaceObject(
       }
     }
 
-    /**
-     * When the alarm is next needed, in milliseconds from now, or null if
-     * nothing is waited for: soon while a delivery waits or is under way
-     * or a push message waits to be sent, and else when the next access is
-     * due or the inbox next has something to do by the clock.
-     */
-    #nextLookIn(): number | null {
-      // Also for a delivery that can begin: one that became ready while
-      // this alarm ran has set the alarm for itself, `#wake`, and sooner.
-      // A push message that is left could not be sent a moment ago, and
-      // is not tried at once: what failed then fails again. Or a pass is
-      // sending it beside this alarm, which needs no alarm. A pass that
-      // stopped at its limit has set the alarm for now, which stays.
-      if (
-        this.#store.deliveriesNeed(now().getTime()) !== "nothing" ||
-        this.#store.pushesWait
-      ) {
-        return deliveryWatchMs;
-      }
-      const renewal = this.#store.nextRenewalAt;
-      const inbox = this.#store.nextDueAt;
-      this.#attended = inbox;
-      const waits = [
-        ...(renewal === null
-          ? []
-          : [Math.max(renewalPauseMs, renewal - now().getTime())]),
-        ...(inbox === null
-          ? []
-          : [Math.max(deliveryWatchMs, inbox - now().getTime())]),
-      ];
-      return waits.length > 0 ? Math.min(...waits) : null;
+    /** Takes up the scheduled posts whose time has come. */
+    #publishDue(): void {
+      const from = this.#store.seq;
+      this.#store.publishDue(now().getTime());
+      this.#publish(from);
     }
 
     /**
-     * Sets the alarm for the next look, unless one is set that comes
-     * sooner. While the accesses were being renewed, a change may have set
-     * the alarm for a delivery that waits.
+     * When the alarm is next needed, in milliseconds from now, or null if
+     * the object has nothing to do by itself. Everything that sets the
+     * alarm asks here, so this is the one list of what the alarm is for.
+     * It is the earliest of these moments:
+     *
+     * - A delivery can begin, or waits for an access that is overdue for
+     *   renewal: at once, after a change. The alarm itself has just
+     *   tried, so what it leaves so has failed, and it comes back in
+     *   `deliveryWatchMs`: never at once, which would be a loop.
+     * - A delivery is under way: in `deliveryWatchMs`, to see that it
+     *   ends, and to create its workflow if that could not be done.
+     * - The alarm stopped renewing accesses for a delivery, `unfinished`:
+     *   at once, for the rest of them. It has renewed one at least, so
+     *   this ends.
+     * - The alarm stopped waiting for the push messages to be sent,
+     *   because a change asked for a delivery to begin, `stoodAside`: at
+     *   once, for that delivery. It takes a change to get here, so this
+     *   ends.
+     * - A scheduled post is due: at its time. If its time has passed,
+     *   and the object has looked for what was due since, it did not
+     *   manage to take the post up, and comes back in `deliveryWatchMs`.
+     * - A push message waits to be sent: at once after the change that
+     *   queued it, `pushQueued`, and at once when the pass before
+     *   stopped at its limit, which has sent some, so this ends. Else in
+     *   `deliveryWatchMs`: a message that is left then could not be sent
+     *   a moment ago, and what failed then fails again, or a pass is
+     *   sending it beside the alarm.
+     * - An access is to be renewed: at its time, and in `renewalPauseMs`
+     *   at the earliest.
+     * - The inbox has something to do by the clock, which is to tell of
+     *   an access that ends or to remove what is old: at that time, and
+     *   in `deliveryWatchMs` at the earliest, which is when it is tried
+     *   again if it did not work.
+     *
+     * `after` says who asks: a change, or the alarm when it has looked.
      */
-    async #setNextAlarm(): Promise<void> {
-      const wait = this.#nextLookIn();
+    #nextLookIn(
+      after: "change" | "alarm",
+      {
+        unfinished = false,
+        stoodAside = false,
+        pushQueued = false,
+      }: {
+        unfinished?: boolean;
+        stoodAside?: boolean;
+        pushQueued?: boolean;
+      } = {},
+    ): number | null {
+      const time = now().getTime();
+      const waits: number[] = [];
+      const need = this.#store.deliveriesNeed(time);
+      if (need !== "nothing") {
+        waits.push(
+          after === "change" && need !== "watch" ? 0 : deliveryWatchMs,
+        );
+      }
+      if (unfinished || stoodAside) waits.push(0);
+      const dueAt = this.#store.nextDueAt;
+      if (dueAt !== null) {
+        waits.push(
+          dueAt > this.#store.dueLookedAt
+            ? Math.max(0, dueAt - time)
+            : deliveryWatchMs,
+        );
+      }
+      if (this.#store.pushesWait) {
+        waits.push(pushQueued || this.#passStopped ? 0 : deliveryWatchMs);
+      }
+      const renewal = this.#store.nextRenewalAt;
+      if (renewal !== null) {
+        waits.push(Math.max(renewalPauseMs, renewal - time));
+      }
+      const inbox = this.#store.nextInboxAt;
+      if (inbox !== null) {
+        waits.push(Math.max(deliveryWatchMs, inbox - time));
+      }
+      return waits.length === 0 ? null : Math.min(...waits);
+    }
+
+    /**
+     * Sets the alarm to the moment that `#nextLookIn` names, after a
+     * change, unless it is set to that moment or an earlier one already:
+     * a change brings the alarm forward and never puts it off, so the
+     * look at a delivery under way stays where it is whatever is
+     * scheduled after it. Every `setAlarm` of the object is here or at the
+     * end of `alarm`.
+     *
+     * An alarm that is needed at once is set at once, in the same turn as
+     * the change that it follows: it is stored with that change, so it
+     * runs also if the object stops before it gets there. For a later
+     * moment the runtime is asked what is set. It alone knows: a record
+     * of the object's own would be wrong after an alarm that failed, and
+     * for an object from before it had one. The answer takes a moment in
+     * which more can change, so the moment is worked out anew when the
+     * answer is there, and nothing is awaited between that and setting
+     * the alarm. An alarm that began to run in that moment sets the next
+     * one itself.
+     *
+     * While the alarm runs this does nothing: the alarm sets the next one
+     * when it is done, from what it finds then, and a change of its own
+     * would have it run again at once, for what it is about to do.
+     *
+     * By the clock of the runtime, which is the one that alarms go by.
+     * The times of posts and accesses are by the clock that the object
+     * was made with, which is another one in a test: the alarm is set as
+     * far ahead as the moment is by that clock.
+     */
+    async #setNextAlarm(pushQueued = false): Promise<void> {
+      if (this.#looking) return;
+      let wait = this.#nextLookIn("change", { pushQueued });
       if (wait === null) return;
-      // By the clock of the runtime, which is the one that alarms go by.
-      const at = Date.now() + wait;
-      const set = await this.ctx.storage.getAlarm();
-      if (set === null || set > at) await this.ctx.storage.setAlarm(at);
+      if (wait > 0) {
+        const alarms = this.#alarms;
+        const set = await this.ctx.storage.getAlarm();
+        if (this.#looking || alarms !== this.#alarms) return;
+        wait = this.#nextLookIn("change", { pushQueued });
+        if (wait === null) return;
+        if (wait > 0 && set !== null && set <= Date.now() + wait) return;
+      }
+      await this.ctx.storage.setAlarm(Date.now() + wait);
     }
 
     /**
@@ -626,10 +755,13 @@ export function workspaceObject(
      * for it, `#wake`, begins it and takes the rest of the channels. So
      * too when the delivery is one that waited for this renewal, which
      * the alarm begins as its last step.
+     *
+     * Returns whether it stopped so with channels left to turn to.
      */
-    async #renewAccesses(): Promise<void> {
+    async #renewAccesses(): Promise<boolean> {
       const workspace = this.#store.identity;
-      for (const channel of this.#store.renewalsDue(now().getTime())) {
+      const due = this.#store.renewalsDue(now().getTime());
+      for (const [index, channel] of due.entries()) {
         const { channelId, credentials } = channel;
         const renewal = await renewAccess(
           dependencies,
@@ -684,8 +816,11 @@ export function workspaceObject(
           );
         }
         this.#publish(from);
-        if (this.#store.deliveriesNeed(now().getTime()) === "begin") return;
+        if (this.#store.deliveriesNeed(now().getTime()) === "begin") {
+          return index < due.length - 1;
+        }
       }
+      return false;
     }
 
     /**
@@ -698,33 +833,53 @@ export function workspaceObject(
      * accesses waiting with it: the runtime runs one alarm at a time. So
      * the sending is a pass of its own, `#pushPass`, which the alarm
      * begins as the last thing it does, and which it leaves to itself
-     * as soon as a change asks for the alarm: `#wake` says so here. The
-     * alarm then ends and runs again at once, for the delivery, and the
-     * pass goes on beside it. An alarm that comes while a pass is under
-     * way begins no second one.
+     * as soon as a change asks for a delivery to begin: `#wake` says so
+     * here. The alarm then ends and runs again at once, for the delivery,
+     * and the pass goes on beside it. An alarm that comes while a pass is
+     * under way begins no second one.
+     *
+     * Returns whether the alarm left the pass to itself so.
      */
-    async #sendPushes(): Promise<void> {
-      if (!this.#pushing && !this.#store.pushesWait) return;
-      this.#pushing ??= this.#pushPass()
-        .catch((error: unknown) =>
-          console.error(
-            "The push messages of a workspace were not sent",
-            loggable(error),
-          ),
-        )
-        .finally(() => {
-          this.#pushing = null;
-        });
+    async #sendPushes(): Promise<boolean> {
+      if (!this.#pushing && !this.#store.pushesWait) return false;
+      if (!this.#pushing) {
+        this.#passStopped = false;
+        this.#pushing = this.#pushPass()
+          .catch((error: unknown) =>
+            console.error(
+              "The push messages of a workspace were not sent",
+              loggable(error),
+            ),
+          )
+          .finally(() => {
+            this.#pushing = null;
+            // For a pass that the alarm has left to itself. One that the
+            // alarm waits for sets nothing: the end of the alarm does.
+            if (this.#passStopped) {
+              this.#setNextAlarm().catch((error: unknown) =>
+                console.error(
+                  "The next look at a workspace was not set",
+                  loggable(error),
+                ),
+              );
+            }
+          });
+      }
+      let stoodAside = false;
       try {
         await Promise.race([
           this.#pushing,
           new Promise<void>((resolve) => {
-            this.#standAside = resolve;
+            this.#standAside = () => {
+              stoodAside = true;
+              resolve();
+            };
           }),
         ]);
       } finally {
         this.#standAside = null;
       }
+      return stoodAside;
     }
 
     /**
@@ -737,8 +892,9 @@ export function workspaceObject(
      *
      * A pass sends `pushesPerPass` messages at most and takes up no new
      * one after `pushPassMs`. What is left then goes with the next alarm,
-     * which is asked for at once: in between, that alarm looks after the
-     * deliveries and the accesses, also where nothing has woken it.
+     * which is asked for at once, `#passStopped`: in between, that alarm
+     * looks after the deliveries and the accesses, also where nothing has
+     * woken it.
      */
     async #pushPass(): Promise<void> {
       // By the clock of the runtime: this is about how long the object
@@ -751,7 +907,7 @@ export function workspaceObject(
         const [next] = this.#store.queuedPushes(now().getTime());
         if (!next) return;
         if (sent >= pushesPerPass || Date.now() - began >= pushPassMs) {
-          await this.ctx.storage.setAlarm(Date.now());
+          this.#passStopped = true;
           return;
         }
         // A pigy without a key sends nothing, and keeps nothing to send.
@@ -1023,7 +1179,7 @@ export function workspaceObject(
         ...state,
         clientId: hello.clientId,
       } satisfies SocketState);
-      this.#wakeForRenewals();
+      this.#wake();
       send(
         socket,
         this.#store.changesSince(hello.cursor),
@@ -1128,50 +1284,38 @@ export function workspaceObject(
     }
 
     /**
-     * Has the alarm run when the next access is due, after a change that
-     * may have named a time for one: a connection, or a refresh. Not
-     * after every change: the alarm sets itself for the access that comes
-     * after this one. Also when a client says hello: a workspace whose
-     * channels were connected before pigy had this timer has no alarm,
-     * and gets one when somebody next opens it.
+     * Has the alarm run when a change has given the object something to
+     * do by itself: at once if a delivery is ready to begin, because a
+     * post was published or the delivery before it has ended, or has to
+     * wait for an access that is overdue for renewal, which the alarm
+     * renews first, and at once for a push message that the change has
+     * queued. Later for a post that was scheduled, an access that was
+     * given a time to be renewed at or something that the inbox does by
+     * the clock, if that is before the time that the alarm is set to.
+     * Also when a client says hello: a
+     * workspace from before the object had something to do by itself has
+     * no alarm, and gets one when somebody next opens it.
+     *
+     * `#nextLookIn` has what a change does not bring the alarm forward
+     * for. A delivery that is under way without its workflow, because the
+     * workflow could not be created, is nothing that a change has brought
+     * about, and nothing that this change makes any better: the alarm
+     * tries again when its own time comes. Brought forward for it, the
+     * alarm would run at every message of a client, a keystroke included,
+     * for as long as the platform does not create workflows.
      */
-    #wakeForRenewals(): void {
-      this.#setNextAlarm().catch((error: unknown) =>
+    #wake(): void {
+      // The change that led here is committed. If this fails, the posts,
+      // the deliveries and the accesses wait for the next change or the
+      // next alarm.
+      const failed = (error: unknown) =>
         console.error(
           "The next look at a workspace was not set",
           loggable(error),
-        ),
-      );
-    }
-
-    /**
-     * Has the alarm run at once if a change has made a delivery ready to
-     * begin: a post was published, or the delivery before it has ended.
-     * Also where the delivery has to wait for an access that is overdue
-     * for renewal: the alarm renews it, and begins the delivery then.
-     * The alarm is stored with the change that it follows, so it runs also
-     * if the object stops before it gets there.
-     *
-     * Only for that. A delivery that is under way without its workflow,
-     * because the workflow could not be created, is nothing that a change
-     * has brought about, and nothing that this change makes any better:
-     * the alarm tries again when its own time comes. Brought forward for
-     * it, the alarm would run at every message of a client, a keystroke
-     * included, for as long as the platform does not create workflows.
-     */
-    #wake(): void {
-      // The change that led here is committed. If this fails, the
-      // deliveries wait for the next change or the next alarm.
-      const failed = (error: unknown) =>
-        console.error(
-          "The deliveries of a workspace were not looked at",
-          error,
         );
       try {
-        const need = this.#store.deliveriesNeed(now().getTime());
-        // A push message that this change has queued is sent at once, for
-        // the same reason and under the same limit: one that could not be
-        // sent waits for the alarm's own time.
+        // A push message that this change has queued is sent at once:
+        // `#nextLookIn`.
         let pushQueued = this.#store.takePushQueued();
         if (pushQueued && this.#vapidKey() === undefined) {
           // A pigy without a key sends nothing, and keeps nothing to
@@ -1179,28 +1323,17 @@ export function workspaceObject(
           this.#store.dropQueuedPushes();
           pushQueued = false;
         }
-        if (need === "begin" || need === "renew" || pushQueued) {
-          this.ctx.storage.setAlarm(Date.now()).catch(failed);
-          // An alarm that is sending push messages is in the way of the
-          // one that was just set: it ends here, and its sending goes on.
-          if (need === "begin" || need === "renew") this.#standAside?.();
-        } else {
-          this.#attend();
+        if (this.#standAside) {
+          // An alarm that waits for the push messages to be sent is in
+          // the way of a delivery that this change has made ready: it
+          // ends here, its sending goes on, and it comes back at once.
+          const need = this.#store.deliveriesNeed(now().getTime());
+          if (need === "begin" || need === "renew") this.#standAside();
         }
+        this.#setNextAlarm(pushQueued).catch(failed);
       } catch (error) {
         failed(error);
       }
-    }
-
-    /**
-     * Sees to it that the alarm runs when the inbox next has something to
-     * do by the clock: `nextDueAt` of the store, which a change can bring
-     * forward. Asked only when that time is another than the one that the
-     * alarm was last set with.
-     */
-    #attend(): void {
-      if (this.#store.nextDueAt === this.#attended) return;
-      this.#wakeForRenewals();
     }
   };
 }

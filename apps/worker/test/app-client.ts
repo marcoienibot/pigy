@@ -184,5 +184,7 @@ export function shown(store: SyncStore) {
     post_target: table("post_target"),
     target_part_result: table("target_part_result"),
     notification: table("notification"),
+    schedule_slot: table("schedule_slot"),
+    settings: table("settings"),
   };
 }

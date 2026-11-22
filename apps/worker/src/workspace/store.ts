@@ -51,6 +51,7 @@ import {
   type KeyedOutcome,
   keyedCalls,
   notifications,
+  posts,
   postTargets,
   pushOutbox,
   rejections,
@@ -675,6 +676,68 @@ export class WorkspaceStore {
     });
   }
 
+  /**
+   * The latest time for which the object has looked for the posts that
+   * were due, since it was made. A scheduled post whose time is not after
+   * it was looked for and is still there: taking it up has failed.
+   */
+  dueLookedAt = Number.NEGATIVE_INFINITY;
+
+  /**
+   * The scheduled posts whose time has come by `now`, the one that was
+   * due first first. Not those that are held: their time has passed, and
+   * somebody has to say what becomes of them.
+   */
+  private duePosts(now: number): string[] {
+    this.dueLookedAt = Math.max(this.dueLookedAt, now);
+    return this.db
+      .select({ id: posts.id })
+      .from(posts)
+      .where(
+        and(
+          eq(posts.status, "scheduled"),
+          isNotNull(posts.dueAt),
+          lte(posts.dueAt, now),
+          isNull(posts.heldAt),
+        ),
+      )
+      .orderBy(asc(posts.dueAt), asc(posts.id))
+      .all()
+      .map(({ id }) => id);
+  }
+
+  /**
+   * Takes up the scheduled posts whose time has come: each is sent, held
+   * or given another slot, by the mutator `post.due`. Every mutation of
+   * the workspace does the same before it runs and after, so this is for
+   * the alarm, which runs when a time has come and nothing else happens.
+   */
+  publishDue(now: number): void {
+    this.storage.transactionSync(() => {
+      this.run([], now, "server");
+    });
+  }
+
+  /**
+   * When the next scheduled post is due, or null if none is: the earliest
+   * time among those that are not held. A time that has passed is one
+   * that `publishDue` did not get done.
+   */
+  get nextDueAt(): number | null {
+    const next = this.db
+      .select({ dueAt: sql<number | null>`min(${posts.dueAt})` })
+      .from(posts)
+      .where(
+        and(
+          eq(posts.status, "scheduled"),
+          isNotNull(posts.dueAt),
+          isNull(posts.heldAt),
+        ),
+      )
+      .get();
+    return next?.dueAt ?? null;
+  }
+
   /** The workspace that the object holds. */
   get identity(): WorkspaceIdentity {
     const record = this.db
@@ -1250,6 +1313,12 @@ export class WorkspaceStore {
    * times that mutators put into rows say in which order the mutations
    * were run, also for those of one message, and across restarts: the
    * last time is stored with the workspace.
+   *
+   * The scheduled posts whose time has come are taken up first, with
+   * `post.due`: a mutation never finds a post that should have gone out
+   * by its time. And again after the mutations, for a post that one of
+   * them scheduled for a time that has passed, as a device does that was
+   * without a connection.
    */
   private run(
     mutations: MutatorCall[],
@@ -1259,7 +1328,22 @@ export class WorkspaceStore {
     this.forgetHandedBack(now);
     const before = this.record();
     let { seq, time } = before;
-    const outcomes = mutations.map((mutation) => {
+    const due = () => {
+      for (const id of this.duePosts(Math.max(now, time + 1))) {
+        const refusal = apply({ name: "post.due", args: { id } }, "server");
+        // The mutator takes every post that is due. The alarm comes back
+        // to one that it did not, in its own time.
+        if (refusal) {
+          console.error(`The due post ${id} was not taken up`, refusal.message);
+        }
+      }
+    };
+    const apply = (
+      mutation: MutatorCall,
+      // Whose the mutation is: a due post is the server's to take up,
+      // whoever the others are from.
+      from: MutationSource,
+    ): Refusal | null => {
       time = Math.max(now, time + 1);
       const tx = new RecordingTransaction(this.db, time);
       try {
@@ -1267,7 +1351,7 @@ export class WorkspaceStore {
         // mutator wrote if it throws.
         this.storage.transactionSync(() => {
           try {
-            applyMutation(tx, mutation.name, mutation.args, source);
+            applyMutation(tx, mutation.name, mutation.args, from);
           } catch (error) {
             // Only what is thrown here is a refusal: it comes from the
             // mutator. The database failing under it is not, and neither is
@@ -1292,7 +1376,10 @@ export class WorkspaceStore {
         }
       }
       return null;
-    });
+    };
+    due();
+    const outcomes = mutations.map((mutation) => apply(mutation, source));
+    if (mutations.length > 0) due();
 
     // The log is kept from growing by dropping what is older than the
     // window. A cursor from before the floor can no longer be served from
@@ -1509,7 +1596,7 @@ export class WorkspaceStore {
    * milliseconds since the epoch, or null if nothing is in sight: an
    * access whose end is to be told of, or a notification that is to go.
    */
-  get nextDueAt(): number | null {
+  get nextInboxAt(): number | null {
     const access = this.db
       .select({ endsAt: min(channels.expiresAt) })
       .from(channels)

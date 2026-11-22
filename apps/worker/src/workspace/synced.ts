@@ -8,6 +8,8 @@ import {
   postParts,
   posts,
   postTargets,
+  scheduleSlots,
+  settings,
   targetPartResults,
 } from "./schema.ts";
 
@@ -30,6 +32,10 @@ const synced = {
       status: posts.status,
       createdAt: posts.createdAt,
       updatedAt: posts.updatedAt,
+      mode: posts.mode,
+      dueAt: posts.dueAt,
+      queuePosition: posts.queuePosition,
+      heldAt: posts.heldAt,
     },
   },
   post_part: {
@@ -92,6 +98,22 @@ const synced = {
       channelId: notifications.channelId,
       createdAt: notifications.createdAt,
       readAt: notifications.readAt,
+    },
+  },
+  schedule_slot: {
+    table: scheduleSlots,
+    columns: {
+      id: scheduleSlots.id,
+      weekday: scheduleSlots.weekday,
+      minute: scheduleSlots.minute,
+    },
+  },
+  settings: {
+    table: settings,
+    columns: {
+      id: settings.id,
+      timeZone: settings.timeZone,
+      queuePaused: settings.queuePaused,
     },
   },
 } satisfies {
