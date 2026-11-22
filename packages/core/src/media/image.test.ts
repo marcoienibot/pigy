@@ -316,6 +316,21 @@ test.each([
   },
 );
 
+test("a WebP whose RIFF header lies about its length is refused, either way", async () => {
+  const file = webpFile(12, 5, { clean: true });
+  const saying = (length: number) => {
+    const lying = file.slice();
+    new DataView(lying.buffer).setUint32(4, length, true);
+    return lying;
+  };
+  // Longer than the file: it ends before what it said.
+  expect(await refusal(saying(file.length + 100))).toBe("damaged");
+  // Shorter than its chunks: a chunk goes on beyond it.
+  expect(await refusal(saying(20))).toBe("damaged");
+  // What it is: taken.
+  expect(await refusal(saying(file.length - 8))).toBe("taken");
+});
+
 test("a WebP whose header chunk is longer than its fields is refused", async () => {
   // VP8X has ten bytes. Whatever follows them in the chunk would be
   // copied as part of the header.
