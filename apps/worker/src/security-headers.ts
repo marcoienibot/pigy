@@ -9,7 +9,9 @@ import type { AppEnv } from "./env.ts";
  *
  * Every answer gets a content security policy, also one that no browser
  * shows as a page, so that a page which is added later starts from a
- * policy that allows nothing and not from none.
+ * policy that allows nothing and not from none. The policy is the header
+ * and nothing else: no tag is written into a page, which would hold only
+ * where the page has a head to write it into, and only from there on.
  */
 
 const always = {
@@ -48,7 +50,9 @@ async function hashSource(text: string): Promise<string> {
  * - The style sheets that the page has in its head, each by its hash, and
  *   no other: not a `style` attribute, and not a `<style>` further down,
  *   where a page shows what others have written. The hashes are made of
- *   the page as it is answered, so they need no keeping.
+ *   the page as it is answered, so they need no keeping. A page whose head
+ *   has no end, `</head>`, gets none: nothing says where its own markup
+ *   ends.
  * - A form is sent to pigy alone. A browser asks this of where the answer
  *   to a form redirects to as well: a simulated consent page sends the
  *   browser back to a callback of this pigy.
@@ -58,7 +62,8 @@ async function hashSource(text: string): Promise<string> {
  * of its own, which is left as it is.
  */
 export async function pagePolicy(html: string): Promise<string> {
-  const head = html.slice(0, html.search(/<\/head>/i) + 1 || html.length);
+  const end = html.search(/<\/head>/i);
+  const head = end === -1 ? "" : html.slice(0, end);
   const sheets = [...head.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)];
   const hashes = await Promise.all(
     sheets.map(([, text = ""]) => hashSource(text)),
@@ -81,9 +86,13 @@ export function securityHeaders(): MiddlewareHandler<AppEnv> {
     if (answer.status === 101 || c.get("passedOn")) return;
 
     const headers = new Headers(answer.headers);
+    // An answer without a body is no page, whatever its type says: there
+    // is nothing to read, and nothing to make one of for a status that
+    // has none, such as 204 and 304.
     const page =
       headers.get("Content-Type")?.startsWith("text/html") === true &&
-      !headers.has("Content-Security-Policy");
+      !headers.has("Content-Security-Policy") &&
+      answer.body !== null;
     // A page is read whole, for the hashes of its style sheets. It is
     // small: the Worker answers with no page that is not.
     const html = page ? await answer.text() : undefined;

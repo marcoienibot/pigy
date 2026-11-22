@@ -173,6 +173,21 @@ describe("the policy of a page", () => {
     expect(policy).not.toContain(await hashOf(injected));
   });
 
+  it("allows no style sheet at all to a page whose head has no end", async () => {
+    // Without "</head>" nothing says where the page's own markup ends and
+    // what it shows of others begins: the whole of it would be taken for
+    // the head, and every style sheet in it allowed.
+    const injected = "body { display: none; }";
+
+    const policy = await pagePolicy(
+      `<!doctype html><title>pigy</title><style>a{}</style><p>Hello</p><style>${injected}</style>`,
+    );
+
+    expect(policy).toBe(
+      "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+    );
+  });
+
   it("allows no style at all to a page that has none, and never a script", async () => {
     const policy = await pagePolicy(
       page("<script>alert(1)</script>", "<p>Hello</p>"),
@@ -182,6 +197,39 @@ describe("the policy of a page", () => {
     expect(policy).toBe(
       "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
     );
+  });
+});
+
+describe("an answer that is HTML and has no body", () => {
+  it.each([
+    ["has nothing to say", 204],
+    ["says that the browser has it already", 304],
+    ["has a body that is not there", 200],
+  ])("has its headers when it %s", async (_, status) => {
+    const app = new Hono();
+    app.use(securityHeaders());
+    // What a route may answer with: a status that has no body, with the
+    // type of a page all the same.
+    app.get(
+      "/",
+      () =>
+        new Response(null, {
+          status,
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+        }),
+    );
+
+    const response = await app.request("https://pigy.test/");
+
+    // As it was answered, and not an error of the middleware, which would
+    // read a body that is not there and make one for a status that has
+    // none.
+    expect(response.status).toBe(status);
+    expect(response.body).toBeNull();
+    // The header is the policy, whatever the answer holds: it allows
+    // nothing.
+    expect(response.headers.get("Content-Security-Policy")).toBe(dataPolicy);
+    expectCommonHeaders(response);
   });
 });
 
