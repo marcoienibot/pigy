@@ -254,10 +254,30 @@ it("runs a pending mutation after every time that the server has put into a chan
         dueAt: 5,
         queuePosition: null,
         heldAt: 6_000,
+        trashedAt: null,
       },
     },
   ]);
   expect(edited(held)?.updatedAt).toBe(6_001);
+  // And one that was put aside: `trashedAt` is one as well.
+  const aside = applyChanges(rows, false, [
+    {
+      op: "put",
+      table: "post",
+      row: {
+        id: newId(),
+        status: "scheduled",
+        createdAt: 1,
+        updatedAt: 1,
+        mode: "custom",
+        dueAt: 5,
+        queuePosition: null,
+        heldAt: null,
+        trashedAt: 7_000,
+      },
+    },
+  ]);
+  expect(edited(aside)?.updatedAt).toBe(7_001);
 });
 
 it("lets a pending mutation see what the ones before it did", () => {

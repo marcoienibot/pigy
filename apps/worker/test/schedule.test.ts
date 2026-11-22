@@ -1,5 +1,5 @@
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
-import { lateMs, type Row } from "@pigy/core";
+import { lateMs, type Row, trashMs } from "@pigy/core";
 import { feed, type SimToken } from "@pigy/simulators/world";
 import { expect, it, vi } from "vitest";
 import { deliveryWatchMs } from "../src/workspace/object.ts";
@@ -553,6 +553,7 @@ it("publishes a post that an alarm finds late, and holds one that it finds more 
     status: "scheduled",
     dueAt: now() - 2 * hour - 29 * minute,
     heldAt: expect.any(Number),
+    trashedAt: null,
   });
   expect(targetOf(later, early.targets[0] ?? "").status).toBe("pending");
   // A held post is nothing to come back for: the alarm that looked
@@ -581,6 +582,7 @@ it("moves a queued post that an alarm finds too late to the next slot", async ()
     // The same time of the week, a week on.
     dueAt: slot + 7 * 24 * hour,
     heldAt: null,
+    trashedAt: null,
   });
   expect(posts()).toEqual([]);
 });
@@ -612,6 +614,7 @@ it("publishes at once a post that a device scheduled for a time that has just pa
   expect(postOf(client, old.postId)).toMatchObject({
     status: "scheduled",
     heldAt: expect.any(Number),
+    trashedAt: null,
   });
   expect(posts()).toEqual(["Just missed"]);
 });
@@ -750,25 +753,18 @@ it("publishes a post once when its delete and the Undo of that reach the server 
 
   // Two minutes before the time, without a connection: the phone deletes
   // the post, and Undo brings it back. What the app makes of the two:
-  // a delete of a scheduled post, and a copy that is scheduled for the
-  // same time in the place of the post that is gone.
+  // the post is put aside, and that is taken back.
   phone.connection.stop();
-  phone.store.mutate("post.delete", { id: postId, ifScheduled: true });
-  const copy = newId();
-  phone.store.mutate("post.create", {
-    id: copy,
-    partId: newId(),
-    text: "Once",
+  phone.store.mutate("post.trash", { id: postId });
+  // The phone shows what it did: the post put aside, which no screen
+  // shows, and then scheduled as it was.
+  expect(phone.store.getView().post.get(postId)?.trashedAt).not.toBeNull();
+  phone.store.mutate("post.restore", { id: postId });
+  expect(phone.store.getView().post.get(postId)).toMatchObject({
+    status: "scheduled",
+    dueAt,
+    trashedAt: null,
   });
-  phone.store.mutate("target.add", {
-    id: newId(),
-    postId: copy,
-    channelId: channel,
-  });
-  phone.store.mutate("post.schedule", { id: copy, dueAt, ifGone: postId });
-  // The phone shows what it did: the post gone, its copy scheduled.
-  expect(phone.store.getView().post.has(postId)).toBe(false);
-  expect(phone.store.getView().post.get(copy)?.status).toBe("scheduled");
 
   // The app is opened again twenty minutes after the time, with a
   // connection, and sends what the phone kept. The server has not heard
@@ -779,17 +775,104 @@ it("publishes a post once when its delete and the Undo of that reach the server 
 
   const later = await watching(browser, workspace);
   expect(await settled(later, postId)).toMatchObject({ status: "sent" });
-  // The delete came too late, and so the copy is not scheduled, which
-  // would have been twenty minutes late too, and sent: the post went out
-  // once. The copy is a draft, and the phone is told why.
+  // The delete came too late, and the phone is told. Its Undo found
+  // nothing to take back, and made no post: the post went out once.
   expect(
     back.store.getRejections().map(({ name, code }) => [name, code]),
-  ).toEqual([
-    ["post.delete", "not_scheduled"],
-    ["post.schedule", "not_gone"],
-  ]);
-  expect(postOf(later, copy).status).toBe("draft");
+  ).toEqual([["post.trash", "not_scheduled"]]);
+  expect((await stored(workspace)).map(({ id }) => id)).toEqual([postId]);
   expect(posts()).toEqual(["Once"]);
+});
+
+it("publishes a post once when it went out and its record was deleted before the delete and the Undo of a phone arrive", async () => {
+  const { test, browser, workspace, channel, client, posts } = await ready();
+  const app = device(browser, workspace);
+  const phone = await app.online();
+  const dueAt = now() + 2 * minute;
+  const { postId } = await schedule(client, workspace, "Once", dueAt, channel);
+  await vi.waitFor(() =>
+    expect(phone.store.getView().post.get(postId)?.status).toBe("scheduled"),
+  );
+  // Without a connection, the phone deletes the post, takes that back,
+  // and has let the notice of a second deletion pass before: everything
+  // that the Queue screen can make of a post.
+  phone.connection.stop();
+  phone.store.mutate("post.trash", { id: postId });
+  phone.store.mutate("post.restore", { id: postId });
+
+  // The server publishes the post at its time, and another device
+  // deletes its record from the Sent screen: the post stays on the
+  // network, and the workspace knows nothing of it any more.
+  test.advance(2 * minute);
+  await alarm(workspace);
+  const other = await watching(browser, workspace);
+  expect(await settled(other, postId)).toMatchObject({ status: "sent" });
+  await mutate(other, other.mutation("post.delete", { id: postId }));
+
+  // The phone is back twenty minutes later. Nothing is there for what it
+  // kept to be about. An Undo that scheduled a copy of the post would
+  // find the original gone, as if its own delete had deleted it, and
+  // publish the copy: twenty minutes late, which is sent.
+  test.advance(20 * minute);
+  const back = await app.online();
+
+  expect(back.store.getRejections()).toEqual([]);
+  // No post is left that could go out, and nothing more is on the
+  // network than the one.
+  expect(await stored(workspace)).toEqual([]);
+  expect(posts()).toEqual(["Once"]);
+});
+
+it("does not publish a post that was put aside when its time comes, and deletes it a day later for a device that never did", async () => {
+  const { test, browser, workspace, channel, client, posts } = await ready();
+  const dueAt = now() + 2 * minute;
+  const { postId } = await schedule(client, workspace, "Aside", dueAt, channel);
+
+  // The window is closed while the Undo is still offered: the second
+  // step of the deletion never comes.
+  await mutate(client, client.mutation("post.trash", { id: postId }));
+
+  // Its time comes and goes. The alarm that was set for it, which a
+  // change never puts off, finds nothing due.
+  test.advance(3 * minute);
+  await alarm(workspace);
+  expect(await stored(workspace)).toMatchObject([
+    { id: postId, status: "scheduled" },
+  ]);
+  expect(posts()).toEqual([]);
+  // The next one is for the deletion: a day after the post was put
+  // aside, which was three minutes ago.
+  const set = (await alarmOf(workspace)) ?? 0;
+  expect(set - Date.now()).toBeGreaterThan(trashMs - 4 * minute);
+  expect(set - Date.now()).toBeLessThanOrEqual(trashMs - 3 * minute);
+
+  // Then the alarm deletes it, with its part and its target, and a
+  // client hears of it like of any change. A whole day on, and so past
+  // the time: every mutation of a workspace has a time of its own, a
+  // millisecond after the one before.
+  test.advance(trashMs);
+  const later = await watching(browser, workspace);
+  expect(later.copy.post.map(({ id }) => id)).toEqual([postId]);
+  await alarm(workspace);
+  await follow(later, () => later.copy.post.length === 0);
+  expect(later.copy.post_part).toEqual([]);
+  expect(later.copy.post_target).toEqual([]);
+  expect(await stored(workspace)).toEqual([]);
+  expect(posts()).toEqual([]);
+  // Nothing is left for the object to do by itself.
+  expect(await alarmOf(workspace)).toBeNull();
+});
+
+it("stores the time zone of a workspace under the name that the server has for it", async () => {
+  const { client } = await ready();
+
+  await mutate(
+    client,
+    client.mutation("settings.setTimeZone", { timeZone: "europe/ROME" }),
+  );
+
+  // In the runtime that the server is: the mutator asks it for the name.
+  expect(client.copy.settings).toMatchObject([{ timeZone: "Europe/Rome" }]);
 });
 
 it("takes up a post that is due before a mutation that would move it, without waiting for the alarm", async () => {

@@ -8,7 +8,6 @@ import {
   type MutatorArgs,
   type MutatorName,
   ownParts,
-  partsFor,
   type Row,
   sameTimeZone,
   settingsId,
@@ -16,7 +15,6 @@ import {
   timeOf,
 } from "@pigy/core";
 import { type Channel, selectChannels } from "@/lib/channels";
-import { restoreOwnText } from "@/lib/drafts";
 
 /**
  * What the Queue screen, the calendar and the posting schedule show: the
@@ -103,11 +101,19 @@ export function selectSchedule(
   };
 }
 
+/**
+ * Whether a post is scheduled, as far as a screen is concerned: not one
+ * that was put aside, which is deleted but for its Undo and is on no
+ * screen.
+ */
+const isScheduled = (post: Row<"post">) =>
+  post.status === "scheduled" && post.trashedAt === null;
+
 /** Whether the workspace has something that goes by its time zone. */
 function goesByZone(tables: Tables): boolean {
   if (tables.schedule_slot.size > 0) return true;
   for (const post of tables.post.values()) {
-    if (post.status === "scheduled") return true;
+    if (isScheduled(post)) return true;
   }
   return false;
 }
@@ -239,7 +245,7 @@ const snippetLength = 160;
 export function selectQueue(tables: Tables): QueueItem[] {
   const scheduled = new Map<string, Row<"post">>();
   for (const post of tables.post.values()) {
-    if (post.status === "scheduled") scheduled.set(post.id, post);
+    if (isScheduled(post)) scheduled.set(post.id, post);
   }
   if (scheduled.size === 0) return [];
   const parts = new Map<string, Row<"post_part">[]>();
@@ -517,7 +523,7 @@ export function selectCalendar(tables: Tables): CalendarEntry[] {
   }
   const entries: CalendarEntry[] = [];
   for (const post of tables.post.values()) {
-    if (post.status === "draft") continue;
+    if (post.status === "draft" || post.trashedAt !== null) continue;
     const time = post.status === "scheduled" ? post.dueAt : went.get(post.id);
     // A post of a queue that is paused or has no slots has no day.
     if (time === null || time === undefined) continue;
@@ -623,145 +629,122 @@ export function dayName(
   }).format(Date.UTC(year, month - 1, day));
 }
 
-// Deleting a scheduled post, and bringing it back.
+// Deleting a scheduled post, and taking that back.
 
-/** What a scheduled post was, for the Undo of its deletion. */
-export type TakenPost = {
-  /** The ID that it had. */
-  id: string;
-  /** The texts of its parts, in order. */
-  texts: string[];
-  /** Where it went, each account with the text that was written for it. */
-  targets: { channelId: string; own: string[] | null }[];
-  /** When it was to go out: a time, or its place in the queue. */
-  when:
-    | { mode: "custom"; dueAt: number | null }
-    | { mode: "queue"; afterId: string | null };
-};
-
-/** Reads what the scheduled post `id` is, before it is deleted. */
-export function takePost(tables: Tables, id: string): TakenPost | undefined {
-  const post = tables.post.get(id);
-  if (!post) return undefined;
-  const parts = [...tables.post_part.values()].filter(
-    (part) => part.postId === id,
-  );
-  const targets = [...tables.post_target.values()].filter(
-    (target) => target.postId === id,
-  );
-  const queue = inQueueOrder(selectQueue(tables));
-  const place = queue.findIndex((item) => item.id === id);
-  return {
-    id,
-    texts: ownParts(parts).map(({ text }) => text),
-    targets: targets.map((target) => {
-      const own = partsFor(parts, target.id);
-      return {
-        channelId: target.channelId,
-        own: own.some((part) => part.targetId === target.id)
-          ? own.map(({ text }) => text)
-          : null,
-      };
-    }),
-    when:
-      post.mode === "queue"
-        ? { mode: "queue", afterId: queue[place - 1]?.id ?? null }
-        : { mode: "custom", dueAt: post.dueAt },
-  };
+/**
+ * Deletes the scheduled post `id`, as far as anybody sees: puts it aside.
+ * It is gone from every screen and goes out nowhere, and `restore` takes
+ * that back. `deleteForGood` is the second step, when the Undo is no
+ * longer offered. The server refuses the first step for a post that is
+ * no longer scheduled: a device that has not heard that the post went
+ * out must not delete it from the Sent screen of every other.
+ */
+export function putAside(mutate: Mutate, id: string): void {
+  mutate("post.trash", { id });
 }
 
 /**
- * Deletes the scheduled post `id`, and only a scheduled one: a device
- * that has not heard that the post went out must not delete it from the
- * Sent screen of every other, and `bringBack` counts on the post being
- * there then.
+ * Deletes a post that was put aside, and no other: the first step may
+ * have been refused, and the post is then not this deletion's.
  */
-export function deleteScheduled(mutate: Mutate, id: string): void {
-  mutate("post.delete", { id, ifScheduled: true });
+export function deleteForGood(mutate: Mutate, id: string): void {
+  mutate("post.delete", { id, ifTrashed: true });
 }
 
-/** What came of bringing a deleted post back. */
-export type BroughtBack =
-  /** A new post, scheduled as the deleted one was. */
-  | { as: "scheduled"; id: string }
+/** What came of taking the deletion of a scheduled post back. */
+export type Restored =
+  /** It is scheduled again, as it was. */
+  | { as: "scheduled" }
+  /** Its time had passed by less than an hour: it is being sent. */
+  | { as: "sending" }
   /**
-   * A new post that is a draft: no account of it is left, or its time
-   * has passed.
+   * It is a draft: no account of it is left, or the workspace has as
+   * many scheduled posts as it can have.
    */
-  | { as: "draft"; id: string }
+  | { as: "draft" }
   /**
-   * Nothing: the post is there. The server did not delete it, because it
-   * was on its way or had gone out by then.
+   * Nothing was taken back, because the post was not deleted: the server
+   * refused, and the post is there as what `status` says. It had gone
+   * out by then, or somebody had taken it back to the drafts.
    */
-  | { as: "there"; id: string };
+  | { as: "there"; status: Row<"post">["status"] }
+  /** Nothing: the post is gone, deleted for good on another device. */
+  | { as: "gone" };
 
 /**
- * Brings a scheduled post that was deleted back: a post that is deleted
- * is gone for every device, so this is a new one with the same text,
- * which goes to the same accounts, those that are still connected, and
- * at the same time or to the same place in the queue.
- *
- * The post must not go out twice, once as itself and once as its copy.
- * So nothing is brought back while the post is there, which it is again
- * when the server has refused to delete it. And the copy is scheduled
- * only if the post is gone, `ifGone` of the mutators: a device can press
- * Undo before it has heard what the server made of the delete, and
- * without a connection it hears nothing for hours. If the post went out
- * meanwhile, the copy stays a draft, and the person is told.
+ * Takes back that the scheduled post `id` was deleted on this device,
+ * and says what came of it, as this device knows it. It is the same post
+ * again, never a copy: the server does the same to the one row whatever
+ * it has heard of meanwhile, and nothing where there is nothing to take
+ * back, so a post never goes out twice. `tables` reads the copy anew.
  */
-export function bringBack(
+export function restore(
   mutate: Mutate,
-  tables: Tables,
-  taken: TakenPost,
-  now: number,
-  newId: () => string,
-): BroughtBack {
-  if (tables.post.has(taken.id)) return { as: "there", id: taken.id };
-  const id = newId();
-  const [first = "", ...more] = taken.texts;
-  let last = newId();
-  mutate("post.create", { id, partId: last, text: first });
-  for (const text of more) {
-    const partId = newId();
-    mutate("part.add", {
-      id: partId,
-      postId: id,
-      channelId: null,
-      afterId: last,
-      text,
-    });
-    last = partId;
-  }
-  let chosen = 0;
-  for (const { channelId, own } of taken.targets) {
-    if (!tables.channel.has(channelId)) continue;
-    chosen += 1;
-    mutate("target.add", { id: newId(), postId: id, channelId });
-    if (own) {
-      restoreOwnText(
-        mutate,
-        id,
-        channelId,
-        own.map((text) => ({ text })),
-        newId,
-      );
+  tables: () => Tables,
+  id: string,
+): Restored {
+  const before = tables().post.get(id);
+  if (!before) return { as: "gone" };
+  if (before.trashedAt === null) return { as: "there", status: before.status };
+  mutate("post.restore", { id });
+  const status = tables().post.get(id)?.status;
+  if (status === "draft") return { as: "draft" };
+  return { as: status === "scheduled" ? "scheduled" : "sending" };
+}
+
+/**
+ * What the person is told about an Undo, or null where the list says it
+ * all: the post is back in it. `leadsTo` is the screen that the post is
+ * on now, for a notice that offers to go there.
+ */
+export function undoNotice(back: Restored): {
+  title: string;
+  description: string;
+  leadsTo?: "drafts" | "sent";
+} | null {
+  switch (back.as) {
+    case "scheduled":
+      return null;
+    case "sending":
+      return {
+        title: "Brought back, and publishing now",
+        description: "Its time has come meanwhile.",
+        leadsTo: "sent",
+      };
+    case "draft":
+      return {
+        title: "Brought back as a draft",
+        description:
+          "Its accounts are no longer connected, or this workspace has as many scheduled posts as it can have.",
+        leadsTo: "drafts",
+      };
+    case "gone":
+      return {
+        title: "Nothing to undo: the post is gone",
+        description: "It was deleted on another device as well.",
+      };
+    case "there": {
+      const title = "Nothing to undo: the post was not deleted";
+      if (back.status === "draft") {
+        return {
+          title,
+          description:
+            "Somebody had taken it back to the drafts before the delete reached pigy.",
+          leadsTo: "drafts",
+        };
+      }
+      if (back.status === "scheduled") {
+        return {
+          title,
+          description:
+            "It was no longer scheduled when the delete reached pigy, and has been scheduled again since.",
+        };
+      }
+      return {
+        title,
+        description: "It had gone out before the delete reached pigy.",
+        leadsTo: "sent",
+      };
     }
   }
-  if (chosen === 0) return { as: "draft", id };
-  if (taken.when.mode === "queue") {
-    mutate("post.enqueue", { id, first: false, ifGone: taken.id });
-    // Back to where it was, if the post before it is still in the queue.
-    const { afterId } = taken.when;
-    if (
-      afterId === null ||
-      inQueueOrder(selectQueue(tables)).some((item) => item.id === afterId)
-    ) {
-      mutate("post.move", { id, afterId });
-    }
-    return { as: "scheduled", id };
-  }
-  const { dueAt } = taken.when;
-  if (dueAt === null || dueAt <= now) return { as: "draft", id };
-  mutate("post.schedule", { id, dueAt, ifGone: taken.id });
-  return { as: "scheduled", id };
 }

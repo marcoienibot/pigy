@@ -18,6 +18,7 @@ import {
   type TableName,
   type Transaction,
   tableNames,
+  trashMs,
 } from "@pigy/core";
 import {
   and,
@@ -692,7 +693,8 @@ export class WorkspaceStore {
   /**
    * The scheduled posts whose time has come by `now`, the one that was
    * due first first. Not those that are held: their time has passed, and
-   * somebody has to say what becomes of them.
+   * somebody has to say what becomes of them. And not those that were put
+   * aside, which are as good as deleted.
    */
   private duePosts(now: number): string[] {
     this.dueLookedAt = Math.max(this.dueLookedAt, now);
@@ -705,6 +707,7 @@ export class WorkspaceStore {
           isNotNull(posts.dueAt),
           lte(posts.dueAt, now),
           isNull(posts.heldAt),
+          isNull(posts.trashedAt),
         ),
       )
       .orderBy(asc(posts.dueAt), asc(posts.id))
@@ -738,10 +741,62 @@ export class WorkspaceStore {
           eq(posts.status, "scheduled"),
           isNotNull(posts.dueAt),
           isNull(posts.heldAt),
+          isNull(posts.trashedAt),
         ),
       )
       .get();
     return next?.dueAt ?? null;
+  }
+
+  /**
+   * Deletes the posts that were put aside `trashMs` ago or longer: the
+   * second step of deleting a scheduled post, for a device that never
+   * took it. With the mutator that the device would have used, so the
+   * clients hear of it like of any change.
+   */
+  pruneTrashed(now: number): void {
+    this.storage.transactionSync(() => {
+      const old = this.db
+        .select({ id: posts.id })
+        .from(posts)
+        // Only a scheduled post is put aside, and the scheduled ones are
+        // few among all that were ever published: by the index.
+        .where(
+          and(
+            eq(posts.status, "scheduled"),
+            lte(posts.trashedAt, now - trashMs),
+          ),
+        )
+        .all();
+      if (old.length === 0) return;
+      const refusals = this.run(
+        old.map(({ id }) => ({
+          name: "post.delete",
+          args: { id, ifTrashed: true } satisfies MutatorArgs<"post.delete">,
+        })),
+        now,
+        "server",
+      );
+      for (const refusal of refusals) {
+        // The mutator refuses no post that was put aside: a bug.
+        if (refusal) {
+          console.error("A post that was put aside was not deleted", refusal);
+        }
+      }
+    });
+  }
+
+  /**
+   * When the next post that was put aside is to be deleted, or null if
+   * none was put aside.
+   */
+  get nextPruneAt(): number | null {
+    const next = this.db
+      .select({ at: min(posts.trashedAt) })
+      .from(posts)
+      .where(and(eq(posts.status, "scheduled"), isNotNull(posts.trashedAt)))
+      .get();
+    return next?.at == null ? null : next.at + trashMs;
   }
 
   /** The workspace that the object holds. */

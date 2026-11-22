@@ -74,6 +74,62 @@ export async function connectInSandbox(
   return channel;
 }
 
+/**
+ * The versions in packages/core/src/sync/protocol.ts, which a client says
+ * with its hello: `e2e` imports no application code.
+ */
+const versions = { protocolVersion: 2, schemaVersion: 8 };
+
+/**
+ * The posts of a workspace as its server has them, read by a client of
+ * the sync protocol that asks for everything: also what no screen shows,
+ * such as a post that was put aside.
+ */
+export function postsOf(
+  page: Page,
+  workspaceId: string,
+): Promise<{ id: string; status: string; trashedAt: number | null }[]> {
+  return page.evaluate(
+    ({ workspaceId, versions }) =>
+      new Promise((resolve, reject) => {
+        // A UUID version 7, which is what the ID of a client has to be.
+        const time = Date.now().toString(16).padStart(12, "0");
+        const random = crypto.randomUUID().replaceAll("-", "");
+        const clientId = `${time.slice(0, 8)}-${time.slice(8)}-7${random.slice(0, 3)}-8${random.slice(3, 6)}-${random.slice(6, 18)}`;
+        const socket = new WebSocket(
+          `${location.origin.replace(/^http/, "ws")}/sync/${workspaceId}`,
+        );
+        socket.onopen = () =>
+          socket.send(
+            JSON.stringify({
+              type: "hello",
+              ...versions,
+              clientId,
+              cursor: null,
+              lastMutationId: 0,
+            }),
+          );
+        socket.onmessage = (event) => {
+          const message = JSON.parse(event.data);
+          if (message.type !== "patch") {
+            reject(new Error(`The server said ${event.data}`));
+            return;
+          }
+          // The answer to the hello has every row.
+          resolve(
+            message.changes
+              .filter(({ table }: { table: string }) => table === "post")
+              .map(({ row }: { row: unknown }) => row),
+          );
+          socket.close();
+        };
+        socket.onclose = ({ code }) =>
+          reject(new Error(`The socket was closed with ${code}`));
+      }),
+    { workspaceId, versions },
+  );
+}
+
 /** What a client of the sync protocol holds of a published post. */
 export type Published = {
   post: { id: string; status: string };
@@ -104,7 +160,7 @@ export function publishNow(
   dueIn?: number,
 ): Promise<Published> {
   return page.evaluate(
-    ({ workspaceId, channelId, text, dueIn }) =>
+    ({ workspaceId, channelId, text, dueIn, versions }) =>
       new Promise<Published>((resolve, reject) => {
         // A UUID version 7, which is what the ID of a row has to be.
         const id = () => {
@@ -121,9 +177,7 @@ export function publishNow(
           socket.send(
             JSON.stringify({
               type: "hello",
-              // The versions in packages/core/src/sync/protocol.ts.
-              protocolVersion: 2,
-              schemaVersion: 8,
+              ...versions,
               clientId: id(),
               cursor: null,
               lastMutationId: 0,
@@ -200,6 +254,6 @@ export function publishNow(
         socket.onclose = ({ code }) =>
           reject(new Error(`The socket was closed with ${code}`));
       }),
-    { workspaceId, channelId, text, dueIn },
+    { workspaceId, channelId, text, dueIn, versions },
   );
 }

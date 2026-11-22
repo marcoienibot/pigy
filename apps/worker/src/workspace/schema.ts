@@ -41,12 +41,13 @@ export const posts = sqliteTable(
     status: text("status", { enum: postStatuses }).notNull(),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
-    // The four below came with scheduling. All can be null, which is what
+    // The five below came with scheduling. All can be null, which is what
     // they are for every post from before.
     mode: text("mode", { enum: postModes }),
     dueAt: integer("due_at"),
     queuePosition: integer("queue_position"),
     heldAt: integer("held_at"),
+    trashedAt: integer("trashed_at"),
   },
   (table) => [
     // For the scheduled posts, which the mutators of the queue and every

@@ -2,23 +2,24 @@ import { settingsId } from "@pigy/core";
 import { expect, it, vi } from "vitest";
 import {
   addMonths,
-  bringBack,
   claimTimeZone,
-  deleteScheduled,
+  deleteForGood,
   entriesByDay,
   fieldZone,
   minuteFromInput,
   minuteLabel,
   monthName,
   movesIn,
+  putAside,
+  restore,
   selectCalendar,
   selectQueue,
   selectSchedule,
   slotsByDay,
   suggestedTime,
-  takePost,
   timeFromInput,
   timeToInput,
+  undoNotice,
   weekdayName,
   weeksOf,
   whenDue,
@@ -300,6 +301,7 @@ it("says of a scheduled post where it goes, what it begins with and whether it i
   const made = scheduledPost("\n  A title \nand more\nlines", ada.id, {
     dueAt: 1000,
     heldAt: 5000,
+    trashedAt: null,
   });
   const tables = tablesOf({
     channel: [grace, ada],
@@ -372,119 +374,125 @@ function recorded() {
   };
 }
 
-/** IDs in the order they are asked for: "new-1", "new-2". */
-function numbered() {
-  let count = 0;
-  return () => {
-    count += 1;
-    return `new-${count}`;
-  };
-}
-
-it("deletes a scheduled post only as one, and schedules what Undo brings back only if the post is gone", () => {
+it("shows a post that was put aside on no screen, and does not take it for something that goes by the zone", () => {
   const ada = channel();
-  const one = scheduledPost("Scheduled", ada.id, { dueAt: 5000 });
-  const tables = tablesOf({ channel: [ada], ...tablesWith(one) });
-  const taken = takePost(tables, one.post.id);
-  if (!taken) throw new Error("The post is there");
-  const { made, mutate } = recorded();
-
-  deleteScheduled(mutate, one.post.id);
-  // The device has deleted the post: its copy no longer has it.
-  bringBack(mutate, tablesOf({ channel: [ada] }), taken, 1000, numbered());
-
-  // Both say what they count on. A device can make them hours before
-  // the server hears of them, and the post can have gone out by then:
-  // then neither is carried out, and the post goes out once.
-  expect(made).toEqual([
-    ["post.delete", { id: one.post.id, ifScheduled: true }],
-    ["post.create", { id: "new-1", partId: "new-2", text: "Scheduled" }],
-    ["target.add", { id: "new-3", postId: "new-1", channelId: ada.id }],
-    ["post.schedule", { id: "new-1", dueAt: 5000, ifGone: one.post.id }],
-  ]);
-});
-
-it("puts a post of the queue that Undo brings back where it was, only if the post is gone", () => {
-  const ada = channel();
-  const [a, b] = [0, 1].map((queuePosition) =>
-    scheduledPost(`Post ${queuePosition}`, ada.id, {
-      mode: "queue",
-      dueAt: 1000 + queuePosition,
-      queuePosition,
-    }),
-  );
-  if (!a || !b) throw new Error("Two posts");
-  const taken = takePost(
-    tablesOf({ channel: [ada], ...tablesWith(a, b) }),
-    b.post.id,
-  );
-  if (!taken) throw new Error("The post is there");
-  const { made, mutate } = recorded();
-
-  const back = bringBack(
-    mutate,
-    tablesOf({ channel: [ada], ...tablesWith(a) }),
-    taken,
-    1000,
-    numbered(),
-  );
-
-  expect(back).toEqual({ as: "scheduled", id: "new-1" });
-  expect(made.slice(-2)).toEqual([
-    ["post.enqueue", { id: "new-1", first: false, ifGone: b.post.id }],
-    ["post.move", { id: "new-1", afterId: a.post.id }],
-  ]);
-});
-
-it("brings nothing back while the post is there: the server did not delete it", () => {
-  const ada = channel();
-  const one = scheduledPost("Scheduled", ada.id, { dueAt: 5000 });
-  const tables = tablesOf({ channel: [ada], ...tablesWith(one) });
-  const taken = takePost(tables, one.post.id);
-  if (!taken) throw new Error("The post is there");
-  const { made, mutate } = recorded();
-
-  // The delete was refused, and the post is in the copy again, on its
-  // way by now: a copy of it would go out as well.
-  const sending = tablesOf({
-    channel: [ada],
-    ...tablesWith({ ...one, post: { ...one.post, status: "sending" } }),
+  const aside = scheduledPost("Aside", ada.id, { dueAt: 5000, trashedAt: 10 });
+  const queued = scheduledPost("Queued aside", ada.id, {
+    mode: "queue",
+    queuePosition: 0,
+    trashedAt: 10,
   });
-  const back = bringBack(mutate, sending, taken, 1000, numbered());
+  const stays = scheduledPost("Stays", ada.id, {
+    mode: "queue",
+    dueAt: 2000,
+    queuePosition: 1,
+  });
+  const tables = tablesOf({
+    channel: [ada],
+    ...tablesWith(aside, queued, stays),
+  });
 
-  expect(back).toEqual({ as: "there", id: one.post.id });
+  expect(selectQueue(tables)).toMatchObject([
+    // The first of the queue: the one before it does not count.
+    { title: "Stays", position: 0 },
+  ]);
+  expect(selectCalendar(tables).map(({ title }) => title)).toEqual(["Stays"]);
+  // A workspace whose only scheduled post was put aside has nothing
+  // that goes by a zone: it takes the zone of the device with the next.
+  expect(
+    selectSchedule(tablesOf({ channel: [ada], ...tablesWith(aside) }), rome)
+      .zone,
+  ).toBe("device");
+});
+
+it("deletes a scheduled post in two steps, each of which is about that post alone", () => {
+  const { made, mutate } = recorded();
+
+  putAside(mutate, "post-1");
+  deleteForGood(mutate, "post-1");
+
+  // The second deletes only what the first has put aside: a device can
+  // make both hours before the server hears of them, and the post can
+  // have gone out by then.
+  expect(made).toEqual([
+    ["post.trash", { id: "post-1" }],
+    ["post.delete", { id: "post-1", ifTrashed: true }],
+  ]);
+});
+
+it("takes a deletion back as the same post, and says what the post is then", () => {
+  const ada = channel();
+  const one = scheduledPost("Scheduled", ada.id, { dueAt: 5000 });
+  const aside = { ...one, post: { ...one.post, trashedAt: 10 } };
+  /** The copy with the post as `status`, as it is after the mutation. */
+  const after = (status: "scheduled" | "sending" | "draft") => {
+    const { made, mutate } = recorded();
+    const tables = () =>
+      tablesOf({
+        channel: [ada],
+        ...tablesWith(
+          made.length === 0
+            ? aside
+            : { ...one, post: { ...one.post, status, trashedAt: null } },
+        ),
+      });
+    return { back: restore(mutate, tables, one.post.id), made };
+  };
+
+  const scheduled = after("scheduled");
+  expect(scheduled.back).toEqual({ as: "scheduled" });
+  // No copy: one mutation, about the post that was put aside.
+  expect(scheduled.made).toEqual([["post.restore", { id: one.post.id }]]);
+  // Its time had come, or no account of it was left.
+  expect(after("sending").back).toEqual({ as: "sending" });
+  expect(after("draft").back).toEqual({ as: "draft" });
+});
+
+it("takes nothing back where the post was not deleted, or is gone, and says which", () => {
+  const ada = channel();
+  const one = scheduledPost("Scheduled", ada.id, { dueAt: 5000 });
+  const { made, mutate } = recorded();
+  const as = (status: "sent" | "draft") => () =>
+    tablesOf({
+      channel: [ada],
+      ...tablesWith({ ...one, post: { ...one.post, status } }),
+    });
+
+  // The server refused to put it aside: it had gone out, or was back in
+  // the drafts, and the copy shows it so again.
+  expect(restore(mutate, as("sent"), one.post.id)).toEqual({
+    as: "there",
+    status: "sent",
+  });
+  expect(restore(mutate, as("draft"), one.post.id)).toEqual({
+    as: "there",
+    status: "draft",
+  });
+  expect(restore(mutate, () => tablesOf({}), one.post.id)).toEqual({
+    as: "gone",
+  });
   expect(made).toEqual([]);
 });
 
-it("brings a post back as a draft when its time has passed or no account of it is left", () => {
-  const ada = channel();
-  const one = scheduledPost("Scheduled", ada.id, { dueAt: 5000 });
-  const taken = takePost(
-    tablesOf({ channel: [ada], ...tablesWith(one) }),
-    one.post.id,
-  );
-  if (!taken) throw new Error("The post is there");
-
-  const late = recorded();
-  expect(
-    bringBack(
-      late.mutate,
-      tablesOf({ channel: [ada] }),
-      taken,
-      5000,
-      numbered(),
-    ),
-  ).toEqual({ as: "draft", id: "new-1" });
-  expect(late.made.map(([name]) => name)).toEqual([
-    "post.create",
-    "target.add",
-  ]);
-  // The account was disconnected meanwhile.
-  const alone = recorded();
-  expect(
-    bringBack(alone.mutate, tablesOf({}), taken, 1000, numbered()),
-  ).toEqual({ as: "draft", id: "new-1" });
-  expect(alone.made.map(([name]) => name)).toEqual(["post.create"]);
+it("says after an Undo where the post is, and leads there: to the drafts for one that was taken back, to Sent for one that went out", () => {
+  // The post is in the list again: nothing to say.
+  expect(undoNotice({ as: "scheduled" })).toBeNull();
+  expect(undoNotice({ as: "there", status: "draft" })).toMatchObject({
+    title: "Nothing to undo: the post was not deleted",
+    description:
+      "Somebody had taken it back to the drafts before the delete reached pigy.",
+    leadsTo: "drafts",
+  });
+  for (const status of ["sending", "sent", "error"] as const) {
+    expect(undoNotice({ as: "there", status })).toMatchObject({
+      description: "It had gone out before the delete reached pigy.",
+      leadsTo: "sent",
+    });
+  }
+  expect(undoNotice({ as: "draft" })?.leadsTo).toBe("drafts");
+  expect(undoNotice({ as: "sending" })?.leadsTo).toBe("sent");
+  // Nowhere to lead to.
+  expect(undoNotice({ as: "gone" })?.leadsTo).toBeUndefined();
 });
 
 it("says when a post is due on the clocks of the zone, as somebody there would", () => {

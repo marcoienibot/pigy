@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "dce689a5-3231-4d73-9b01-bf1b74da8676",
+  "id": "1735d09e-c302-4976-bccc-bde19e5a4862",
   "prevId": "321da52f-bd25-45ee-8a04-f2d7d933b445",
   "tables": {
     "change_log": {
@@ -574,6 +574,13 @@
         },
         "held_at": {
           "name": "held_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "trashed_at": {
+          "name": "trashed_at",
           "type": "integer",
           "primaryKey": false,
           "notNull": false,

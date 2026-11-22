@@ -36,6 +36,7 @@ const synced = {
       dueAt: posts.dueAt,
       queuePosition: posts.queuePosition,
       heldAt: posts.heldAt,
+      trashedAt: posts.trashedAt,
     },
   },
   post_part: {

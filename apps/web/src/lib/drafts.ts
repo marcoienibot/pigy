@@ -253,13 +253,12 @@ export function restoreOwnText(
   postId: string,
   channelId: string,
   parts: readonly { text: string }[],
-  newId: () => string = () => uuidv7(new Date()),
 ): void {
   const mutations = ownTextMutations(
     postId,
     channelId,
     parts.map(({ text }) => text),
-    newId,
+    () => uuidv7(new Date()),
   );
   for (const mutation of mutations) {
     // Each under its own name: the compiler checks the arguments of a

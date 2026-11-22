@@ -67,11 +67,6 @@ export const rejectionCodeSchema = z.enum([
   "too_many_slots",
   /** The workspace has as many scheduled posts as it can have. */
   "too_many_scheduled",
-  /**
-   * The post that this one was to stand in for is there: it was not
-   * deleted after all, so nothing is scheduled in its place.
-   */
-  "not_gone",
   /** The part is the only one of its text, which has to keep one. */
   "last_part",
   /** The text has as many parts as a text can have. */
@@ -137,10 +132,14 @@ function mutator<Schema extends z.ZodType>(
 
 const partTextSchema = z.string().max(maxPartTextLength);
 
-/** The post with this ID. A mutation about one that is gone is rejected. */
+/**
+ * The post with this ID. A mutation about one that is gone is rejected,
+ * and so is one about a post that was put aside, which is as good as
+ * gone: only `post.restore` and `post.delete` are about such a post.
+ */
 function existingPost(tx: Transaction, id: string): Row<"post"> {
   const post = tx.get("post", id);
-  if (!post) {
+  if (!post || post.trashedAt !== null) {
     throw new MutationRejected("not_found", "This post no longer exists");
   }
   return post;
@@ -291,9 +290,17 @@ function unsent(tx: Transaction, id: string): Row<"post"> {
   return post;
 }
 
-/** Whether a post is in the queue. */
+/** Whether a post is in the queue. Not one that was put aside. */
 const inQueue = (post: Row<"post">) =>
-  post.status === "scheduled" && post.mode === "queue";
+  post.status === "scheduled" &&
+  post.mode === "queue" &&
+  post.trashedAt === null;
+
+/** How many posts are scheduled, the queue included. */
+const scheduledCount = (tx: Transaction) =>
+  tx
+    .find("post", "status", "scheduled")
+    .filter((post) => post.trashedAt === null).length;
 
 /** The posts of the queue, in its order. */
 function queueOf(tx: Transaction): Row<"post">[] {
@@ -450,31 +457,14 @@ function deletePost(tx: Transaction, id: string): void {
 /**
  * Refuses to schedule `post` if the workspace has as many scheduled posts
  * as it can have, the queue included. Not for a post that is scheduled
- * already, which is given another time or place.
+ * already, which is given another time or place. A post that was put
+ * aside does not count: it is as good as gone.
  */
 function roomFor(tx: Transaction, post: Row<"post">): void {
-  if (
-    post.status !== "scheduled" &&
-    tx.find("post", "status", "scheduled").length >= maxScheduled
-  ) {
+  if (post.status !== "scheduled" && scheduledCount(tx) >= maxScheduled) {
     throw new MutationRejected(
       "too_many_scheduled",
       `A workspace has at most ${maxScheduled} scheduled posts`,
-    );
-  }
-}
-
-/**
- * Refuses to schedule a post in the place of the post `ifGone` if that
- * one is there. That is for the Undo of a delete, which schedules a copy:
- * if the server did not take the delete, because the post was on its way
- * by then, the copy would go out as well.
- */
-function gone(tx: Transaction, ifGone: string | undefined): void {
-  if (ifGone !== undefined && tx.get("post", ifGone)) {
-    throw new MutationRejected(
-      "not_gone",
-      "The post that was deleted had gone out by then, so what was brought back stays a draft",
     );
   }
 }
@@ -844,22 +834,20 @@ export const mutators = {
    * Deleted in the middle, it would leave posts on the networks that pigy
    * knows nothing of.
    *
-   * With `ifScheduled` only a post that is scheduled is deleted, and one
-   * that has gone out is not: that is what somebody means who deletes a
-   * post on the Queue screen, where it has not gone out, on a device
-   * that may not have heard that it has.
+   * With `ifTrashed` only a post that was put aside is deleted, and
+   * nothing is done to any other: that is the second step of deleting a
+   * scheduled post, which follows `post.trash` when the Undo is no
+   * longer offered. The first step may have been refused, because the
+   * post had gone out by then, or taken back by the Undo of another
+   * device: the post is then not this deletion's to delete, and whoever
+   * made it has been told, or has nothing to be told.
    */
   "post.delete": mutator(
-    z.strictObject({ id: idSchema, ifScheduled: z.literal(true).optional() }),
-    (tx, { id, ifScheduled }) => {
-      const status = tx.get("post", id)?.status;
-      if (ifScheduled && status !== undefined && status !== "scheduled") {
-        throw new MutationRejected(
-          "not_scheduled",
-          "This post has gone out already",
-        );
-      }
-      if (status === "sending") {
+    z.strictObject({ id: idSchema, ifTrashed: z.literal(true).optional() }),
+    (tx, { id, ifTrashed }) => {
+      const post = tx.get("post", id);
+      if (ifTrashed && (!post || post.trashedAt === null)) return;
+      if (post?.status === "sending") {
         throw new MutationRejected(
           "sending",
           "A post cannot be deleted while it is being sent",
@@ -1039,20 +1027,15 @@ export const mutators = {
    * `post.due` takes up a post whose time the server finds out late: it
    * is sent, or held if it is too late for that. A client does the same
    * to what it shows, by its own clock.
-   *
-   * With `ifGone` the post stands in for one that was deleted, and is
-   * refused if that one is there: see `gone`.
    */
   "post.schedule": mutator(
     z.strictObject({
       id: idSchema,
       // Up to the last moment that a date can hold.
       dueAt: z.number().int().nonnegative().max(8.64e15),
-      ifGone: idSchema.optional(),
     }),
-    (tx, { id, dueAt, ifGone }) => {
+    (tx, { id, dueAt }) => {
       const post = unsent(tx, id);
-      gone(tx, ifGone);
       roomFor(tx, post);
       if (tx.find("post_target", "postId", id).length === 0) {
         throw new MutationRejected(
@@ -1086,19 +1069,11 @@ export const mutators = {
    * A post that is in the queue already stays where it is, and moves to
    * the front with `first`. While the queue is paused or the workspace has
    * no slot, the post is in the queue without a time.
-   *
-   * With `ifGone` the post stands in for one that was deleted, and is
-   * refused if that one is there: see `gone`.
    */
   "post.enqueue": mutator(
-    z.strictObject({
-      id: idSchema,
-      first: z.boolean(),
-      ifGone: idSchema.optional(),
-    }),
-    (tx, { id, first, ifGone }) => {
+    z.strictObject({ id: idSchema, first: z.boolean() }),
+    (tx, { id, first }) => {
       const post = unsent(tx, id);
-      gone(tx, ifGone);
       roomFor(tx, post);
       if (tx.find("post_target", "postId", id).length === 0) {
         throw new MutationRejected(
@@ -1183,6 +1158,95 @@ export const mutators = {
       );
     }
     toDraft(tx, post);
+  }),
+
+  /**
+   * Puts a scheduled post aside: the first step of deleting it from the
+   * Queue screen, which `post.restore` takes back. From here on the post
+   * is as good as gone, for every mutator but that one and `post.delete`:
+   * it is not due, the queue closes up behind it, and it does not count
+   * among the scheduled posts. Its row stays, with its parts, its targets
+   * and the texts of its accounts, and with what says when it was to go
+   * out: the time that somebody chose, or its place in the queue.
+   *
+   * Only a post that is scheduled is put aside. One that has gone out,
+   * or that somebody took back to the drafts, is refused: a device that
+   * has not heard of that must not delete the post from the Sent screen
+   * or the drafts of every other. Does nothing if the post is gone or put
+   * aside already: two devices can delete the same post.
+   *
+   * Deleting is two steps so that its Undo is no new post. An Undo that
+   * made a copy would have to prove that the post it copies was deleted
+   * by the deletion that it undoes, and not published first and deleted
+   * from Sent later, and not undone by another device as well. This
+   * way there is one row, and every step is about it and does nothing
+   * where it does not apply: whatever order the steps of several devices
+   * arrive in, the post goes out once at most.
+   */
+  "post.trash": mutator(z.strictObject({ id: idSchema }), (tx, { id }) => {
+    const post = tx.get("post", id);
+    if (!post || post.trashedAt !== null) return;
+    if (post.status !== "scheduled") {
+      throw new MutationRejected(
+        "not_scheduled",
+        post.status === "draft"
+          ? "This post is back in the drafts: somebody took it back"
+          : "This post has gone out already",
+      );
+    }
+    const queued = inQueue(post);
+    tx.put("post", {
+      ...post,
+      // A post of the queue has no time while it is put aside, and is
+      // given one anew when it comes back.
+      dueAt: queued ? null : post.dueAt,
+      trashedAt: tx.now,
+      updatedAt: tx.now,
+    });
+    if (queued) requeue(tx);
+  }),
+
+  /**
+   * Takes back that a post was put aside: the Undo of deleting a
+   * scheduled post. Does nothing if the post is not put aside, or is
+   * gone: the first step was refused, the post was deleted for good, or
+   * another device has taken it back already.
+   *
+   * The post is scheduled again as it was, by the rules of scheduling:
+   *
+   * - A post of the queue is in the queue again, at its place if no
+   *   other post has taken that, and the posts take the slots anew.
+   * - A post with a time that somebody chose has that time. If it has
+   *   passed meanwhile, the post is taken up as `post.schedule` takes up
+   *   one that is scheduled for the past: sent, or held if it is too
+   *   late for that. One that was held is held still.
+   * - A post that has no account left, because its accounts were
+   *   disconnected meanwhile, is a draft. So is one for which the
+   *   workspace has no room, because as many posts were scheduled
+   *   meanwhile as it can have: nothing is lost, and somebody schedules
+   *   it again.
+   */
+  "post.restore": mutator(z.strictObject({ id: idSchema }), (tx, { id }) => {
+    const post = tx.get("post", id);
+    if (!post || post.trashedAt === null) return;
+    const back = { ...post, trashedAt: null, updatedAt: tx.now };
+    if (
+      tx.find("post_target", "postId", id).length === 0 ||
+      scheduledCount(tx) >= maxScheduled
+    ) {
+      tx.put("post", { ...back, ...unscheduled, status: "draft" });
+      return;
+    }
+    tx.put("post", back);
+    if (inQueue(back)) {
+      requeue(tx);
+    } else if (
+      back.dueAt !== null &&
+      back.dueAt <= tx.now &&
+      back.heldAt === null
+    ) {
+      takeUp(tx, { ...back, dueAt: back.dueAt });
+    }
   }),
 
   /**
@@ -1446,9 +1510,12 @@ export const mutators = {
           // A scheduled post goes to the accounts that are left. One that
           // has none left would have nowhere to go when its time comes:
           // it is a draft again, for somebody to choose.
+          // Not one that was put aside: it stays so, and is a draft if
+          // it is restored.
           const post = tx.get("post", target.postId);
           if (
             post?.status === "scheduled" &&
+            post.trashedAt === null &&
             tx.find("post_target", "postId", post.id).length === 0
           ) {
             left ||= inQueue(post);
@@ -1487,7 +1554,8 @@ export const mutators = {
         post?.status !== "scheduled" ||
         post.dueAt === null ||
         post.dueAt > tx.now ||
-        post.heldAt !== null
+        post.heldAt !== null ||
+        post.trashedAt !== null
       ) {
         throw new MutationRejected("not_current", "This post is not due");
       }

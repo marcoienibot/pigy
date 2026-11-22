@@ -15,7 +15,12 @@ import {
   sentPost,
 } from "../app.ts";
 import { expect, type Page, signIn, test } from "../fixtures.ts";
-import { connectInSandbox, publishNow, workspacesOf } from "../sandbox.ts";
+import {
+  connectInSandbox,
+  postsOf,
+  publishNow,
+  workspacesOf,
+} from "../sandbox.ts";
 
 // Scheduling from the app: a time from the editor, the queue with its
 // posting times, the Queue screen and the calendar. The Worker tests move
@@ -478,6 +483,118 @@ test("posts are added to the queue, take its slots in their order, are reordered
   await expect(sentPost(page, "First")).toContainText("Sent");
   await openScreen(page, "Simulator");
   await expect(feedOf(page, grace)).toContainText("First");
+});
+
+/** Writes a draft and schedules it for a time in 2031, from its editor. */
+async function scheduleFor2031(page: Page, text: string) {
+  await draftFor(page, text);
+  await publishPanel(page).getByRole("button", { name: "Schedule…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Schedule this post" });
+  await dialog.getByLabel("Date and time").fill("2031-05-06T09:30");
+  await dialog.getByRole("button", { name: "Schedule" }).click();
+  await expect(editor(page)).toHaveCount(0);
+}
+
+test("a deleted scheduled post is only put aside while its Undo is offered, and deleted when that has passed", async ({
+  ownPage: page,
+}) => {
+  // The notice with the Undo stays for ten seconds, which this waits out.
+  test.slow();
+  const { sandbox } = await workspacesOf(page);
+  await openScreen(page, "Channels");
+  await connectSimulated(page, grace);
+  await openScreen(page, "Drafts");
+  await scheduleFor2031(page, "Not after all");
+  await openScreen(page, "Queue");
+  await expect(queueRow(page, "Not after all")).toBeVisible();
+
+  await act(page, "Not after all", "Delete");
+  const undo = notice(page, "Scheduled post deleted");
+  await expect(undo).toBeVisible();
+  // It is gone from the screen at once, and the server has it still:
+  // put aside, for the Undo to take back.
+  await expect(queueRows(page)).toHaveCount(0);
+  await expect(page.getByText("Nothing scheduled")).toBeVisible();
+  await expectSync(page, "Synced");
+  expect(await postsOf(page, sandbox)).toMatchObject([
+    { status: "scheduled", trashedAt: expect.any(Number) },
+  ]);
+
+  // When the notice has gone, nobody can take the deletion back, and
+  // the post is deleted for good.
+  await expect(undo).toHaveCount(0, { timeout: 20_000 });
+  await expect.poll(() => postsOf(page, sandbox)).toEqual([]);
+  // Nowhere else either: not in the drafts, where a copy would be.
+  await openScreen(page, "Drafts");
+  await expect(draftRow(page, "Not after all")).toHaveCount(0);
+});
+
+test("an Undo after a delete that the server refused says where the post is, in one notice of the refusal, and leads there", async ({
+  page,
+  ownEmail,
+  otherDevice,
+  isMobile,
+}) => {
+  // Before the app opens its socket, which this is put in the way of.
+  const connection = await connectionOf(page);
+  await signIn(page, ownEmail);
+  await openScreen(page, "Channels");
+  await connectSimulated(page, grace);
+  await openScreen(page, "Drafts");
+  await scheduleFor2031(page, "Taken back");
+  await openScreen(page, "Queue");
+  await expectSync(page, "Synced");
+
+  // While this device has no connection, another takes the post back to
+  // the drafts.
+  await connection.cut();
+  await expectSync(page, /Offline/);
+  const other = await otherDevice();
+  await openScreen(other, "Queue");
+  await act(other, "Taken back", "Back to drafts");
+  await expectSync(other, "Synced");
+
+  // This one has not heard, and deletes the post from its queue.
+  await act(page, "Taken back", "Delete");
+  await expect(queueRows(page)).toHaveCount(0);
+  await connection.restore();
+
+  // The server did not delete a draft of somebody's from a Queue screen.
+  // The device is told once, and what is true: not that the post went
+  // out.
+  const refusal = notice(page, "A scheduled post was not deleted");
+  await expect(refusal).toContainText(
+    "This post is back in the drafts: somebody took it back.",
+  );
+  // Closed, as a person does who has read it: it lies over the notice
+  // with the Undo.
+  await refusal.getByRole("button", { name: "Close toast" }).click();
+  await expect(refusal).toHaveCount(0);
+  // The Undo has nothing to take back, and says where the post is.
+  await notice(page, "Scheduled post deleted")
+    .getByRole("button", { name: "Undo" })
+    .click();
+  const nothing = notice(page, "Nothing to undo: the post was not deleted");
+  await expect(nothing).toContainText(
+    "Somebody had taken it back to the drafts before the delete reached pigy.",
+  );
+  // Read once the server has answered everything that the Undo made of
+  // it: no second refusal has come, of something that followed the
+  // delete, as a post that was not moved in the queue.
+  await expectSync(page, "Synced");
+  await expect(
+    page
+      .getByRole("listitem")
+      .filter({ hasText: /A (scheduled |deleted )?post was not/ }),
+  ).toHaveCount(0);
+
+  await nothing.getByRole("button", { name: "Open" }).click();
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Drafts");
+  await expect(editor(page)).toHaveValue("Taken back");
+  await backToList(page, isMobile);
+  // The other device has it as it left it: a draft.
+  await openScreen(other, "Drafts");
+  await expect(draftRow(other, "Taken back")).toBeVisible();
 });
 
 test("a post is queued without a connection, with the time that the queue will give it, and stays when the device is back", async ({

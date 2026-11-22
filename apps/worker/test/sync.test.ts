@@ -85,6 +85,7 @@ it("answers the first hello of a client with a snapshot", async () => {
         dueAt: null,
         queuePosition: null,
         heldAt: null,
+        trashedAt: null,
       },
     ],
     post_part: [

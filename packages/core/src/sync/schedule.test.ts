@@ -126,6 +126,7 @@ it("schedules a draft for a time: it is scheduled, and its targets stay as they 
     dueAt,
     queuePosition: null,
     heldAt: null,
+    trashedAt: null,
   });
   // `scheduled` is a status of the post alone.
   expect(workspace.rows("post_target").map(({ status }) => status)).toEqual([
@@ -173,6 +174,7 @@ it("takes a time that has passed, and takes the post up at once: a device can sc
     status: "scheduled",
     dueAt: start - lateMs - 1,
     heldAt: start,
+    trashedAt: null,
   });
   // So taking the first back is refused, whether it comes in the same
   // message as the scheduling or in the next.
@@ -183,80 +185,351 @@ it("takes a time that has passed, and takes the post up at once: a device can sc
   ).toBe("not_scheduled");
 });
 
-it("schedules a post in the place of one that was deleted only if that one is gone", () => {
+/** Ends the delivery of a post that was taken up: it is sent. */
+function deliver(workspace: Workspace, postId: string) {
+  for (const target of workspace.rows("post_target")) {
+    if (target.postId === postId) {
+      workspace.put("post_target", { ...target, status: "sent" });
+    }
+  }
+  workspace.put("post", { ...postOf(workspace, postId), status: "sent" });
+}
+
+/** How many deliveries have been asked for: each is a post on a network. */
+const asked = (workspace: Workspace) =>
+  workspace.rows("post_target").filter(({ queuedAt }) => queuedAt !== null)
+    .length;
+
+it("puts a scheduled post aside: it is not due, has no place in the queue, and counts for nothing", () => {
   const workspace = scheduled();
-  const [original = "", copy = "", other = ""] = [1, 2, 3].map((n) =>
+  const [timed = "", queued = "", behind = ""] = [1, 2, 3].map((n) =>
     draft(workspace, n),
   );
-  // The original is there: its delete was refused, or never arrived.
-  expect(
-    rejectionOf(() =>
-      workspace.mutate(
-        "post.schedule",
-        { id: copy, dueAt: start + 1000, ifGone: original },
-        start,
-      ),
-    ),
-  ).toBe("not_gone");
-  expect(
-    rejectionOf(() =>
-      workspace.mutate(
-        "post.enqueue",
-        { id: copy, first: false, ifGone: original },
-        start,
-      ),
-    ),
-  ).toBe("not_gone");
-  expect(postOf(workspace, copy).status).toBe("draft");
+  const dueAt = start + 1000;
+  workspace.mutate("post.schedule", { id: timed, dueAt }, start);
+  workspace.mutate("post.enqueue", { id: queued, first: false }, start);
+  workspace.mutate("post.enqueue", { id: behind, first: false }, start);
+  expect(queueOf(workspace)).toEqual([
+    [queued, firstMonday],
+    [behind, firstWednesday],
+  ]);
 
-  workspace.mutate("post.delete", { id: original }, start);
-  workspace.mutate(
-    "post.schedule",
-    { id: copy, dueAt: start + 1000, ifGone: original },
-    start,
-  );
-  workspace.mutate(
-    "post.enqueue",
-    { id: other, first: false, ifGone: original },
-    start,
-  );
-  expect(postOf(workspace, copy).status).toBe("scheduled");
-  expect(postOf(workspace, other).mode).toBe("queue");
+  workspace.mutate("post.trash", { id: timed }, start + 10);
+  workspace.mutate("post.trash", { id: queued }, start + 20);
+
+  // Its row stays, with what says when it was to go out, for the Undo.
+  expect(postOf(workspace, timed)).toMatchObject({
+    status: "scheduled",
+    mode: "custom",
+    dueAt,
+    trashedAt: start + 10,
+  });
+  // The queue has closed up behind the other: the post behind it has
+  // its slot, and the one that was put aside has no time.
+  expect(postOf(workspace, queued)).toMatchObject({
+    mode: "queue",
+    dueAt: null,
+    trashedAt: start + 20,
+  });
+  expect(postOf(workspace, behind).dueAt).toBe(at(firstMonday));
+  // The server does not take it up when its time has come.
+  expect(
+    rejectionOf(() =>
+      workspace.mutate("post.due", { id: timed }, dueAt, "server"),
+    ),
+  ).toBe("not_current");
+  // It is gone for every other mutator, as a deleted post is.
+  for (const run of [
+    () => workspace.mutate("post.publish", { id: timed }),
+    () => workspace.mutate("post.schedule", { id: timed, dueAt }),
+    () => workspace.mutate("post.enqueue", { id: timed, first: true }),
+    () => workspace.mutate("post.move", { id: queued, afterId: null }),
+    () => workspace.mutate("post.unschedule", { id: timed }),
+  ]) {
+    expect(rejectionOf(run)).toBe("not_found");
+  }
+  // Putting it aside again changes nothing: two devices can delete it.
+  workspace.mutate("post.trash", { id: timed }, start + 500);
+  expect(postOf(workspace, timed).trashedAt).toBe(start + 10);
+  expect(asked(workspace)).toBe(0);
 });
 
-it("deletes a post only while it is scheduled where the delete says so", () => {
+it("puts aside only a post that is scheduled, and says what the post is instead", () => {
   const workspace = scheduled();
-  const [waits = "", went = "", other = ""] = [1, 2, 3].map((n) =>
-    draft(workspace, n),
-  );
-  workspace.mutate("post.schedule", { id: waits, dueAt: start + 1000 }, start);
+  const [went = "", back = ""] = [1, 2].map((n) => draft(workspace, n));
   workspace.mutate("post.schedule", { id: went, dueAt: start + 1000 }, start);
   workspace.mutate("post.due", { id: went }, start + 1000, "server");
-  // The delivery of the second has ended: it is sent, and could be
-  // deleted from the Sent screen.
-  const [target] = workspace
-    .rows("post_target")
-    .filter(({ postId }) => postId === went);
-  if (!target) throw new Error("The post has a target");
-  workspace.put("post_target", { ...target, status: "sent" });
-  workspace.put("post", { ...postOf(workspace, went), status: "sent" });
+  deliver(workspace, went);
 
-  // From the Queue screen of a device that has not heard of that, the
-  // delete is for a post that has not gone out, and for no other.
+  // From the Queue screen of a device that has not heard that the post
+  // went out, or that somebody took it back to the drafts: it stays, on
+  // the Sent screen and in the drafts of every other.
+  const refusal = (postId: string) => {
+    try {
+      workspace.mutate("post.trash", { id: postId });
+    } catch (error) {
+      if (error instanceof MutationRejected) return [error.code, error.message];
+      throw error;
+    }
+    return undefined;
+  };
+  expect(refusal(went)).toEqual([
+    "not_scheduled",
+    "This post has gone out already",
+  ]);
+  expect(refusal(back)).toEqual([
+    "not_scheduled",
+    "This post is back in the drafts: somebody took it back",
+  ]);
+  expect(postOf(workspace, went).trashedAt).toBeNull();
+  // A post that is gone is no error.
+  workspace.mutate("post.trash", { id: id(77) });
+});
+
+it("restores a post that was put aside as it was: its time, or its place in the queue", () => {
+  const workspace = scheduled();
+  const [timed = "", first = "", second = "", third = ""] = [1, 2, 3, 4].map(
+    (n) => draft(workspace, n),
+  );
+  const dueAt = start + 5000;
+  workspace.mutate("post.schedule", { id: timed, dueAt }, start);
+  for (const post of [first, second, third]) {
+    workspace.mutate("post.enqueue", { id: post, first: false }, start);
+  }
+  workspace.mutate("post.trash", { id: timed }, start + 10);
+  workspace.mutate("post.trash", { id: second }, start + 10);
+  expect(queueOf(workspace).filter(([, time]) => time)).toEqual([
+    [first, firstMonday],
+    [third, firstWednesday],
+  ]);
+
+  workspace.mutate("post.restore", { id: timed }, start + 20);
+  workspace.mutate("post.restore", { id: second }, start + 20);
+
+  expect(postOf(workspace, timed)).toMatchObject({
+    status: "scheduled",
+    mode: "custom",
+    dueAt,
+    trashedAt: null,
+  });
+  // Between the two that it was between, each with the slot of its place.
+  expect(queueOf(workspace)).toEqual([
+    [first, firstMonday],
+    [second, firstWednesday],
+    [third, secondMonday],
+  ]);
+  // A second Undo, of another device, finds nothing to take back.
+  const before = workspace.rows("post");
+  workspace.mutate("post.restore", { id: timed }, start + 30);
+  workspace.mutate("post.restore", { id: id(77) }, start + 30);
+  expect(workspace.rows("post")).toEqual(before);
+});
+
+it("takes a restored post up as scheduling would when its time has passed, and makes a draft of one that has no account or no room", () => {
+  const workspace = scheduled();
+  const [recent = "", old = "", alone = "", crowded = ""] = [1, 2, 3, 4].map(
+    (n) => draft(workspace, n),
+  );
+  // The third goes to an account of its own.
+  connect(workspace, otherChannelId, "2");
+  workspace.mutate("target.remove", { postId: alone, channelId }, start);
+  workspace.mutate(
+    "target.add",
+    { id: id(250), postId: alone, channelId: otherChannelId },
+    start,
+  );
+  for (const post of [recent, old, alone, crowded]) {
+    workspace.mutate("post.schedule", { id: post, dueAt: start + 1000 }, start);
+    workspace.mutate("post.trash", { id: post }, start + 10);
+  }
+  // The account of the third is disconnected meanwhile.
+  workspace.mutate(
+    "channel.disconnect",
+    { id: otherChannelId },
+    start + 20,
+    "server",
+  );
+
+  workspace.mutate("post.restore", { id: recent }, start + 2000);
+  workspace.mutate("post.restore", { id: old }, start + 1000 + lateMs + 1);
+  workspace.mutate("post.restore", { id: alone }, start + 2000);
+
+  expect(postOf(workspace, recent).status).toBe("sending");
+  expect(postOf(workspace, old)).toMatchObject({
+    status: "scheduled",
+    heldAt: start + 1000 + lateMs + 1,
+    trashedAt: null,
+  });
+  expect(postOf(workspace, alone)).toMatchObject({
+    status: "draft",
+    mode: null,
+    dueAt: null,
+    trashedAt: null,
+  });
+
+  // As many posts are scheduled as a workspace can have: the post that
+  // was put aside made room for the last of them, and has none itself.
+  const have = workspace
+    .rows("post")
+    .filter((post) => post.status === "scheduled" && post.trashedAt === null);
+  for (let number = have.length; number < maxScheduled; number += 1) {
+    workspace.put("post", {
+      ...postOf(workspace, old),
+      id: id(1000 + number),
+    });
+  }
+  workspace.mutate("post.restore", { id: crowded }, start + 3000);
+  expect(postOf(workspace, crowded).status).toBe("draft");
+});
+
+it("does not count a post that was put aside among the scheduled posts of a workspace", () => {
+  const workspace = scheduled();
+  const [aside = "", post = ""] = [1, 2].map((n) => draft(workspace, n));
+  workspace.mutate("post.schedule", { id: aside, dueAt: start + 1000 }, start);
+  for (let number = 1; number < maxScheduled; number += 1) {
+    workspace.put("post", {
+      ...postOf(workspace, aside),
+      id: id(1000 + number),
+    });
+  }
   expect(
     rejectionOf(() =>
-      workspace.mutate("post.delete", { id: went, ifScheduled: true }),
+      workspace.mutate("post.schedule", { id: post, dueAt: start + 1000 }),
     ),
-  ).toBe("not_scheduled");
+  ).toBe("too_many_scheduled");
+
+  workspace.mutate("post.trash", { id: aside }, start);
+  workspace.mutate("post.schedule", { id: post, dueAt: start + 1000 }, start);
+  expect(postOf(workspace, post).status).toBe("scheduled");
+});
+
+it("deletes for good only a post that was put aside, with the texts of its accounts", () => {
+  const workspace = scheduled();
+  const [aside = "", waits = "", went = ""] = [1, 2, 3].map((n) =>
+    draft(workspace, n),
+  );
+  workspace.mutate("target.customize", {
+    postId: aside,
+    channelId,
+    parts: [{ id: id(501), text: "For Ada" }],
+  });
+  for (const post of [aside, waits, went]) {
+    workspace.mutate("post.schedule", { id: post, dueAt: start + 1000 }, start);
+  }
+  workspace.mutate("post.trash", { id: aside }, start + 10);
+  // The text of its account has stayed with it, for the Undo.
   expect(
-    rejectionOf(() =>
-      workspace.mutate("post.delete", { id: other, ifScheduled: true }),
-    ),
-  ).toBe("not_scheduled");
-  workspace.mutate("post.delete", { id: waits, ifScheduled: true });
-  expect(workspace.rows("post").map(({ id }) => id)).toEqual([went, other]);
-  // A post that is gone already is no error: two devices can delete it.
-  workspace.mutate("post.delete", { id: waits, ifScheduled: true });
+    workspace.rows("post_part").filter(({ postId }) => postId === aside),
+  ).toHaveLength(2);
+  workspace.mutate("post.due", { id: went }, start + 1000, "server");
+  deliver(workspace, went);
+
+  // The second step of a deletion whose first was refused, or undone,
+  // or never made: nothing is deleted.
+  workspace.mutate("post.delete", { id: waits, ifTrashed: true });
+  workspace.mutate("post.delete", { id: went, ifTrashed: true });
+  workspace.mutate("post.delete", { id: id(77), ifTrashed: true });
+  expect(workspace.rows("post").map(({ id }) => id)).toEqual([
+    aside,
+    waits,
+    went,
+  ]);
+
+  workspace.mutate("post.delete", { id: aside, ifTrashed: true });
+  expect(workspace.rows("post").map(({ id }) => id)).toEqual([waits, went]);
+  expect(
+    workspace.rows("post_part").filter(({ postId }) => postId === aside),
+  ).toEqual([]);
+  expect(
+    workspace.rows("post_target").filter(({ postId }) => postId === aside),
+  ).toEqual([]);
+});
+
+// The two orders in which an Undo once published a post twice, when it
+// made a copy of the deleted post and scheduled that. What a device does
+// without a connection reaches the server later, in the order it was
+// done, after whatever the server and the other devices did meanwhile.
+
+it("publishes a post once when its delete and its Undo arrive after it went out and its record was deleted", () => {
+  const workspace = scheduled();
+  const post = draft(workspace, 1);
+  const dueAt = start + 1000;
+  workspace.mutate("post.schedule", { id: post, dueAt }, start);
+
+  // The phone has deleted the post and pressed Undo, without a
+  // connection. Meanwhile the server publishes the post at its time,
+  // and another device deletes its record from Sent.
+  workspace.mutate("post.due", { id: post }, dueAt, "server");
+  expect(asked(workspace)).toBe(1);
+  deliver(workspace, post);
+  workspace.mutate("post.delete", { id: post }, dueAt + 10);
+
+  // The phone is back. Nothing of the post is there for its three steps
+  // to be about, and none of them makes a post.
+  workspace.mutate("post.trash", { id: post }, dueAt + 20);
+  workspace.mutate("post.restore", { id: post }, dueAt + 21);
+  workspace.mutate("post.delete", { id: post, ifTrashed: true }, dueAt + 22);
+
+  expect(workspace.rows("post")).toEqual([]);
+  expect(workspace.rows("post_target")).toEqual([]);
+});
+
+it("leaves one post when two devices delete the same scheduled post and both press Undo", () => {
+  const workspace = scheduled();
+  const post = draft(workspace, 1);
+  const dueAt = start + 60_000;
+  workspace.mutate("post.schedule", { id: post, dueAt }, start);
+
+  // Each without a connection, so each arrives as a whole.
+  for (const arrives of [start + 100, start + 200]) {
+    workspace.mutate("post.trash", { id: post }, arrives);
+    workspace.mutate("post.restore", { id: post }, arrives + 1);
+  }
+
+  expect(workspace.rows("post")).toMatchObject([
+    { id: post, status: "scheduled", dueAt, trashedAt: null },
+  ]);
+  workspace.mutate("post.due", { id: post }, dueAt, "server");
+  expect(asked(workspace)).toBe(1);
+});
+
+it("keeps a post deleted that one device deleted for good, whatever the Undo of another says afterwards", () => {
+  const workspace = scheduled();
+  const post = draft(workspace, 1);
+  workspace.mutate("post.schedule", { id: post, dueAt: start + 60_000 }, start);
+
+  // One device deletes the post and lets its Undo pass. The other had
+  // deleted it too, and pressed Undo, and is heard of last.
+  workspace.mutate("post.trash", { id: post }, start + 100);
+  workspace.mutate("post.delete", { id: post, ifTrashed: true }, start + 200);
+  workspace.mutate("post.trash", { id: post }, start + 300);
+  workspace.mutate("post.restore", { id: post }, start + 301);
+
+  expect(workspace.rows("post")).toEqual([]);
+});
+
+it("keeps a scheduled post that lost its only account put aside, and gone from the queue of nobody", () => {
+  const workspace = scheduled();
+  const [aside = "", queued = ""] = [1, 2].map((n) => draft(workspace, n));
+  workspace.mutate("post.enqueue", { id: aside, first: false }, start);
+  workspace.mutate("post.enqueue", { id: queued, first: false }, start);
+  workspace.mutate("post.trash", { id: aside }, start + 10);
+
+  workspace.mutate(
+    "channel.disconnect",
+    { id: channelId },
+    start + 20,
+    "server",
+  );
+
+  // The one that was not put aside is a draft again, as before. The
+  // other does not come back among the drafts by a disconnect: it is
+  // deleted but for its Undo.
+  expect(postOf(workspace, queued).status).toBe("draft");
+  expect(postOf(workspace, aside)).toMatchObject({
+    status: "scheduled",
+    trashedAt: start + 10,
+  });
 });
 
 it("schedules no more posts than a workspace can have", () => {
@@ -275,6 +548,7 @@ it("schedules no more posts than a workspace can have", () => {
       dueAt: start + lateMs,
       queuePosition: null,
       heldAt: null,
+      trashedAt: null,
     });
   }
 
@@ -798,6 +1072,7 @@ it("sends a post whose time has come, and keeps what said when", () => {
     mode: "custom",
     dueAt,
     heldAt: null,
+    trashedAt: null,
   });
   expect(workspace.rows("post_target")).toMatchObject([
     { status: "queued", queuedAt: dueAt },
@@ -838,6 +1113,7 @@ it("sends a post that is an hour late, and holds one that is later", () => {
     status: "scheduled",
     dueAt,
     heldAt: dueAt + lateMs + 1,
+    trashedAt: null,
   });
   expect(
     workspace.rows("post_target").find(({ postId }) => postId === late)?.status,
@@ -860,6 +1136,7 @@ it.each([
   // Held, which is something that was done to the post: it says when.
   expect(postOf(workspace, post)).toMatchObject({
     heldAt: start + 2 * lateMs,
+    trashedAt: null,
     updatedAt: start + 2 * lateMs,
   });
 
@@ -974,6 +1251,7 @@ it("gives a queued post that is found too late the next slot, and keeps the orde
   expect(postOf(workspace, a)).toMatchObject({
     status: "scheduled",
     heldAt: null,
+    trashedAt: null,
     updatedAt: thursday,
   });
 });

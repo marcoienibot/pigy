@@ -471,7 +471,8 @@ export function workspaceObject(
 
     /**
      * Looks after what the workspace does by itself. It takes up the
-     * scheduled posts whose time has come. It ends the deliveries whose
+     * scheduled posts whose time has come, and deletes the ones that
+     * were put aside a day ago. It ends the deliveries whose
      * workflow is over without having said so, and begins the ones whose
      * turn has come, each as a run of the publishing workflow. Then it
      * renews the access of every channel whose time for that has come,
@@ -613,15 +614,22 @@ export function workspaceObject(
       }
     }
 
-    /** Takes up the scheduled posts whose time has come. */
+    /**
+     * Takes up the scheduled posts whose time has come, and deletes the
+     * ones that were put aside long enough ago.
+     */
     #publishDue(): void {
       const from = this.#store.seq;
       const time = now().getTime();
       // Before it is tried: what fails here has been tried all the same,
       // and is come back to in a while, not at once.
       this.#store.dueLookedAt = Math.max(this.#store.dueLookedAt, time);
-      this.#store.publishDue(time);
-      this.#publish(from);
+      try {
+        this.#store.publishDue(time);
+        this.#store.pruneTrashed(time);
+      } finally {
+        this.#publish(from);
+      }
     }
 
     /**
@@ -646,6 +654,9 @@ export function workspaceObject(
      * - A scheduled post is due: at its time. If its time has passed,
      *   and the object has looked for what was due since, it did not
      *   manage to take the post up, and comes back in `deliveryWatchMs`.
+     * - A post that was put aside is to be deleted: `trashMs` after it
+     *   was put aside, and in `deliveryWatchMs` if the alarm has just
+     *   failed to.
      * - A push message waits to be sent: at once after the change that
      *   queued it, `pushQueued`, and at once when the pass before
      *   stopped at its limit, which has sent some, so this ends. Else in
@@ -682,6 +693,12 @@ export function workspaceObject(
         );
       }
       if (unfinished || stoodAside) waits.push(0);
+      const pruneAt = this.#store.nextPruneAt;
+      if (pruneAt !== null) {
+        waits.push(
+          Math.max(after === "alarm" ? deliveryWatchMs : 0, pruneAt - time),
+        );
+      }
       const dueAt = this.#store.nextDueAt;
       if (dueAt !== null) {
         waits.push(

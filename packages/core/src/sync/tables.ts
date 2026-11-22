@@ -103,6 +103,17 @@ export const postRowSchema = z.strictObject({
    * it back to the drafts. Null for every other post.
    */
   heldAt: timeSchema.nullable(),
+  /**
+   * When somebody put the post aside, for a `scheduled` post that was
+   * deleted on the Queue screen: the first step of deleting it, which an
+   * Undo takes back. Such a post is as good as gone: it is not due, has
+   * no place in the queue and no time there, counts for nothing and is on
+   * no screen. It keeps what says when it was to go out, for the Undo:
+   * the time that somebody chose, or its place in the queue. The device
+   * deletes it when its Undo is no longer offered, and the server does
+   * `trashMs` after this time. Null for every other post.
+   */
+  trashedAt: timeSchema.nullable(),
 });
 
 /** What a post has of these when nothing says when it goes out. */
@@ -111,7 +122,18 @@ export const unscheduled = {
   dueAt: null,
   queuePosition: null,
   heldAt: null,
+  trashedAt: null,
 } as const;
+
+/**
+ * How long a post that was put aside is kept, in milliseconds: a day. The
+ * device that put it aside deletes it seconds later, when its notice with
+ * the Undo has gone. This is for a device that never does: its window was
+ * closed, or it left the workspace. Far longer than any Undo is offered,
+ * a device without a connection included, whose mutations arrive
+ * together: nothing is deleted under an Undo that could still come.
+ */
+export const trashMs = 24 * 60 * 60 * 1000;
 
 /**
  * How late a post still goes out, in milliseconds: an hour. The server

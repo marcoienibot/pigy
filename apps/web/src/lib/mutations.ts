@@ -21,6 +21,8 @@ const refused: Record<MutatorName, string> = {
   "post.enqueue": "A post was not added to the queue",
   "post.move": "A post was not moved in the queue",
   "post.unschedule": "A post was not taken back to the drafts",
+  "post.trash": "A scheduled post was not deleted",
+  "post.restore": "A deleted post was not brought back",
   "slot.add": "A posting time was not added",
   "slot.remove": "A posting time was not removed",
   "queue.setPaused": "The queue was not paused or resumed",

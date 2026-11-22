@@ -1,4 +1,3 @@
-import { uuidv7 } from "@pigy/core";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import {
   ArrowDown,
@@ -32,16 +31,17 @@ import { useShortcuts } from "@/lib/keyboard";
 import { networkInfo } from "@/lib/networks";
 import { undoMs } from "@/lib/notices";
 import {
-  bringBack,
   claimTimeZone,
-  deleteScheduled,
+  deleteForGood,
   type Moves,
   movesIn,
+  putAside,
   type QueueItem,
+  restore,
   type Schedule,
   selectQueue,
   selectSchedule,
-  takePost,
+  undoNotice,
   whenDue,
 } from "@/lib/queue";
 import { useNow } from "@/lib/time";
@@ -123,35 +123,47 @@ function QueueList() {
   };
 
   const remove = (item: QueueItem) => {
-    // What the post is, read before it goes.
-    const taken = takePost(tablesNow(), item.id);
-    deleteScheduled(mutate, item.id);
-    if (!taken) return;
+    const { id } = item;
+    // Put aside first: the post is gone from every screen and goes out
+    // nowhere, and the Undo takes that back. It is deleted when the Undo
+    // is no longer offered, and by the server a day later if this
+    // window is gone before then.
+    putAside(mutate, id);
+    let undone = false;
+    const forGood = () => {
+      if (!undone) deleteForGood(mutate, id);
+    };
     toast("Scheduled post deleted", {
       duration: undoMs,
+      onAutoClose: forGood,
+      onDismiss: forGood,
       action: {
         label: "Undo",
         onClick: () => {
-          const back = bringBack(mutate, tablesNow(), taken, Date.now(), () =>
-            uuidv7(new Date()),
-          );
-          if (back.as === "draft") {
-            toast("Brought back as a draft", {
-              description:
-                "Its time has passed, or its accounts are no longer connected.",
-            });
-          } else if (back.as === "there") {
-            // The server did not delete it: it was on its way by then. A
-            // copy of it would go out as well.
-            toast("Nothing to undo: the post was not deleted", {
-              description: "It had gone out before the delete reached pigy.",
-              action: {
-                label: "View",
-                onClick: () =>
-                  void navigate({ to: "/sent", search: { post: back.id } }),
-              },
-            });
-          }
+          undone = true;
+          const back = restore(mutate, tablesNow, id);
+          const open = (label: string, to: "/" | "/sent") => ({
+            label,
+            onClick: () => {
+              if (to === "/") {
+                focusWhenOpened(id);
+                void navigate({ to, search: { draft: id } });
+              } else {
+                void navigate({ to, search: { post: id } });
+              }
+            },
+          });
+          const said = undoNotice(back);
+          if (!said) return;
+          toast(said.title, {
+            description: said.description,
+            ...(said.leadsTo && {
+              action: open(
+                said.leadsTo === "drafts" ? "Open" : "View",
+                said.leadsTo === "drafts" ? "/" : "/sent",
+              ),
+            }),
+          });
         },
       },
     });

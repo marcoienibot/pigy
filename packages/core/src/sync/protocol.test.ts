@@ -122,6 +122,7 @@ const post = {
   dueAt: null,
   queuePosition: null,
   heldAt: null,
+  trashedAt: null,
 };
 
 it("accepts a row of the table that a change names", () => {
