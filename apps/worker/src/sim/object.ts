@@ -323,7 +323,9 @@ export function simWorldObject({
      */
     #world() {
       const { kv } = this.ctx.storage;
-      const world = createWorld({ storage: kv, now });
+      // A sandbox has an audience, so that a person sees the stats of
+      // their posts move.
+      const world = createWorld({ storage: kv, now, audience: true });
       const mastodon = createMastodonSimulator(world);
       if (!kv.get(seededKey)) {
         mastodon.addInstance(sandboxMastodonDomain);

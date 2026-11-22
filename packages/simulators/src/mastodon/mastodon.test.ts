@@ -1780,3 +1780,43 @@ describe("media", () => {
     expect(response.status).toBe(200);
   });
 });
+
+describe("what people did with a status", () => {
+  it("counts the likes, boosts, replies and quotes that its world has for it", async () => {
+    const sim = setup();
+    const { token } = await connect(sim);
+    const { status } = await publish(sim, token, { status: "Counted" });
+    await publish(sim, token, {
+      status: "Me again",
+      in_reply_to_id: status.id,
+    });
+    sim.world.engage("mastodon", status.id, {
+      likes: 5,
+      reposts: 2,
+      quotes: 1,
+    });
+
+    const shown = await api(sim, "GET", `/api/v1/statuses/${status.id}`, token);
+
+    // The reply of the account itself counts, as Mastodon counts it.
+    expect(await shown.json()).toMatchObject({
+      favourites_count: 5,
+      reblogs_count: 2,
+      replies_count: 1,
+      quotes_count: 1,
+    });
+  });
+
+  it("has no count of quotes before 4.5, which has none", async () => {
+    const sim = setup({ version: "4.4.0" });
+    const { token } = await connect(sim);
+    const { status } = await publish(sim, token, { status: "Counted" });
+
+    const shown = (await (
+      await api(sim, "GET", `/api/v1/statuses/${status.id}`, token)
+    ).json()) as Record<string, unknown>;
+
+    expect(shown).toMatchObject({ favourites_count: 0, reblogs_count: 0 });
+    expect(shown).not.toHaveProperty("quotes_count");
+  });
+});

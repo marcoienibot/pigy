@@ -78,6 +78,24 @@ export type SimPost = {
    * a post without any.
    */
   images?: SimImage[];
+  /**
+   * What people did with the post that the world does not count by
+   * itself: `engage` adds to it. Left out where nobody did anything.
+   */
+  engagement?: Partial<SimEngagement>;
+};
+
+/**
+ * What people did with a post: liked it, shared it, replied to it, quoted
+ * it and saw it. A network shows what it counts of these, by names of
+ * its own.
+ */
+export type SimEngagement = {
+  likes: number;
+  reposts: number;
+  replies: number;
+  quotes: number;
+  views: number;
 };
 
 /** A link, a mention or a hashtag in the text of a simulated post. */
@@ -166,6 +184,25 @@ export type SimWorld = {
 
   /** The bytes of the images that were published in the world. */
   blobs: SimBlobs;
+
+  /**
+   * Adds to what people did with a post of `network`, as if somebody had
+   * liked it, shared it and so on: for a test, which says how many.
+   */
+  engage(network: Network, postId: string, more: Partial<SimEngagement>): void;
+  /**
+   * What people did with `post`, a post of `network`, now: what `engage`
+   * added, the posts of the world that reply to it, and, in a world with
+   * an audience, what the audience did since the post was made. With
+   * `nested`, the replies are all those below the post, the replies to
+   * its replies among them, as a network counts them that counts a whole
+   * thread under the post that begins it.
+   */
+  engagementOf(
+    network: Network,
+    post: SimPost,
+    options?: { nested?: boolean },
+  ): SimEngagement;
 };
 
 export type SimWorldOptions = {
@@ -173,11 +210,19 @@ export type SimWorldOptions = {
   storage?: SimStorage;
   /** The clock that the world's time starts from and runs with. */
   now: Clock;
+  /**
+   * Whether the posts of the world have an audience, which likes, shares,
+   * answers, quotes and sees them by itself as time goes by, so that a
+   * person in a sandbox sees the stats of a post move: `audienceOf`.
+   * Without one, as in a test, a post gets only what `engage` gives it.
+   */
+  audience?: boolean;
 };
 
 export function createWorld({
   storage = memoryStorage(),
   now,
+  audience = false,
 }: SimWorldOptions): SimWorld {
   const offset = () => (storage.get("clock/offset") as number | undefined) ?? 0;
   const tokenTable = <Token extends SimToken>(network: Network) =>
@@ -244,8 +289,83 @@ export function createWorld({
 
     table: (network, name) => table(storage, `${network}/${name}`),
     blobs: createBlobs(storage, () => world.nextNumber()),
+
+    engage(network, postId, more) {
+      const posts = world.posts(network);
+      const post = posts.get(postId);
+      if (!post) throw new Error(`There is no post ${postId} on ${network}`);
+      const before = post.engagement ?? {};
+      const engagement: Partial<SimEngagement> = { ...before };
+      for (const [name, count] of Object.entries(more) as [
+        keyof SimEngagement,
+        number,
+      ][]) {
+        engagement[name] = (before[name] ?? 0) + count;
+      }
+      posts.put(postId, { ...post, engagement });
+    },
+
+    engagementOf(network, post, { nested = false } = {}) {
+      const given = post.engagement ?? {};
+      const grown = audience
+        ? audienceOf(post, world.now().getTime())
+        : { likes: 0, reposts: 0, replies: 0, quotes: 0, views: 0 };
+      const repliesTo = new Map<string, string[]>();
+      for (const { id, replyToId } of world.posts(network).all()) {
+        if (replyToId === null) continue;
+        repliesTo.set(replyToId, [...(repliesTo.get(replyToId) ?? []), id]);
+      }
+      let answers = 0;
+      const below = [post.id];
+      for (let id = below.pop(); id !== undefined; id = below.pop()) {
+        const replies = repliesTo.get(id) ?? [];
+        answers += replies.length;
+        if (nested) below.push(...replies);
+      }
+      return {
+        likes: grown.likes + (given.likes ?? 0),
+        reposts: grown.reposts + (given.reposts ?? 0),
+        replies: grown.replies + (given.replies ?? 0) + answers,
+        quotes: grown.quotes + (given.quotes ?? 0),
+        views: grown.views + (given.views ?? 0),
+      };
+    },
   };
   return world;
+}
+
+const minuteMs = 60 * 1000;
+
+/**
+ * What the audience of a world has done with `post` by the time `now`.
+ * It is worked out from the post and the time alone, so it is the same
+ * whoever asks, and grows as a post does: from the first minutes, half
+ * of it in the first hour, and less and less after a day. How far a post
+ * reaches, between 10 and 59 likes in the end, follows from its ID, so
+ * that two posts do not do the same. The first like comes within one to
+ * seven minutes, so that a person who tries pigy in a sandbox sees the
+ * stats move when pigy reads them ten minutes after the post went out,
+ * and not at once. People see a post before they like it, and the views
+ * come first.
+ */
+export function audienceOf(post: SimPost, now: number): SimEngagement {
+  // FNV-1a, which spreads the IDs well enough for this.
+  let seed = 0x811c9dc5;
+  for (const character of post.id) {
+    seed = Math.imul(seed ^ character.charCodeAt(0), 0x01000193) >>> 0;
+  }
+  const reach = 10 + (seed % 50);
+  const minutes = Math.max(0, now - post.createdAt) / minuteMs;
+  // Half of the likes in the first hour, and half of the views in the
+  // first half hour.
+  const likes = Math.floor((reach * minutes) / (minutes + 60));
+  return {
+    likes,
+    reposts: Math.floor(likes / 4),
+    replies: Math.floor(likes / 8),
+    quotes: Math.floor(likes / 15),
+    views: Math.floor((reach * 25 * minutes) / (minutes + 30)),
+  };
 }
 
 /** A post with the account that made it. */

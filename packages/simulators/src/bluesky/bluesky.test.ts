@@ -1395,3 +1395,64 @@ describe("faults", () => {
     expect(sim.world.faults.armed("bluesky")).toHaveLength(1);
   });
 });
+
+describe("the app view", () => {
+  /** Asks the public app view for the posts of `uris`. */
+  const getPosts = (sim: Sim, uris: string[]) =>
+    sim.simulator.fetch(
+      `https://public.api.bsky.app/xrpc/app.bsky.feed.getPosts?${new URLSearchParams(uris.map((uri) => ["uris", uri]))}`,
+    );
+
+  it("shows a post to anybody, with what people did with it", async () => {
+    const sim = await setup();
+    const tokens = await connected(sim);
+    const { uri, cid } = await body(
+      await createRecord(sim, tokens.access_token, post("Counted")),
+    );
+    sim.world.engage("bluesky", String(uri), { likes: 4, reposts: 1 });
+
+    // No token: the counts of a post are public.
+    const answer = await getPosts(sim, [String(uri)]);
+
+    expect(answer.status).toBe(200);
+    expect(await body(answer)).toEqual({
+      posts: [
+        {
+          uri,
+          cid,
+          author: {
+            did: sim.ada.id,
+            handle: "ada.bsky.test",
+            displayName: "Ada Lovelace",
+          },
+          record: post("Counted"),
+          replyCount: 0,
+          repostCount: 1,
+          likeCount: 4,
+          quoteCount: 0,
+          indexedAt: start.toISOString(),
+        },
+      ],
+    });
+  });
+
+  it("leaves out a post that it does not have, and refuses what is no AT URI", async () => {
+    const sim = await setup();
+    const gone = `at://${sim.ada.id}/app.bsky.feed.post/3m2abcdefgh22`;
+
+    expect(await body(await getPosts(sim, [gone]))).toEqual({ posts: [] });
+    expect((await getPosts(sim, ["https://bsky.app/post/1"])).status).toBe(400);
+    // The lexicon takes 25 at most.
+    expect((await getPosts(sim, Array(26).fill(gone))).status).toBe(400);
+  });
+
+  it("asks a client that asks too often to wait", async () => {
+    const sim = await setup();
+    sim.simulator.arm({ kind: "rate-limit", operation: "stats" });
+
+    const answer = await getPosts(sim, [`at://${sim.ada.id}/x/y`]);
+
+    expect(answer.status).toBe(429);
+    expect(answer.headers.get("Retry-After")).toBe("60");
+  });
+});

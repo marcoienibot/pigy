@@ -52,7 +52,8 @@ export type { Instance, MastodonAccount } from "./state.ts";
  * Not simulated: media, polls, scheduled statuses, quotes, content
  * warnings, followers, federation between instances beyond finding the
  * account that a mention names, and the limits that Mastodon keeps per IP
- * address.
+ * address. What people do with a status is counted, and nobody does it:
+ * the counts of a status are what its world says, `engagementOf`.
  */
 
 /** The faults that Mastodon can suffer from. */
@@ -66,7 +67,8 @@ export const mastodonFaultKinds = [
 /**
  * The requests that a fault can strike: reading the instance, asking whose
  * token it is, and posting, reading and deleting a status. Reading takes in
- * the list of an account's statuses and the source of one.
+ * the list of an account's statuses, the source of one, and its counts,
+ * which are in the status.
  */
 export const mastodonOperations = [
   "instance",

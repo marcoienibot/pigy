@@ -1032,3 +1032,111 @@ describe("what it keeps to itself", () => {
     expect(response.body.error?.code).toBe(100);
   });
 });
+
+describe("insights", () => {
+  /** A token of Ada's that may read insights too. */
+  const insightful = (sim: Sim) =>
+    tokenFor(
+      sim,
+      sim.ada,
+      authorizationUrl(sim, { scope: `${scope},threads_manage_insights` }),
+    );
+
+  const insightsOf = (
+    sim: Sim,
+    token: string,
+    id: string,
+    metric = "views,likes,replies,reposts,quotes",
+  ) => call(sim, "GET", `/${id}/insights`, { metric, access_token: token });
+
+  it("says what people did with a post of the account, by each metric that is asked for", async () => {
+    const sim = setup();
+    const token = await insightful(sim);
+    const id = await post(sim, token, "Counted");
+    await post(sim, token, "Me again", { reply_to_id: id });
+    sim.world.engage("threads", id, { views: 40, likes: 3, quotes: 1 });
+
+    const { status, body } = await answer(await insightsOf(sim, token, id));
+
+    expect(status).toBe(200);
+    // The reply of the account itself is among the replies.
+    expect(body.data?.map(({ name, values }) => [name, values])).toEqual([
+      ["views", [{ value: 40 }]],
+      ["likes", [{ value: 3 }]],
+      ["replies", [{ value: 1 }]],
+      ["reposts", [{ value: 0 }]],
+      ["quotes", [{ value: 1 }]],
+    ]);
+    expect(body.data?.[0]).toMatchObject({
+      period: "lifetime",
+      id: `${id}/insights/views/lifetime`,
+    });
+  });
+
+  it("counts every reply below a post that begins a thread, and only those to it below a reply", async () => {
+    const sim = setup();
+    const token = await insightful(sim);
+    // A thread of three parts, each a reply to the one before, and an
+    // answer of somebody else's to the second.
+    const root = await post(sim, token, "First");
+    const second = await post(sim, token, "Second", { reply_to_id: root });
+    const third = await post(sim, token, "Third", { reply_to_id: second });
+    // As a person does in the app of Threads.
+    sim.simulator.addPost(sim.grace.id, {
+      text: "Grace answers",
+      replyToId: second,
+    });
+    const repliesOf = async (id: string) =>
+      (await answer(await insightsOf(sim, token, id, "replies"))).body.data?.[0]
+        ?.values;
+
+    // As Meta documents the metric: of a root post, the replies in its
+    // whole thread, the account's own among them.
+    expect(await repliesOf(root)).toEqual([{ value: 3 }]);
+    // Of a reply, the replies to it alone.
+    expect(await repliesOf(second)).toEqual([{ value: 2 }]);
+    expect(await repliesOf(third)).toEqual([{ value: 0 }]);
+  });
+
+  it("refuses a token without the permission to read insights", async () => {
+    const sim = setup();
+    // What an account that was connected before pigy asked for it has.
+    const token = await tokenFor(sim);
+    const id = await post(sim, token, "Counted");
+
+    const { status, body } = await answer(await insightsOf(sim, token, id));
+
+    expect(status).toBe(403);
+    expect(body.error?.code).toBe(10);
+  });
+
+  it("has none of a post of somebody else's or of one that is gone, and none of a metric that it does not know", async () => {
+    const sim = setup();
+    const token = await insightful(sim);
+    const graces = await post(sim, await tokenFor(sim, sim.grace), "Grace's");
+    const mine = await post(sim, token, "Mine");
+
+    const other = await answer(await insightsOf(sim, token, graces));
+    expect(other.body.error).toMatchObject({ code: 100, error_subcode: 33 });
+    await call(sim, "DELETE", `/${mine}`, { access_token: token });
+    const gone = await answer(await insightsOf(sim, token, mine));
+    expect(gone.body.error).toMatchObject({ code: 100, error_subcode: 33 });
+    const mineAgain = await post(sim, token, "Mine again");
+    const unknown = await answer(
+      await insightsOf(sim, token, mineAgain, "likes,hearts"),
+    );
+    expect(unknown.status).toBe(400);
+    expect(unknown.body.error?.code).toBe(100);
+  });
+
+  it("can be made to fail like the rest of the API", async () => {
+    const sim = setup();
+    const token = await insightful(sim);
+    const id = await post(sim, token, "Counted");
+    sim.simulator.arm({ kind: "rate-limit", operation: "stats" });
+
+    const { body } = await answer(await insightsOf(sim, token, id));
+
+    expect(body.error).toMatchObject({ code: 4 });
+  });
+});

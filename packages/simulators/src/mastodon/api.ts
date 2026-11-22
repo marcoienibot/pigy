@@ -190,6 +190,8 @@ function statusJson(state: State, status: Status, source = false) {
   const found = findEntities(status.text, (name, domain) =>
     mentionedAccount(state, status.domain, name, domain),
   );
+  const instance = state.instances.get(status.domain);
+  const engagement = state.world.engagementOf("mastodon", status);
   return {
     id: status.id,
     created_at: new Date(status.createdAt).toISOString(),
@@ -201,11 +203,15 @@ function statusJson(state: State, status: Status, source = false) {
     language: "en",
     uri: `https://${status.domain}/users/${account?.username}/statuses/${status.id}`,
     url: status.url,
-    replies_count: state.statuses
-      .all()
-      .filter(({ replyToId }) => replyToId === status.id).length,
-    reblogs_count: 0,
-    favourites_count: 0,
+    // What people did with it, the replies in the world among it, which
+    // count those of the account itself.
+    replies_count: engagement.replies,
+    reblogs_count: engagement.reposts,
+    favourites_count: engagement.likes,
+    // GUESS, PLAN.md section 19: an instance has quotes from 4.5 on, and
+    // one from before leaves the count out.
+    ...(instance &&
+      atLeast(instance.version, 4, 5) && { quotes_count: engagement.quotes }),
     edited_at: null,
     favourited: false,
     reblogged: false,

@@ -195,6 +195,7 @@ export type BlueskyFaultKind = (typeof blueskyFaultKinds)[number];
  * - `revoke`: giving an access back.
  * - `profile`: reading the profile of an account.
  * - `publish`, `read` and `delete`: writing, reading and deleting a post.
+ * - `stats`: asking the app view what people did with a post.
  */
 export const blueskyOperations = [
   "identity",
@@ -206,6 +207,7 @@ export const blueskyOperations = [
   "publish",
   "read",
   "delete",
+  "stats",
 ] as const;
 
 export type Operation = (typeof blueskyOperations)[number];

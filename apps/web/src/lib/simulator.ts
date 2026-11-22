@@ -107,6 +107,7 @@ const operations: Record<string, string> = {
   refresh: "Renewing the access",
   revoke: "Giving the access back",
   profile: "Reading the profile",
+  stats: "Reading the stats of a post",
 };
 
 /** What the fault `kind` is called, and what it does on `network`. */

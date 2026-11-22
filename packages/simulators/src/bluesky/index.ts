@@ -1,5 +1,6 @@
 import type { Fetch } from "@pigy/core";
 import type { SimWorld } from "../world/index.ts";
+import { appView, blueskyAppViewHost } from "./appview.ts";
 import { html, json, text, withFaults } from "./http.ts";
 import {
   dnsQuery,
@@ -29,6 +30,7 @@ import {
   type State,
 } from "./state.ts";
 
+export { blueskyAppViewHost } from "./appview.ts";
 export { dnsResolverHost, plcDirectoryHost } from "./identity.ts";
 export type { BlueskySimulatorOptions } from "./oauth.ts";
 export {
@@ -58,7 +60,9 @@ export { blueskyFaultKinds, blueskyOperations } from "./state.ts";
  * - the directory of `did:plc`, `plc.directory`, and the hosts of `did:web`,
  * - the servers that keep accounts, each a PDS,
  * - the entryway that authorizes for Bluesky's own servers, `bsky.social`,
- *   and a PDS that authorizes for itself.
+ *   and a PDS that authorizes for itself,
+ * - the public app view, `public.api.bsky.app`, for what people did with
+ *   a post: appview.ts.
  *
  * It enforces the rules itself and shares no code with the adapter or with
  * pigy's own validation. record.ts says where it is stricter than a real
@@ -77,8 +81,8 @@ export { blueskyFaultKinds, blueskyOperations } from "./state.ts";
  * - It accepts only the secrets it made itself, which say what they are.
  *
  * Not simulated: the repositories behind the records, media, the app
- * view with its feeds and notifications, accounts that move, and the
- * limits that a server keeps per IP address.
+ * view beyond the counts of a post, accounts that move, and the limits
+ * that a server keeps per IP address.
  */
 
 /** The entryway: the authorization server of Bluesky's own servers. */
@@ -166,6 +170,7 @@ export function createBlueskySimulator(
     host === plcDirectoryHost ||
     host === dnsResolverHost ||
     host === blueskyEntryway ||
+    host === blueskyAppViewHost ||
     state.servers.get(host) !== undefined ||
     accountAt(host) !== undefined;
 
@@ -184,6 +189,7 @@ export function createBlueskySimulator(
       const path = url.pathname;
 
       if (host === plcDirectoryHost) return plcDirectory(state, request, url);
+      if (host === blueskyAppViewHost) return appView(state, request, url);
       if (host === dnsResolverHost) return dnsQuery(state, request, url);
 
       const account = accountAt(host);

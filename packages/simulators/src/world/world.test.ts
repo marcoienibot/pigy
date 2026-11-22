@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   answerConsent,
+  audienceOf,
   consentPage,
   createWorld,
   feed,
@@ -363,5 +364,112 @@ describe("answerConsent", () => {
         "deny",
       ),
     ).rejects.toThrow("answered 401: No such client");
+  });
+});
+
+describe("engagement", () => {
+  const hour = 60 * 60 * 1000;
+
+  /** A post of `id` on the simulated Mastodon of `world`, made now. */
+  function postOf(world: ReturnType<typeof createWorld>, id: string) {
+    const post: SimPost = {
+      network: "mastodon",
+      id,
+      accountId: "1",
+      text: "A post",
+      replyToId: null,
+      createdAt: world.now().getTime(),
+      url: `https://mastodon.example/@ada/${id}`,
+    };
+    world.posts("mastodon").put(id, post);
+    return post;
+  }
+
+  it("counts what a test said that people did, and the replies of the world", () => {
+    const { world } = setup();
+    postOf(world, "1");
+    // A reply that the account posted itself, as the second part of a
+    // thread is, counts like any other.
+    world.posts("mastodon").put("2", { ...postOf(world, "2"), replyToId: "1" });
+
+    world.engage("mastodon", "1", { likes: 2, views: 10 });
+    world.engage("mastodon", "1", { likes: 1, reposts: 4 });
+
+    const post = world.posts("mastodon").get("1") as SimPost;
+    expect(world.engagementOf("mastodon", post)).toEqual({
+      likes: 3,
+      reposts: 4,
+      replies: 1,
+      quotes: 0,
+      views: 10,
+    });
+  });
+
+  it("lets nothing happen by itself in a world without an audience", () => {
+    const { world } = setup();
+    const post = postOf(world, "1");
+
+    // What a test counts on: a post gets what the test gives it.
+    world.advance(30 * 24 * hour);
+
+    expect(world.engagementOf("mastodon", post)).toEqual({
+      likes: 0,
+      reposts: 0,
+      replies: 0,
+      quotes: 0,
+      views: 0,
+    });
+  });
+
+  it("has the audience of a sandbox see a post first, like it over the first day, and less and less after", () => {
+    const world = createWorld({ now: () => start, audience: true });
+    const post = postOf(world, "01932c07-0000-7000-8000-000000000001");
+    const at = (hours: number) => {
+      world.advance(hours * hour - (world.now().getTime() - start.getTime()));
+      return world.engagementOf("mastodon", post);
+    };
+
+    expect(at(0)).toEqual({
+      likes: 0,
+      reposts: 0,
+      replies: 0,
+      quotes: 0,
+      views: 0,
+    });
+    const [first, day, month] = [at(1), at(24), at(30 * 24)];
+    expect(first.views).toBeGreaterThan(0);
+    expect(day.likes).toBeGreaterThan(first.likes);
+    expect(month.likes).toBeGreaterThan(day.likes);
+    // It levels off: a month adds less to a day than the first day adds
+    // to the first hour.
+    expect(month.likes - day.likes).toBeLessThan(day.likes - first.likes);
+    expect(month.likes).toBeLessThan(60);
+  });
+
+  it("has the audience of a sandbox begin within the first minutes, so that a person who tries pigy sees the stats move", () => {
+    const world = createWorld({ now: () => start, audience: true });
+    // Posts of every reach: it follows from the ID.
+    const posts = Array.from({ length: 100 }, (_, index) =>
+      postOf(
+        world,
+        `01932c07-0000-7000-8000-${String(index).padStart(12, "0")}`,
+      ),
+    );
+    const likesAt = (minutes: number) =>
+      posts.map(
+        (post) => audienceOf(post, start.getTime() + minutes * 60 * 1000).likes,
+      );
+
+    // Nobody has liked a post that pigy reads at once.
+    expect(likesAt(0.5).every((likes) => likes === 0)).toBe(true);
+    // Somebody has liked every post when pigy reads it ten minutes later.
+    expect(likesAt(10).every((likes) => likes > 0)).toBe(true);
+    // And the posts that reach far are liked within a couple of minutes.
+    expect(likesAt(2).some((likes) => likes > 0)).toBe(true);
+  });
+
+  it("refuses to engage with a post that is not there", () => {
+    const { world } = setup();
+    expect(() => world.engage("mastodon", "1", { likes: 1 })).toThrow();
   });
 });

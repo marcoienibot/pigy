@@ -10,6 +10,7 @@ import {
   type Caller,
   createContainer,
   deletePost,
+  insights,
   lacking,
   type NewPost,
   noSuchObject,
@@ -63,7 +64,8 @@ export type { ThreadsApp, ThreadsPost, ThreadsUser } from "./state.ts";
  *
  * Not simulated: media, carousels, links with a preview of the app's
  * choosing, quotes, polls, topics, publishing in one step, the list of an
- * account's replies, insights, mentions, webhooks, an app in development
+ * account's replies, the insights of an account, mentions, webhooks, an
+ * app in development
  * that only its testers can use, and the limits that Meta keeps per app.
  */
 
@@ -80,7 +82,7 @@ export const threadsFaultKinds = [
  * The requests that a fault can strike: exchanging a code for a token,
  * that token for one that lasts, renewing the latter, asking whose token
  * it is, making a container, publishing one, looking at a container or a
- * post, and deleting a post.
+ * post, deleting a post, and reading its insights.
  */
 export const threadsOperations = [
   "publish",
@@ -91,6 +93,7 @@ export const threadsOperations = [
   "exchange",
   "refresh",
   "delete",
+  "stats",
 ] as const;
 
 type Operation = (typeof threadsOperations)[number];
@@ -245,6 +248,13 @@ export function createThreadsSimulator(world: SimWorld): ThreadsSimulator {
         operation: "read",
         scopes: ["threads_basic", "threads_content_publish"],
         run: own((caller, params) => publishingLimit(state, caller, params)),
+      };
+    }
+    if (second === "insights" && method === "GET" && first !== "me") {
+      return {
+        operation: "stats",
+        scopes: ["threads_basic", "threads_manage_insights"],
+        run: (caller, params) => insights(state, caller, first, params),
       };
     }
     if (second === "replies" && method === "GET" && first !== "me") {

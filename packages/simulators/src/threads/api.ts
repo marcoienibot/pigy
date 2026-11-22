@@ -546,6 +546,66 @@ export function replies(
   );
 }
 
+/**
+ * The metrics of the insights of a media object that the simulation has,
+ * by their names, and what each is of what people did with a post. GUESS,
+ * PLAN.md section 19: the names and the form of the answer are those that
+ * Meta documents for "Insights", from what its author knew of them, and
+ * a metric that the simulation does not have is refused as one that
+ * Threads does not have. Threads has `shares` too, which pigy does not ask.
+ */
+const mediaMetrics = {
+  views: "views",
+  likes: "likes",
+  replies: "replies",
+  reposts: "reposts",
+  quotes: "quotes",
+} as const;
+
+const isMediaMetric = (name: string): name is keyof typeof mediaMetrics =>
+  Object.hasOwn(mediaMetrics, name);
+
+/**
+ * `GET /{id}/insights`: what people did with a post of the account, by
+ * the metrics that `metric` names, over the life of the post. Only the
+ * account's own posts have insights for it.
+ */
+export function insights(
+  state: State,
+  { user }: Caller,
+  id: string,
+  params: URLSearchParams,
+): Response {
+  const post = state.posts.get(id);
+  if (!post || post.accountId !== user.id) return noSuchObject(state, id);
+  const asked = (params.get("metric") ?? "").split(",").filter(Boolean);
+  if (asked.length === 0) {
+    return invalidParameter(state, "(#100) The parameter metric is required");
+  }
+  if (!asked.every(isMediaMetric)) {
+    return invalidParameter(
+      state,
+      `(#100) metric must be one of the following values: ${Object.keys(mediaMetrics).join(", ")}`,
+    );
+  }
+  // As Meta documents `replies` of a media object: of a post that begins
+  // a thread, every reply in the thread below it, the account's own
+  // among them, and of a reply, the replies to it alone.
+  const engagement = state.world.engagementOf("threads", post, {
+    nested: post.replyToId === null,
+  });
+  return json(200, {
+    data: asked.map((name) => ({
+      name,
+      period: "lifetime",
+      values: [{ value: engagement[mediaMetrics[name]] }],
+      title: name.charAt(0).toUpperCase() + name.slice(1),
+      description: `The number of ${name} of the post.`,
+      id: `${id}/insights/${name}/lifetime`,
+    })),
+  });
+}
+
 /** `GET /me/threads_publishing_limit`: how much of its quotas the account has used. */
 export function publishingLimit(
   state: State,
