@@ -68,3 +68,15 @@ export async function deleteUnder(
     if (!listed.truncated) return;
   }
 }
+
+/**
+ * Whether the bucket failed because it has no such multipart upload: it
+ * was completed, aborted, or never begun. The binding says so in the
+ * message of its error, with the code of R2's API, 10024, which is all
+ * that tells it from a failure that a second try may cure. GUESS: that
+ * the platform says so for an upload that is completed or was dropped
+ * after a while, where the local runtime drops one that is dropped again
+ * without a word: PLAN.md section 19.
+ */
+export const noSuchUpload = (error: unknown): boolean =>
+  error instanceof Error && /\(10024\)$/.test(error.message);

@@ -382,6 +382,91 @@ test("an image that is in no part is deleted after a day, and one that is in a p
   ]);
 });
 
+test.each([
+  ["that is not finished within a week", uploadLifetimeMs, true],
+  ["of an image that is in no part for a day", unattachedMs, false],
+] as const)(
+  "the parts of an upload %s are dropped by the bucket, also when it fails to the first time",
+  async (_, after, inPart) => {
+    const { test: app, browser, client, workspaceId } = await ready();
+    const file = await pngFile(1400, 1300, { noise: true });
+    const mediaId = await createMedia(client, file);
+    if (inPart) {
+      const { partIds } = await writeDraft(client, workspaceId, "Hello");
+      await attach(client, partIds[0] ?? "", mediaId);
+    }
+    await beginUpload(browser, workspaceId, mediaId);
+    await sendChunk(browser, workspaceId, mediaId, file, 1);
+
+    // The bucket fails the first time that it is told to drop the parts,
+    // for a reason of its own.
+    const bucket = Object.getPrototypeOf(env.MEDIA) as R2Bucket;
+    const resume = bucket.resumeMultipartUpload;
+    let failures = 1;
+    const uploads: R2MultipartUpload[] = [];
+    const spy = vi
+      .spyOn(bucket, "resumeMultipartUpload")
+      .mockImplementation(function (this: R2Bucket, key, uploadId) {
+        const upload = resume.call(this, key, uploadId);
+        uploads.push(upload);
+        return {
+          key: upload.key,
+          uploadId: upload.uploadId,
+          uploadPart: (...args) => upload.uploadPart(...args),
+          complete: (...args) => upload.complete(...args),
+          abort: async () => {
+            if (failures-- > 0) {
+              throw new Error(
+                "abortMultipartUpload: We encountered an internal error. Please try again. (10001)",
+              );
+            }
+            await upload.abort();
+          },
+        };
+      });
+    /** Whether the bucket still has the upload, and bills its parts. */
+    const billed = async () => {
+      const upload = uploads[0];
+      if (!upload) throw new Error("The upload was never dropped");
+      try {
+        await resume
+          .call(env.MEDIA, upload.key, upload.uploadId)
+          .uploadPart(3, new Uint8Array(8));
+        return true;
+      } catch (error) {
+        expect(String(error)).toContain("(10024)");
+        return false;
+      }
+    };
+    try {
+      app.advance(after + 1000);
+      await look(workspaceId);
+      // Given up: no chunk is taken any more. And the bucket still has the
+      // parts, which pigy keeps track of.
+      expect(
+        (await sendChunk(browser, workspaceId, mediaId, file, 2)).status,
+      ).toBe(409);
+      expect(await billed()).toBe(true);
+      const meanwhile = new SyncClient();
+      await meanwhile.connect(browser, workspaceId);
+      // The row stays until the bucket has dropped the parts.
+      expect(mediaOf(meanwhile, mediaId).status).toBe("failed");
+
+      // The bucket is asked again an hour later.
+      app.advance(60 * 60 * 1000);
+      await look(workspaceId);
+      expect(await billed()).toBe(false);
+      const after_ = new SyncClient();
+      await after_.connect(browser, workspaceId);
+      expect(after_.table("media").map(({ id }) => id)).toEqual(
+        inPart ? [mediaId] : [],
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  },
+);
+
 test("a person makes only so many requests of an upload in a minute", async () => {
   const { test: app, browser, workspaceId } = await ready();
   const begin = () =>

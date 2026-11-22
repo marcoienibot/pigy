@@ -20,7 +20,7 @@ import {
 import { drizzle } from "drizzle-orm/d1";
 import type { Bindings } from "../env.ts";
 import { type LogKind, log, loggable } from "../log.ts";
-import { deleteUnder, mediaKeys } from "../media/keys.ts";
+import { deleteUnder, mediaKeys, noSuchUpload } from "../media/keys.ts";
 import {
   deliveryInstanceId,
   lostTrackMessage,
@@ -43,6 +43,7 @@ import {
   type DeliveryRun,
   type DisconnectChannelOutcome,
   type DueMedia,
+  dropUploadAgainMs,
   type MediaUpload,
   type MutationOutcome,
   type Patch,
@@ -774,22 +775,34 @@ export function workspaceObject(
      * `mediaPerPass` images of each kind at most:
      *
      * - An upload that was not finished within `uploadLifetimeMs` is
-     *   given up: the bucket is told to drop its parts, and the row says
-     *   `failed`.
+     *   given up: the row says `failed`, and the bucket is told to drop
+     *   its parts.
      * - An image that has been in no part for `unattachedMs` is deleted,
-     *   with everything that the bucket has of it, and then its row.
+     *   with everything that the bucket has of it, and then its row. An
+     *   upload that it was on its way in is given up first.
      * - An image whose posts were all sent `originalLifetimeMs` ago
      *   loses its bytes and what was made of them for the networks, and
      *   keeps its small picture: PLAN.md section 10.
      *
-     * The row first and the bucket after. Each of the mutators looks at
-     * the image as it is when it runs, and leaves one alone that is
-     * something else by then: an upload that was finished meanwhile, an
-     * image that an Undo has put into a part again. Only what the row
-     * then says is gone is deleted. If the bucket fails after that, bytes
-     * are left that no row names: the log says which, and nothing serves
-     * them. Each image is tried by itself, so one that fails does not
-     * keep the others.
+     * The row first and the bucket after, and each image only once it is
+     * claimed: `claimMedia` of the store looks at it again in the
+     * transaction of the mutator that says what happens to it, and
+     * leaves one alone that is something else by then, an upload that
+     * was finished meanwhile, an image that a device has put into a
+     * draft. The alarm goes through the images with the bucket, and
+     * devices change them in the meantime. Only what a claim then says is
+     * gone is deleted. If the bucket fails after that, bytes are left
+     * that no row names: the log says which, and nothing serves them.
+     *
+     * The parts of an upload that was given up are the exception: the
+     * bucket bills them for as long as it has them, and nothing else
+     * names them. So the row keeps the upload until the bucket has
+     * dropped them or says that it has no such upload, and the bucket is
+     * asked again an hour after it failed, for as long as it takes. A
+     * row in no part is deleted only after that.
+     *
+     * Each image is tried by itself, so one that fails does not keep the
+     * others.
      */
     async #keepMedia(): Promise<void> {
       const { id: workspaceId } = this.#store.identity;
@@ -816,46 +829,83 @@ export function workspaceObject(
           }
         }
       };
-      /** Has the bucket drop the parts of an upload that is not finished. */
-      const abort = async ({ uploadId }: DueMedia, key: string) => {
-        if (uploadId === null) return;
-        try {
-          await bucket.resumeMultipartUpload(key, uploadId).abort();
-        } catch {
-          // Finished or dropped already: nothing of it is left then.
+      /**
+       * Has the bucket drop the parts of the upload `uploadId` of an image
+       * whose upload was given up. Returns whether the bucket has none of
+       * them any more: it dropped them, or has no such upload, because it
+       * was finished, dropped before, or never begun.
+       */
+      const drop = async (
+        id: string,
+        uploadId: string | null,
+        key: string,
+      ): Promise<boolean> => {
+        if (uploadId !== null) {
+          try {
+            await bucket.resumeMultipartUpload(key, uploadId).abort();
+          } catch (error) {
+            if (!noSuchUpload(error)) {
+              this.#store.dropUploadAt(id, now().getTime() + dropUploadAgainMs);
+              console.error(
+                `The upload of the image ${id} of the workspace ${workspaceId} was not dropped, and is asked for again in an hour`,
+                loggable(error),
+              );
+              return false;
+            }
+          }
         }
+        this.#store.uploadDropped(id);
+        return true;
       };
       await each(due.abandoned, async (image, keys) => {
-        const failed = this.#store.mediaChanged(
-          {
-            name: "media.fail",
-            args: {
-              id: image.id,
-              error:
-                "The upload was not finished within a week. Attach the image again.",
-            },
-          },
+        const claimed = this.#store.claimMedia(
+          "abandoned",
+          image.id,
           now().getTime(),
         );
-        if (!failed) return;
-        await abort(image, keys.upload);
+        if (claimed?.done !== "given up") return;
+        await drop(image.id, claimed.uploadId, keys.upload);
+        // A file that the parts made, by a completion that did not get
+        // to say how it ended.
         await deleteUnder(bucket, keys.prefix);
+      });
+      await each(due.unaborted, async (image, keys) => {
+        if (!(await drop(image.id, image.uploadId, keys.upload))) return;
+        // One in no part waited for this.
+        const claimed = this.#store.claimMedia(
+          "unattached",
+          image.id,
+          now().getTime(),
+        );
+        if (claimed?.done === "deleted") {
+          await deleteUnder(bucket, keys.prefix);
+        }
       });
       await each(due.unattached, async (image, keys) => {
-        this.#store.mediaChanged(
-          { name: "media.delete", args: { ids: [image.id] } },
+        let claimed = this.#store.claimMedia(
+          "unattached",
+          image.id,
           now().getTime(),
         );
-        // In a part again by now: it stays, with its bytes.
-        if (this.#store.mediaUpload(image.id)) return;
-        await abort(image, keys.upload);
-        await deleteUnder(bucket, keys.prefix);
+        if (claimed?.done === "given up") {
+          if (!(await drop(image.id, claimed.uploadId, keys.upload))) return;
+          claimed = this.#store.claimMedia(
+            "unattached",
+            image.id,
+            now().getTime(),
+          );
+        }
+        if (claimed?.done === "deleted") {
+          await deleteUnder(bucket, keys.prefix);
+        }
       });
       await each(due.outlived, async (image, keys) => {
-        this.#store.mediaChanged(
-          { name: "media.expire", args: { ids: [image.id] } },
+        const claimed = this.#store.claimMedia(
+          "outlived",
+          image.id,
           now().getTime(),
         );
+        if (claimed?.done !== "expired") return;
         await bucket.delete(keys.original);
         await deleteUnder(bucket, keys.variants);
       });

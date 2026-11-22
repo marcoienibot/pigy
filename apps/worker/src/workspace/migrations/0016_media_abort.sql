@@ -1,0 +1,1 @@
+ALTER TABLE `media` ADD `upload_abort_at` integer;

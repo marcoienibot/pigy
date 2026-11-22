@@ -304,15 +304,24 @@ export const media = sqliteTable(
     originalGoneAt: integer("original_gone_at"),
 
     // The columns below are not synced. Where the bytes are in the bucket
-    // is no column: `mediaKey` of src/media/keys.ts makes it of the IDs
+    // is no column: `mediaKeys` of src/media/keys.ts makes it of the IDs
     // of the workspace and of the image.
 
     /**
      * The upload in several parts that the bytes arrive through, as the
      * bucket names it, while the image is `uploading` and its upload has
-     * begun. Null before, and afterwards.
+     * begun. Null before, and afterwards: also after the alarm has given
+     * the upload up, once the bucket has dropped its parts.
      */
     uploadId: text("upload_id"),
+    /**
+     * When the alarm asks the bucket to drop the parts of the upload
+     * `uploadId`, which it has given up, or null while there is nothing to
+     * drop. The bucket bills the parts for as long as it has them, so the
+     * alarm asks again, an hour later, until the bucket has done so or
+     * says that it has no such upload.
+     */
+    uploadAbortAt: integer("upload_abort_at"),
     /**
      * The parts of that upload that the bucket has, each with its number
      * and with what the bucket said of it, which finishing the upload

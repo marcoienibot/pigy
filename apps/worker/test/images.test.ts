@@ -6,7 +6,8 @@ import {
   sandboxImagePath,
 } from "@pigy/core";
 import { feed } from "@pigy/simulators/world";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
+import { WorkspaceStore } from "../src/workspace/store.ts";
 import { connectBlueskyInSandbox, connectInSandbox } from "./channels.ts";
 import { type Browser, invite, signedIn } from "./helpers.ts";
 import {
@@ -29,7 +30,7 @@ import {
   targetOf,
   writeDraft,
 } from "./publishing.ts";
-import { SyncClient } from "./sync-client.ts";
+import { newId, SyncClient } from "./sync-client.ts";
 
 /**
  * Posts with images, published by the workflow of the Worker: to the
@@ -335,6 +336,72 @@ it("lets go of the image of a post 30 days after it was sent everywhere, and kee
     (await browser.fetch(mediaFilePath(workspaceId, sent.id, "original")))
       .status,
   ).toBe(404);
+});
+
+it("keeps the bytes of an image that a device puts into a draft while the alarm goes through the images", async () => {
+  const { test, browser, workspaces } = await started();
+  const workspaceId = workspaces.live;
+  const channel = await connectAccount(test, browser, workspaceId);
+  const client = new SyncClient();
+  await client.connect(browser, workspaceId);
+  const first = await upload(browser, client, workspaceId, await photo());
+  const second = await upload(browser, client, workspaceId, await photo());
+  const post = await writeDraft(client, workspaceId, "Sent");
+  await attach(client, post.partIds[0] ?? "", first.id);
+  await attach(client, post.partIds[0] ?? "", second.id);
+  await publishTo(client, post.postId, channel);
+  expect(await ended(client, post.postId)).toMatchObject({ status: "sent" });
+  const draft = await writeDraft(client, workspaceId, "Again");
+
+  // The person goes on using pigy meanwhile: a session lasts 30 days from
+  // its last use.
+  test.advance(originalLifetimeMs / 2);
+  expect((await browser.fetch("/api/workspaces")).status).toBe(200);
+  test.advance(originalLifetimeMs / 2 + 1000);
+  // The alarm lists both as outlived. The device puts the second into a
+  // draft while the alarm deletes the bytes of the first in the bucket:
+  // the list is no longer what the images are when it comes to the
+  // second.
+  const listed = WorkspaceStore.prototype.mediaDue;
+  const due = vi
+    .spyOn(WorkspaceStore.prototype, "mediaDue")
+    .mockImplementationOnce(function (this: WorkspaceStore, now) {
+      const found = listed.call(this, now);
+      expect(found.outlived.map(({ id }) => id).sort()).toEqual(
+        [first.id, second.id].sort(),
+      );
+      this.mutate(
+        {
+          name: "media.attach",
+          args: {
+            id: newId(),
+            partId: draft.partIds[0],
+            mediaId: second.id,
+            alt: "",
+          },
+        },
+        now,
+      );
+      return found;
+    });
+  try {
+    await look(workspaceId);
+  } finally {
+    due.mockRestore();
+  }
+  // The draft can go out with its image.
+  expect(await kept(workspaceId)).toEqual(
+    [
+      `${first.id}/thumbnail`,
+      `${second.id}/original`,
+      `${second.id}/thumbnail`,
+    ].sort(),
+  );
+  const later = new SyncClient();
+  await later.connect(browser, workspaceId);
+  expect(
+    later.table("media").find(({ id }) => id === second.id)?.originalGoneAt,
+  ).toBeNull();
 });
 
 it("keeps the image of a post that did not arrive everywhere, for another try", async () => {

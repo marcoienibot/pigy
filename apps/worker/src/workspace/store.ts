@@ -312,8 +312,17 @@ export type MediaUpload = {
 /** How an upload ended: what the server read in the bytes, or why it has none. */
 export type UploadOutcome = { facts: ImageFacts } | { error: string };
 
+/** What the alarm of the object does to an image by the clock: see `dueFor`. */
+export type MediaDuty = "abandoned" | "unattached" | "outlived";
+
 /** An image whose time for something has come: see `mediaDue`. */
 export type DueMedia = { id: string; uploadId: string | null };
+
+/**
+ * How long the alarm waits before it asks the bucket again to drop the
+ * parts of an upload that it has given up, in milliseconds: an hour.
+ */
+export const dropUploadAgainMs = 60 * 60 * 1000;
 
 /** The most images that one look of the alarm deals with, of each kind. */
 export const mediaPerPass = 50;
@@ -1424,60 +1433,71 @@ export class WorkspaceStore {
   }
 
   /**
-   * The images whose time for something has come by `now`,
-   * `mediaPerPass` of each at most:
+   * The condition under which an image is due for `duty` by `now`, in
+   * one place: what `mediaDue` lists, and what `claimMedia` looks at
+   * again before it does anything.
    *
-   * - `abandoned`: on their way for longer than `uploadLifetimeMs`. The
+   * - `abandoned`: on its way for longer than `uploadLifetimeMs`. The
    *   upload is given up, and the row says so.
    * - `unattached`: in no part for longer than `unattachedMs`. The image
-   *   is deleted, with its row.
+   *   is deleted, with its row: once the bucket has dropped the parts of
+   *   an upload that it was on its way in, which is given up first.
    * - `outlived`: in posts that were all sent everywhere, the last of
    *   them `originalLifetimeMs` ago or longer. The server lets go of the
    *   bytes and keeps the small picture.
+   * - `unaborted`: of an upload that was given up, and whose parts the
+   *   bucket is to be asked again to drop.
    */
-  mediaDue(now: number): {
-    abandoned: DueMedia[];
-    unattached: DueMedia[];
-    outlived: DueMedia[];
-  } {
-    const columns = { id: media.id, uploadId: media.uploadId };
+  private dueFor(duty: MediaDuty | "unaborted", now: number) {
+    switch (duty) {
+      case "abandoned":
+        return and(
+          eq(media.status, "uploading"),
+          lte(media.createdAt, now - uploadLifetimeMs),
+        );
+      case "unattached":
+        return and(
+          lte(media.unattachedSince, now - unattachedMs),
+          or(isNull(media.uploadId), eq(media.status, "uploading")),
+        );
+      case "outlived":
+        return and(
+          eq(media.status, "ready"),
+          isNull(media.originalGoneAt),
+          isNull(media.unattachedSince),
+          sql`not exists ${this.stillNeeded(now)}`,
+        );
+      case "unaborted":
+        return lte(media.uploadAbortAt, now);
+    }
+  }
+
+  /**
+   * The images whose time for something has come by `now`,
+   * `mediaPerPass` for each duty at most: see `dueFor`. What is done to
+   * one is decided again by `claimMedia`, when it is its turn: the alarm
+   * goes through them with the bucket, and a device can change an image
+   * meanwhile.
+   */
+  mediaDue(now: number): Record<MediaDuty | "unaborted", DueMedia[]> {
+    const due = (duty: MediaDuty | "unaborted") =>
+      this.db
+        .select({ id: media.id, uploadId: media.uploadId })
+        .from(media)
+        .where(this.dueFor(duty, now))
+        .limit(mediaPerPass)
+        .all();
     return {
-      abandoned: this.db
-        .select(columns)
-        .from(media)
-        .where(
-          and(
-            eq(media.status, "uploading"),
-            lte(media.createdAt, now - uploadLifetimeMs),
-          ),
-        )
-        .limit(mediaPerPass)
-        .all(),
-      unattached: this.db
-        .select(columns)
-        .from(media)
-        .where(lte(media.unattachedSince, now - unattachedMs))
-        .limit(mediaPerPass)
-        .all(),
-      outlived: this.db
-        .select(columns)
-        .from(media)
-        .where(
-          and(
-            eq(media.status, "ready"),
-            isNull(media.originalGoneAt),
-            isNull(media.unattachedSince),
-            sql`not exists ${this.stillNeeded(now)}`,
-          ),
-        )
-        .limit(mediaPerPass)
-        .all(),
+      abandoned: due("abandoned"),
+      unattached: due("unattached"),
+      outlived: due("outlived"),
+      unaborted: due("unaborted"),
     };
   }
 
   /**
    * When the next image is due for something, in milliseconds since the
-   * epoch, or null if none is in sight: see `mediaDue`.
+   * epoch, or null if none is in sight: see `dueFor`.
    */
   get nextMediaAt(): number | null {
     const uploading = this.db
@@ -1485,8 +1505,15 @@ export class WorkspaceStore {
       .from(media)
       .where(eq(media.status, "uploading"))
       .get();
+    // Not one whose upload the bucket has yet to drop: that is due when
+    // the bucket is asked again.
     const unattached = this.db
       .select({ at: min(media.unattachedSince) })
+      .from(media)
+      .where(or(isNull(media.uploadId), eq(media.status, "uploading")))
+      .get();
+    const abort = this.db
+      .select({ at: min(media.uploadAbortAt) })
       .from(media)
       .get();
     // Of the images whose posts have all gone everywhere, the one whose
@@ -1506,38 +1533,100 @@ export class WorkspaceStore {
     const times = [
       ...(uploading?.at == null ? [] : [uploading.at + uploadLifetimeMs]),
       ...(unattached?.at == null ? [] : [unattached.at + unattachedMs]),
+      ...(abort?.at == null ? [] : [abort.at]),
       ...(sent?.last == null ? [] : [sent.last + originalLifetimeMs]),
     ];
     return times.length > 0 ? Math.min(...times) : null;
   }
 
   /**
-   * Runs a mutator of the server's own that is about images, for the
-   * alarm of the object, and returns whether it did what it says: not
-   * for an upload that has ended otherwise by now.
+   * Does what is due of the image `id` for `duty`, if it still is by
+   * `now`, in one transaction: through the mutator that says so, which
+   * clients hear of. What `mediaDue` listed may be something else by
+   * the time the alarm comes to it: an upload that was finished, an
+   * image that a device has put into a draft. Returns what was done, for
+   * the alarm to do the rest in the bucket, or null if nothing is due:
+   *
+   * - `given up`: the upload of an image on its way, by `media.fail`.
+   *   The row keeps the upload as the bucket names it, `uploadId`, for
+   *   the bucket to drop its parts: `uploadDropped` when it has.
+   * - `deleted`: the row of an image in no part, by `media.delete`.
+   * - `expired`: the bytes of an image, by `media.expire`.
    */
-  mediaChanged(
-    mutation:
-      | { name: "media.fail"; args: MutatorArgs<"media.fail"> }
-      | { name: "media.expire"; args: MutatorArgs<"media.expire"> }
-      | { name: "media.delete"; args: MutatorArgs<"media.delete"> },
+  claimMedia(
+    duty: MediaDuty,
+    id: string,
     now: number,
-  ): boolean {
+  ):
+    | { done: "given up"; uploadId: string | null }
+    | { done: "deleted" | "expired" }
+    | null {
     return this.storage.transactionSync(() => {
-      const [refusal] = this.run([mutation], now, "server");
-      if (refusal) {
-        if (refusal.code === "not_current") return false;
-        throw new Error(`${mutation.name} was refused: ${refusal.message}`);
-      }
-      if (mutation.name === "media.fail") {
+      const image = this.db
+        .select({ status: media.status, uploadId: media.uploadId })
+        .from(media)
+        .where(and(eq(media.id, id), this.dueFor(duty, now)))
+        .get();
+      if (!image) return null;
+      const ran = (mutation: MutatorCall) => {
+        const [refusal] = this.run([mutation], now, "server");
+        // What was just looked at is what the mutator needs.
+        if (refusal) {
+          throw new Error(`${mutation.name} was refused: ${refusal.message}`);
+        }
+      };
+      if (image.status === "uploading") {
+        ran({
+          name: "media.fail",
+          args: {
+            id,
+            error:
+              duty === "abandoned"
+                ? "The upload was not finished within a week. Attach the image again."
+                : "The image was in no draft for a day, and its upload was given up.",
+          },
+        });
         this.db
           .update(media)
-          .set({ uploadId: null, uploadParts: null })
-          .where(eq(media.id, mutation.args.id))
+          .set({
+            uploadParts: null,
+            uploadAbortAt: image.uploadId === null ? null : now,
+          })
+          .where(eq(media.id, id))
           .run();
+        return { done: "given up", uploadId: image.uploadId };
       }
-      return true;
+      if (duty === "unattached") {
+        ran({ name: "media.delete", args: { ids: [id] } });
+        return { done: "deleted" };
+      }
+      ran({ name: "media.expire", args: { ids: [id] } });
+      return { done: "expired" };
     });
+  }
+
+  /**
+   * Notes that the bucket has dropped the parts of the upload of the
+   * image `id`, which was given up: nothing is left to ask of it.
+   */
+  uploadDropped(id: string): void {
+    this.db
+      .update(media)
+      .set({ uploadId: null, uploadAbortAt: null })
+      .where(and(eq(media.id, id), ne(media.status, "uploading")))
+      .run();
+  }
+
+  /**
+   * Notes that the bucket is to be asked again at `at` to drop the parts
+   * of the upload of the image `id`.
+   */
+  dropUploadAt(id: string, at: number): void {
+    this.db
+      .update(media)
+      .set({ uploadAbortAt: at })
+      .where(and(eq(media.id, id), isNotNull(media.uploadAbortAt)))
+      .run();
   }
 
   /**
