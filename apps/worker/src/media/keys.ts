@@ -7,7 +7,8 @@ import { idSchema } from "@pigy/core";
  * is deleting what is under its prefix.
  *
  * - `upload` is the file as the device sent it, while the server puts it
- *   together and reads it. It is deleted when that is done.
+ *   together and reads it. It is deleted once the workspace has been told
+ *   how the upload ended: `forgetUpload` of intake.ts.
  * - `original` is the image as pigy keeps it: the picture without what a
  *   camera wrote next to it.
  * - `thumbnail` is the small picture for the lists of the app, which

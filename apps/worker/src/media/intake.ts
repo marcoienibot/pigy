@@ -26,7 +26,10 @@ import { type ImageTransformer, makeThumbnail } from "./transform.ts";
  * one. It is never in memory as a whole: only the small picture is.
  *
  * It fails, for the caller to try again, when the bucket fails. A second
- * try finds the parts put together already and goes on from there.
+ * try finds the parts put together already and goes on from there. So
+ * nothing is deleted here: the file that the parts make stays until the
+ * workspace has been told how the upload ended, `forgetUpload`, and is
+ * what a try after a failure to tell it reads.
  */
 export async function takeIn(
   bucket: R2Bucket,
@@ -39,14 +42,18 @@ export async function takeIn(
   // Put together already, by a try before this one that did not get to
   // say so: finishing an upload a second time fails.
   if (!(await bucket.head(keys.upload))) {
-    await bucket
-      .resumeMultipartUpload(keys.upload, upload.uploadId)
-      .complete(upload.parts);
+    try {
+      await bucket
+        .resumeMultipartUpload(keys.upload, upload.uploadId)
+        .complete(upload.parts);
+    } catch (error) {
+      // Or by a try at the same time as this one, which got there first.
+      if (!(await bucket.head(keys.upload))) throw error;
+    }
   }
-  const refused = async (error: string): Promise<UploadOutcome> => {
-    await deleteUnder(bucket, keys.prefix);
-    return { error };
-  };
+  const refused = async (error: string): Promise<UploadOutcome> => ({
+    error,
+  });
   const whole = async () => {
     const file = await bucket.get(keys.upload);
     if (!file) throw new Error("The upload is not in the bucket");
@@ -110,6 +117,24 @@ export async function takeIn(
   await bucket.put(keys.thumbnail, thumbnail.bytes, {
     httpMetadata: { contentType: thumbnail.facts.type },
   });
-  await bucket.delete(keys.upload);
   return { facts };
+}
+
+/**
+ * Deletes what the bucket has of an upload that has ended, once the
+ * workspace has it so: the file as the device sent it, and of an upload
+ * that failed, everything of the image.
+ */
+export async function forgetUpload(
+  bucket: R2Bucket,
+  workspaceId: string,
+  mediaId: string,
+  status: "ready" | "failed",
+): Promise<void> {
+  const keys = mediaKeys(workspaceId, mediaId);
+  if (status === "ready") {
+    await bucket.delete(keys.upload);
+  } else {
+    await deleteUnder(bucket, keys.prefix);
+  }
 }

@@ -26,7 +26,7 @@ import {
   ownWorkspace,
   uploadedPart,
 } from "../workspace/workspaces.ts";
-import { takeIn } from "./intake.ts";
+import { forgetUpload, takeIn } from "./intake.ts";
 import { mediaKeys } from "./keys.ts";
 import { mediaLinkPath, mediaLinksWith } from "./links.ts";
 import { imagesTransformer } from "./transform.ts";
@@ -254,10 +254,19 @@ export function mediaRoutes(dependencies: AppDependencies): Hono<AppEnv> {
         throw new HTTPException(404, { message: "There is no such image" });
       }
       const { upload } = found;
-      // Completed before: the answer of that time was lost.
-      if (upload.status !== "uploading") {
-        return c.json(uploadCompleteSchema.parse({ status: upload.status }));
-      }
+      // Completed before: the answer of that time was lost, and so may
+      // have been what was to be deleted after it.
+      const ended = (status: "ready" | "failed") => {
+        c.executionCtx.waitUntil(
+          forgetUpload(c.env.MEDIA, workspace.id, mediaId, status).catch(
+            (error) => {
+              console.error("An upload was not forgotten", loggable(error));
+            },
+          ),
+        );
+        return c.json(uploadCompleteSchema.parse({ status }));
+      };
+      if (upload.status !== "uploading") return ended(upload.status);
       const { uploadId } = upload;
       if (
         uploadId === null ||
@@ -268,7 +277,10 @@ export function mediaRoutes(dependencies: AppDependencies): Hono<AppEnv> {
         });
       }
       // To its end also when the client leaves: the parts are put
-      // together once, and nobody else would read the file.
+      // together once, and nobody else would read the file. What the
+      // bucket has of the upload is deleted only once the workspace has
+      // been told how it ended: a try after a failure to tell it reads
+      // the file again.
       const work = (async () => {
         const outcome = await takeIn(
           c.env.MEDIA,
@@ -277,7 +289,7 @@ export function mediaRoutes(dependencies: AppDependencies): Hono<AppEnv> {
           mediaId,
           { ...upload, uploadId },
         );
-        const ended = await finishUpload(
+        const told = await finishUpload(
           c.env.WORKSPACE,
           workspace,
           mediaId,
@@ -285,14 +297,26 @@ export function mediaRoutes(dependencies: AppDependencies): Hono<AppEnv> {
           // An image has one upload, and it ends once.
           `upload/${mediaId}`,
         );
-        return ended.ok && "facts" in outcome ? "ready" : "failed";
+        const status = told.ok && "facts" in outcome ? "ready" : "failed";
+        await forgetUpload(c.env.MEDIA, workspace.id, mediaId, status);
+        return status;
       })();
       c.executionCtx.waitUntil(
         work.catch((error) => {
           console.error("An image was not taken in", loggable(error));
         }),
       );
-      return c.json(uploadCompleteSchema.parse({ status: await work }));
+      try {
+        return c.json(uploadCompleteSchema.parse({ status: await work }));
+      } catch (error) {
+        // A completion at the same time as this one has ended the upload
+        // meanwhile: this one says how.
+        const now = await mediaUploadOf(c.env.WORKSPACE, workspace, mediaId);
+        if (now && now.upload.status !== "uploading") {
+          return ended(now.upload.status);
+        }
+        throw error;
+      }
     },
   );
 

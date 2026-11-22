@@ -14,7 +14,8 @@ import {
   pngHeader,
   pngSignature,
 } from "@pigy/core/test-images";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
+import { WorkspaceStore } from "../src/workspace/store.ts";
 import { adminEmail, invite, setup, signedIn } from "./helpers.ts";
 import {
   attach,
@@ -157,6 +158,73 @@ test("an upload that was cut off goes on from the chunks that arrived", async ()
   // answered as the first was and takes nothing in again.
   const again = await completeUpload(browser, workspaceId, mediaId);
   expect(await again.json()).toEqual({ status: "ready" });
+});
+
+test.each([
+  ["an image", async () => pngFile(8, 8), "ready", ["original", "thumbnail"]],
+  [
+    "a file that is refused",
+    async () => new TextEncoder().encode("<script>alert(1)</script>"),
+    "failed",
+    [],
+  ],
+] as const)(
+  "a completion of %s whose workspace could not be told is completed by the next one",
+  async (_, make, status, files) => {
+    const { browser, client, workspaceId } = await ready();
+    const file = await make();
+    const mediaId = await createMedia(client, file);
+    await beginUpload(browser, workspaceId, mediaId);
+    await sendChunk(browser, workspaceId, mediaId, file, 1);
+    // The bytes are taken in, and the call that says so to the
+    // workspace fails, as when a deploy takes the object away under it.
+    const finish = vi
+      .spyOn(WorkspaceStore.prototype, "finishUpload")
+      .mockImplementationOnce(() => {
+        throw new Error("The object went away");
+      });
+    try {
+      expect((await completeUpload(browser, workspaceId, mediaId)).status).toBe(
+        500,
+      );
+    } finally {
+      finish.mockRestore();
+    }
+    // The device asks again. Before, the first completion had deleted the
+    // file that the parts made, and the second completed the parts once
+    // more, which the bucket refuses: every try failed for a week.
+    const again = await completeUpload(browser, workspaceId, mediaId);
+    expect(again.status).toBe(200);
+    expect(await again.json()).toEqual({ status });
+    await follow(client, () => mediaOf(client, mediaId).status === status);
+    expect(await kept(workspaceId)).toEqual(
+      files.map((name) => `${mediaId}/${name}`),
+    );
+  },
+);
+
+test("two completions at once both say how the upload ended, and the file is taken in once", async () => {
+  const { browser, client, workspaceId } = await ready();
+  const file = await pngFile(8, 8);
+  const mediaId = await createMedia(client, file);
+  await beginUpload(browser, workspaceId, mediaId);
+  await sendChunk(browser, workspaceId, mediaId, file, 1);
+  // Two tabs, or a device that asked again before its first answer came.
+  const answers = await Promise.all([
+    completeUpload(browser, workspaceId, mediaId),
+    completeUpload(browser, workspaceId, mediaId),
+  ]);
+  expect(answers.map(({ status }) => status)).toEqual([200, 200]);
+  expect(await Promise.all(answers.map((answer) => answer.json()))).toEqual([
+    { status: "ready" },
+    { status: "ready" },
+  ]);
+  await follow(client, () => mediaOf(client, mediaId).status === "ready");
+  expect(await kept(workspaceId)).toEqual([
+    `${mediaId}/original`,
+    `${mediaId}/thumbnail`,
+  ]);
+  expect(await served(browser, workspaceId, mediaId)).toEqual(file);
 });
 
 test("a chunk is taken only as the bytes of its place in the file", async () => {

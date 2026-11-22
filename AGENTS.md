@@ -247,7 +247,7 @@ What connects accounts:
 What takes and serves images, in `media/`:
 
 - `routes.ts` has the routes of an upload and the two ways out of the bucket: to the owner of a workspace, and at a signed link. Nothing else serves a byte of the bucket.
-- `intake.ts` is what happens when an upload is complete: `takeIn` puts the parts together, reads the file with `scanImage` of `@pigy/core`, keeps the copy without metadata and makes the small picture, all of it as streams.
+- `intake.ts` is what happens when an upload is complete: `takeIn` puts the parts together, reads the file with `scanImage` of `@pigy/core`, keeps the copy without metadata and makes the small picture, all of it as streams, and deletes nothing. `forgetUpload` deletes what is left of the upload once the workspace has been told how it ended, so that a completion whose call to the workspace failed is taken up by the next.
 - `keys.ts` says where everything of an image is in the bucket, by the IDs of its workspace and of the image, and which names of files a content may use: `contentImageKey`, which is the one way from a name to a key.
 - `transform.ts` is the interface in front of the Images binding, `ImageTransformer`, and `makeVariant`, which brings an image within the bytes and the pixels of a network.
 - `variants.ts` is the workflow's: `imagesFor` says which file each image of a delivery goes out as and makes the ones that are missing, and `mediaSource` is where an adapter reads them.
