@@ -63,9 +63,13 @@ function say(answer: Kept): void {
 /**
  * Asks the browser to keep what pigy stores on this device, and tells
  * whoever shows the answer. For a button: the person has asked for it.
+ * It returns the answer, for the button to say when nothing has changed:
+ * a browser that decides by itself refuses without a word.
  */
-export async function keepOnDevice(): Promise<void> {
-  say(await askToKeep(deviceStorage()));
+export async function keepOnDevice(): Promise<Kept> {
+  const answer = await askToKeep(deviceStorage());
+  say(answer);
+  return answer;
 }
 
 let asked = false;

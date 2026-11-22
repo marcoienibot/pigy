@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useState } from "react";
 import { type Theme, themes, useTheme } from "@/components/theme-provider";
 import { Button } from "@/components/ui/button";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
@@ -98,8 +99,14 @@ function App() {
  * with the first change after it is opened: the button is for a browser
  * that asks the person, who has not answered, and for one that decides by
  * itself and may decide otherwise by now.
+ *
+ * A browser that decides by itself says no without showing anything, and
+ * the row is then as it was before the button was pressed. So the row
+ * says that the browser was asked and has refused, and what makes it
+ * decide otherwise: nothing here is broken, and nothing is left to press.
  */
 function DeviceData({ kept }: { kept: Kept }) {
+  const [refused, setRefused] = useState(false);
   return (
     <div className="flex items-center justify-between gap-4 px-3 py-2">
       <p>
@@ -112,9 +119,23 @@ function DeviceData({ kept }: { kept: Kept }) {
           {kept === "unknown" &&
             "This browser does not say whether it keeps what pigy stores here. It may delete it when the device runs low on space."}
         </span>
+        {kept === "not-kept" && refused && (
+          <span role="status" className="mt-1 block">
+            The browser was asked and has decided not to, for now. Some
+            browsers, Chrome among them, decide this by themselves and ask
+            nobody: they keep the data of an app that is installed, and of a
+            site that is used a lot. There is nothing else to press.
+          </span>
+        )}
       </p>
       {kept === "not-kept" && (
-        <Button variant="outline" size="sm" onClick={keepOnDevice}>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={async () =>
+            setRefused((await keepOnDevice()) === "not-kept")
+          }
+        >
           Ask to keep it
         </Button>
       )}
