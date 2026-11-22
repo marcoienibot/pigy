@@ -7,6 +7,7 @@ import {
   switchTo,
 } from "../app.ts";
 import { expect, type Page, test } from "../fixtures.ts";
+import { png } from "../images.ts";
 
 /**
  * Settings → API: a person makes a key, sees it once, a script uses it
@@ -248,4 +249,67 @@ test("serves the page that describes the API, and its document", async ({
   const document = await (await request.get("/api/v1/openapi.json")).json();
   expect(document).toMatchObject({ openapi: "3.1.0" });
   expect(Object.keys(document.paths)).toContain("/posts");
+});
+
+test("a script makes a draft with an image at an address of the sandbox and one that it uploads, which the app shows", async ({
+  ownPage: page,
+}) => {
+  test.slow();
+  await openKeys(page);
+  const key = await makeKey(page, "Images");
+
+  // The file itself as the body, as a script sends it with curl.
+  const uploaded = await page.evaluate(
+    async ({ key, bytes }) => {
+      const response = await fetch("/api/v1/media", {
+        method: "POST",
+        credentials: "omit",
+        headers: {
+          Authorization: `Bearer ${key}`,
+          "Content-Type": "image/png",
+        },
+        body: new Uint8Array(bytes),
+      });
+      return { status: response.status, body: await response.json() };
+    },
+    { key, bytes: [...png(160, 120)] },
+  );
+  expect(uploaded).toMatchObject({
+    status: 201,
+    body: { status: "ready", type: "image/png", width: 160, height: 120 },
+  });
+  const mediaId = (uploaded.body as { id: string }).id;
+
+  // The other is fetched from the simulated web of the sandbox.
+  const made = await call(page, key, "/posts", {
+    method: "POST",
+    json: {
+      text: "Two pictures from a script",
+      saveToDraft: true,
+      assets: [
+        {
+          image: {
+            url: "https://example.test/images/sunset.png",
+            metadata: { altText: "Sunset" },
+          },
+        },
+        { image: { mediaId, metadata: { altText: "Uploaded" } } },
+      ],
+    },
+  });
+  expect(made.status).toBe(201);
+
+  // The draft is in the app with its images, as one written there.
+  await openScreen(page, "Drafts");
+  await draftRow(page, "Two pictures from a script").click();
+  const images = page.getByRole("list", { name: "Images of the post" });
+  await expect(images.getByRole("listitem")).toHaveCount(2);
+  await expect(images.locator("img")).toHaveCount(2);
+  expect(
+    await images
+      .getByRole("textbox")
+      .evaluateAll((fields) =>
+        fields.map((field) => (field as HTMLTextAreaElement).value),
+      ),
+  ).toEqual(["Sunset", "Uploaded"]);
 });
