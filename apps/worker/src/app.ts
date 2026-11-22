@@ -7,6 +7,7 @@ import { channelRoutes, connectCallbackRoutes } from "./channels/routes.ts";
 import type { AppDependencies, AppEnv } from "./env.ts";
 import { handleError, handleNotFound } from "./errors.ts";
 import { blueskyClientRoutes } from "./network/bluesky-client.ts";
+import { previewRoutes } from "./preview/routes.ts";
 import { pushRoutes } from "./push/routes.ts";
 import { sandboxRoutes, simRoutes } from "./sim/routes.ts";
 import { worldPagesPath } from "./sim/world.ts";
@@ -39,6 +40,7 @@ export function createApp(dependencies: AppDependencies): Hono<AppEnv> {
   app.route("/api/admin", adminRoutes(dependencies));
   app.route("/api", workspaceRoutes(dependencies));
   app.route("/api", channelRoutes(dependencies));
+  app.route("/api", previewRoutes(dependencies));
   app.route("/api/sandbox", sandboxRoutes(dependencies));
   app.route("/api/push", pushRoutes(dependencies));
   app.route("/sync", syncRoutes(dependencies));

@@ -199,3 +199,19 @@ export const oauthStates = sqliteTable(
   },
   (table) => [index("oauth_state_expires_at_idx").on(table.expiresAt)],
 );
+
+/**
+ * How often each person has asked for a preview in the minute that is
+ * running: the card of a link, or the accounts that a text mentions. Each
+ * is a request that pigy makes for them to a host that they named, so it
+ * has a limit, `previewsPerMinute` of @pigy/core. One row per person,
+ * which is written over when the next minute begins.
+ */
+export const previewUses = sqliteTable("preview_use", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  /** The minute that is counted, as its beginning. */
+  windowStart: integer("window_start").notNull(),
+  count: integer("count").notNull(),
+});

@@ -4,7 +4,11 @@ import {
   type WorkflowStep,
 } from "cloudflare:workers";
 import {
+  cardLinks,
+  cardMaker,
   channelLimits,
+  type LinkCard,
+  linkCardSchema,
   type MutatorArgs,
   type Network,
   type PostContent,
@@ -21,6 +25,7 @@ import {
   publishProgressSchema,
   withCredentials,
 } from "@pigy/providers";
+import { fetchLinkCard } from "@pigy/providers/card";
 import { openCredentials, sealCredentials } from "../channels/credentials.ts";
 import type { AppDependencies, Bindings } from "../env.ts";
 import { loggable } from "../errors.ts";
@@ -65,7 +70,14 @@ import { retryWaitSeconds } from "./retry.ts";
  *    one to a network whose adapter tells the deliveries to an account
  *    apart, `tellsDeliveriesApart` of the contract: what the others have
  *    recorded stays good there.
- * 3. `publish` of @pigy/providers drives the adapter of the network: each
+ * 3. `cards` reads the pages that the first links of the parts lead to,
+ *    for a network that shows the card of a link only if it is sent one,
+ *    `cardMaker` of @pigy/core, as Bluesky and LinkedIn. It asks nothing
+ *    of the network and changes nothing anywhere, and it cannot fail a
+ *    delivery: a page that cannot be read leaves its link without a card.
+ *    A delivery to a network that makes its cards itself skips the step,
+ *    and so does one without a link.
+ * 4. `publish` of @pigy/providers drives the adapter of the network: each
  *    of its steps is a step here, `publish-1`, `publish-2` and so on, with
  *    at most one request that changes something on the network. After
  *    each, `record-publish-N` tells the workspace how far the post has
@@ -75,7 +87,7 @@ import { retryWaitSeconds } from "./retry.ts";
  *    each of these steps first tells the workspace that it begins, and
  *    does not call the adapter if a run of the same step began before:
  *    see `sendingOnce` below.
- * 4. `end` tells the workspace how the delivery ended.
+ * 5. `end` tells the workspace how the delivery ended.
  *
  * What the platform stores of a run is to be taken for readable: what the
  * run was started with, and what each step returned. Neither holds a
@@ -107,6 +119,26 @@ export type PublishDependencies = Pick<
  * return, is a few IDs per part.
  */
 export const stepResultBytes = 1024 * 1024;
+
+/**
+ * How many pages a delivery reads for the cards of its links at most.
+ * Each has its seconds, `cardLimits` of @pigy/providers, and they are
+ * read one after the other, so this is what keeps the step within its
+ * time. A thread with more links than this goes out with cards for the
+ * first of them.
+ */
+export const maxCardsPerDelivery = 8;
+
+/**
+ * The step that reads the pages of links. It talks to hosts that a person
+ * named, and nothing in it fails as a step. The platform runs it again
+ * only when it was cut off, and gives up soon: a delivery does not wait
+ * for a card.
+ */
+const cardStep = {
+  retries: { limit: 1, delay: "10 seconds", backoff: "constant" },
+  timeout: "2 minutes",
+} as const;
 
 /**
  * How old the limits of a channel may be before a delivery asks the
@@ -722,6 +754,56 @@ export async function deliver(
     };
   };
 
+  /**
+   * The content of a delivery with the cards of its links, where pigy
+   * makes them: read in a step of their own, so that every step of the
+   * adapter in this run is handed the same. The pages are read with the
+   * reach of the workspace: the simulated web for a sandbox.
+   *
+   * What the step returns is what pages say of themselves, cut to a
+   * length: no secret, and `maxCardsPerDelivery` cards at most, which is
+   * far less than the platform keeps of a step.
+   */
+  const withCards = async (
+    { channel, content, progress }: Prepared,
+    reach: Reach,
+  ): Promise<PostContent> => {
+    if (cardMaker[channel.network] !== "pigy" || progress?.done) {
+      return content;
+    }
+    const links = cardLinks(channel.network, content);
+    if (links.every((link) => link === null)) return content;
+    const read = await step.do("cards", cardStep, async () => {
+      const cards: (LinkCard | null)[] = [];
+      let asked = 0;
+      for (const link of links) {
+        if (link === null || asked >= maxCardsPerDelivery) {
+          cards.push(null);
+          continue;
+        }
+        asked++;
+        try {
+          cards.push(await fetchLinkCard(reach.fetch, link));
+        } catch (error) {
+          // No failure of the page, which `fetchLinkCard` takes for a
+          // link without a card, but of pigy. It is logged, and the post
+          // goes out without the card all the same.
+          console.error("The card of a link was not read", loggable(error));
+          cards.push(null);
+        }
+      }
+      return { cards };
+    });
+    // What a step returned is read like everything that was stored.
+    const cards = linkCardSchema.nullable().array().safeParse(read.cards);
+    return {
+      parts: content.parts.map((part, index) => {
+        const card = cards.data?.[index];
+        return card ? { ...part, card } : part;
+      }),
+    };
+  };
+
   let ending: Ending = { status: "sent" };
   try {
     const prepared = await tried("prepare", prepare);
@@ -770,7 +852,7 @@ export async function deliver(
       sendingOnce(provider),
       {
         ...accessOf(prepared.channel, provider, channelVault),
-        content: prepared.content,
+        content: await withCards(prepared, reach),
         // What names the delivery to the network, the same in every
         // attempt.
         key: targetId,

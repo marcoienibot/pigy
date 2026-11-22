@@ -142,8 +142,20 @@ function threaded({ accounts, posts }: WorldContents): SandboxFeed {
   const entries = new Map<string, SandboxPost>();
   const key = (network: string, id: string) => `${network} ${id}`;
   // Oldest first, so that replies are listed in the order they were made.
-  for (const { network, id, text, createdAt } of posts) {
-    entries.set(key(network, id), { id, text, createdAt, replies: [] });
+  for (const { network, id, text, createdAt, entities, card } of posts) {
+    entries.set(key(network, id), {
+      id,
+      text,
+      createdAt,
+      // A post from before the simulators kept them has neither.
+      entities: (entities ?? []).map(({ kind, start, end }) => ({
+        kind,
+        start,
+        end,
+      })),
+      card: card ?? null,
+      replies: [],
+    });
   }
   const beginnings = new Map<string, SandboxPost[]>();
   for (const post of posts) {

@@ -7,6 +7,7 @@ import { createLinkedInSimulator } from "@pigy/simulators/linkedin";
 import { createMastodonSimulator } from "@pigy/simulators/mastodon";
 import { createPushSimulator } from "@pigy/simulators/push";
 import { createThreadsSimulator } from "@pigy/simulators/threads";
+import { createWebSimulator } from "@pigy/simulators/web";
 import { createWorld } from "@pigy/simulators/world";
 import { drizzle } from "drizzle-orm/d1";
 import { expect, onTestFinished, vi } from "vitest";
@@ -191,8 +192,10 @@ export function setup(
   // Each network answers on its own hosts, as on the internet.
   const networks: Fetch = (input, init) => {
     const { host } = new URL(urlOf(input));
-    const owner = [bluesky, linkedin, threads].find((simulator) =>
-      simulator.owns(host),
+    // The web is among them: the pages that the links of a post lead
+    // to, which here are those of the simulated web.
+    const owner = [bluesky, linkedin, threads, createWebSimulator()].find(
+      (simulator) => simulator.owns(host),
     );
     return (owner ?? mastodon).fetch(input, init);
   };

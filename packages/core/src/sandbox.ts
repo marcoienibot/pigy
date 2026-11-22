@@ -64,13 +64,22 @@ export const sandboxIdentifiers: {
 };
 
 /**
+ * A page of the simulated web of every sandbox, for a link to try: a post
+ * that leads to it gets a card. The simulated web has a few pages under
+ * `.test`, which nothing on the internet can have, and `@pigy/simulators`
+ * has them.
+ */
+export const sandboxLink = "https://example.test/";
+
+/**
  * What a sandbox shows of its simulated world, and what a person can do to
  * it, for the pages that are there to try pigy out. The routes are under
  * `/api/sandbox` and name no workspace: they answer for the sandbox of
  * whoever is signed in, and for no other.
  *
  * - `GET /api/sandbox/feed` answers with a `SandboxFeed`: what is published
- *   in the world, by account.
+ *   in the world, by account, each post with its links, mentions and
+ *   hashtags as its network has them, and with the card of its link.
  * - `GET /api/sandbox/faults` answers with `SandboxFaults`: the ways each
  *   simulated network can be made to fail, and the faults that are armed.
  * - `POST /api/sandbox/faults` takes a `SandboxFault` and arms it: the next
@@ -90,14 +99,47 @@ export type SandboxPost = {
   text: string;
   /** When it was posted, in milliseconds since the Unix epoch. */
   createdAt: number;
+  /**
+   * What the network shows in the text as more than text, in the order of
+   * the text and none within another: each with where it stands, in
+   * UTF-16 code units. It is what the simulated network made of the post,
+   * by its own rules or as the post marked it.
+   */
+  entities: SandboxEntity[];
+  /**
+   * The card of a link that the network shows with the post, or null. Its
+   * texts are what a page says of itself: text, never markup.
+   */
+  card: { url: string; title: string; description: string } | null;
   /** The replies of the same account, oldest first. A thread is a chain. */
   replies: SandboxPost[];
+};
+
+/** A link, a mention or a hashtag in the text of a `SandboxPost`. */
+export type SandboxEntity = {
+  kind: "link" | "mention" | "hashtag";
+  start: number;
+  end: number;
 };
 
 export const sandboxPostSchema: z.ZodType<SandboxPost> = z.strictObject({
   id: z.string().min(1),
   text: z.string(),
   createdAt: z.number().int().nonnegative(),
+  entities: z.array(
+    z.strictObject({
+      kind: z.enum(["link", "mention", "hashtag"]),
+      start: z.number().int().nonnegative(),
+      end: z.number().int().nonnegative(),
+    }),
+  ),
+  card: z
+    .strictObject({
+      url: z.string(),
+      title: z.string(),
+      description: z.string(),
+    })
+    .nullable(),
   get replies() {
     return z.array(sandboxPostSchema);
   },

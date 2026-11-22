@@ -28,6 +28,7 @@ import {
   threadsFaultKinds,
   threadsOperations,
 } from "@pigy/simulators/threads";
+import { createWebSimulator } from "@pigy/simulators/web";
 import {
   createWorld,
   type FaultKind,
@@ -165,6 +166,7 @@ export function simWorldObject({
         return undefined;
       }
       const { mastodon, bluesky, linkedin, threads } = this.#world();
+      const web = createWebSimulator();
       if (pigy !== undefined) {
         // LinkedIn sends a browser to an address that was entered for the
         // application, in full, and to no other. The application of a
@@ -184,7 +186,11 @@ export function simWorldObject({
       // not tried in turn: a simulator fails for a host that is not its own
       // the same way as for an answer that a fault loses, so going on to
       // the next would take a fault of one network for a host of another.
-      const simulators = [mastodon, bluesky, linkedin, threads];
+      //
+      // The simulated web is among them: the pages that the links of a
+      // post lead to in a sandbox, which pigy reads for the card of a
+      // link as it reads a page of the internet for a live workspace.
+      const simulators = [mastodon, bluesky, linkedin, threads, web];
       const { host } = new URL(url);
       const simulator = simulators.find((candidate) => candidate.owns(host));
       if (!simulator) return { noSuchHost: host };
