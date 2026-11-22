@@ -390,6 +390,12 @@ const notesSchema = z.strictObject({
    * without images, and by notes from before pigy published any.
    */
   blobs: z.array(blobSchema).max(4).optional(),
+  /**
+   * True once the images of the next part were uploaded a second time,
+   * because the server no longer had them when the record was written.
+   * It is done once for a part: a server that drops them again fails it.
+   */
+  blobsAgain: z.literal(true).optional(),
 });
 
 type Notes = z.infer<typeof notesSchema>;
@@ -615,7 +621,7 @@ export function createBlueskyProvider({
       said
         ? `${host} refused the request: ${said}`
         : `${host} refused the request (HTTP ${status}).`,
-      { status },
+      { status, code: errorOf(answer) },
     );
   }
 
@@ -1408,6 +1414,7 @@ export function createBlueskyProvider({
           ...(next.facets && { facets: next.facets }),
           ...(next.embed && { embed: next.embed }),
           ...(next.blobs && { blobs: next.blobs }),
+          ...(next.blobsAgain && { blobsAgain: true }),
         },
       });
       const index = parts.length;
@@ -1461,6 +1468,7 @@ export function createBlueskyProvider({
           refs: notes.refs,
           rkey: null,
           blobs: [...uploaded, blob],
+          ...(notes.blobsAgain && { blobsAgain: true }),
         });
       }
       if (notes.rkey === null) {
@@ -1488,6 +1496,7 @@ export function createBlueskyProvider({
             new Map(mentions.map(({ handle, did }) => [handle, did])),
           ),
           ...(embed && { embed }),
+          ...(notes.blobsAgain && { blobsAgain: true }),
         });
       }
 
@@ -1568,18 +1577,27 @@ export function createBlueskyProvider({
           // one that no record refers to, and this delivery is taken up
           // long after its images were uploaded. The record was not
           // written, so the part begins anew: its images are uploaded
-          // again, and it gets another key. GUESS: how a PDS says so,
-          // from the code of Bluesky's, PLAN.md section 19.
+          // again, and it gets another key. Once: a server that drops
+          // them again has something else wrong with it. GUESS: how a
+          // PDS says so, from the code of Bluesky's, PLAN.md section 19.
           if (
             embed?.$type === "app.bsky.embed.images" &&
             error instanceof ProviderError &&
             error.status === 400 &&
-            /blob/i.test(error.message)
+            error.code === "BlobNotFound"
           ) {
+            if (notes.blobsAgain) {
+              throw new ProviderError(
+                "fail",
+                "Bluesky no longer had the images of this post when pigy wrote it, also after pigy uploaded them again.",
+                { status: error.status, code: error.code, cause: error },
+              );
+            }
             return stepped(parts, {
               did: notes.did,
               refs: notes.refs,
               rkey: null,
+              blobsAgain: true,
             });
           }
           throw error;

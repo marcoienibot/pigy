@@ -1746,6 +1746,69 @@ describe("publishing images", () => {
     ]);
   });
 
+  /** Answers every request to write a record with a 400 that says `error`. */
+  const refusingRecords =
+    (error: string, message: string): Intercept =>
+    async (request, simulator) =>
+      request.url.endsWith("/com.atproto.repo.createRecord")
+        ? Response.json({ error, message }, { status: 400 })
+        : simulator(request);
+
+  it("fails a part with images whose record the server refuses for another reason than that it dropped a blob", async () => {
+    const test = await setup();
+    const { credentials } = (await connected(test)).access;
+    // A refusal that lasts, and that names a blob: before, every refusal
+    // that said "blob" began the part anew, for ever.
+    test.intercept(
+      refusingRecords("InvalidRequest", "Invalid blob reference in embed"),
+    );
+    const files = new Map([["one", await pngFile(40, 30)]]);
+    const refused = await failure(() =>
+      publishImages(
+        test,
+        credentials,
+        [{ text: "x", media: [image("one")] }],
+        files,
+      ),
+    );
+    expect(refused).toMatchObject({ kind: "fail", code: "InvalidRequest" });
+    expect(refused.message).toContain("Invalid blob reference in embed");
+  });
+
+  it("uploads the images of a part again once when the server has dropped them, and fails if it drops them again", async () => {
+    const test = await setup();
+    const { credentials } = (await connected(test)).access;
+    const refusing = refusingRecords(
+      "BlobNotFound",
+      "Could not find blob: bafkrei",
+    );
+    // The uploads that the server took.
+    let uploads = 0;
+    test.intercept(async (request, simulator) => {
+      const answer = await refusing(request, simulator);
+      if (request.url.endsWith("/com.atproto.repo.uploadBlob") && answer.ok) {
+        uploads += 1;
+      }
+      return answer;
+    });
+    const files = new Map([["one", await pngFile(40, 30)]]);
+    const refused = await failure(() =>
+      publishImages(
+        test,
+        credentials,
+        [{ text: "x", media: [image("one")] }],
+        files,
+      ),
+    );
+    expect(refused).toMatchObject({ kind: "fail", code: "BlobNotFound" });
+    expect(refused.message).toBe(
+      "Bluesky no longer had the images of this post when pigy wrote it, also after pigy uploaded them again.",
+    );
+    // The first upload and the one after the server dropped the blob.
+    expect(uploads).toBe(2);
+    expect(feed(test.world)).toEqual([]);
+  });
+
   it("is refused a blob whose bytes are not what it says, and an embed of a blob that is over a million bytes", async () => {
     const test = await setup();
     const { credentials } = (await connected(test)).access;
