@@ -783,8 +783,9 @@ export function workspaceObject(
      *   with everything that the bucket has of it, and then its row. An
      *   upload that it was on its way in is given up first.
      * - An image whose posts were all sent `originalLifetimeMs` ago
-     *   loses its bytes and what was made of them for the networks, and
-     *   keeps its small picture: PLAN.md section 10.
+     *   loses its bytes, what was made of them for the networks and the
+     *   file as it was sent, if a completion left that, and keeps its
+     *   small picture: PLAN.md section 10.
      *
      * The row first and the bucket after, and each image only once it is
      * claimed: `claimMedia` of the store looks at it again in the
@@ -912,7 +913,10 @@ export function workspaceObject(
           now().getTime(),
         );
         if (claimed?.done !== "expired") return;
-        await bucket.delete(keys.original);
+        // And the file as the device sent it, with what the camera wrote
+        // next to the picture: the completion deletes it, and leaves it
+        // where the bucket failed it.
+        await bucket.delete([keys.original, keys.upload]);
         await deleteUnder(bucket, keys.variants);
       });
     }

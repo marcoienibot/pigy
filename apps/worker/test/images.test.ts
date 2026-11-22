@@ -298,12 +298,8 @@ it("lets go of the image of a post 30 days after it was sent everywhere, and kee
   const { channel = "" } = await connectBlueskyInSandbox(browser, workspaceId);
   const client = new SyncClient();
   await client.connect(browser, workspaceId);
-  const sent = await upload(
-    browser,
-    client,
-    workspaceId,
-    await photo(1600, 1200),
-  );
+  const file = await photo(1600, 1200);
+  const sent = await upload(browser, client, workspaceId, file);
   const kept_ = await upload(browser, client, workspaceId, await photo(64, 48));
   const post = await writeDraft(client, workspaceId, "Sent");
   await attach(client, post.partIds[0] ?? "", sent.id);
@@ -319,6 +315,10 @@ it("lets go of the image of a post 30 days after it was sent everywhere, and kee
   expect(await kept(workspaceId)).toContain(
     `${sent.id}/variants/jpeg-1000000-0`,
   );
+  // And the file as the device sent it, with the place where the photo
+  // was taken, which the completion deletes, and leaves behind where the
+  // bucket fails to delete it, twice.
+  await env.MEDIA.put(`${workspaceId}/${sent.id}/upload`, file);
 
   // A day before the 30 are over, everything is there. The person goes
   // on using pigy meanwhile: a session lasts 30 days from its last use.
@@ -332,6 +332,7 @@ it("lets go of the image of a post 30 days after it was sent everywhere, and kee
 
   test.advance(day + 1000);
   await look(workspaceId);
+  // Before, the file as it was sent stayed.
   expect(await kept(workspaceId)).toEqual(
     [
       `${sent.id}/thumbnail`,
