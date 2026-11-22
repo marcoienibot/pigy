@@ -1,7 +1,48 @@
-# How long a browser may keep what Cloudflare serves of the web app. The
-# rules are Cloudflare's: https://developers.cloudflare.com/workers/static-assets/headers/
-# Without a rule, a file is kept and checked with the server before every
-# use, which is right for index.html and for the icons.
+# What Cloudflare sends with the files of the web app: how long a browser
+# may keep them, and what a page may do. The rules are Cloudflare's:
+# https://developers.cloudflare.com/workers/static-assets/headers/
+# The headers of every rule that matches a path are sent. What the Worker
+# answers itself gets none of this: apps/worker/src/security-headers.ts
+# has its headers.
+
+# Every file, the app shell above all, which is what any address of a
+# screen is answered with.
+#
+# The policy allows what the app loads and nothing else:
+# - script-src: the files of the build, and the one script that is written
+#   into index.html, which sets the theme before the first paint, by its
+#   hash. The build writes the hash here, security-headers-plugin.ts, and
+#   fails if index.html has another inline script.
+# - style-src: the style sheet of the build, and the one that the notice
+#   library adds to the page as it runs, by its hash, which the build
+#   writes too. No 'unsafe-inline': what React sets of a style, it sets
+#   through the style object of an element, which no policy is asked about.
+# - img-src: the app's own, and any HTTPS address. The pictures of the
+#   connected accounts are at the networks: every Mastodon server and every
+#   server of a Bluesky account is a host of its own, which nobody can list.
+# - connect-src: the API and the sync socket, which 'self' covers as wss.
+# - worker-src and manifest-src: the service worker and the manifest.
+# - form-action: none. No form of the app is sent by the browser. Signing
+#   in and connecting an account are links and redirects, which no
+#   directive of this policy is asked about.
+# - frame-ancestors: nobody shows pigy in a frame.
+/*
+  Content-Security-Policy: default-src 'none'; script-src 'self' {{inline-scripts}}; style-src 'self' {{injected-styles}}; img-src 'self' https:; font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'
+  X-Content-Type-Options: nosniff
+  # A full address within pigy, where the Worker reads the origin of a
+  # form that is sent. Nothing to anybody else: an address of pigy names
+  # a draft.
+  Referrer-Policy: same-origin
+  # pigy opens no window that it talks to and is opened by none. Signing in
+  # and connecting an account leave the page and come back to it.
+  Cross-Origin-Opener-Policy: same-origin
+  Permissions-Policy: accelerometer=(), autoplay=(), browsing-topics=(), camera=(), display-capture=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), usb=(), xr-spatial-tracking=()
+
+# No Strict-Transport-Security here: a rule of this file cannot tell a
+# deployed address from `localhost`, where a browser must not remember
+# it. The Worker sends it with its own answers, at a deployed address
+# alone, and a browser that has seen it once goes by it for the whole
+# host. The app asks the API who is signed in every time it starts.
 
 # Vite names these files after their content, so one never changes under
 # its name. A path here that has no file gets none of this: such a request

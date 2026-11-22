@@ -162,6 +162,48 @@ async function guardNetwork(
 }
 
 /**
+ * Notes what the pages of `context` do that the content security policy of
+ * the app refuses, and returns the list that it is added to. The browser
+ * says so twice: with an event on the page, and on its console.
+ */
+async function watchPolicy(context: BrowserContext): Promise<string[]> {
+  const violations: string[] = [];
+  await context.exposeBinding(
+    "pigyPolicyViolation",
+    (_source, violation: string) => {
+      violations.push(violation);
+    },
+  );
+  // Added by the browser on behalf of the test, so no policy is asked
+  // about it.
+  await context.addInitScript(() => {
+    document.addEventListener("securitypolicyviolation", (event) => {
+      const report = (
+        globalThis as unknown as {
+          pigyPolicyViolation?: (violation: string) => void;
+        }
+      ).pigyPolicyViolation;
+      report?.(
+        `${event.violatedDirective} refused ${event.blockedURI || "inline"} on ${new URL(event.documentURI).pathname}`,
+      );
+    });
+  });
+  // What has no page to tell, such as the service worker, and a page
+  // that the event did not reach.
+  context.on("console", (message) => {
+    if (
+      message.type() === "error" &&
+      message.text().includes("Content Security Policy") &&
+      // The event has told of this one.
+      message.page() === null
+    ) {
+      violations.push(message.text());
+    }
+  });
+  return violations;
+}
+
+/**
  * `lookup` of `dns.promises`, with `localhost` leading to `loopback` alone,
  * where the server of the run listens. The rest is looked up by `lookup`.
  */
@@ -228,6 +270,13 @@ const pinned = base.extend<Record<never, never>, { loopbackOnly: undefined }>({
 export const test = pinned.extend<{
   ownServer: undefined;
   networkGuard: undefined;
+  /**
+   * What the pages of the test did that the content security policy of the
+   * app refuses. A test fails when its body has run and this is not empty,
+   * so every test is a test of the policy, on every screen that it goes
+   * to. A test that breaks the policy on purpose empties the list.
+   */
+  policyViolations: string[];
   /** `page`, signed in as the admin. For tests that are not about sign-in. */
   signedInPage: Page;
   /**
@@ -312,6 +361,25 @@ export const test = pinned.extend<{
     { auto: true },
   ],
 
+  policyViolations: [
+    async ({ context }, use, testInfo) => {
+      const violations = await watchPolicy(context);
+
+      await use(violations);
+
+      if (violations.length > 0) {
+        // As in `ownServer`: a test that expects to fail must not take
+        // this failure for the one that it expects.
+        testInfo.expectedStatus = "passed";
+      }
+      expect(
+        violations,
+        "The content security policy of the app refused something that a page did.",
+      ).toEqual([]);
+    },
+    { auto: true },
+  ],
+
   signedInPage: async ({ page }, use) => {
     await signIn(page, adminEmail);
     // The app shell is only there for somebody who is signed in.
@@ -370,6 +438,7 @@ export const test = pinned.extend<{
     if (!baseURL) throw new Error("baseURL is not set");
     const contexts: BrowserContext[] = [];
     const strayRequests: string[][] = [];
+    const violations: string[][] = [];
 
     await use(async () => {
       // On the same device as `page`, which is what the project sets these
@@ -384,10 +453,15 @@ export const test = pinned.extend<{
       });
       contexts.push(context);
       strayRequests.push(await guardNetwork(context, new URL(baseURL).origin));
+      violations.push(await watchPolicy(context));
       return context.newPage();
     });
 
     for (const context of contexts) await context.close();
+    expect(
+      violations.flat(),
+      "The content security policy of the app refused something that a page did.",
+    ).toEqual([]);
     expect(
       strayRequests.flat(),
       "Requests to hosts other than the app. Tests must not use the network.",

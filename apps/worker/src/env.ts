@@ -116,5 +116,11 @@ export type AppEnv = {
      * session and signs nobody in.
      */
     sessionId: string;
+    /**
+     * Set by a route whose answer is not the Worker's to add to: a file
+     * of the web app that is passed on, which has the headers that
+     * Cloudflare gives it. See src/security-headers.ts.
+     */
+    passedOn?: true;
   };
 };

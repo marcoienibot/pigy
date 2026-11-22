@@ -9,7 +9,8 @@ export default defineConfig({
     tsconfigPaths: true,
   },
   test: {
-    include: ["src/**/*.test.ts"],
+    // Next to `src`: the tests of what the build does.
+    include: ["src/**/*.test.ts", "*.test.ts"],
     setupFiles: ["./test/setup.ts"],
   },
 });

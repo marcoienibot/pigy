@@ -5,5 +5,12 @@
     "lib": ["ES2023"],
     "types": ["node"]
   },
-  "include": ["vite.config.ts", "vitest.config.ts", "service-worker-plugin.ts"]
+  "include": [
+    "vite.config.ts",
+    "vitest.config.ts",
+    "service-worker-plugin.ts",
+    "security-headers-plugin.ts",
+    "security-headers-plugin.test.ts",
+    "zod-without-eval.ts"
+  ]
 }

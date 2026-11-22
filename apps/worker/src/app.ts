@@ -13,6 +13,7 @@ import { handleError, handleNotFound } from "./errors.ts";
 import { blueskyClientRoutes } from "./network/bluesky-client.ts";
 import { previewRoutes } from "./preview/routes.ts";
 import { pushRoutes } from "./push/routes.ts";
+import { securityHeaders } from "./security-headers.ts";
 import { sandboxRoutes, simRoutes } from "./sim/routes.ts";
 import { worldPagesPath } from "./sim/world.ts";
 import { syncRoutes, workspaceRoutes } from "./workspace/routes.ts";
@@ -24,6 +25,10 @@ import { syncRoutes, workspaceRoutes } from "./workspace/routes.ts";
 export function createApp(dependencies: AppDependencies): Hono<AppEnv> {
   const { fetch, simulatedGoogle, simulatedPush } = dependencies;
   const app = new Hono<AppEnv>();
+
+  // What a browser may do with an answer: for every route, the errors
+  // and the paths that nothing answers at included.
+  app.use(securityHeaders());
 
   // What these answer depends on who asks and changes at any time. The
   // pages under /sim are one person's too: those of a simulated network

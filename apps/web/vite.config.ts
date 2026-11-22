@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { cloudflare } from "@cloudflare/vite-plugin";
 import tailwindcss from "@tailwindcss/vite";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
 import { unstable_readConfig } from "wrangler";
+import { securityHeaders } from "./security-headers-plugin.ts";
 import { serviceWorker } from "./service-worker-plugin.ts";
 
 const workerConfig = "../worker/wrangler.jsonc";
@@ -112,12 +114,25 @@ export default defineConfig(({ mode }) => {
         ...(e2e && { config: { secrets: { required: [] } } }),
       }),
       ...(e2e ? [e2eBuildId()] : []),
+      // Writes the hashes of what the app shell has inline into the policy
+      // of `_headers`. Not in `pnpm dev`.
+      securityHeaders(),
       // Builds /sw.js once the web app is built. Not in `pnpm dev`.
       serviceWorker({ workerFirst: workerFirst() }),
     ],
     resolve: {
       // Resolves the "@/" alias from tsconfig.app.json.
       tsconfigPaths: true,
+      // Zod, told not to use `new Function`, which the content security
+      // policy of the app refuses: the file says why it is done here.
+      alias: [
+        {
+          find: /^zod$/,
+          replacement: fileURLToPath(
+            new URL("./zod-without-eval.ts", import.meta.url),
+          ),
+        },
+      ],
     },
   };
 });

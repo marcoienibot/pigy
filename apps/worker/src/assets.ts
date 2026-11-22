@@ -35,6 +35,7 @@ export function assetRoutes(): Hono<AppEnv> {
       missing.headers.set("Cache-Control", "no-store");
       return missing;
     }
+    c.set("passedOn", true);
     return answer;
   });
 

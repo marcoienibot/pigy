@@ -7,6 +7,13 @@ import { expect, test } from "../fixtures.ts";
 // stops working, the requests still cannot reach a real host.
 const otherHost = "https://example.invalid/";
 
+// The content security policy of the app refuses a request to another host
+// before the guard sees it: `connect-src 'self'`. That is the app keeping
+// its own rule, which security-headers.spec.ts tests. These tests are about
+// the guard behind it, for what the policy does not cover or would let
+// through if it were ever widened, so their pages are not under the policy.
+test.use({ bypassCSP: true });
+
 test("a request to another host is aborted and fails the test", async ({
   page,
 }) => {
@@ -56,6 +63,14 @@ test("a request of the service worker to another host is aborted and fails the t
   page,
   context,
 }) => {
+  // A service worker has the policy that its script came with, which
+  // `bypassCSP` does not lift. The script is passed on as it is, without
+  // that one header.
+  await context.route("**/sw.js", async (route) => {
+    const response = await route.fetch();
+    const { "content-security-policy": _, ...headers } = response.headers();
+    await route.fulfill({ response, headers });
+  });
   await page.goto("/");
   await serviceWorkerAnswersFor(page);
   const [worker] = context.serviceWorkers();
