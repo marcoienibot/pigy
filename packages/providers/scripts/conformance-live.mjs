@@ -30,6 +30,11 @@ const networks = {
     "PIGY_LIVE_MASTODON_CLIENT_ID",
     "PIGY_LIVE_MASTODON_CLIENT_SECRET",
   ],
+  threads: [
+    "PIGY_LIVE_THREADS_APP_ID",
+    "PIGY_LIVE_THREADS_APP_SECRET",
+    "PIGY_LIVE_THREADS_ACCESS_TOKEN",
+  ],
 };
 
 const network = argv[2];

@@ -87,6 +87,13 @@ export type Harness = {
    * disconnecting ends it.
    */
   revokes: boolean;
+  /**
+   * True where the provider renews its access by the caller's timer
+   * alone, and never fails with `refresh`: nothing that the network
+   * refuses is cured by renewing. Threads renews a token only while the
+   * token is good.
+   */
+  refreshOnlyByTimer?: boolean;
   /** The secrets in both, which no message may contain. */
   secrets: string[];
   /** Text that marks the posts of this run, and makes them unlike others. */
@@ -906,6 +913,9 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
         if (!provider.refresh) {
           return skip("The access to this network is not renewed");
         }
+        if (harness.refreshOnlyByTimer) {
+          return skip("The network renews no access that it refuses");
+        }
         const text = `${harness.tag} A post after a token that ended early`;
         simulation.arm("token-expired");
         // The step that was refused renews the access and is made again
@@ -935,12 +945,14 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
           publishParts({ ...harness, credentials }, [text]);
         const day = 24 * 60 * 60 * 1000;
 
-        // Three cases, for three kinds of access: Bluesky's is renewed,
-        // LinkedIn's ends, Mastodon's lasts. The first fails for an
-        // adapter whose refresh returns credentials that do not work,
-        // which the pull request for Bluesky has shown, and the second for
-        // an adapter that names an end which the network does not keep,
-        // which the one for LinkedIn has.
+        // Three cases, for three kinds of access: Bluesky's and Threads'
+        // are renewed, LinkedIn's ends, Mastodon's lasts. The first fails
+        // for an adapter whose refresh returns credentials that do not
+        // work, which the pull request for Bluesky has shown, and for one
+        // whose refresh does not put the end off or comes too early for
+        // the network, which the one for Threads has. The second fails
+        // for an adapter that names an end which the network does not
+        // keep, which the one for LinkedIn has.
         if (provider.refresh && access.refreshAt) {
           // Refreshed when it is due, the access goes on.
           simulation.advance(
@@ -950,6 +962,25 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
           expect((await publishWith(renewed.credentials)).progress.done).toBe(
             true,
           );
+          // Where the access has an end, the refresh came before it and
+          // has put it off: past the end that was named first, what the
+          // refresh returned is still good. Threads' is the first access
+          // that is renewed and ends.
+          if (access.expiresAt) {
+            expect(access.refreshAt.getTime()).toBeLessThan(
+              access.expiresAt.getTime(),
+            );
+            expect(renewed.expiresAt?.getTime()).toBeGreaterThan(
+              access.expiresAt.getTime(),
+            );
+            await removeAll(cleanup.splice(0));
+            simulation.advance(
+              access.expiresAt.getTime() - simulation.now().getTime() + 60_000,
+            );
+            expect((await publishWith(renewed.credentials)).progress.done).toBe(
+              true,
+            );
+          }
         } else if (access.expiresAt) {
           // Up to its end the access is good: an end that the network
           // reaches sooner is not the end.
@@ -983,11 +1014,24 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
         if (!harness.simulation) {
           return skip("It would end the access that the live run is given");
         }
+        if (!harness.revokes) {
+          // A network that has no way to take an access back: the
+          // provider says so, which is what lets a caller tell the person
+          // to end the access themselves. Threads' is the first, and its
+          // pull request has shown that this fails for a provider that
+          // says nothing.
+          const refusal = await failure(() =>
+            harness.provider.disconnect(harness.credentials),
+          );
+          expect(refusal.kind).toBe("fail");
+          // And the access is as good as before.
+          const text = `${harness.tag} A post after a disconnect`;
+          expect((await publishParts(harness, [text])).progress.done).toBe(
+            true,
+          );
+          return;
+        }
         await harness.provider.disconnect(harness.credentials);
-        // Stopping here has never run: Mastodon revokes. The pull request
-        // for Threads is the first for a network that does not, and has to
-        // show that disconnecting is still tested for what it does there.
-        if (!harness.revokes) return;
         const error = await failure(() => publishParts(harness, ["Gone"]));
         expect(error.kind).toBe("reconnect");
         expect(harness.simulation.published()).toEqual([]);
