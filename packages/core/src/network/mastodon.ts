@@ -7,44 +7,22 @@
  * points is one character. What a mention is comes from the code that the
  * validator calls, app/lib/extractor.rb.
  *
- * What counts as a link follows the pattern Mastodon 4.5 uses, with one
- * difference: Mastodon accepts only the top-level domains that exist, and
- * this accepts any of two or more ASCII letters. So "https://example.nosuch"
- * counts as a link here and as plain text there. Mastodon's development
- * branch has since changed how it finds links, so the edge cases of this
- * pattern are worth confirming against a real server.
+ * What counts as a link is what `findLinks` of links.ts finds with a
+ * scheme, which follows the pattern Mastodon 4.5 uses: Mastodon links no
+ * address that is written without one. Mastodon's development branch has
+ * since changed how it finds links, so the edge cases of that pattern are
+ * worth confirming against a real server.
+ *
+ * The counting and the detection of `entities.ts` go by the same two
+ * functions, `findLinks` and `findMastodonMentions`: what the editor marks
+ * as a link is what the counter counts as one.
  */
 
-// The pieces of a link, as in config/initializers/twitter_regex.rb.
-const pathChar = String.raw`[^\p{White_Space}<>()?]`;
-// Parentheses belong to a link only in pairs, one level deep.
-const balanced = String.raw`\((?:${pathChar}+|${pathChar}*\(${pathChar}+\)${pathChar}*)\)`;
-// A link does not end in punctuation: the full stop after it is not part
-// of it.
-const pathEnd = String.raw`(?:[^\p{White_Space}()?!*"'「」<>;:=,.$%\[\]~&|]|${balanced})`;
-const path = String.raw`(?:${pathChar}*(?:${balanced}${pathChar}*)*${pathEnd}|${pathChar}+\/)`;
-const beyondAscii = String.raw`\u{A0}-\u{D7FF}\u{E000}-\u{FDCF}\u{FDF0}-\u{FFEF}\u{10000}-\u{10FFFD}`;
-const queryChar = String.raw`[a-z0-9!?*'();:&=+$\/%#\[\]\-_.,~|@^${beyondAscii}]`;
-const queryEnd = String.raw`[a-z0-9_&=#\/\-${beyondAscii}]`;
-// Anything but whitespace, control characters and ASCII punctuation.
-const hostChar = String.raw`[^\p{White_Space}\p{Cc}!-\/:-@\[-\x60{-~]`;
-const hostLabel = String.raw`(?:${hostChar}(?:[_-]|${hostChar})*)?${hostChar}\.`;
-const topLevelDomain = "(?:[a-z]{2,}(?![0-9a-z@+-])|xn--[0-9a-z]+)";
+import { findLinks, type TextRange } from "./links.ts";
 
 // These patterns do without lookbehind, which older browsers that pigy
 // still opens in cannot compile: what must stand before a match is matched
 // with it, as the first group, and put back.
-
-const linkPattern = new RegExp(
-  // Not in the middle of a word, a mention or a hashtag.
-  "(^|[^a-z0-9@＠$#＃])" +
-    String.raw`https?:\/\/` +
-    `(?:${hostLabel})+${topLevelDomain}` +
-    "(?::[0-9]+)?" +
-    String.raw`(?:\/${path}*)?` +
-    String.raw`(?:\?${queryChar}*${queryEnd})?`,
-  "giu",
-);
 
 // What Ruby calls a word character.
 const wordChar = String.raw`[\p{L}\p{M}\p{Nd}\p{Pc}]`;
@@ -54,9 +32,6 @@ const wordChar = String.raw`[\p{L}\p{M}\p{Nd}\p{Pc}]`;
 // domain.
 const mentionName = String.raw`(^|[^=\/\p{L}\p{M}\p{Nd}\p{Pc}])@([a-z0-9_]+(?:[.-]+[a-z0-9_]+)*)`;
 const mentionDomain = `@(${wordChar}+(?:[.-]+${wordChar}+)*)`;
-
-// A mention with a domain: "@name@example.com".
-const remoteMentionPattern = new RegExp(mentionName + mentionDomain, "giu");
 
 // Every mention, with a domain or without: "@name" too.
 const mentionPattern = new RegExp(`${mentionName}(?:${mentionDomain})?`, "giu");
@@ -143,6 +118,40 @@ function storedDomain(domain: string): string {
   }
 }
 
+/** A mention in a text, as Mastodon reads one. */
+export type MastodonMention = TextRange & {
+  /** The name before the domain, as it is written. */
+  username: string;
+  /** The domain, as it is written, or undefined for "@name". */
+  domain: string | undefined;
+};
+
+/**
+ * The mentions of `text` as Mastodon's extractor finds them,
+ * app/lib/extractor.rb: "@name" and "@name@example.com". What only looks
+ * like one is left out: a domain that is longer than Mastodon takes, and
+ * a mention that is followed by what makes Mastodon take it for something
+ * else.
+ */
+export function findMastodonMentions(text: string): MastodonMention[] {
+  const mentions: MastodonMention[] = [];
+  for (const match of text.matchAll(mentionPattern)) {
+    const [whole, before = "", username = "", domain] = match;
+    const start = match.index + before.length;
+    const end = match.index + whole.length;
+    if (
+      // Ruby counts the length of a text in code points.
+      (domain !== undefined &&
+        Array.from(domain).length > maxMentionDomainLength) ||
+      afterMentionPattern.test(text.slice(end))
+    ) {
+      continue;
+    }
+    mentions.push({ start, end, username, domain });
+  }
+  return mentions;
+}
+
 /**
  * The length of `text` as a Mastodon server counts it against its limit.
  * `charactersPerUrl` is what the instance counts a link as, 23 unless it
@@ -153,28 +162,29 @@ export function countMastodonCharacters(
   charactersPerUrl: number,
 ): number {
   const stripped = stripMastodonText(text);
-  const placeholder = "x".repeat(charactersPerUrl);
-  const countable = stripped
-    .replace(
-      linkPattern,
-      (_link: string, before: string) => before + placeholder,
-    )
-    .replace(
-      remoteMentionPattern,
-      (
-        mention: string,
-        before: string,
-        username: string,
-        domain: string,
-        offset: number,
-        whole: string,
-      ) =>
-        // Ruby counts the length of a text in code points.
-        Array.from(domain).length > maxMentionDomainLength ||
-        afterMentionPattern.test(whole.slice(offset + mention.length))
-          ? mention
-          : `${before}@${username}`,
-    );
+  const links = findLinks(stripped, { bare: false });
+  // What counts as something else than it is written: a link as a fixed
+  // number of characters, a mention without its domain.
+  const counted = [
+    ...links.map((link) => ({ ...link, as: "x".repeat(charactersPerUrl) })),
+    ...findMastodonMentions(stripped)
+      .filter(
+        (mention) =>
+          mention.domain !== undefined &&
+          // An address is a link, whatever is in it.
+          !links.some(
+            (link) => mention.start < link.end && link.start < mention.end,
+          ),
+      )
+      .map((mention) => ({ ...mention, as: `@${mention.username}` })),
+  ].sort((a, b) => a.start - b.start);
+  let countable = "";
+  let position = 0;
+  for (const { start, end, as } of counted) {
+    countable += stripped.slice(position, start) + as;
+    position = end;
+  }
+  countable += stripped.slice(position);
   graphemes ??= new Intl.Segmenter(undefined, { granularity: "grapheme" });
   let count = 0;
   for (const _ of graphemes.segment(countable)) count++;
