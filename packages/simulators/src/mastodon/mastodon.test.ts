@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   answerConsent,
   createWorld,
+  entitiesOf,
   feed,
   isSimulatedSecret,
   memoryStorage,
@@ -177,6 +178,9 @@ type StatusJson = {
   content: string;
   visibility: string;
   in_reply_to_id: string | null;
+  mentions: unknown[];
+  tags: unknown[];
+  card: unknown;
   error?: string;
 };
 
@@ -860,6 +864,58 @@ describe("posting a status", () => {
     // No mentions: an address, the end of a path and of a parameter.
     const none = "mail@ADA https://example.com/@ADA ?to=@ADA";
     expect(await saved(none)).toBe(none);
+  });
+
+  it("says of a status whom it mentions, which tags it has, and what its first link leads to", async () => {
+    const sim = setup();
+    const { token } = await connect(sim);
+    sim.simulator.addInstance("other.example");
+    const bob = sim.simulator.addAccount("other.example", "Bob");
+    const { status } = await publish(sim, token, {
+      status:
+        "@bob@other.example and @nobody: https://example.test/ and https://blog.example.test/first-post #News #news",
+    });
+    expect(status.mentions).toEqual([
+      {
+        id: bob.id,
+        username: "Bob",
+        acct: "Bob@other.example",
+        url: "https://other.example/@Bob",
+      },
+    ]);
+    // A tag once, in lower case, however it was written.
+    expect(status.tags).toEqual([
+      { name: "news", url: "https://mastodon.example/tags/news" },
+    ]);
+    // The card is of the first link, with what the page says of itself.
+    expect(status.card).toMatchObject({
+      url: "https://example.test/",
+      title: "The example page",
+      type: "link",
+    });
+    // And the feed of the world has the same, for a person to look at.
+    const kept = feed(sim.world)[0]?.post;
+    expect(kept && entitiesOf(kept)).toEqual([
+      ["mention", "@Bob@other.example", bob.id],
+      ["link", "https://example.test/", "https://example.test/"],
+      [
+        "link",
+        "https://blog.example.test/first-post",
+        "https://blog.example.test/first-post",
+      ],
+      ["hashtag", "#News", "News"],
+      ["hashtag", "#news", "news"],
+    ]);
+    expect(kept?.card?.title).toBe("The example page");
+  });
+
+  it("has no card for a link that leads to no page of its world", async () => {
+    const sim = setup();
+    const { token } = await connect(sim);
+    const { status } = await publish(sim, token, {
+      status: "https://example.com/somewhere",
+    });
+    expect(status.card).toBeNull();
   });
 
   it.each([

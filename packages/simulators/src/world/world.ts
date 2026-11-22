@@ -64,7 +64,31 @@ export type SimPost = {
   createdAt: number;
   /** Where the post would be on the network. */
   url: string;
+  /**
+   * What the network shows in the text as more than text, in the order of
+   * the text, as the network has it: found by itself, or told by whoever
+   * posted. Left out for a post from before the simulators kept them.
+   */
+  entities?: SimEntity[];
+  /** The card of a link that the network shows with the post, if any. */
+  card?: SimCard | null;
 };
+
+/** A link, a mention or a hashtag in the text of a simulated post. */
+export type SimEntity = {
+  kind: "link" | "mention" | "hashtag";
+  /** Where it stands in the text, in UTF-16 code units. */
+  start: number;
+  end: number;
+  /**
+   * What it leads to, as the network keeps it: the address of a link,
+   * the ID of the account that is mentioned, the tag.
+   */
+  target: string;
+};
+
+/** What a simulated network shows of the page that a link leads to. */
+export type SimCard = { url: string; title: string; description: string };
 
 export type SimWorld = {
   /** The time in the world: the clock it was made with, moved by `advance`. */
@@ -224,4 +248,19 @@ export function feed(
         a.post.createdAt - b.post.createdAt ||
         a.post.id.localeCompare(b.post.id),
     );
+}
+
+/**
+ * What `post` shows as more than text, each as its kind, how it is written
+ * in the text and what it leads to: for whoever reads a feed, and for a
+ * test to compare.
+ */
+export function entitiesOf(
+  post: SimPost,
+): [kind: SimEntity["kind"], written: string, target: string][] {
+  return (post.entities ?? []).map(({ kind, start, end, target }) => [
+    kind,
+    post.text.slice(start, end),
+    target,
+  ]);
 }

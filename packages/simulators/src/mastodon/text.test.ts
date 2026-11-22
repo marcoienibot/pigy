@@ -1,5 +1,27 @@
 import { describe, expect, it } from "vitest";
-import { countableLength, findLinks, renderContent } from "./text.ts";
+import {
+  countableLength,
+  findEntities,
+  findLinks,
+  type Mentioned,
+  renderContent as renderContentOf,
+} from "./text.ts";
+
+const grace: Mentioned = {
+  id: "7",
+  username: "Grace",
+  acct: "Grace@other.example",
+  url: "https://other.example/@Grace",
+};
+
+/** The one account that the mentions of these tests find. */
+const accountOf = (username: string, domain: string | undefined) =>
+  username.toLowerCase() === "grace" && domain === "other.example"
+    ? grace
+    : undefined;
+
+const renderContent = (text: string) =>
+  renderContentOf(text, "mastodon.example", accountOf);
 
 const count = (text: string) => countableLength(text, 23);
 const links = (text: string) =>
@@ -138,6 +160,76 @@ describe("renderContent", () => {
     const long = `https://example.com/${"a".repeat(30)}`;
     expect(renderContent(long)).toContain(
       `<span class="ellipsis">example.com/${"a".repeat(18)}</span><span class="invisible">${"a".repeat(12)}</span>`,
+    );
+  });
+});
+
+describe("findEntities", () => {
+  const found = (text: string) =>
+    findEntities(text, accountOf).entities.map(
+      ({ kind, start, end }) => `${kind} ${text.slice(start, end)}`,
+    );
+
+  it.each([
+    ["A #tag here", ["#tag"]],
+    [
+      "#café #日本語 #tag_2 #2fast ＃wide",
+      ["#café", "#日本語", "#tag_2", "#2fast", "＃wide"],
+    ],
+    ["#tag. (#other), #third!", ["#tag", "#other", "#third"]],
+    // A middle dot joins two words of a tag, inside it and not at its end.
+    ["#a·b and #c·", ["#a·b", "#c"]],
+  ])("finds the hashtags of %j", (text, tags) => {
+    expect(found(text)).toEqual(tags.map((tag) => `hashtag ${tag}`));
+  });
+
+  it.each(["#1", "#2024", "# tag", "word#tag", "a=#b", "x/#y", "(a)#b"])(
+    "finds no hashtag in %j",
+    (text) => {
+      expect(found(text)).toEqual([]);
+    },
+  );
+
+  it("takes a mention only of an account that it finds", () => {
+    const text = "@grace@other.example and @nobody@other.example and @grace";
+    expect(findEntities(text, accountOf)).toEqual({
+      entities: [{ kind: "mention", start: 0, end: 20, target: "7" }],
+      mentions: [grace],
+      tags: [],
+    });
+  });
+
+  it("lets the one that starts first stay where two overlap", () => {
+    // The tag and the mention are in the address of the link.
+    expect(found("https://example.com/@grace@other.example#top #real")).toEqual(
+      ["link https://example.com/@grace@other.example#top", "hashtag #real"],
+    );
+  });
+
+  it("lists an account and a tag once, however often they are named", () => {
+    const { mentions, tags } = findEntities(
+      "#a @grace@other.example #b @Grace@other.example #a",
+      accountOf,
+    );
+    expect(mentions).toEqual([grace]);
+    expect(tags).toEqual(["a", "b"]);
+  });
+});
+
+describe("renderContent, of mentions and hashtags", () => {
+  it("links a mention and shows it without its domain", () => {
+    expect(renderContent("Hi @grace@other.example!")).toBe(
+      '<p>Hi <span class="h-card" translate="no"><a href="https://other.example/@Grace" class="u-url mention">@<span>Grace</span></a></span>!</p>',
+    );
+  });
+
+  it("leaves a mention of nobody as the text it is", () => {
+    expect(renderContent("Hi @nobody")).toBe("<p>Hi @nobody</p>");
+  });
+
+  it("links a hashtag to its page on the instance, in lower case", () => {
+    expect(renderContent("#Tag")).toBe(
+      '<p><a href="https://mastodon.example/tags/tag" class="mention hashtag" rel="tag">#<span>Tag</span></a></p>',
     );
   });
 });

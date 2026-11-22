@@ -19,6 +19,7 @@ import {
   postProblem,
   profileCollection,
   recordUri,
+  shownOf,
 } from "./record.ts";
 import {
   type BlueskyToken,
@@ -257,6 +258,7 @@ function createRecord(state: State, pds: Pds, request: Request) {
       rkey: key,
       cid,
       record: value,
+      ...shownOf(state, value),
     };
     // Nothing is awaited between the look above and here, so of two
     // requests with one key only one gets this far.

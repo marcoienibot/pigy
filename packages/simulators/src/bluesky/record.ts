@@ -1,3 +1,4 @@
+import type { SimCard, SimEntity } from "../world/index.ts";
 import { accountByHandle, type PostRecord, type State } from "./state.ts";
 
 /**
@@ -19,8 +20,19 @@ import { accountByHandle, type PostRecord, type State } from "./state.ts";
  *   with another hash than it has,
  * - a reply whose root is not the root of the thread of its parent.
  *
- * Not simulated, and refused: facets, which pigy sends from phase 4 on,
- * embeds, labels, extra tags and the deprecated entities.
+ * Facets are checked against the lexicon `app.bsky.richtext.facet`, and
+ * on three points more strictly than a PDS checks them, for the same
+ * reason: what a PDS lets through shows in an app as a link over the
+ * wrong letters, or as a mention of nobody.
+ *
+ * - a facet has to cover bytes of the text, and begin and end between two
+ *   characters, not in the middle of one,
+ * - two facets must not overlap, which the lexicon asks of a client,
+ * - a mention has to name an account of this world.
+ *
+ * Of the embeds, the card of a link is simulated, `app.bsky.embed.external`,
+ * without a picture: blobs are not simulated. Not simulated, and refused:
+ * every other embed, labels, extra tags and the deprecated entities.
  */
 
 export const postCollection = "app.bsky.feed.post";
@@ -174,10 +186,20 @@ export function postProblem(state: State, record: unknown): string | undefined {
     return `record/$type must be ${postCollection}`;
   }
   for (const key of Object.keys(record)) {
-    if (["facets", "embed", "labels", "tags", "entities"].includes(key)) {
+    if (["labels", "tags", "entities"].includes(key)) {
       return `record/${key} is not simulated`;
     }
-    if (!["$type", "text", "createdAt", "reply", "langs"].includes(key)) {
+    if (
+      ![
+        "$type",
+        "text",
+        "createdAt",
+        "reply",
+        "langs",
+        "facets",
+        "embed",
+      ].includes(key)
+    ) {
       return `record/${key} is not a field of ${postCollection}`;
     }
   }
@@ -211,6 +233,10 @@ export function postProblem(state: State, record: unknown): string | undefined {
       return "record/langs must be well-formed BCP 47 language tags";
     }
   }
+  const facetProblem = facetsProblem(state, text, record.facets);
+  if (facetProblem) return facetProblem;
+  const embedProblem = externalProblem(record.embed);
+  if (embedProblem) return embedProblem;
   if (reply !== undefined) {
     if (!isObject(reply)) return "record/reply must be an object";
     const parent = referenced(state, reply.parent, "record/reply/parent");
@@ -237,4 +263,224 @@ export function accountOf(state: State, repo: unknown) {
   return repo.startsWith("did:")
     ? state.accounts.get(repo)
     : accountByHandle(state, repo);
+}
+
+const facetPrefix = "app.bsky.richtext.facet#";
+const externalEmbed = "app.bsky.embed.external";
+
+// The limits of a tag in the lexicon: bytes, and grapheme clusters.
+const maxTagBytes = 640;
+const maxTagGraphemes = 64;
+
+/** Whether `value` is an address with a scheme: the format `uri`. */
+function isUri(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 8192) return false;
+  return /^[a-zA-Z][a-zA-Z0-9+.-]*:[^\s]+$/.test(value);
+}
+
+/** Whether a byte begins a character in UTF-8, and is not the middle of one. */
+const beginsCharacter = (byte: number | undefined) =>
+  byte === undefined || (byte & 0xc0) !== 0x80;
+
+/** What a facet of a post marks, once it is checked. */
+type Facet = {
+  byteStart: number;
+  byteEnd: number;
+  kind: SimEntity["kind"];
+  target: string;
+};
+
+/** The facets of `facets` over `text`, or what is wrong with them. */
+function readFacets(
+  state: State,
+  text: string,
+  facets: unknown,
+): Facet[] | string {
+  if (facets === undefined) return [];
+  if (!Array.isArray(facets)) return "record/facets must be an array";
+  const bytes = encoder.encode(text);
+  const read: Facet[] = [];
+  for (const [number, facet] of facets.entries()) {
+    const where = `record/facets/${number}`;
+    if (!isObject(facet)) return `${where} must be an object`;
+    for (const key of Object.keys(facet)) {
+      if (!["$type", "index", "features"].includes(key)) {
+        return `${where}/${key} is not a field of a facet`;
+      }
+    }
+    if (
+      facet.$type !== undefined &&
+      facet.$type !== "app.bsky.richtext.facet"
+    ) {
+      return `${where}/$type must be app.bsky.richtext.facet`;
+    }
+    const { index, features } = facet;
+    if (!isObject(index)) return `${where}/index must be an object`;
+    const { byteStart, byteEnd } = index;
+    if (
+      !Number.isInteger(byteStart) ||
+      !Number.isInteger(byteEnd) ||
+      (byteStart as number) < 0 ||
+      (byteEnd as number) < 0
+    ) {
+      return `${where}/index must have byteStart and byteEnd, integers of 0 or more`;
+    }
+    const [start, end] = [byteStart as number, byteEnd as number];
+    // Stricter than a PDS, on purpose: see the top of this file.
+    if (start >= end || end > bytes.length) {
+      return `${where}/index names bytes ${start} to ${end}, and the text has ${bytes.length}`;
+    }
+    if (!beginsCharacter(bytes[start]) || !beginsCharacter(bytes[end])) {
+      return `${where}/index begins or ends in the middle of a character`;
+    }
+    if (read.some((other) => start < other.byteEnd && other.byteStart < end)) {
+      return `${where}/index overlaps another facet`;
+    }
+    if (!Array.isArray(features) || features.length !== 1) {
+      // The lexicon takes several features for one stretch of text. pigy
+      // sends one, and what several would mean in an app is not said.
+      return `${where}/features: the simulated PDS takes one feature per facet`;
+    }
+    const [feature] = features as unknown[];
+    if (!isObject(feature) || typeof feature.$type !== "string") {
+      return `${where}/features/0 must be an object with a $type`;
+    }
+    const fields = Object.keys(feature).filter((key) => key !== "$type");
+    const only = (name: string) =>
+      fields.length === 1 && fields[0] === name
+        ? undefined
+        : `${where}/features/0 must have "${name}" and nothing else`;
+    switch (feature.$type) {
+      case `${facetPrefix}link`: {
+        const problem = only("uri");
+        if (problem) return problem;
+        if (!isUri(feature.uri)) {
+          return `${where}/features/0/uri must be a uri`;
+        }
+        read.push({
+          byteStart: start,
+          byteEnd: end,
+          kind: "link",
+          target: feature.uri,
+        });
+        break;
+      }
+      case `${facetPrefix}mention`: {
+        const problem = only("did");
+        if (problem) return problem;
+        if (!isDid(feature.did)) {
+          return `${where}/features/0/did must be a valid did`;
+        }
+        // Stricter than a PDS, on purpose: see the top of this file.
+        if (!state.accounts.get(feature.did)) {
+          return `${where}/features/0/did names no account of this world: ${feature.did}`;
+        }
+        read.push({
+          byteStart: start,
+          byteEnd: end,
+          kind: "mention",
+          target: feature.did,
+        });
+        break;
+      }
+      case `${facetPrefix}tag`: {
+        const problem = only("tag");
+        if (problem) return problem;
+        const { tag } = feature;
+        if (
+          typeof tag !== "string" ||
+          tag === "" ||
+          encoder.encode(tag).length > maxTagBytes ||
+          graphemeLength(tag) > maxTagGraphemes
+        ) {
+          return `${where}/features/0/tag must be a string of at most ${maxTagGraphemes} graphemes`;
+        }
+        // The tag is kept without its sign: "Posts" of docs.bsky.app.
+        if (/^[#＃]/.test(tag)) {
+          return `${where}/features/0/tag must not begin with "#"`;
+        }
+        read.push({
+          byteStart: start,
+          byteEnd: end,
+          kind: "hashtag",
+          target: tag,
+        });
+        break;
+      }
+      default:
+        return `${where}/features/0/$type is no feature that the simulated PDS knows: ${feature.$type}`;
+    }
+  }
+  return read;
+}
+
+function facetsProblem(state: State, text: string, facets: unknown) {
+  const read = readFacets(state, text, facets);
+  return typeof read === "string" ? read : undefined;
+}
+
+/** What is wrong with `embed`, or undefined if the simulated PDS takes it. */
+function externalProblem(embed: unknown): string | undefined {
+  if (embed === undefined) return undefined;
+  if (!isObject(embed)) return "record/embed must be an object";
+  if (embed.$type !== externalEmbed) {
+    return `record/embed: the simulated PDS takes ${externalEmbed} and no other embed`;
+  }
+  const { external } = embed;
+  if (Object.keys(embed).length !== 2 || !isObject(external)) {
+    return `record/embed must have "external" and nothing else`;
+  }
+  for (const key of Object.keys(external)) {
+    if (key === "thumb") {
+      return "record/embed/external/thumb is not simulated: the simulated PDS keeps no blobs";
+    }
+    if (!["uri", "title", "description"].includes(key)) {
+      return `record/embed/external/${key} is not a field of an external embed`;
+    }
+  }
+  if (!isUri(external.uri)) return "record/embed/external/uri must be a uri";
+  // Both are required by the lexicon, and may be empty.
+  if (typeof external.title !== "string") {
+    return "record/embed/external/title must be a string";
+  }
+  if (typeof external.description !== "string") {
+    return "record/embed/external/description must be a string";
+  }
+  return undefined;
+}
+
+/**
+ * What an app shows of a post that the simulated PDS has taken, besides
+ * its text: what its facets mark, by where they stand in the text as a
+ * string, and the card of its embed.
+ */
+export function shownOf(
+  state: State,
+  record: Record<string, unknown>,
+): { entities: SimEntity[]; card: SimCard | null } {
+  const text = record.text as string;
+  const facets = readFacets(state, text, record.facets);
+  const bytes = encoder.encode(text);
+  const decoder = new TextDecoder();
+  /** The place in the string of what is `byte` bytes into its UTF-8. */
+  const offset = (byte: number) =>
+    decoder.decode(bytes.subarray(0, byte)).length;
+  const external = isObject(record.embed) ? record.embed.external : undefined;
+  return {
+    entities: (typeof facets === "string" ? [] : facets)
+      .map(({ byteStart, byteEnd, kind, target }) => ({
+        kind,
+        start: offset(byteStart),
+        end: offset(byteEnd),
+        target,
+      }))
+      .sort((a, b) => a.start - b.start),
+    card: isObject(external)
+      ? {
+          url: external.uri as string,
+          title: external.title as string,
+          description: external.description as string,
+        }
+      : null,
+  };
 }

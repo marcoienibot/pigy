@@ -1,4 +1,5 @@
 import { escapeHtml } from "../world/pages.ts";
+import type { SimEntity } from "../world/world.ts";
 
 /**
  * What Mastodon does with the text of a status: how it counts it against
@@ -185,16 +186,21 @@ const notAfterMention =
 // Extractor::MAX_DOMAIN_LENGTH: what has a longer domain is no mention.
 const longestDomain = 253;
 
-/** The mentions in `text`, each with the name before the domain. */
-function findMentions(text: string): (Range & { username: string })[] {
-  const mentions: (Range & { username: string })[] = [];
+/** The mentions in `text`, each with its name and its domain, if it has one. */
+function findMentions(
+  text: string,
+): (Range & { username: string; domain: string | undefined })[] {
+  const mentions: (Range & {
+    username: string;
+    domain: string | undefined;
+  })[] = [];
   for (const match of text.matchAll(mention)) {
     const end = match.index + match[0].length;
     if (notAfterMention.test(text.slice(end))) continue;
-    const [username = "", domain = ""] = (match[1] ?? "").split("@");
+    const [username = "", domain] = (match[1] ?? "").split("@");
     // Ruby's `length` is the number of code points, not of code units.
-    if ([...domain].length > longestDomain) continue;
-    mentions.push({ start: match.index, end, username });
+    if ([...(domain ?? "")].length > longestDomain) continue;
+    mentions.push({ start: match.index, end, username, domain });
   }
   return mentions;
 }
@@ -259,6 +265,108 @@ export function countableLength(text: string, reservedPerUrl: number): number {
   return length;
 }
 
+// A hashtag, as in app/models/tag.rb: "#" or its full-width form, not
+// after a letter, a digit, "=", "/" or ")", and then a name. A name is
+// made of word characters, with a letter among them. Inside it, and not
+// at its ends, it may also have one of three separators: the middle dot,
+// the Katakana middle dot and the zero width non-joiner.
+// GUESS: the pattern as of Mastodon 4.5, written down from memory of the
+// code and not from the documentation, which only says "#" and a word.
+const tagWord = String.raw`[\p{L}\p{M}\p{Nd}\p{Pc}]`;
+const tagInner = String.raw`[\p{L}\p{M}\p{Nd}\p{Pc}\u00B7\u30FB\u200C]`;
+const tagLetter = String.raw`[\p{L}\p{M}]`;
+const hashtag = new RegExp(
+  String.raw`(?<![=/)\p{L}\p{M}\p{Nd}])[#＃]` +
+    `(${tagWord}${tagInner}*[\\p{L}\\p{M}\\u00B7\\u30FB\\u200C_]${tagInner}*${tagWord}` +
+    `|${tagWord}*${tagLetter}${tagWord}*)`,
+  "gu",
+);
+
+/** The hashtags in `text`, each with its name. */
+function findHashtags(text: string): (Range & { name: string })[] {
+  return [...text.matchAll(hashtag)].map((match) => ({
+    start: match.index,
+    end: match.index + match[0].length,
+    name: match[1] ?? "",
+  }));
+}
+
+/** An account that a mention names, as the instance that shows it has it. */
+export type Mentioned = {
+  id: string;
+  username: string;
+  /** The name alone for an account of the instance, with its domain otherwise. */
+  acct: string;
+  url: string;
+};
+
+/**
+ * What Mastodon makes of a text that it has saved: its links, the
+ * mentions of the accounts that it finds, and its hashtags, in the order
+ * of the text. `accountOf` is given the name and the domain of a mention
+ * and returns the account, or undefined for nobody: such a mention stays
+ * text.
+ *
+ * From app/lib/text_formatter.rb and app/lib/extractor.rb: where two of
+ * them overlap, the one that starts first stays.
+ */
+export function findEntities(
+  text: string,
+  accountOf: (
+    username: string,
+    domain: string | undefined,
+  ) => Mentioned | undefined,
+): {
+  entities: SimEntity[];
+  mentions: Mentioned[];
+  /** The names of the tags, as they are written. */
+  tags: string[];
+} {
+  const mentions: Mentioned[] = [];
+  const tags: string[] = [];
+  const candidates: (SimEntity & { account?: Mentioned; name?: string })[] = [
+    ...findLinks(text).map(({ start, end }) => ({
+      kind: "link" as const,
+      start,
+      end,
+      target: text.slice(start, end),
+    })),
+    ...findMentions(text).flatMap(({ start, end, username, domain }) => {
+      const account = accountOf(username, domain);
+      return account
+        ? [
+            {
+              kind: "mention" as const,
+              start,
+              end,
+              target: account.id,
+              account,
+            },
+          ]
+        : [];
+    }),
+    ...findHashtags(text).map(({ start, end, name }) => ({
+      kind: "hashtag" as const,
+      start,
+      end,
+      target: name,
+      name,
+    })),
+  ].sort((a, b) => a.start - b.start);
+  const entities: SimEntity[] = [];
+  let position = 0;
+  for (const { account, name, ...entity } of candidates) {
+    if (entity.start < position) continue;
+    position = entity.end;
+    entities.push(entity);
+    if (account && !mentions.some(({ id }) => id === account.id)) {
+      mentions.push(account);
+    }
+    if (name !== undefined && !tags.includes(name)) tags.push(name);
+  }
+  return { entities, mentions, tags };
+}
+
 /** A link as Mastodon writes it: with the parts it does not show hidden. */
 function linkHtml(url: string): string {
   const prefix = /^https?:\/\/(?:www\.)?/i.exec(url)?.[0] ?? "";
@@ -270,29 +378,53 @@ function linkHtml(url: string): string {
 
 /**
  * The `content` of a status: its text as HTML. Blank lines part
- * paragraphs, other line breaks become `<br />`, links become `<a>`.
+ * paragraphs, other line breaks become `<br />`, and links, mentions and
+ * hashtags become `<a>`, from app/lib/text_formatter.rb. `domain` is that
+ * of the instance, where the pages of its tags are.
  *
- * Mentions and hashtags stay plain text here. Mastodon links them too.
- * That makes no difference to the text that the HTML stands for, but for
- * one: Mastodon shows a mention of an account from elsewhere without its
- * domain, and this shows it as it is saved.
+ * A mention shows as the name of the account without its domain, also
+ * for an account from elsewhere: the text that the HTML stands for is not
+ * the text that was saved there.
  */
-export function renderContent(text: string): string {
-  return text
-    .replace(/\r\n?/g, "\n")
-    .split(/\n\n+/)
-    .map((paragraph) => {
-      const lines = paragraph.split("\n").map((line) => {
-        let html = "";
-        let position = 0;
-        for (const { start, end } of findLinks(line)) {
-          html += escapeHtml(line.slice(position, start));
-          html += linkHtml(line.slice(start, end));
-          position = end;
-        }
-        return html + escapeHtml(line.slice(position));
-      });
-      return `<p>${lines.join("<br />")}</p>`;
-    })
-    .join("");
+export function renderContent(
+  text: string,
+  domain: string,
+  accountOf: (
+    username: string,
+    domain: string | undefined,
+  ) => Mentioned | undefined,
+): string {
+  const normalized = text.replace(/\r\n?/g, "\n");
+  const { entities } = findEntities(normalized, accountOf);
+  const mentioned = new Map<string, Mentioned>();
+  for (const { start, end, username, domain: named } of findMentions(
+    normalized,
+  )) {
+    const account = accountOf(username, named);
+    if (account) mentioned.set(`${start}-${end}`, account);
+  }
+  let html = "<p>";
+  let position = 0;
+  /** Text between two entities: its line breaks are the only markup. */
+  const plain = (from: number, to: number) =>
+    escapeHtml(normalized.slice(from, to))
+      .replace(/\n\n+/g, "</p><p>")
+      .replaceAll("\n", "<br />");
+  for (const { kind, start, end } of entities) {
+    html += plain(position, start);
+    const written = normalized.slice(start, end);
+    if (kind === "link") {
+      html += linkHtml(written);
+    } else if (kind === "mention") {
+      const account = mentioned.get(`${start}-${end}`);
+      html += account
+        ? `<span class="h-card" translate="no"><a href="${escapeHtml(account.url)}" class="u-url mention">@<span>${escapeHtml(account.username)}</span></a></span>`
+        : escapeHtml(written);
+    } else {
+      const name = written.slice(1);
+      html += `<a href="https://${escapeHtml(domain)}/tags/${encodeURIComponent(name.toLowerCase())}" class="mention hashtag" rel="tag">#<span>${escapeHtml(name)}</span></a>`;
+    }
+    position = end;
+  }
+  return `${html}${plain(position, normalized.length)}</p>`;
 }

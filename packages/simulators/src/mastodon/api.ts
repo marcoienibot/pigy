@@ -1,3 +1,4 @@
+import { webPageAt } from "../web/index.ts";
 import { apiError, bodyParams, json, text } from "./http.ts";
 import {
   type App,
@@ -9,7 +10,13 @@ import {
   type Status,
   type Visibility,
 } from "./state.ts";
-import { countableLength, renderContent, rewriteMentions } from "./text.ts";
+import {
+  countableLength,
+  findEntities,
+  type Mentioned,
+  renderContent,
+  rewriteMentions,
+} from "./text.ts";
 
 /**
  * The part of Mastodon's API that pigy uses: methods/instance,
@@ -171,6 +178,9 @@ function statusJson(state: State, status: Status, source = false) {
   const parent = status.replyToId
     ? state.statuses.get(status.replyToId)
     : undefined;
+  const found = findEntities(status.text, (name, domain) =>
+    mentionedAccount(state, status.domain, name, domain),
+  );
   return {
     id: status.id,
     created_at: new Date(status.createdAt).toISOString(),
@@ -195,16 +205,73 @@ function statusJson(state: State, status: Status, source = false) {
     pinned: false,
     ...(source
       ? { text: status.text }
-      : { content: renderContent(status.text) }),
+      : {
+          content: renderContent(status.text, status.domain, (name, domain) =>
+            mentionedAccount(state, status.domain, name, domain),
+          ),
+        }),
     reblog: null,
     application: app ? { name: app.name, website: app.website } : null,
     account: account ? accountJson(state, account) : null,
     media_attachments: [],
-    mentions: [],
-    tags: [],
+    mentions: found.mentions,
+    // A tag is kept in lower case, whatever way it was written.
+    tags: [...new Set(found.tags.map((name) => name.toLowerCase()))].map(
+      (name) => ({
+        name,
+        url: `https://${status.domain}/tags/${encodeURIComponent(name)}`,
+      }),
+    ),
     emojis: [],
-    card: null,
+    card: status.card
+      ? {
+          // entities/PreviewCard, for a link.
+          url: status.card.url,
+          title: status.card.title,
+          description: status.card.description,
+          type: "link",
+          author_name: "",
+          author_url: "",
+          provider_name: "",
+          provider_url: "",
+          html: "",
+          width: 0,
+          height: 0,
+          image: null,
+          embed_url: "",
+          blurhash: null,
+        }
+      : null,
     poll: null,
+  };
+}
+
+/**
+ * The account that a mention on the instance `own` names, as that
+ * instance has it, or undefined if it finds none: see `mentionedAcct`.
+ */
+function mentionedAccount(
+  state: State,
+  own: string,
+  username: string,
+  domain = own,
+): Mentioned | undefined {
+  const account = state.accounts
+    .all()
+    .find(
+      (known) =>
+        known.username.toLowerCase() === username.toLowerCase() &&
+        known.domain === domain.toLowerCase(),
+    );
+  if (!account) return undefined;
+  return {
+    id: account.id,
+    username: account.username,
+    acct:
+      account.domain === own
+        ? account.username
+        : `${account.username}@${account.domain}`,
+    url: `https://${account.domain}/@${account.username}`,
   };
 }
 
@@ -250,17 +317,7 @@ function mentionedAcct(
   username: string,
   domain = instance.domain,
 ): string | undefined {
-  const account = state.accounts
-    .all()
-    .find(
-      (known) =>
-        known.username.toLowerCase() === username.toLowerCase() &&
-        known.domain === domain.toLowerCase(),
-    );
-  if (!account) return undefined;
-  return account.domain === instance.domain
-    ? account.username
-    : `${account.username}@${account.domain}`;
+  return mentionedAccount(state, instance.domain, username, domain)?.acct;
 }
 
 /** `POST /api/v1/statuses`: posts a status. */
@@ -334,6 +391,13 @@ export async function createStatus(
     return apiError(422, `Validation failed: ${errors.join(", ")}`);
   }
 
+  const found = findEntities(body, (name, domain) =>
+    mentionedAccount(state, instance.domain, name, domain),
+  );
+  const firstLink = found.entities.find(({ kind }) => kind === "link");
+  // The web of a simulated world is the simulated web: a link that leads
+  // anywhere else has no page that could be read.
+  const firstPage = firstLink && webPageAt(firstLink.target);
   const id = state.nextId();
   const status: Status = {
     network: "mastodon",
@@ -346,6 +410,18 @@ export async function createStatus(
     url: `https://${instance.domain}/@${account.username}/${id}`,
     visibility: visibility as Visibility,
     appId: app.clientId,
+    entities: found.entities,
+    // Mastodon reads the page of the first link of a status and shows
+    // what it says of itself. It does so a moment after it has taken the
+    // status. GUESS: here the card is there at once, which a client that
+    // reads the status again later cannot tell apart.
+    card: firstPage
+      ? {
+          url: firstPage.url,
+          title: firstPage.ogTitle ?? firstPage.title ?? "",
+          description: firstPage.ogDescription ?? firstPage.description ?? "",
+        }
+      : null,
   };
   state.statuses.put(id, status);
   if (key) {

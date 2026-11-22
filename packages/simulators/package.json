@@ -10,6 +10,7 @@
     "./mastodon": "./src/mastodon/index.ts",
     "./push": "./src/push/index.ts",
     "./threads": "./src/threads/index.ts",
+    "./web": "./src/web/index.ts",
     "./world": "./src/world/index.ts"
   },
   "scripts": {

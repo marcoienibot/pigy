@@ -14,6 +14,7 @@ import {
 import {
   answerConsent,
   createWorld,
+  entitiesOf,
   feed,
   isSimulatedSecret,
   simulationNotice,
@@ -874,13 +875,168 @@ describe("the repository of an account", () => {
       error: "InvalidRequest",
     });
     // Not simulated, and so refused rather than ignored.
-    expect(await refused(post("Hi", { facets: [] }))).toMatchObject({
+    expect(await refused(post("Hi", { labels: {} }))).toMatchObject({
       error: "InvalidRequest",
     });
     // A post is kept under a timestamp identifier.
     expect(await refused(post("Hi"), { rkey: "self" })).toMatchObject({
       error: "InvalidRequest",
     });
+  });
+
+  it("keeps the facets of a post, and shows what they mark by where it stands in the text", async () => {
+    const sim = await setup();
+    const tokens = await connected(sim);
+    // An emoji first: four bytes in UTF-8 and two code units in a string,
+    // so every facet after it stands elsewhere in the bytes than in the
+    // string.
+    const text = "😀 @ada.bsky.test wrote https://example.test/ #news";
+    const at = (part: string) => {
+      const start = new TextEncoder().encode(
+        text.slice(0, text.indexOf(part)),
+      ).length;
+      return {
+        byteStart: start,
+        byteEnd: start + new TextEncoder().encode(part).length,
+      };
+    };
+    const facet = (part: string, feature: Record<string, string>) => ({
+      index: at(part),
+      features: [feature],
+    });
+    const written = await createRecord(
+      sim,
+      tokens.access_token,
+      post(text, {
+        facets: [
+          facet("@ada.bsky.test", {
+            $type: "app.bsky.richtext.facet#mention",
+            did: sim.ada.id,
+          }),
+          facet("https://example.test/", {
+            $type: "app.bsky.richtext.facet#link",
+            uri: "https://example.test/",
+          }),
+          facet("#news", { $type: "app.bsky.richtext.facet#tag", tag: "news" }),
+        ],
+      }),
+    );
+    expect(written.status).toBe(200);
+    const kept = feed(sim.world)[0]?.post;
+    expect(kept && entitiesOf(kept)).toEqual([
+      ["mention", "@ada.bsky.test", sim.ada.id],
+      ["link", "https://example.test/", "https://example.test/"],
+      ["hashtag", "#news", "news"],
+    ]);
+    expect(kept?.card).toBeNull();
+  });
+
+  it("refuses a facet that an app could not show", async () => {
+    const sim = await setup();
+    const tokens = await connected(sim);
+    const text = "é #tag";
+    const tag = { $type: "app.bsky.richtext.facet#tag", tag: "tag" };
+    const refused = async (facets: unknown) => {
+      const response = await createRecord(
+        sim,
+        tokens.access_token,
+        post(text, { facets }),
+      );
+      expect(response.status).toBe(400);
+      return (await body(response)).message as string;
+    };
+    const facet = (
+      byteStart: number,
+      byteEnd: number,
+      feature: unknown = tag,
+    ) => ({
+      index: { byteStart, byteEnd },
+      features: [feature],
+    });
+    // "é" is two bytes, so the tag is bytes 3 to 7 of 7.
+    expect(
+      (
+        await createRecord(
+          sim,
+          tokens.access_token,
+          post(text, { facets: [facet(3, 7)] }),
+        )
+      ).status,
+    ).toBe(200);
+    // Beyond the text, which is what offsets in code units give for a
+    // text with letters of more than one byte before the facet.
+    expect(await refused([facet(3, 8)])).toContain("the text has 7");
+    expect(await refused([facet(7, 3)])).toContain("names bytes");
+    // In the middle of the "é".
+    expect(await refused([facet(1, 7)])).toContain("middle of a character");
+    expect(await refused([facet(3, 7), facet(5, 7)])).toContain("overlaps");
+    expect(
+      await refused([
+        facet(3, 7, { $type: "app.bsky.richtext.facet#tag", tag: "#tag" }),
+      ]),
+    ).toContain('must not begin with "#"');
+    expect(
+      await refused([
+        facet(3, 7, {
+          $type: "app.bsky.richtext.facet#link",
+          uri: "example.test",
+        }),
+      ]),
+    ).toContain("must be a uri");
+    // A mention of an account that this world does not have.
+    expect(
+      await refused([
+        facet(3, 7, {
+          $type: "app.bsky.richtext.facet#mention",
+          did: "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+        }),
+      ]),
+    ).toContain("names no account");
+    expect(
+      await refused([facet(3, 7, { $type: "app.bsky.richtext.facet#bold" })]),
+    ).toContain("no feature");
+  });
+
+  it("keeps the card of a link, and takes no picture for it", async () => {
+    const sim = await setup();
+    const tokens = await connected(sim);
+    const external = {
+      uri: "https://example.test/",
+      title: "The example page",
+      description: "",
+    };
+    const embed = (fields: unknown) => ({
+      $type: "app.bsky.embed.external",
+      external: fields,
+    });
+    const written = await createRecord(
+      sim,
+      tokens.access_token,
+      post("See https://example.test/", { embed: embed(external) }),
+    );
+    expect(written.status).toBe(200);
+    expect(feed(sim.world)[0]?.post.card).toEqual({
+      url: "https://example.test/",
+      title: "The example page",
+      description: "",
+    });
+    const refused = async (embedded: unknown) =>
+      (
+        await createRecord(
+          sim,
+          tokens.access_token,
+          post("Hi", { embed: embedded }),
+        )
+      ).status;
+    // The lexicon requires a title and a description, empty or not.
+    expect(
+      await refused(embed({ uri: external.uri, title: "No description" })),
+    ).toBe(400);
+    // Blobs are not simulated, so a picture is refused and not ignored.
+    expect(await refused(embed({ ...external, thumb: {} }))).toBe(400);
+    expect(await refused({ $type: "app.bsky.embed.images", images: [] })).toBe(
+      400,
+    );
   });
 
   it("takes a reply only to a post that is there, named by its hash, in its thread", async () => {
