@@ -1,13 +1,12 @@
 import {
-  type ApiPost,
   type ApiScope,
-  apiPostSchema,
   type CreateApiKeyResponse,
   createApiKeyResponseSchema,
   type ErrorResponse,
   errorResponseSchema,
   grantableApiScopes,
 } from "@pigy/core";
+import { type ApiPost, apiPostSchema } from "@pigy/core/api";
 import { expect, vi } from "vitest";
 import type { Browser, TestSetup } from "./helpers.ts";
 import { patience, started } from "./publishing.ts";

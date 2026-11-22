@@ -1,15 +1,17 @@
 import { runDurableObjectAlarm } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import {
-  apiChannelListSchema,
-  apiChannelSchema,
-  apiPostingScheduleSchema,
-  apiPostListSchema,
   type Environment,
   type SandboxPost,
   sandboxFeedSchema,
   sandboxMastodonDomain,
 } from "@pigy/core";
+import {
+  apiChannelListSchema,
+  apiChannelSchema,
+  apiPostingScheduleSchema,
+  apiPostListSchema,
+} from "@pigy/core/api";
 import { feed } from "@pigy/simulators/world";
 import { describe, expect, it } from "vitest";
 import { type ApiClient, apiClient, makeKey, startedApi } from "./api.ts";

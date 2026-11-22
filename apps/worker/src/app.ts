@@ -1,4 +1,5 @@
-import { apiBasePath, healthResponseSchema } from "@pigy/core";
+import { healthResponseSchema } from "@pigy/core";
+import { apiBasePath } from "@pigy/core/api";
 import { Hono } from "hono";
 import { adminRoutes } from "./admin/routes.ts";
 import { apiKeyRoutes } from "./api/key-routes.ts";

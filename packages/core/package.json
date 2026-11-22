@@ -4,6 +4,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./api": "./src/api/index.ts",
     "./return-to": "./src/return-to.ts"
   },
   "scripts": {

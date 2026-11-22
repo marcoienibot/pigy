@@ -1,20 +1,19 @@
+import { type ApiScope, idSchema } from "@pigy/core";
 import {
   type ApiOperation,
   type ApiOperationName,
-  type ApiScope,
   apiOperations,
   apiRateLimit,
   apiTime,
   createPostRequestSchema,
   idempotencyKeySchema,
-  idSchema,
   listPostsQuerySchema,
   maxApiBodyBytes,
   movePostRequestSchema,
   openApiDocument,
   putPostingScheduleRequestSchema,
   updatePostRequestSchema,
-} from "@pigy/core";
+} from "@pigy/core/api";
 import { drizzle } from "drizzle-orm/d1";
 import { type Context, Hono, type MiddlewareHandler } from "hono";
 import { HTTPException } from "hono/http-exception";

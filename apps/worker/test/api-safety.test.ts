@@ -5,7 +5,7 @@ import {
   apiRateLimit,
   maxApiBodyBytes,
   openApiDocument,
-} from "@pigy/core";
+} from "@pigy/core/api";
 import { feed } from "@pigy/simulators/world";
 import { expect, it, vi } from "vitest";
 import { apiRoutes } from "../src/api/routes.ts";

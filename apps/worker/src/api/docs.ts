@@ -1,4 +1,4 @@
-import { apiBasePath } from "@pigy/core";
+import { apiBasePath } from "@pigy/core/api";
 
 /**
  * The page that describes the public API to a person, at `/api/v1/docs`.

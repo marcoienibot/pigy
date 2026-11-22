@@ -1,7 +1,5 @@
 export * from "./access.ts";
 export * from "./api/keys.ts";
-export * from "./api/openapi.ts";
-export * from "./api/v1.ts";
 export * from "./base64url.ts";
 export * from "./connect.ts";
 export * from "./dependencies.ts";
