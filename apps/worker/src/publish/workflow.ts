@@ -29,7 +29,7 @@ import {
 import { fetchLinkCard } from "@pigy/providers/card";
 import { openCredentials, sealCredentials } from "../channels/credentials.ts";
 import type { AppDependencies, Bindings } from "../env.ts";
-import { type LogContext, log } from "../log.ts";
+import { type LogContext, log, loggable } from "../log.ts";
 import { mediaLinksWith } from "../media/links.ts";
 import { imagesTransformer } from "../media/transform.ts";
 import { ImageUnavailable, imagesFor, mediaSource } from "../media/variants.ts";
@@ -91,7 +91,9 @@ import { retryWaitSeconds } from "./retry.ts";
  *    account takes, or of a type that its network does not take, a
  *    smaller one is made, once, and kept in the bucket next to the
  *    original, `imagesFor` of src/media/variants.ts. It asks nothing of
- *    the network. What it returns says which file each image goes out
+ *    the network, and a failure of the bucket or of what makes images is
+ *    tried again as a network that asks for that is, and ends the
+ *    delivery as failed when it never works. What it returns says which file each image goes out
  *    as, and what that file is: no bytes. A post without images skips
  *    the step, as every run from before pigy had images does.
  * 5. `publish` of @pigy/providers drives the adapter of the network: each
@@ -152,6 +154,10 @@ const cardStep = {
   retries: { limit: 3, delay: "5 seconds", backoff: "constant" },
   timeout: "30 seconds",
 } as const;
+
+/** What a delivery says whose images could not be made ready for it. */
+const mediaFailedMessage =
+  "pigy could not make the images of this post ready to send.";
 
 /**
  * The address that the links to the images of a sandbox are made with.
@@ -886,9 +892,16 @@ export async function deliver(
       } catch (error) {
         if (error instanceof ImageUnavailable) throw refused(error.message);
         // The bucket, or what makes images, failed for a reason of its
-        // own: the step has changed nothing anywhere, and the platform
-        // runs it again.
-        throw new Unasked(error);
+        // own. The step has asked nothing of a network, so it is tried
+        // again as one that a network asks to have tried again, and
+        // what the delivery ends with if it never works is a failure
+        // that says so, and nothing that anybody has to look into at
+        // the account.
+        console.error(
+          "The images of a delivery could not be made ready",
+          loggable(error),
+        );
+        throw new ProviderError("retry", mediaFailedMessage);
       }
     });
     // What a step returned is read like everything that was stored.

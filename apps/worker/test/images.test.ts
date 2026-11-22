@@ -1,3 +1,4 @@
+import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import {
   mediaFilePath,
@@ -6,10 +7,10 @@ import {
   sandboxImagePath,
 } from "@pigy/core";
 import { feed } from "@pigy/simulators/world";
-import { expect, it, vi } from "vitest";
+import { expect, it, onTestFinished, vi } from "vitest";
 import { WorkspaceStore } from "../src/workspace/store.ts";
 import { connectBlueskyInSandbox, connectInSandbox } from "./channels.ts";
-import { type Browser, invite, signedIn } from "./helpers.ts";
+import { type Browser, expectErrors, invite, signedIn } from "./helpers.ts";
 import {
   attach,
   createMedia,
@@ -28,9 +29,10 @@ import {
   publishTo,
   started,
   targetOf,
+  waitsOf,
   writeDraft,
 } from "./publishing.ts";
-import { newId, SyncClient } from "./sync-client.ts";
+import { newId, objectOf, SyncClient } from "./sync-client.ts";
 
 /**
  * Posts with images, published by the workflow of the Worker: to the
@@ -402,6 +404,73 @@ it("keeps the bytes of an image that a device puts into a draft while the alarm 
   expect(
     later.table("media").find(({ id }) => id === second.id)?.originalGoneAt,
   ).toBeNull();
+});
+
+it("ends a delivery as failed, and as nothing that a person has to look into, when its images cannot be made ready", async () => {
+  const { test, browser, workflows, workspaces } = await started();
+  const workspaceId = workspaces.live;
+  const channel = await connectAccount(test, browser, workspaceId);
+  const client = new SyncClient();
+  await client.connect(browser, workspaceId);
+  const image = await upload(browser, client, workspaceId, await photo());
+  const draft = await writeDraft(client, workspaceId, "Not yet");
+  await attach(client, draft.partIds[0] ?? "", image.id);
+  // The bucket fails whenever the step that makes the images ready asks
+  // it for one, for a reason of its own.
+  expectErrors();
+  const bucket = Object.getPrototypeOf(env.MEDIA) as R2Bucket;
+  const head = bucket.head;
+  const failing = vi.spyOn(bucket, "head").mockImplementation(function (
+    this: R2Bucket,
+    key,
+  ) {
+    if (key.endsWith("/original")) {
+      return Promise.reject(
+        new Error(
+          "head: We encountered an internal error. Please try again. (10001)",
+        ),
+      );
+    }
+    return head.call(this, key);
+  });
+  onTestFinished(() => failing.mockRestore());
+  // Before, the platform ran the step again on its own, after a minute,
+  // which a test does not wait for.
+  await workflows.modifyAll(async (modifier) => {
+    await modifier.disableRetryDelays();
+  });
+
+  const [targetId = ""] = await publishTo(client, draft.postId, channel);
+  // Before, the platform gave up on the step, and the object of the
+  // workspace ended the delivery as `uncertain` when it next looked.
+  await ended(client, draft.postId);
+
+  // Nothing was asked of the network, so nobody has to look at the
+  // account: the delivery failed, with words for the person.
+  const target = targetOf(client, targetId);
+  expect(target).toMatchObject({
+    status: "error",
+    error:
+      "pigy could not make the images of this post ready to send. pigy has tried 6 times.",
+  });
+  expect(await waitsOf(workspaceId, target.id)).toEqual({
+    "media-wait-1": 60,
+    "media-wait-2": 120,
+    "media-wait-3": 240,
+    "media-wait-4": 480,
+    "media-wait-5": 960,
+  });
+  expect(
+    await runInDurableObject(objectOf(workspaceId), (_, state) =>
+      state.storage.sql
+        .exec<{ may: number }>(
+          "select may_have_sent as may from post_target where id = ?",
+          target.id,
+        )
+        .one(),
+    ),
+  ).toEqual({ may: 0 });
+  expect(feed(test.network.world)).toEqual([]);
 });
 
 it("keeps the image of a post that did not arrive everywhere, for another try", async () => {
