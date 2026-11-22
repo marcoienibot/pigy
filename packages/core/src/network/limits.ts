@@ -84,10 +84,25 @@ const networkNames: { readonly [Name in Limits["network"]]: string } = {
   mastodon: "Mastodon",
 };
 
+/**
+ * The longest text that pigy publishes to one account, all its parts
+ * together, in UTF-16 code units, which is what `String.length` counts.
+ * It is no network's limit but pigy's own: the text that a delivery
+ * publishes is kept by the platform with the step of the workflow that
+ * read it, and a step may return about a megabyte. This is far below
+ * that, also when every character is written as six bytes, and far above
+ * a thread that anybody reads: a hundred parts of a thousand characters.
+ * Only an account whose server takes very long posts can reach it.
+ */
+export const maxContentLength = 100_000;
+
 /** Something that keeps content from being published to a network. */
 export type ContentIssue = {
-  /** Which part it is about, counted from 0. */
-  part: number;
+  /**
+   * Which part it is about, counted from 0, or null for what is about
+   * the whole text.
+   */
+  part: number | null;
   /** For people. */
   message: string;
 } & (
@@ -104,6 +119,11 @@ export type ContentIssue = {
    * more bytes than it allows: on a network that limits both.
    */
   | { code: "too_many_bytes"; bytes: number; maxBytes: number }
+  /**
+   * The parts together are longer than pigy publishes to one account,
+   * `maxContentLength`, whatever the network would take.
+   */
+  | { code: "too_much_text"; length: number; maxLength: number }
 );
 
 /**
@@ -177,6 +197,16 @@ export function validateContent(
         message: `The parts are ${characters} characters long together. ${networkNames.linkedin} takes them as one post, with an empty line between them, and its limit is ${maxCharacters}.`,
       });
     }
+  }
+  const length = content.parts.reduce((sum, { text }) => sum + text.length, 0);
+  if (length > maxContentLength) {
+    issues.push({
+      part: null,
+      code: "too_much_text",
+      length,
+      maxLength: maxContentLength,
+      message: `The text is ${length} characters long, all its parts together. pigy publishes at most ${maxContentLength} to one account.`,
+    });
   }
   return issues;
 }

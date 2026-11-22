@@ -1,5 +1,7 @@
+import { maxContentLength, maxParts, maxPartTextLength } from "@pigy/core";
 import { feed } from "@pigy/simulators/world";
 import { expect, it } from "vitest";
+import { stepResultBytes } from "../src/publish/workflow.ts";
 import {
   connectBlueskyInSandbox,
   connectBlueskyLive,
@@ -252,4 +254,57 @@ it("goes on with the text that was written for the account when its delivery is 
   expect(
     publishedOf(client, targetId, { postId: draft.postId, partIds: own }),
   ).toEqual(posts.map(({ id }) => id));
+});
+
+it("does not send a thread that is longer than pigy publishes to one account, on a server that would take every part", async () => {
+  const { test, browser, workspaces } = await started();
+  // A server that takes posts as long as a part can be, so that nothing
+  // but the length of the whole thread is in the way.
+  const roomy = "roomy.test";
+  test.network.mastodon.addInstance(roomy, {
+    maxCharacters: maxPartTextLength,
+  });
+  const account = test.network.mastodon.addAccount(roomy, "long", "Long");
+  const channel = await connectAccount(test, browser, workspaces.live, {
+    domain: roomy,
+    accountId: account.id,
+  });
+  const client = new SyncClient();
+  await client.connect(browser, workspaces.live);
+  const parts = Array.from(
+    { length: maxContentLength / maxPartTextLength + 1 },
+    (_, index) => `${index} `.padEnd(maxPartTextLength, "x"),
+  ) as [string, ...string[]];
+  const draft = await writeDraft(client, workspaces.live, ...parts);
+
+  const [targetId = ""] = await publishTo(client, draft.postId, channel);
+
+  // The delivery ends before anything is sent, with what is wrong for
+  // the person. Sent, such a text would first have to be returned from
+  // the step that read it, which the platform keeps.
+  expect(await ended(client, draft.postId)).toMatchObject({ status: "error" });
+  expect(targetOf(client, targetId)).toMatchObject({
+    status: "error",
+    error: `The text is ${parts.length * maxPartTextLength} characters long, all its parts together. pigy publishes at most ${maxContentLength} to one account.`,
+  });
+  expect(feed(test.network.world)).toEqual([]);
+});
+
+it("keeps the longest text that it publishes well within what a step of the workflow may return", () => {
+  // The worst case: as many parts as a text has, and every character one
+  // that is written as six bytes, as JSON writes a control character.
+  const length = Math.floor(maxContentLength / maxParts);
+  const content = {
+    parts: Array.from({ length: maxParts }, () => ({
+      text: "\u0000".repeat(length),
+    })),
+  };
+  expect(length * maxParts).toBe(maxContentLength);
+
+  const bytes = new TextEncoder().encode(JSON.stringify(content)).length;
+
+  // Not just within: the step returns the channel and the progress too,
+  // and nobody has measured how the platform writes a result down.
+  expect(bytes).toBeGreaterThan(maxContentLength * 5);
+  expect(bytes).toBeLessThan(stepResultBytes * 0.75);
 });

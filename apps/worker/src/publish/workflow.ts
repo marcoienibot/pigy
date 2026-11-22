@@ -98,6 +98,17 @@ export type PublishDependencies = Pick<
 };
 
 /**
+ * How much a step of a workflow may return, in bytes: what the platform
+ * keeps of it. `prepare` returns the text that the delivery publishes, so
+ * that every step and every attempt of the run reads the same, and it
+ * returns none that `validateContent` has not passed, which holds a text
+ * to `maxContentLength` of `@pigy/core`: far less than this, however it
+ * is written down. The progress of an adapter, which the other steps
+ * return, is a few IDs per part.
+ */
+export const stepResultBytes = 1024 * 1024;
+
+/**
  * How old the limits of a channel may be before a delivery asks the
  * network again, in milliseconds.
  */
@@ -693,7 +704,9 @@ export async function deliver(
       if (!kept.ok) throw superseded();
     }
     // What does not pass is not sent: the network would refuse it, or
-    // worse, take it and cut it short.
+    // worse, take it and cut it short. Nor is it returned from this step:
+    // a text that is longer than pigy publishes would be more than the
+    // platform keeps of a step, `stepResultBytes`.
     const issues = validateContent(limits, content);
     if (issues.length > 0) {
       throw refused(issues.map(({ message }) => message).join(" "));

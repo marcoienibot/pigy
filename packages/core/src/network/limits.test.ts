@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { type Limits, limitsSchema, validateContent } from "./limits.ts";
+import {
+  type Limits,
+  limitsSchema,
+  maxContentLength,
+  validateContent,
+} from "./limits.ts";
 
 const limits: Limits = {
   network: "mastodon",
@@ -62,6 +67,26 @@ describe("validateContent", () => {
     expect(issues.map(({ part, code }) => [part, code])).toEqual([
       [0, "empty"],
       [2, "too_long"],
+    ]);
+  });
+
+  it("reports a text that is longer than pigy publishes to one account, whatever its network takes", () => {
+    // A server that takes posts of any length: each part passes by
+    // itself, and only the whole is too much.
+    const roomy: Limits = { ...limits, maxCharacters: 1_000_000 };
+    const parts = (length: number) => ({
+      parts: [{ text: "a".repeat(length - 10) }, { text: "b".repeat(10) }],
+    });
+
+    expect(validateContent(roomy, parts(maxContentLength))).toEqual([]);
+    expect(validateContent(roomy, parts(maxContentLength + 1))).toEqual([
+      {
+        part: null,
+        code: "too_much_text",
+        length: maxContentLength + 1,
+        maxLength: maxContentLength,
+        message: `The text is ${maxContentLength + 1} characters long, all its parts together. pigy publishes at most ${maxContentLength} to one account.`,
+      },
     ]);
   });
 });
