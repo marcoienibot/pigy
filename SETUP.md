@@ -28,6 +28,7 @@ Check: `wrangler whoami` names the account.
 By hand, from your machine. The deploys after it can come from CI, section 6.
 
 ```sh
+wrangler r2 bucket create pigy-media
 pnpm install
 pnpm build
 pnpm --filter @pigy/web exec wrangler deploy
@@ -36,7 +37,7 @@ wrangler d1 migrations apply DB --remote
 
 Always deploy right after `pnpm build`. `pnpm e2e` and `pnpm preview:e2e` make a build with a simulated sign-in that signs anybody in as anybody, and each build points `wrangler deploy` at itself.
 
-The deploy creates everything that pigy runs on, and nothing has to be made beforehand. This is what `apps/worker/wrangler.jsonc` asks for, line by line, and nothing else:
+The deploy creates everything that pigy runs on but the bucket of the images, which the first command makes, once. This is what `apps/worker/wrangler.jsonc` asks for, line by line, and nothing else:
 
 - The Worker `pigy`, with the compatibility flag `global_fetch_strictly_public` and its version as the binding `VERSION`, which `/api/health` answers with.
 - The web app as the static assets of the Worker, bound as `ASSETS`. A path that has no file gets the app shell, and the paths under `/api/`, `/connect/`, `/sim/`, `/sync/` and `/assets/` go to the Worker first.
@@ -44,14 +45,17 @@ The deploy creates everything that pigy runs on, and nothing has to be made befo
 - Two Durable Object classes with SQLite storage: `WorkspaceDO`, bound as `WORKSPACE`, and `SimWorldDO`, bound as `SIM_WORLD`.
 - The workflow `pigy-publish`, of the class `PublishWorkflow`, bound as `PUBLISH`. Workflows are part of the Workers Paid plan as pigy uses them, section 1.
 - A rate limiter, bound as `API_RATE_LIMITER`, which counts the requests of each key of the public API: 120 in 60 seconds. Its namespace is `1001`, a number of the account's own choosing that no other rate limiter of the account may use. To check, if the account has other Workers: that none of them binds a rate limiter with that number.
+- The R2 bucket `pigy-media`, bound as `MEDIA`: the images that people attach to their posts, as pigy keeps them, and their small pictures. It gets no public address and no custom domain: every byte of it is served by the Worker. A lifecycle rule of the bucket that aborts a multipart upload which is not complete after eight days is worth adding in its settings, `PLAN.md` section 19: pigy gives such an upload up after a week by itself, and the rule is for one that it could not.
+- Cloudflare Images, bound as `IMAGES`, which makes the small pictures and the smaller images that a network takes. It needs nothing set up, and is billed by the transformation.
 - Workers Logs for what pigy writes, with the invocation logs and the traces off, section 9.
 
-No R2 bucket, no KV namespace, no queue and no route of a zone: the configuration binds none. Media is a later phase.
+No KV namespace, no queue and no route of a zone: the configuration binds none.
 
 Check:
 
 - `curl https://<host>/api/health` answers `{"status":"ok","version":"…"}`.
 - `wrangler d1 migrations list DB --remote` lists nothing left to apply.
+- `wrangler r2 bucket list` names `pigy-media`.
 - `https://<host>/` shows the sign-in page, which says that sign-in is not set up. That is the next step.
 
 To check, because nobody has run it: that `wrangler d1 migrations apply DB --remote` finds the database without an ID in `wrangler.jsonc`. Wrangler 4.162 looks a database up by its name where the configuration has no ID. If yours asks for one, `wrangler d1 list` has it, and it goes into `d1_databases` of `apps/worker/wrangler.jsonc` as `database_id`.
@@ -111,7 +115,7 @@ To switch it on, in the settings of the repository on GitHub:
 1. Environments → New environment, named `production`. Under "Deployment branches and tags", allow `main` alone. The secrets below are then out of reach of a pull request, which can change the workflow that it runs.
 2. In that environment, add two secrets:
    - `CLOUDFLARE_ACCOUNT_ID`: the ID of your account, which `wrangler whoami` shows.
-   - `CLOUDFLARE_API_TOKEN`: a token that you make in the Cloudflare dashboard under My Profile → API Tokens, from the template "Edit Cloudflare Workers", limited to your account, with "D1: Edit" added to it. To check, at the first run: that the template covers Workflows and the rate limiter. If the deploy is refused for one of them, the token lacks a permission, and the error names it.
+   - `CLOUDFLARE_API_TOKEN`: a token that you make in the Cloudflare dashboard under My Profile → API Tokens, from the template "Edit Cloudflare Workers", limited to your account, with "D1: Edit" added to it. To check, at the first run: that the template covers Workflows, the rate limiter, the R2 bucket and Images. If the deploy is refused for one of them, the token lacks a permission, and the error names it.
 3. Secrets and variables → Actions → Variables → New repository variable: `DEPLOY`, with the value `true`.
 
 Check: the next push to `main` has a job "deploy" that ends green, and `curl https://<host>/api/health` answers with a new `version`.
@@ -131,7 +135,7 @@ In this order. Each is something that only a deployed pigy can show.
 1. Sign in with Google, on a desktop and on a phone. Sign out. Sign in with an address that is not invited, and see the invite-only page.
 2. The sandbox: connect a simulated account of each network on the Channels screen, publish a post, and find it on the Simulator screen.
 3. Switch to live. Connect one real account per network: Mastodon and Bluesky need nothing more, LinkedIn and Threads need steps 4.2 and 4.3. Bluesky cannot be tried before this point at all: it reads pigy's client metadata from `https://<host>/connect/bluesky/client-metadata.json`.
-4. Publish a post to each, and a thread. Find them on the networks, and on the Sent screen.
+4. Publish a post to each, and a thread. Find them on the networks, and on the Sent screen. Attach a photo from a phone to a post for Mastodon and Bluesky, describe it, and find it there with its description and standing up as it was taken.
 5. Schedule a post for a few minutes ahead, close the app, and see it go out.
 6. Install pigy on a phone: from the menu of Chrome on Android, and with "Add to Home Screen" in Safari on iOS. Open it without a connection.
 7. Turn "Notifications on this device" on in Settings, on the phone. In the sandbox, arm a failure on Simulator → Failures and publish: the phone shows a notification, and pressing it leads to the post.
@@ -158,8 +162,8 @@ Nothing alerts anybody: no alerting service is set up. Look at the logs after a 
 **What is there.** Only what pigy writes itself: one line of JSON for everything that went wrong, from `apps/worker/src/log.ts`. Each line has:
 
 - `level`: `error` is for you to look at, a bug or something that is not set up. `warn` is how something ended that pigy has dealt with, such as a network that refused an access: the person was told on a screen.
-- `kind`: `request` (a route answered with a 500), `configuration` (a secret is missing or not valid), `sign-in`, `connection`, `renewal`, `delivery`, `schedule`, `push`, `sync`, `alarm`.
-- `message`, in words, and where it applies `route`, `step`, `workspaceId`, `channelId`, `targetId`, `postId`, `network`, `host`, `status`.
+- `kind`: `request` (a route answered with a 500), `configuration` (a secret is missing or not valid), `sign-in`, `connection`, `renewal`, `delivery`, `schedule`, `push`, `media` (the bucket or Images failed for an image), `sync`, `alarm`.
+- `message`, in words, and where it applies `route`, `step`, `workspaceId`, `channelId`, `targetId`, `postId`, `mediaId`, `network`, `host`, `status`.
 - `error`: the error with its stack and the errors that caused it. Of anything else that an error carries, a line says only what kind of thing it is, such as `[object URLSearchParams]`: a library puts there what it compared, which can be the code of a callback or a token.
 
 A line never holds a secret, the text of a post, or the address of a person. To check, in the dashboard: that the fields of a line can be filtered by. If they cannot, the lines are still searched as text.
@@ -183,12 +187,13 @@ What is known, and what to check. pigy has no backup of its own.
 
 - **D1** holds who may sign in, the sessions, the push subscriptions and the registrations with Mastodon servers. Cloudflare keeps its history by itself, Time Travel: a database can be restored to any minute of the last 30 days on the paid plan, with `wrangler d1 time-travel restore pigy --timestamp=<time>`. To check: `wrangler d1 time-travel info pigy` answers with a bookmark. For a copy of your own: `wrangler d1 export pigy --remote --output=pigy.sql`. The file holds sealed secrets and the addresses of the people you invited: keep it as you keep the keys.
 - **The workspaces** are the posts, the channels with their sealed credentials, the schedules and the inbox. Each is the SQLite database of a Durable Object. Cloudflare keeps 30 days of history for such a database, point-in-time recovery, but only the object itself can ask for it, from code: nothing in pigy does, and there is no command that restores or exports a workspace. So today a workspace that is damaged cannot be brought back by you. What softens that: a device that has opened a workspace holds a copy of its synced rows, and the posts that went out are on the networks. An export of a workspace, and a way to restore one, are `PLAN.md` section 21.
+- **The images** are in the bucket `pigy-media`, under the IDs of their workspaces. pigy makes no copy of them, and deletes the bytes of an image by itself 30 days after its posts were sent, keeping its small picture. A post that went out has its images on the networks.
 - **The secrets** are backed up by you: section 4. A restored database is worth nothing without the `CREDENTIAL_KEYS` that sealed what is in it.
 - **The runs of the publishing workflow** are kept by Cloudflare for some days and are no data to back up: `AGENTS.md`, "Deployment".
 
 ## 11. A custom domain
 
-`PLAN.md` section 20 has what moving to another address means. pigy has no setting for its address: it takes it from the request, so nothing in the code or the secrets changes. In order:
+`PLAN.md` section 20 has what moving to another address means. pigy takes its address from the request, so nothing in the code or the secrets changes, but `APP_URL` where you have set it, which nothing needs before Threads publishes images. In order:
 
 1. Add the domain to the Worker: Workers & Pages → pigy → Settings → Domains & Routes → Custom domain.
 2. Add `https://<new host>/api/auth/google/callback` to the Google client, `https://<new host>/connect/linkedin/callback` to the LinkedIn application and `https://<new host>/connect/threads/callback` to the Threads app, and keep the old ones until nobody uses the old address.
