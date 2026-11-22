@@ -878,19 +878,26 @@ describe("the devices that are told", () => {
 describe("a push service that does not answer", () => {
   it("does not keep a post that is published meanwhile from going out", async () => {
     // A push service that takes a request and says nothing, until the
-    // test lets it. `over` says that the app has its answer, or has given
-    // the request up, which it does after ten seconds.
+    // test lets it. `over` says that the app has its answer.
+    //
+    // The app gives such a request up after ten seconds, by a timer of
+    // the runtime's that no test moves. This service does not hear of
+    // that: the request stays open until the test says, and is then
+    // answered whatever the time. So nothing here depends on how long
+    // the machine takes to publish the post below: an alarm that waited
+    // for the push service would wait for good, and the test would run
+    // out of time, and not pass because the ten seconds were over.
     const service = { hangs: false, asked: 0, over: 0 };
     const context = await withChannel({
       interceptPush: (push) => async (input, init) => {
         service.asked += 1;
+        // Each side looks on a timer of its own: see `gate`.
+        while (service.hangs) {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
         try {
-          // Each side looks on a timer of its own: see `gate`.
-          while (service.hangs) {
-            if (init?.signal?.aborted) throw new TypeError("Given up");
-            await new Promise((resolve) => setTimeout(resolve, 5));
-          }
-          return await push(input, init);
+          // Without the signal of the app, which may have fired by now.
+          return await push(input, { ...init, signal: undefined });
         } finally {
           service.over += 1;
         }
@@ -913,7 +920,9 @@ describe("a push service that does not answer", () => {
     // It went out while the push service was still being waited for: the
     // alarm that sent the message did not make the delivery wait for it.
     expect(targetOf(client, targetId)).toMatchObject({ status: "sent" });
-    expect(service.over).toBe(0);
+    // The request to the push service is the one that was open before
+    // the post was written, and it is open still.
+    expect(service).toMatchObject({ asked: 1, over: 0 });
 
     // And the message arrives when the push service answers at last.
     service.hangs = false;

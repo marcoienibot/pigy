@@ -2040,6 +2040,30 @@ it("tells the inbox of a delivery that failed by itself when the last one ends b
   expect(workspace.rows("notification")).toEqual([ofPost(6000)]);
 });
 
+it("tells the inbox of a delivery that fails by itself after the person disconnected the other account", () => {
+  const workspace = sendingToTwo();
+  // The third order of the two: the disconnect first, which ends one
+  // delivery and tells nobody, and then the other delivery fails.
+  workspace.mutate(
+    "channel.disconnect",
+    { id: otherChannelId },
+    5000,
+    "server",
+  );
+  expect(workspace.rows("notification")).toEqual([]);
+
+  workspace.mutate("target.end", failed, 6000, "server");
+
+  // What the person did themselves does not hide what went wrong
+  // without them.
+  expect(disconnectedOf(workspace)).toEqual({
+    [targetId]: false,
+    [otherTargetId]: true,
+  });
+  expect(statusOf(workspace)).toBe("error");
+  expect(workspace.rows("notification")).toEqual([ofPost(6000)]);
+});
+
 it("tells the inbox that a channel needs connecting again when its network would not renew its access", () => {
   const workspace = withTarget();
 
