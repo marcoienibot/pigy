@@ -753,6 +753,9 @@ export async function deliver(
         // What names the delivery to the network, the same in every
         // attempt.
         key: targetId,
+        // An attempt before this one may have sent what nobody heard of
+        // again: that is one of the ways in which an attempt ends.
+        mayHaveSentBefore: run.attempt > 1,
       },
       {
         run: async (name, publishStep) => {

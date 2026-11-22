@@ -477,6 +477,29 @@ describe("a delivery to LinkedIn that goes wrong", () => {
     },
   );
 
+  it("does not take a post for the delivery's that LinkedIn has already when a first attempt is refused as a repetition: it fails and says where that post is", async () => {
+    const context = await withChannel("live");
+    // The account has the text already. To the second delivery it makes
+    // no difference who put it there, the member by hand or, as here,
+    // another delivery: its own first attempt has sent nothing before.
+    const first = await delivered(context, "Said before");
+    expect(first.target.status).toBe("sent");
+    const [there] = await context.posted();
+
+    const second = await delivered(context, "Said before");
+
+    expect(second.target).toMatchObject({
+      status: "error",
+      attempt: 1,
+      error: `LinkedIn already has a post with this text, and did not publish it a second time: ${there?.url}`,
+    });
+    // Nothing of the post that is there is recorded as this delivery's.
+    expect(publishedOf(context.client, second.targetId, second.draft)).toEqual(
+      [],
+    );
+    expect(await context.posted()).toHaveLength(1);
+  });
+
   it("asks a person to look when LinkedIn fails while it takes a post, and does not try again by itself", async () => {
     const context = await withChannel("live");
     await arm(context, "live", "server-error");

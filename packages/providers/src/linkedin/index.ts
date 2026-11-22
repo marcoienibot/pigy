@@ -123,8 +123,11 @@ const dayMs = 24 * 60 * 60 * 1000;
 
 // What names a post: the URN of a share or of a post of the older kind.
 const postUrn = /^urn:li:(?:share|ugcPost):\d+$/;
-// How LinkedIn refuses a post that repeats one, with the one it repeats.
-const duplicateOf = /Content is a duplicate of (urn:li:(?:share|ugcPost):\d+)/;
+// How LinkedIn refuses a post that repeats one, with the one it repeats:
+// the whole message, so that nothing which a message only quotes is taken
+// for it.
+const duplicateOf =
+  /^Content is a duplicate of (urn:li:(?:share|ugcPost):\d+)$/;
 
 type Call = {
   method?: "GET" | "POST" | "DELETE";
@@ -471,14 +474,21 @@ export function createLinkedInProvider({
      *
      * One thing LinkedIn does tell: it refuses a post of the same member
      * with the same text as one that it has, for some minutes, and names
-     * the one that it has. The step takes that post for its own. Within
-     * those minutes that is how a step which is run again, by a person
-     * who found nothing or by a workflow, comes by the post of the run
-     * before it. It is also what a second delivery of the same text
-     * within those minutes gets: LinkedIn would not publish it a second
-     * time whatever pigy did, and the one post is then that of both.
+     * the one that it has. Whose that post is, the refusal does not say:
+     * the member may have written it by hand, or published it from
+     * elsewhere. So the step takes it for its own only where an attempt
+     * before this one may have sent, `mayHaveSentBefore` of the request:
+     * within those minutes that is how a delivery that a person tries
+     * again comes by the post of the attempt before. A first attempt has
+     * sent nothing that the refusal could mean, and fails, with a link to
+     * the post that LinkedIn has.
+     *
+     * What is left: the same text sent twice through pigy within those
+     * minutes, where the second delivery is tried again, takes the post of
+     * the first. LinkedIn would not publish it a second time whatever pigy
+     * did.
      */
-    async publishStep({ credentials, content, progress }) {
+    async publishStep({ credentials, content, progress, mayHaveSentBefore }) {
       const { accessToken, memberId } = parseCredentials(credentials);
       const recorded =
         progress === null ? null : publishProgressSchema.safeParse(progress);
@@ -523,15 +533,24 @@ export function createLinkedInProvider({
           `${how}, so pigy cannot tell whether the post is on LinkedIn, and LinkedIn gives it no way to look. Look at the account before you try again.`,
           { cause },
         );
+      // From here on the request is out, or may be. Whatever leaves it
+      // without an answer that says what became of it is `uncertain`:
+      // only a refusal that pigy has read says that nothing was posted.
       let answer: HttpAnswer;
       try {
         answer = await request(apiHost, "/rest/posts", call);
       } catch (error) {
-        // No answer: the request may have arrived all the same.
-        if (error instanceof ProviderError && error.kind === "retry") {
-          throw unknown("LinkedIn did not answer", error);
-        }
-        throw error;
+        // What is no failure of a network is passed on as it is.
+        if (!(error instanceof ProviderError)) throw error;
+        // No answer came, or one that `send` does not hand out: too long
+        // to read, or one that sends pigy elsewhere. LinkedIn may have
+        // taken the post all the same.
+        throw unknown(
+          error.kind === "retry"
+            ? "LinkedIn did not answer"
+            : "LinkedIn answered in a way that pigy cannot read",
+          error,
+        );
       }
       const { status } = answer;
       if (status >= 200 && status < 300) {
@@ -541,8 +560,9 @@ export function createLinkedInProvider({
         }
         return published(id);
       }
-      // A server that fails says nothing of how far it got.
-      if (status >= 500) {
+      // A server that fails says nothing of how far it got, and neither
+      // does a status that is no refusal.
+      if (status < 400 || status >= 500) {
         throw unknown(
           `LinkedIn failed while it took the post (HTTP ${status})`,
         );
@@ -550,7 +570,14 @@ export function createLinkedInProvider({
       if (status === 422) {
         const said = z.object({ message: z.string() }).safeParse(answer.json);
         const duplicate = said.data?.message.match(duplicateOf)?.[1];
-        if (duplicate) return published(duplicate);
+        if (duplicate) {
+          if (mayHaveSentBefore) return published(duplicate);
+          throw new ProviderError(
+            "fail",
+            `LinkedIn already has a post with this text, and did not publish it a second time: ${postUrl(duplicate)}`,
+            { status },
+          );
+        }
       }
       throw failure(answer, call);
     },

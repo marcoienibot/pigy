@@ -602,8 +602,16 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
         }
       });
 
-      it("publishes nothing twice when every step is run twice", async () => {
+      it("publishes nothing twice when every step is run twice", async ({
+        skip,
+      }) => {
         const harness = await setup();
+        // A provider that says so promises nothing for a step that is run
+        // twice: its caller sees to it that none is. `publishStep` of the
+        // contract, rule 3.
+        if (!harness.provider.repeatsSafely) {
+          return skip("The steps of this provider are never run twice");
+        }
         const texts = ["first", "second"].map(
           (part) => `${harness.tag} The ${part} part of a thread, sent twice`,
         );

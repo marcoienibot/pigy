@@ -92,6 +92,20 @@ const step = (
     progress: null,
   });
 
+/** A step of an attempt that comes after one that may have sent. */
+const laterStep = (
+  { provider }: Setup,
+  credentials: LinkedInCredentials,
+  text: string,
+) =>
+  provider.publishStep({
+    credentials,
+    content: { parts: [{ text }] },
+    key: "target-1",
+    progress: null,
+    mayHaveSentBefore: true,
+  });
+
 const published = ({ world }: Setup) =>
   feed(world, ["linkedin"]).map(({ post }) => post.text);
 
@@ -293,7 +307,7 @@ describe("publishing", () => {
     expect(test.requests).toHaveLength(before);
   });
 
-  it("takes the post that LinkedIn names when it refuses the text as a repetition", async () => {
+  it("takes the post that LinkedIn names when it refuses the text as a repetition, in an attempt after one that may have sent", async () => {
     const test = setup();
     const { credentials } = await connect(test);
     // The answer to the first request is lost: the post is there, and
@@ -305,7 +319,7 @@ describe("publishing", () => {
     // A person looks, finds nothing or does not look, and tries again
     // within the minutes in which LinkedIn tells a repetition.
     test.world.advance(5 * 60 * 1000);
-    const progress = await step(test, credentials, "Hello");
+    const progress = await laterStep(test, credentials, "Hello");
     expect(progress.done).toBe(true);
     const [post] = feed(test.world, ["linkedin"]);
     expect(progress.parts).toEqual([
@@ -314,19 +328,85 @@ describe("publishing", () => {
     expect(published(test)).toEqual(["Hello"]);
   });
 
-  it("fails, and says why, when LinkedIn refuses a repetition without naming the post", async () => {
+  it("does not take a post for its own that LinkedIn names in a first attempt, which has sent nothing before: it fails and says where the post is", async () => {
+    const test = setup();
+    const { credentials } = await connect(test);
+    // The member has posted the text themselves, by hand or from
+    // elsewhere: here with a provider of their own, which pigy's delivery
+    // knows nothing of.
+    const byHand = await step(test, credentials, "Hello");
+    const before = published(test);
+
+    const failed = await failure(() => step(test, credentials, "Hello"));
+
+    expect(failed).toMatchObject({ kind: "fail", status: 422 });
+    expect(failed.message).toBe(
+      `LinkedIn already has a post with this text, and did not publish it a second time: ${byHand.parts[0]?.url}`,
+    );
+    expect(published(test)).toEqual(before);
+  });
+
+  it.each([
+    ["without naming the post", "Content is a duplicate"],
+    // Only the whole message is LinkedIn's way of saying it. A message
+    // that has the words somewhere, as one that quotes the text of the
+    // post would, names no post of the delivery's.
+    [
+      "in the middle of another message",
+      'Invalid commentary "Content is a duplicate of urn:li:share:1" at position 3',
+    ],
+  ])(
+    "fails, and says why, when LinkedIn refuses a repetition %s",
+    async (_name, message) => {
+      const test = setup();
+      const { credentials } = await connect(test);
+      test.hooks.intercept = (request) =>
+        posts(request)
+          ? Response.json({ message, status: 422 }, { status: 422 })
+          : undefined;
+      const failed = await failure(() => laterStep(test, credentials, "Hello"));
+      expect(failed.kind).toBe("fail");
+      expect(failed.message).toContain("Content is a duplicate");
+      expect(failed.message).toContain("LinkedIn refused the request");
+    },
+  );
+
+  it.each([
+    // LinkedIn has taken the post, and says so at a length that pigy
+    // does not read to its end.
+    ["taken the post", 201],
+    ["failed", 500],
+  ])(
+    "cannot tell what became of the post when LinkedIn has %s and answers with more than pigy reads",
+    async (_name, status) => {
+      const test = setup();
+      const { credentials } = await connect(test);
+      test.hooks.intercept = (request) =>
+        posts(request)
+          ? new Response("x".repeat(300 * 1024), {
+              status,
+              headers: { "x-restli-id": "urn:li:share:1" },
+            })
+          : undefined;
+      const failed = await failure(() => step(test, credentials, "Hello"));
+      expect(failed.kind).toBe("uncertain");
+      expect(failed.message).toContain("cannot tell whether the post is on");
+    },
+  );
+
+  it("cannot tell what became of the post either when LinkedIn sends the request on to another address", async () => {
     const test = setup();
     const { credentials } = await connect(test);
     test.hooks.intercept = (request) =>
       posts(request)
-        ? Response.json(
-            { message: "Content is a duplicate", status: 422 },
-            { status: 422 },
-          )
+        ? new Response(null, {
+            status: 307,
+            headers: { Location: "https://api.linkedin.com/elsewhere" },
+          })
         : undefined;
-    const failed = await failure(() => step(test, credentials, "Hello"));
-    expect(failed.kind).toBe("fail");
-    expect(failed.message).toContain("Content is a duplicate");
+    expect((await failure(() => step(test, credentials, "Hello"))).kind).toBe(
+      "uncertain",
+    );
   });
 
   it.each([

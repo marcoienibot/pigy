@@ -35,6 +35,8 @@ export type PublishJob = CredentialSource & {
   content: PostContent;
   /** See `PublishRequest.key`. */
   key: string;
+  /** See `PublishRequest.mayHaveSentBefore`. */
+  mayHaveSentBefore?: boolean;
 };
 
 /**
@@ -123,7 +125,14 @@ export async function publish(
     if (progress && progress.waitSeconds > 0) {
       await runner.sleep(`wait-${step}`, progress.waitSeconds);
     }
-    const request = { content: job.content, key: job.key, progress };
+    const request = {
+      content: job.content,
+      key: job.key,
+      progress,
+      ...(job.mayHaveSentBefore !== undefined && {
+        mayHaveSentBefore: job.mayHaveSentBefore,
+      }),
+    };
     progress = await runner.run(`publish-${step}`, () =>
       withCredentials(job, (credentials) =>
         provider.publishStep({ ...request, credentials }),
