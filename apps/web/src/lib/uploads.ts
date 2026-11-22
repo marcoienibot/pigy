@@ -26,7 +26,10 @@ import type { FileStore } from "@/lib/upload-files";
  * - An image that is put into a draft without a connection waits. Its
  *   row is made by a mutation, which waits in the outbox like every
  *   change, and the server knows no upload for a row that it does not
- *   have: the upload asks again until it does.
+ *   have. So an upload asks nothing until the copy of its workspace says
+ *   that the server has confirmed that mutation, `rowOf`, and asks again
+ *   after a 404 all the same: a tab that does not sync the workspace
+ *   cannot tell.
  *
  * Only the device that has the file uploads it. Another device shows the
  * image as on its way. And on the device, one tab: every tab of the
@@ -88,6 +91,14 @@ export type UploadLocks = {
  */
 export const uploadLock = (mediaId: string) => `pigy/upload/${mediaId}`;
 
+/**
+ * How the row of an image stands for the server, as far as the copy of
+ * its workspace in this tab can tell. `sent`: the server has confirmed
+ * the mutation that makes it. Until then, `offline` while the tab cannot
+ * reach the server, and `waiting` while it can.
+ */
+export type RowState = "sent" | "offline" | "waiting";
+
 /** Addresses of files, for pictures: `URL.createObjectURL` and its undoing. */
 export type FileUrls = {
   create(file: Blob): string;
@@ -117,6 +128,8 @@ type Running = {
   progress: UploadProgress;
   /** Ends the wait before the next try. */
   wake: (() => void) | null;
+  /** Ends the wait for the row, for an upload that is stopped. */
+  halt: (() => void) | null;
   stopped: boolean;
   /** Lets go of the lock of the upload. */
   release: () => void;
@@ -151,6 +164,16 @@ export class Uploads {
       schedule: (run: () => void, ms: number) => () => void;
       /** The Web Locks of the browser, where it has them. */
       locks?: UploadLocks | undefined;
+      /**
+       * Calls `told` with how the row of the image `mediaId` stands, at
+       * once and whenever that may have changed, until what it returns is
+       * called. Without it, an upload asks at once.
+       */
+      rowOf?: (
+        workspaceId: string,
+        mediaId: string,
+        told: (row: RowState) => void,
+      ) => () => void;
       urls?: FileUrls;
       now?: () => number;
     },
@@ -380,6 +403,7 @@ export class Uploads {
     if (!upload) return;
     upload.stopped = true;
     upload.wake?.();
+    upload.halt?.();
     this.running.delete(mediaId);
     const url = this.urls.get(mediaId);
     if (url !== undefined) {
@@ -404,6 +428,7 @@ export class Uploads {
       file,
       progress: { sent: 0, total: file.size, waiting: null, error: null },
       wake: null,
+      halt: null,
       stopped: false,
       release,
     };
@@ -421,8 +446,43 @@ export class Uploads {
     this.changed();
   }
 
+  /**
+   * Waits until the server has the row of the image, as far as the tab can
+   * tell, and says meanwhile what the upload waits for: a request before
+   * would be answered with a 404, which the browser writes into the
+   * console of the page. Over when the upload is stopped too.
+   */
+  private async rowFirst(mediaId: string, upload: Running): Promise<void> {
+    const { rowOf } = this.deps;
+    if (!rowOf) return;
+    await new Promise<void>((resolve) => {
+      let done = false;
+      let stopFollowing: (() => void) | undefined;
+      const end = () => {
+        if (done) return;
+        done = true;
+        upload.halt = null;
+        stopFollowing?.();
+        resolve();
+      };
+      upload.halt = end;
+      stopFollowing = rowOf(upload.workspaceId, mediaId, (row) => {
+        if (done) return;
+        if (row === "sent") end();
+        else {
+          this.set(upload, {
+            waiting: row === "offline" ? "connection" : "server",
+          });
+        }
+      });
+      // Told at once, before it returned what stops it.
+      if (done) stopFollowing();
+    });
+  }
+
   private async run(mediaId: string, upload: Running): Promise<void> {
     const { api } = this.deps;
+    await this.rowFirst(mediaId, upload);
     const path = mediaUploadPath(upload.workspaceId, mediaId);
     const { file } = upload;
     const sentOf = (received: readonly number[]) =>
@@ -451,7 +511,8 @@ export class Uploads {
         return;
       } catch (error) {
         const lost = unanswered(error);
-        // The row has not reached the server yet.
+        // The row has not reached the server yet, as in a tab that cannot
+        // tell, or the image is gone, which `resume` hears of.
         const early = error instanceof ApiError && error.status === 404;
         const again =
           lost ||

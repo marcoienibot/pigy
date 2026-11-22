@@ -2,7 +2,12 @@ import { uploadChunkBytes, uuidv7 } from "@pigy/core";
 import { expect, test } from "vitest";
 import { ApiError, Unanswered } from "@/lib/api";
 import { memoryFiles } from "@/lib/upload-files";
-import { type UploadApi, type UploadLocks, Uploads } from "@/lib/uploads";
+import {
+  type RowState,
+  type UploadApi,
+  type UploadLocks,
+  Uploads,
+} from "@/lib/uploads";
 
 const workspaceId = "workspace";
 const base = `/api/workspaces/${workspaceId}/media`;
@@ -217,6 +222,45 @@ test("an upload whose row the server does not have yet asks again, and one that 
   pass();
   await until(() => completed.includes("late"));
   expect(completed).toEqual(["late"]);
+});
+
+test("an upload asks for nothing until the server has the row of its image, and says meanwhile what it waits for", async () => {
+  const { api, completed, requests } = server();
+  // How the row stands, as the copy of the workspace says, and the
+  // uploads that follow it.
+  let row: RowState = "offline";
+  const following = new Set<(row: RowState) => void>();
+  const tell = (now: RowState) => {
+    row = now;
+    for (const told of [...following]) told(now);
+  };
+  const { uploads } = uploadsOf(api, memoryFiles(), {
+    rowOf: (_, __, told) => {
+      following.add(told);
+      told(row);
+      return () => following.delete(told);
+    },
+  });
+  await uploads.add(workspaceId, "one", fileOf(10));
+  await until(() => uploads.progress("one")?.waiting === "connection");
+  tell("waiting");
+  expect(uploads.progress("one")?.waiting).toBe("server");
+  // Before, the first request went out at once, and the server answered
+  // it with a 404 while the mutation that makes the row was on its way.
+  expect(requests).toEqual([]);
+
+  tell("sent");
+  await until(() => completed.length === 1);
+  expect(requests[0]).toBe("POST /one/upload");
+  expect(following.size).toBe(0);
+
+  // An upload that ends while it waits asks for nothing.
+  tell("waiting");
+  await uploads.add(workspaceId, "two", fileOf(10));
+  await until(() => following.size === 1);
+  await uploads.resume(workspaceId, []);
+  expect(following.size).toBe(0);
+  expect(requests.filter((request) => request.includes("/two/"))).toEqual([]);
 });
 
 test("a tab that is loaded again goes on with the files that the device kept, and says which it does not have", async () => {

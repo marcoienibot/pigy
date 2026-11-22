@@ -217,6 +217,39 @@ it("reads the copy again when it has missed a write of another tab", async () =>
   expect(two.store.head).toEqual((await device.storage.read())?.head);
 });
 
+it("says in every tab whether a mutation of the device waits to be confirmed, and tells when it no longer does", async () => {
+  const device = browser();
+  const one = await device.tab();
+  const two = await device.tab();
+  const { id } = createDraft(one.store, "Hello");
+  const creates =
+    (postId: string) => (mutation: { name: string; args: unknown }) =>
+      mutation.name === "post.create" &&
+      (mutation.args as { id: string }).id === postId;
+  // Before it is stored, in the tab that made it.
+  expect(one.store.holdsUnconfirmed(creates(id))).toBe(true);
+  expect(one.store.holdsUnconfirmed(creates(newId()))).toBe(false);
+  await settle();
+  expect(two.store.holdsUnconfirmed(creates(id))).toBe(true);
+
+  let told = 0;
+  two.store.subscribe(() => {
+    told += 1;
+  });
+  // The server confirms it, through the tab that holds the socket.
+  await one.store.transact((head) =>
+    applyPatch(
+      head,
+      { from: null, to: 1, changes: [], lastMutationId: 1, rejected: [] },
+      newId(),
+    ),
+  );
+  await settle();
+  expect(told).toBeGreaterThan(0);
+  expect(two.store.holdsUnconfirmed(creates(id))).toBe(false);
+  expect(one.store.holdsUnconfirmed(creates(id))).toBe(false);
+});
+
 it("tells a tab that opens how the tab with the socket is getting on", async () => {
   const device = browser();
   const holder = await device.tab();

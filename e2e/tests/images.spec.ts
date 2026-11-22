@@ -1,5 +1,6 @@
 import {
   channelChoice,
+  connectionOf,
   connectSimulated,
   connectSimulatedLinkedIn,
   draftRow,
@@ -207,6 +208,42 @@ test("a post goes out with its image, which the Sent screen and the feed of the 
     ),
   ).toBe(320);
   expect(await overflowOf(page)).toBe(0);
+});
+
+test("an upload asks nothing until the server has the row of its image", async ({
+  ownPage: page,
+}) => {
+  // What the page asks of the upload, and what the server answers.
+  const answers: string[] = [];
+  page.on("response", (response) => {
+    const { pathname } = new URL(response.url());
+    const step = pathname.split("/upload")[1];
+    if (step === undefined || !pathname.includes("/media/")) return;
+    answers.push(
+      `${response.request().method()} ${step || "/"} ${response.status()}`,
+    );
+  });
+  // The route applies to the sockets that are opened after it.
+  const connection = await connectionOf(page);
+  await page.reload();
+  await page.getByRole("button", { name: "New draft" }).click();
+  await editor(page).fill("Held back");
+  await expectSync(page, "Synced");
+
+  // The change that makes the row of the image is held back on its way.
+  connection.hold();
+  await choose(page, [file("boats.png", png(320, 240))]);
+  await expect(image(page, 1).getByRole("status")).toHaveText(
+    "Waiting to upload",
+  );
+  // Before, the upload began at once, and the server answered that it has
+  // no such image, which the browser writes into the console. The tile
+  // said that it waits only after that answer.
+  expect(answers).toEqual([]);
+
+  connection.release();
+  await uploaded(page, 1);
+  expect(answers).toEqual(["POST / 200", "PUT /1 200", "POST /complete 200"]);
 });
 
 test("an upload that loses its connection waits, says so, and goes on with what is missing, also after the page was loaded again", async ({

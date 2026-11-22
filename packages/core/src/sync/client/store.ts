@@ -287,6 +287,24 @@ export class SyncStore {
   }
 
   /**
+   * Whether a mutation of this device that the server has not confirmed
+   * is one that `matches`: in the stored outbox, of whichever tab, or in
+   * this tab still. For what waits until the server has what such a
+   * mutation makes, as the upload of an image waits for its row: the
+   * listeners are told when this may have changed, as when `pending` of
+   * the state has.
+   */
+  holdsUnconfirmed(
+    matches: (mutation: { name: string; args: unknown }) => boolean,
+  ): boolean {
+    return (
+      (this.copy?.head.outbox.some(matches) ?? false) ||
+      [...this.ahead.values()].some(matches) ||
+      this.unsaved.some(matches)
+    );
+  }
+
+  /**
    * Whether this tab holds a mutation that is not stored, or has stored it
    * and not yet told its listeners so: what `whenStored` waits for. For
    * whoever waits for several stores: one of them can take another

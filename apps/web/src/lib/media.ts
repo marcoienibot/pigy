@@ -22,7 +22,8 @@ import {
 import { fetchImage, uploadRequest } from "@/lib/api";
 import { networkInfo } from "@/lib/networks";
 import { indexedDbFiles } from "@/lib/upload-files";
-import { Uploads } from "@/lib/uploads";
+import { type RowState, Uploads } from "@/lib/uploads";
+import { openStore } from "@/sync/workspace-sync";
 
 /**
  * The images of the parts of a post, as a screen shows them: what the
@@ -343,6 +344,29 @@ export function uploadsFor(userId: string): Uploads {
       // Not in every browser: without them, every tab uploads what the
       // device keeps, as before there were several tabs.
       locks: typeof navigator === "undefined" ? undefined : navigator.locks,
+      rowOf: (workspaceId, mediaId, told) => {
+        const store = openStore(userId, workspaceId);
+        // A tab that does not sync the workspace cannot tell: the upload
+        // asks, and asks again after a 404.
+        if (!store) {
+          told("sent");
+          return () => {};
+        }
+        const makesRow = ({ name, args }: { name: string; args: unknown }) =>
+          name === "media.create" &&
+          (args as { id?: unknown } | null)?.id === mediaId;
+        const look = () => {
+          let row: RowState = "sent";
+          if (store.holdsUnconfirmed(makesRow)) {
+            row =
+              store.getState().connection === "offline" ? "offline" : "waiting";
+          }
+          told(row);
+        };
+        const stop = store.subscribe(look);
+        look();
+        return stop;
+      },
     });
     uploadsOf.set(userId, uploads);
   }
