@@ -187,9 +187,7 @@ export const defaultMediaLimits: {
  * says so: PLAN.md section 10 has what is left to build. A network leaves
  * the list when its adapter publishes images.
  */
-export const imagesNotPublishedTo: readonly Limits["network"][] = [
-  "threads",
-];
+export const imagesNotPublishedTo: readonly Limits["network"][] = [];
 
 /** What the account of `limits` takes of images. */
 export function mediaLimitsOf(limits: Limits): MediaLimits {

@@ -54,8 +54,10 @@ export type Simulation = {
   /**
    * Arms a fault for the next request that publishes or, with "connect",
    * for the next request that completes a connection once the network has
-   * taken the code of the callback, or, with "stats", for the next request
-   * that reads the stats of a post.
+   * taken the code of the callback. With "upload", for the next request
+   * that hands the network an image: its bytes, or the address that the
+   * network fetches it from. With "stats", for the next request that
+   * reads the stats of a post.
    */
   arm(
     kind:
@@ -64,7 +66,7 @@ export type Simulation = {
       | "lost-response"
       | "token-revoked"
       | "token-expired",
-    during?: "publish" | "connect" | "stats",
+    during?: "publish" | "connect" | "upload" | "stats",
   ): void;
   /**
    * Has people do more with the post `id` of the network, as if they had
@@ -1327,10 +1329,59 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
           ]);
           expect(shown).toHaveLength(2);
         } else {
+          // No network takes this branch so far, and it has never run:
+          // LinkedIn joins a thread, and runs no step twice.
           expect(shown).toHaveLength(1);
           expect(shown[0]?.images).toEqual(shownOf(images.flat()));
         }
       });
+
+      // `it.for` and not `it.each`: it hands the test its context, which
+      // has `skip`.
+      it.for([
+        ["an upload", "upload"],
+        ["the request that publishes", "publish"],
+      ] as const)(
+        "publishes a post with images once when the answer to %s is lost, and the step is run again",
+        async ([_name, during], { skip }) => {
+          const harness = await setup();
+          const { simulation, provider } = harness;
+          if (harness.noImages) return skip("This run publishes no images");
+          if (!simulation) return skip("Losing an answer takes a simulation");
+          const text = `${harness.tag} Images whose answer is lost on the way`;
+          const images = await imagesOf("Shown once", "Also shown once");
+          // The network carries the request out, and its answer is lost.
+          simulation.arm("lost-response", during);
+          const errors: ProviderError[] = [];
+          let progress: PublishProgress;
+          try {
+            ({ progress } = await publishParts(harness, [text], {
+              images: [images],
+              runner: patientRunner(harness, simulation, (error) => {
+                errors.push(error);
+              }),
+            }));
+          } catch (error) {
+            // A provider that cannot look cannot tell whether its post
+            // is there. An upload is no post: it is tried again by every
+            // provider, and does not end a delivery as unknown.
+            expect(during).toBe("publish");
+            expectUncertain(provider, error);
+            expect(simulation.shown()).toMatchObject([
+              { text, images: shownOf(images) },
+            ]);
+            return;
+          }
+          expect(errors.map(({ kind }) => kind)).toEqual(["retry"]);
+          expect(progress.done).toBe(true);
+          // One post, with each image once and in its place: what a run
+          // whose answer was lost uploaded is in no post, and a post that
+          // it published is found and not published again.
+          expect(simulation.shown()).toMatchObject([
+            { text, images: shownOf(images) },
+          ]);
+        },
+      );
 
       it("does not take a post without the images of its part for the part", async ({
         skip,

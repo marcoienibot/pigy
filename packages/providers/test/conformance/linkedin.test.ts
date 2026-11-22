@@ -104,7 +104,12 @@ describeProvider("LinkedIn, simulated", async () => {
           kind,
           // With the code exchanged for a token, the adapter asks whose
           // token it is.
-          operation: during === "connect" ? "account" : "publish",
+          operation:
+            during === "connect"
+              ? "account"
+              : during === "upload"
+                ? "upload"
+                : "publish",
         });
       },
       engage: (id, more) => world.engage("linkedin", id, more),

@@ -1,6 +1,7 @@
 import type { Fetch } from "@pigy/core";
 import { createThreadsSimulator } from "@pigy/simulators/threads";
 import { answerConsent, createWorld, feed } from "@pigy/simulators/world";
+import type { MediaSource } from "../../src/provider.ts";
 import {
   createThreadsProvider,
   type ThreadsCredentials,
@@ -10,10 +11,44 @@ import { threadsLiveHarness } from "./threads-live.ts";
 
 const redirectUri = "https://pigy.example/connect/threads/callback";
 
+/**
+ * How long a link to an image of a test is good for, as pigy's own links
+ * are: a quarter of an hour.
+ */
+const linkLifetimeMs = 15 * 60 * 1000;
+
 /** A new world with pigy as an app, one account and an adapter. */
 function simulated() {
   const world = createWorld({ now: () => new Date("2026-11-15T10:00:00Z") });
-  const simulator = createThreadsSimulator(world);
+  /**
+   * The images that the tests serve, by the links that the adapter was
+   * handed for them, until each link expires: what pigy serves at its
+   * signed links, and the web of the world, which Threads fetches from.
+   */
+  const served = new Map<string, { bytes: Uint8Array; expires: number }>();
+  const simulator = createThreadsSimulator(world, {
+    web: async (input) => {
+      const url = input instanceof Request ? input.url : String(input);
+      const image = served.get(url);
+      return image && world.now().getTime() < image.expires
+        ? new Response(image.bytes as Uint8Array<ArrayBuffer>)
+        : new Response("There is nothing here", { status: 404 });
+    },
+  });
+  /** Where the adapter reads the images of a test: at a link each. */
+  const mediaOf = (images: ReadonlyMap<string, Uint8Array>): MediaSource => ({
+    read: async () => {
+      throw new Error("Threads takes no bytes");
+    },
+    link: async (id) => {
+      const bytes = images.get(id);
+      if (!bytes) throw new Error(`The test has no image ${id}`);
+      const expires = world.now().getTime() + linkLifetimeMs;
+      const link = `https://pigy.example/api/media-links/${encodeURIComponent(id)}?expires=${expires}&signature=${crypto.randomUUID()}`;
+      served.set(link, { bytes, expires });
+      return link;
+    },
+  });
   const app = simulator.addApp({ name: "pigy", redirectUris: [redirectUri] });
   const ada = simulator.addUser({ username: "ada", name: "Ada Lovelace" });
   // Counts the requests that ask Threads to publish a container. Making
@@ -59,6 +94,7 @@ function simulated() {
     provider,
     consent,
     connect,
+    mediaOf,
     publishRequests: () => publishRequests,
   };
 }
@@ -66,8 +102,16 @@ function simulated() {
 // The Threads adapter against the simulated Threads, in a new world for
 // every test.
 describeProvider("Threads, simulated", async () => {
-  const { world, simulator, app, provider, consent, connect, publishRequests } =
-    simulated();
+  const {
+    world,
+    simulator,
+    app,
+    provider,
+    consent,
+    connect,
+    mediaOf,
+    publishRequests,
+  } = simulated();
   const credentials = await connect();
   // A token as the real Threads makes them, which the simulation must
   // refuse.
@@ -78,8 +122,7 @@ describeProvider("Threads, simulated", async () => {
     redirectUri,
     identifier: undefined,
     thread: "chain",
-    // Until the adapter publishes images.
-    noImages: true,
+    mediaOf,
     counts: ["likes", "reposts", "replies", "quotes", "views"],
     credentials,
     refusedCredentials: { ...credentials, accessToken: unknownToken },
@@ -101,12 +144,14 @@ describeProvider("Threads, simulated", async () => {
         simulator.arm({
           kind,
           // With the code exchanged for a token of an hour, the adapter
-          // asks for the one that lasts.
+          // asks for the one that lasts. Threads is handed an image with
+          // the container that it fetches it for.
           operation: {
             connect: "exchange",
             publish: "publish",
+            upload: "container",
             stats: "stats",
-          }[during] as "exchange" | "publish" | "stats",
+          }[during] as "exchange" | "publish" | "container" | "stats",
         });
       },
       engage: (id, more) => world.engage("threads", id, more),
