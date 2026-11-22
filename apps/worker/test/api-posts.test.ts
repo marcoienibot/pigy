@@ -13,7 +13,9 @@ import {
   apiPostListSchema,
 } from "@pigy/core/api";
 import { feed } from "@pigy/simulators/world";
+import { drizzle } from "drizzle-orm/durable-sqlite";
 import { describe, expect, it } from "vitest";
+import { postsPage } from "../src/workspace/api.ts";
 import { farthestLookMs } from "../src/workspace/object.ts";
 import { type ApiClient, apiClient, makeKey, startedApi } from "./api.ts";
 import { connectInSandbox } from "./channels.ts";
@@ -186,8 +188,9 @@ describe.each(["live", "sandbox"] as const)(
           channelId: channel,
           service: "mastodon",
           status: "sent",
-          text: "Shared now",
-          thread: [],
+          // It got the text of the post, which the post says.
+          text: null,
+          thread: null,
           customized: false,
           // A simulated network of a sandbox has no page to link to.
           link: environment === "live" ? expect.stringContaining(domain) : null,
@@ -508,7 +511,8 @@ it("changes a draft: its text, its thread, its channels and the text of a servic
 
   expect(await patch({ channelIds: [channel] })).toMatchObject({
     channelIds: [channel],
-    targets: [{ customized: false, text: "First" }],
+    // The channel gets the text of the post, which is said once.
+    targets: [{ customized: false, text: null, thread: null }],
   });
   // The text of a service begins with the post's own first part when it
   // names none, is replaced by the next, and goes with null.
@@ -524,7 +528,7 @@ it("changes a draft: its text, its thread, its channels and the text of a servic
     targets: [{ customized: true, text: "Own", thread: [] }],
   });
   expect(await patch({ metadata: { mastodon: null } })).toMatchObject({
-    targets: [{ customized: false, text: "First", thread: [] }],
+    targets: [{ customized: false, text: null, thread: null }],
   });
   expect(await patch({ channelIds: [] })).toMatchObject({
     channelIds: [],
@@ -825,6 +829,52 @@ it("fills the queue by the posting schedule, at its end and at its front, and mo
   ]);
 });
 
+it("keeps the place of a queued post that is changed, also when the change says that it is in the queue", async () => {
+  const { api, channel } = await ready();
+  await setTimes(api, [{ day: "mon", times: ["09:00", "12:00", "15:00"] }]);
+  const queued = (text: string) =>
+    api.create({ text, channelIds: [channel], mode: "addToQueue" });
+  const [first, second, third] = [
+    await queued("First"),
+    await queued("Second"),
+    await queued("Third"),
+  ];
+  const order = async () =>
+    (await listOf(api, "?status=scheduled")).posts
+      .sort((a, b) => ((a.dueAt ?? "") < (b.dueAt ?? "") ? -1 : 1))
+      .map(({ text }) => text);
+  expect(await order()).toEqual(["First", "Second", "Third"]);
+
+  // A script that sends the whole post with every change says the mode
+  // that the post has. That asks for nothing new: the post is taken out
+  // of the queue to be edited, and goes back to its place, not to the
+  // end.
+  expect(
+    await api.ok(`/posts/${first.id}`, {
+      method: "PATCH",
+      json: { text: "First, edited", mode: "addToQueue" },
+    }),
+  ).toMatchObject({ dueAt: first.dueAt, mode: "addToQueue" });
+  expect(
+    await api.ok(`/posts/${second.id}`, {
+      method: "PATCH",
+      json: { text: "Second, edited", mode: "addToQueue" },
+    }),
+  ).toMatchObject({ dueAt: second.dueAt });
+  expect(await order()).toEqual(["First, edited", "Second, edited", "Third"]);
+
+  // The front of the queue is another place, which is asked for.
+  await api.ok(`/posts/${third.id}`, {
+    method: "PATCH",
+    json: { text: "Third, edited", mode: "shareNext" },
+  });
+  expect(await order()).toEqual([
+    "Third, edited",
+    "First, edited",
+    "Second, edited",
+  ]);
+});
+
 it("sets the posting schedule: the times, the zone and the pause, and refuses what is none", async () => {
   const { api, channel } = await ready();
   expect(await scheduleOf(api)).toMatchObject({
@@ -994,6 +1044,20 @@ it("lists the posts a page at a time, the newest first, by status and by channel
     (await listOf(api, "?status=scheduled,sent")).posts.map(({ id }) => id),
   ).toEqual([scheduled.id]);
   expect((await listOf(api, "?status=draft&first=100")).posts).toHaveLength(5);
+  // Two statuses are two walks, of which the newest posts are the page:
+  // the pages are the ones of all posts, here, in the same order, also
+  // for a status that is named twice.
+  const both: string[] = [];
+  for (let cursor = ""; ; ) {
+    const page = await listOf(
+      api,
+      `?status=draft,scheduled,draft&first=4${cursor}`,
+    );
+    both.push(...page.posts.map(({ id }) => id));
+    if (!page.pageInfo.hasNextPage) break;
+    cursor = `&after=${page.pageInfo.endCursor}`;
+  }
+  expect(both).toEqual(seen);
   expect(
     (await listOf(api, `?channelId=${channel}`)).posts.map(({ id }) => id),
   ).toEqual([scheduled.id]);
@@ -1012,6 +1076,53 @@ it("lists the posts a page at a time, the newest first, by status and by channel
     });
   }
   await api.refused("/posts?limit=2", {}, 400);
+});
+
+it("reads a page of posts by walking down an index from the cursor on, without a sort", async () => {
+  const { api, workspace, channel } = await ready();
+  // The workspace has its tables once it was used.
+  await api.create({ text: "One", saveToDraft: true });
+  const from = { id: "01939c2e-0000-7000-8000-000000000000", createdAt: 1 };
+  const plans = await runInDurableObject(objectOf(workspace), (_, state) => {
+    const db = drizzle(state.storage);
+    // What SQLite says that it does for the question that the API asks.
+    const planOf = (query: Parameters<typeof postsPage>[1]) => {
+      const { sql, params } = postsPage(db, query).toSQL();
+      return state.storage.sql
+        .exec<{ detail: string }>(`explain query plan ${sql}`, ...params)
+        .toArray()
+        .map(({ detail }) => detail);
+    };
+    return {
+      all: planOf({ limit: 21 }),
+      allAfter: planOf({ limit: 21, from }),
+      ofStatus: planOf({ limit: 21, status: "sent" }),
+      ofStatusAfter: planOf({ limit: 21, status: "sent", from }),
+      ofChannelAfter: planOf({ limit: 21, channelId: channel, from }),
+    };
+  });
+  // Each is one walk down an index that has the posts in the order of
+  // the page: a search from the cursor on, not a scan of the posts
+  // before it, and no step that sorts, which SQLite calls a temporary
+  // B-tree. The posts of a channel are those of the walk that have a
+  // target for it.
+  const channelTarget =
+    "SEARCH post_target EXISTS USING COVERING INDEX post_target_post_id_channel_id_idx (post_id=? AND channel_id=?)";
+  expect(plans).toEqual({
+    all: ["SCAN post USING INDEX post_created_at_idx"],
+    allAfter: [
+      "SEARCH post USING INDEX post_created_at_idx ((created_at,id)<(?,?))",
+    ],
+    ofStatus: ["SEARCH post USING INDEX post_status_created_at_idx (status=?)"],
+    ofStatusAfter: [
+      "SEARCH post USING INDEX post_status_created_at_idx (status=? AND (created_at,id)<(?,?))",
+    ],
+    ofChannelAfter: [
+      "SEARCH post USING INDEX post_created_at_idx ((created_at,id)<(?,?))",
+      channelTarget,
+    ],
+  });
+  expect(JSON.stringify(plans)).not.toContain("TEMP B-TREE");
 });
 
 it("shows the clients of the app what the API did, as it does it", async () => {

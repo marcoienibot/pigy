@@ -13,7 +13,7 @@ import m0010 from './0010_may_have_sent.sql';
 import m0011 from './0011_own_text.sql';
 import m0012 from './0012_notifications.sql';
 import m0013 from './0013_scheduling.sql';
-import m0014 from './0014_post_created_at_index.sql';
+import m0014 from './0014_post_indexes_for_the_api.sql';
 
   export default {
     journal,

@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "871dcba9-ab58-45be-8d9b-8fe996dcf5dc",
+  "id": "610f43e8-c635-46d8-9205-df46eb737d27",
   "prevId": "1735d09e-c302-4976-bccc-bde19e5a4862",
   "tables": {
     "change_log": {
@@ -588,10 +588,12 @@
         }
       },
       "indexes": {
-        "post_status_idx": {
-          "name": "post_status_idx",
+        "post_status_created_at_idx": {
+          "name": "post_status_created_at_idx",
           "columns": [
-            "status"
+            "status",
+            "created_at",
+            "id"
           ],
           "isUnique": false
         },

@@ -1,9 +1,15 @@
+import { runInDurableObject } from "cloudflare:test";
+import { env } from "cloudflare:workers";
+import { mutators, uuidv7 } from "@pigy/core";
 import {
   type ApiOperation,
   apiOperations,
   apiPostListSchema,
+  apiPostSchema,
   apiRateLimit,
+  maxApiAnswerTextLength,
   maxApiBodyBytes,
+  maxApiChannels,
   openApiDocument,
 } from "@pigy/core/api";
 import { feed } from "@pigy/simulators/world";
@@ -11,11 +17,17 @@ import { expect, it, vi } from "vitest";
 import { apiRoutes } from "../src/api/routes.ts";
 import type { AppDependencies } from "../src/env.ts";
 import { WorkspaceStore } from "../src/workspace/store.ts";
+import { mutateWorkspace } from "../src/workspace/workspaces.ts";
 import { type ApiClient, apiClient, makeKey, startedApi } from "./api.ts";
 import { connectInSandbox } from "./channels.ts";
 import { expectErrors, invite, signedIn } from "./helpers.ts";
 import { connectAccount, started } from "./publishing.ts";
-import { SyncClient, workspaceIds } from "./sync-client.ts";
+import {
+  identityOf,
+  objectOf,
+  SyncClient,
+  workspaceIds,
+} from "./sync-client.ts";
 
 /**
  * What keeps the public API safe to hand a key for: what a key reaches,
@@ -192,11 +204,22 @@ it("carries a request out once for its Idempotency-Key, and answers a repeat as 
   const json = { text: "Once", channelIds: [channel], mode: "shareNow" };
   const key = { "Idempotency-Key": "order-1" };
 
-  const first = await api.create(json, key);
-  expect((await api.ended(first.id)).status).toBe("sent");
-  // The repeat is answered with what the first was answered with, which
-  // is the post as it was then, and makes no second post.
-  expect(await api.create(json, key)).toEqual(first);
+  const post = (headers: Record<string, string>) =>
+    api.call("/posts", { method: "POST", json, headers });
+  const created = await post(key);
+  expect(created.status).toBe(201);
+  expect(created.headers.get("Idempotent-Replayed")).toBeNull();
+  const first = apiPostSchema.parse(await created.json());
+  expect(first.status).toBe("sending");
+  const sent = await api.ended(first.id);
+  expect(sent.status).toBe("sent");
+  // The repeat makes no second post, and says that it is a repeat. It is
+  // answered with the status of the first answer, and with the post as it
+  // is now: sent, which it was not when the first answer was given.
+  const repeated = await post(key);
+  expect(repeated.status).toBe(201);
+  expect(repeated.headers.get("Idempotent-Replayed")).toBe("true");
+  expect(await repeated.json()).toEqual(sent);
   expect((await listOf(api)).posts).toHaveLength(1);
   expect(feed(test.network.world).map(({ post }) => post.text)).toEqual([
     "Once",
@@ -262,12 +285,187 @@ it("answers the repeat of a refused request with the refusal, whatever has chang
     method: "PATCH",
     json: { mode: "addToQueue" },
   });
+  // What is kept of the refusal is from the version of pigy that gave
+  // it, and is said again as it is, whatever a later version would keep:
+  // here it has something that this version does not know.
+  await runInDurableObject(objectOf(workspaces.live), (_, state) => {
+    state.storage.sql.exec(
+      `update keyed_call set outcome =
+         json_set(outcome, '$.answer.since', 'another version')
+       where key like 'api:%'`,
+    );
+  });
   // The request would be taken now, as the one with a new key is. The
-  // repeat is not a new request: it is answered as it was.
+  // repeat is not a new request: it is answered as it was, and says so.
   const repeated = await move("move-1");
   expect(repeated.status).toBe(409);
+  expect(repeated.headers.get("Idempotent-Replayed")).toBe("true");
   expect(await repeated.json()).toEqual(refusal);
-  expect((await move("move-2")).status).toBe(200);
+  const moved = await move("move-2");
+  expect(moved.status).toBe(200);
+  expect(moved.headers.get("Idempotent-Replayed")).toBeNull();
+
+  // The repeat of a request whose post is gone since makes no post, and
+  // says that there is none.
+  const made = { text: "Made once", saveToDraft: true };
+  const once = { "Idempotency-Key": "make-1" };
+  const { id } = await api.create(made, once);
+  expect((await api.call(`/posts/${id}`, { method: "DELETE" })).status).toBe(
+    204,
+  );
+  const gone = await api.call("/posts", {
+    method: "POST",
+    json: made,
+    headers: once,
+  });
+  expect(gone.status).toBe(404);
+  expect(gone.headers.get("Idempotent-Replayed")).toBe("true");
+  expect((await listOf(api)).posts.map(({ text }) => text)).toEqual([
+    "Not in the queue yet",
+  ]);
+});
+
+/** Gives a workspace `count` channels that no network knows of. */
+async function manyChannels(
+  test: Parameters<typeof identityOf>[0] & { clock: { time: Date } },
+  workspaceId: string,
+  count: number,
+): Promise<string[]> {
+  const workspace = await identityOf(test, workspaceId);
+  const ids: string[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const id = uuidv7(test.clock.time);
+    // Run by the Worker, as the connect callback does: nothing of this
+    // test is about the access of a channel.
+    expect(
+      await mutateWorkspace(env.WORKSPACE, workspace, "channel.connect", {
+        id,
+        network: "mastodon",
+        accountId: `account-${index}`,
+        handle: `@account${index}@mastodon.example`,
+        name: `Account ${index}`,
+        avatarUrl: null,
+        profileUrl: null,
+        expiresAt: null,
+        limits: null,
+      }),
+    ).toEqual({ ok: true });
+    ids.push(id);
+  }
+  return ids;
+}
+
+it("keeps a small record of a large post under its Idempotency-Key, and answers within its budget", async () => {
+  const { test, browser, workspaces } = await startedApi();
+  const api = apiClient(test, (await makeKey(browser, workspaces.live)).secret);
+  const channelIds = await manyChannels(test, workspaces.live, maxApiChannels);
+  const part = "x".repeat(10_000);
+  const thread = Array.from({ length: 24 }, () => ({ text: part }));
+  // A draft may hold anything: a thread of a quarter of a million
+  // characters for fifty channels, in a body just under the limit.
+  const request = {
+    method: "POST",
+    json: { text: part, metadata: { thread }, channelIds, saveToDraft: true },
+    headers: { "Idempotency-Key": "large-1" },
+  };
+  expect(JSON.stringify(request.json).length).toBeGreaterThan(250_000);
+  expect(JSON.stringify(request.json).length).toBeLessThan(maxApiBodyBytes);
+
+  // The answer says the text of the post once, and not once more for
+  // each channel that gets it.
+  const created = await api.call("/posts", request);
+  expect(created.status).toBe(201);
+  const text = await created.text();
+  expect(text.length).toBeLessThan(300_000);
+  const post = apiPostSchema.parse(JSON.parse(text));
+  expect(post.targets).toHaveLength(maxApiChannels);
+  expect(post.targets.every((target) => target.text === null)).toBe(true);
+
+  // What is kept for the repeats is a few hundred bytes, whatever the
+  // post: the answer itself would not fit into a row.
+  const kept = await runInDurableObject(objectOf(workspaces.live), (_, state) =>
+    state.storage.sql
+      .exec<{ size: number }>(
+        "select length(outcome) as size from keyed_call where key like 'api:%'",
+      )
+      .toArray(),
+  );
+  expect(kept).toEqual([{ size: expect.any(Number) }]);
+  expect(kept[0]?.size).toBeLessThan(500);
+  const repeated = await api.call("/posts", request);
+  expect(repeated.status).toBe(201);
+  expect(repeated.headers.get("Idempotent-Replayed")).toBe("true");
+  expect(await repeated.json()).toEqual(post);
+
+  // Every channel is given a text of its own, as long as the post's. An
+  // answer carries a million characters of texts at most: the post's
+  // own, the texts of three channels, and null for the other 47, which
+  // `customized` says have one.
+  const customized = await api.call(`/posts/${post.id}`, {
+    method: "PATCH",
+    json: { metadata: { mastodon: { text: part, thread } } },
+    headers: { "Idempotency-Key": "large-2" },
+  });
+  expect(customized.status).toBe(200);
+  const large = await customized.text();
+  expect(large.length).toBeLessThan(maxApiAnswerTextLength + 50_000);
+  const { targets } = apiPostSchema.parse(JSON.parse(large));
+  expect(targets.every((target) => target.customized)).toBe(true);
+  expect(targets.filter((target) => target.text !== null)).toHaveLength(3);
+  expect(targets.filter((target) => target.thread === null)).toHaveLength(47);
+
+  // A page ends before the post that it has no room for, and the next
+  // one begins with it.
+  await api.create({ text: "Small", saveToDraft: true });
+  const first = await listOf(api, "?first=2");
+  expect(first.posts.map(({ text }) => text)).toEqual(["Small"]);
+  expect(first.pageInfo.hasNextPage).toBe(true);
+  const next = await api.call(
+    `/posts?first=2&after=${first.pageInfo.endCursor}`,
+  );
+  const page = await next.text();
+  expect(page.length).toBeLessThan(maxApiAnswerTextLength + 50_000);
+  expect(apiPostListSchema.parse(JSON.parse(page))).toMatchObject({
+    posts: [{ id: post.id }],
+    pageInfo: { hasNextPage: false },
+  });
+});
+
+it("keeps nothing of a request that a bug of pigy's failed, and carries it out when it is repeated", async () => {
+  const { test, browser, workspaces } = await startedApi();
+  const channel = await connectAccount(test, browser, workspaces.live);
+  const api = apiClient(test, (await makeKey(browser, workspaces.live)).secret);
+  const request = {
+    method: "POST",
+    json: { text: "After the fix", channelIds: [channel], saveToDraft: true },
+    headers: { "Idempotency-Key": "bug-1" },
+  };
+
+  // A mutator throws what is no refusal: a bug, which the store answers
+  // the mutation with as an error of its own.
+  const errors = expectErrors();
+  const bug = vi
+    .spyOn(mutators["target.add"], "apply")
+    .mockImplementationOnce(() => {
+      throw new Error("A bug of the mutator");
+    });
+  const failed = await api.refused("/posts", request, 500);
+  expect(failed).toEqual({
+    error: "UnexpectedError",
+    message: "Something went wrong",
+  });
+  expect(bug).toHaveBeenCalledTimes(1);
+  expect(errors).toHaveBeenCalled();
+  expect((await listOf(api)).posts).toEqual([]);
+
+  // The bug is fixed. The repeat is the request for the first time: a
+  // 500 that was kept under the key would be its answer for 30 days.
+  const response = await api.call("/posts", request);
+  expect(response.status).toBe(201);
+  expect(response.headers.get("Idempotent-Replayed")).toBeNull();
+  expect((await listOf(api)).posts.map(({ text }) => text)).toEqual([
+    "After the fix",
+  ]);
 });
 
 it("leaves nothing of a request that failed in its middle, and carries it out when it is repeated", async () => {

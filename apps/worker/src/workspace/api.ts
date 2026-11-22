@@ -25,10 +25,11 @@ import {
   defaultApiPageSize,
   type ListPostsQuery,
   type MovePostRequest,
+  maxApiAnswerTextLength,
   type PutPostingScheduleRequest,
   type UpdatePostRequest,
 } from "@pigy/core/api";
-import { and, desc, eq, exists, inArray, isNull, lt, or } from "drizzle-orm";
+import { and, desc, eq, exists, isNull, sql } from "drizzle-orm";
 import type { DrizzleSqliteDODatabase } from "drizzle-orm/durable-sqlite";
 import { posts, postTargets } from "./schema.ts";
 import { findRows, readRow, readRows } from "./synced.ts";
@@ -65,10 +66,88 @@ export type ApiCall =
   | { op: "getPostingSchedule" }
   | { op: "putPostingSchedule"; body: PutPostingScheduleRequest };
 
-/** How a call ended: the status, and the body of a success or the refusal. */
-export type ApiAnswer =
+/**
+ * How a call ended: the status, and the body of a success or the refusal.
+ * `replayed` says that the call was not carried out now: it came with a
+ * key that it had come with before, and this is what is said of it today.
+ */
+export type ApiAnswer = (
   | { ok: true; status: number; body: unknown }
+  | { ok: false; status: number; message: string; field?: string }
+) & { replayed?: true };
+
+/**
+ * What is kept of a write that came with an `Idempotency-Key`, for the
+ * repeats of it: a small record, whatever the size of the post.
+ *
+ * - Of a success, the status and the read that makes the body of a
+ *   repeat, `read`, or null for an answer without a body. The body itself
+ *   is not kept. It can be megabytes, more than a row of the database
+ *   holds, and it would be parsed by a later version of the Worker with
+ *   the shape of that day. So a repeat is answered with the status of
+ *   the first answer and with the post, or the posting schedule, as it is
+ *   when the repeat comes.
+ * - Of a refusal, all of it, which is a status and a few words.
+ */
+export type KeptApiAnswer =
+  | { ok: true; status: number; read: ApiRead | null }
   | { ok: false; status: number; message: string; field?: string };
+
+/** The reads that make the body of a repeat. */
+type ApiRead = Extract<ApiCall, { op: "getPost" | "getPostingSchedule" }>;
+
+/** The longest message of a refusal that is kept. None is as long. */
+const maxKeptMessageLength = 1000;
+
+/** What to keep of the write `call`, which was answered with `answer`. */
+export function keptOf(call: ApiCall, answer: ApiAnswer): KeptApiAnswer {
+  if (!answer.ok) {
+    const { status, field } = answer;
+    const message = answer.message.slice(0, maxKeptMessageLength);
+    return {
+      ok: false,
+      status,
+      message,
+      ...(field !== undefined && { field }),
+    };
+  }
+  const { status } = answer;
+  switch (call.op) {
+    case "createPost":
+      // The one thing of the answer that nothing else says.
+      return {
+        ok: true,
+        status,
+        read: { op: "getPost", id: (answer.body as ApiPost).id },
+      };
+    case "updatePost":
+    case "movePost":
+      return { ok: true, status, read: { op: "getPost", id: call.id } };
+    case "putPostingSchedule":
+      return { ok: true, status, read: { op: "getPostingSchedule" } };
+    default:
+      return { ok: true, status, read: null };
+  }
+}
+
+/**
+ * The answer to a repeat of the call that `kept` is kept of. A post that
+ * is gone by now is said to be: the repeat of the request that made it is
+ * a 404 then, and makes no second post.
+ */
+export function replayOf(kept: KeptApiAnswer, bench: ApiBench): ApiAnswer {
+  if (!kept.ok) return { ...kept, replayed: true };
+  if (kept.read === null) {
+    return { ok: true, status: kept.status, body: null, replayed: true };
+  }
+  try {
+    const { body } = carryOut(kept.read, bench) as ApiAnswer & { ok: true };
+    return { ok: true, status: kept.status, body, replayed: true };
+  } catch (error) {
+    if (!(error instanceof ApiRefusal)) throw error;
+    return { ...error.answer, replayed: true };
+  }
+}
 
 /**
  * Thrown to refuse a call. The store undoes what the call did and answers
@@ -98,6 +177,16 @@ export type ApiBench = {
     name: string,
     args: unknown,
   ): { code: RejectionCode; message: string } | null;
+  /**
+   * Marks the push messages that wait to be sent, for `dropPushesSince`.
+   */
+  pushMark(): number;
+  /**
+   * Takes back the push messages that were queued for the notification
+   * `notificationId` since `mark`: the devices are not told a second time
+   * of what the call has only made anew.
+   */
+  dropPushesSince(mark: number, notificationId: string): void;
 };
 
 /** The status that the refusal of a mutator is answered with. */
@@ -113,8 +202,6 @@ function statusOf(code: RejectionCode): number {
     case "not_failed":
     case "not_current":
       return 409;
-    case "internal_error":
-      return 500;
     default:
       return 400;
   }
@@ -140,7 +227,16 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
   /** Runs a mutation, which the mutator has to take. */
   const run = (mutation: { name: MutatorName; args: unknown }): void => {
     const refusal = bench.mutate(mutation.name, mutation.args);
-    if (refusal) throw new ApiRefusal(statusOf(refusal.code), refusal.message);
+    if (!refusal) return;
+    // A bug of the mutator, which the store has logged. It is no refusal
+    // of the request: thrown as it is, the call has not happened, nothing
+    // is kept under its key, and its repeat is carried out once the bug
+    // is gone. As a refusal it would be answered as a 500 for as long as
+    // the key is kept.
+    if (refusal.code === "internal_error") {
+      throw new Error(`The mutator ${mutation.name} failed`);
+    }
+    throw new ApiRefusal(statusOf(refusal.code), refusal.message);
   };
   const mutate = <Name extends MutatorName>(
     name: Name,
@@ -190,8 +286,26 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
     return post.status === "draft" ? null : "shareNow";
   };
 
-  const postResource = (post: Row<"post">): ApiPost => {
-    const parts = findRows(db, "post_part", "postId", post.id);
+  const lengthOf = (parts: { text: string }[]) =>
+    parts.reduce((length, { text }) => length + text.length, 0);
+
+  /**
+   * How many characters the answer of a post has room for besides the
+   * post's own text: `maxApiAnswerTextLength` has what this is for.
+   */
+  const roomAfter = (parts: Row<"post_part">[]) => ({
+    left: maxApiAnswerTextLength - lengthOf(ownParts(parts)),
+  });
+
+  /**
+   * The post as the API says it. `room` is what is left of the answer for
+   * the texts that accounts have of their own, and is used up here.
+   */
+  const postResource = (
+    post: Row<"post">,
+    parts = findRows(db, "post_part", "postId", post.id),
+    room = roomAfter(parts),
+  ): ApiPost => {
     const [first, ...thread] = ownParts(parts);
     const targets = targetsOf(post.id);
     return {
@@ -206,20 +320,27 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
       createdAt: apiTime(post.createdAt),
       updatedAt: apiTime(post.updatedAt),
       targets: targets.map((target) => {
-        const [text, ...further] = partsFor(parts, target.id);
+        const customized = parts.some((part) => part.targetId === target.id);
+        const gets = partsFor(parts, target.id);
+        const [text, ...further] = gets;
         const published = findRows(
           db,
           "target_part_result",
           "targetId",
           target.id,
         ).find(({ partId }) => partId === text?.id);
+        // The text of an account is said where the account has one of
+        // its own, and where the answer has room for it. Every other
+        // account gets the text of the post, which the post says once.
+        const own = customized && lengthOf(gets) <= room.left;
+        if (own) room.left -= lengthOf(gets);
         return {
           channelId: target.channelId,
           service: readRow(db, "channel", target.channelId)?.network ?? null,
           status: target.status,
-          text: text?.text ?? "",
-          thread: further.map((part) => ({ text: part.text })),
-          customized: parts.some((part) => part.targetId === target.id),
+          text: own ? (text?.text ?? "") : null,
+          thread: own ? further.map((part) => ({ text: part.text })) : null,
+          customized,
           link: published?.url ?? null,
           remoteId: published?.remoteId ?? null,
           error: target.error,
@@ -413,46 +534,43 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
           "after",
         );
       }
-      // One more than the page, to know whether another follows.
-      const page = db
-        .select({ id: posts.id, createdAt: posts.createdAt })
-        .from(posts)
-        .where(
-          and(
-            isNull(posts.trashedAt),
-            status && inArray(posts.status, status),
-            channelId === undefined
-              ? undefined
-              : exists(
-                  db
-                    .select({ id: postTargets.id })
-                    .from(postTargets)
-                    .where(
-                      and(
-                        eq(postTargets.postId, posts.id),
-                        eq(postTargets.channelId, channelId),
-                      ),
-                    ),
-                ),
-            from &&
-              or(
-                lt(posts.createdAt, from.createdAt),
-                and(eq(posts.createdAt, from.createdAt), lt(posts.id, from.id)),
-              ),
-          ),
+      // One more than the page, to know whether another follows. Each
+      // status is asked for by itself, so that every question is a walk
+      // down an index from the cursor on, and the newest of them all are
+      // the page: `postsPage`.
+      const statuses = status ? [...new Set(status)] : [undefined];
+      const page = statuses
+        .flatMap((one) =>
+          postsPage(db, {
+            status: one,
+            channelId,
+            from: from ?? undefined,
+            limit: first + 1,
+          }).all(),
         )
-        .orderBy(desc(posts.createdAt), desc(posts.id))
-        .limit(first + 1)
-        .all();
-      const shown = page.slice(0, first);
-      const last = shown.at(-1);
+        .sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1))
+        .slice(0, first + 1);
+      // A page ends before the post that the answer has no room for, so
+      // it can have fewer posts than were asked for. It has one at least.
+      let room = maxApiAnswerTextLength;
+      let taken = 0;
+      const shown: ApiPost[] = [];
+      for (const { id } of page.slice(0, first)) {
+        const post = readRow(db, "post", id);
+        if (post) {
+          const parts = findRows(db, "post_part", "postId", id);
+          const length = lengthOf(parts);
+          if (shown.length > 0 && length > room) break;
+          shown.push(postResource(post, parts));
+          room -= length;
+        }
+        taken += 1;
+      }
+      const last = page[taken - 1];
       return ok({
-        posts: shown.flatMap(({ id }) => {
-          const post = readRow(db, "post", id);
-          return post ? [postResource(post)] : [];
-        }),
+        posts: shown,
         pageInfo: {
-          hasNextPage: page.length > first,
+          hasNextPage: page.length > taken,
           endCursor: last ? cursorAt(last) : null,
         },
       });
@@ -514,6 +632,26 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
       const queued = queue();
       const place = queued.findIndex((post) => post.id === id);
       const ahead = place > 0 ? (queued[place - 1]?.id ?? null) : null;
+      // What the request leaves of when the post goes out. A request
+      // that says what the post has already asks for nothing new: a
+      // script may send the whole post with every change.
+      const time = timeOf(body.dueAt);
+      const keepsPlace =
+        scheduled &&
+        before.mode === "queue" &&
+        !body.saveToDraft &&
+        (body.mode === undefined || body.mode === "addToQueue");
+      const keepsTime =
+        scheduled &&
+        before.mode === "custom" &&
+        !body.saveToDraft &&
+        (body.mode === undefined ||
+          (body.mode === "customScheduled" && time === before.dueAt));
+      // What the inbox says of a post that is held, and the push messages
+      // that wait, to leave both as they are if the post is held still.
+      const notice =
+        before.heldAt === null ? undefined : readRow(db, "notification", id);
+      const pushMark = bench.pushMark();
       // Only a draft is edited, in the app as here: a scheduled post is
       // taken back first, and given its time again below.
       if (scheduled && (edits || body.saveToDraft)) {
@@ -584,20 +722,42 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
 
       if (body.saveToDraft) {
         // A draft from here on, which the lines above have seen to.
-      } else if (body.mode) {
-        share(id, body.mode, timeOf(body.dueAt));
-      } else if (scheduled && edits) {
-        // As it was: at its time, or at its place in the queue.
-        if (before.mode === "queue") {
+      } else if (keepsPlace) {
+        if (edits) {
+          // Back into the queue, at its place.
           share(id, "addToQueue", undefined);
           // If the post that was ahead has gone out meanwhile, so have
           // all that were before it: the front is the place then.
           const still = queue().some((post) => post.id === ahead);
           mutate("post.move", { id, afterId: still ? ahead : null });
-        } else {
+        }
+      } else if (keepsTime) {
+        if (edits) {
           // The time that the row has, which can be one that an answer
           // does not say as it is: `apiTime`.
           share(id, "customScheduled", before.dueAt ?? undefined);
+        }
+      } else if (body.mode) {
+        share(id, body.mode, time);
+      }
+
+      // A post that was held and is held still, at the time that it had,
+      // has only been edited. The mutators took what the inbox said of
+      // it away when the post was taken back, and said it anew, unread
+      // and with a push message, when it was scheduled again. The devices
+      // are not told a second time, and the inbox is left as it was: read
+      // if somebody had read it, without the notification if somebody
+      // had dismissed it.
+      const after = postOf(id);
+      if (before.heldAt !== null && keepsTime && after.heldAt !== null) {
+        const anew = readRow(db, "notification", id);
+        if (anew && anew.createdAt !== notice?.createdAt) {
+          bench.dropPushesSince(pushMark, id);
+          const seen = { id, createdAt: anew.createdAt };
+          if (!notice) mutate("notification.dismiss", seen);
+          else if (notice.readAt !== null) {
+            mutate("notification.read", { notifications: [seen] });
+          }
         }
       }
       return ok(postResource(postOf(id)));
@@ -690,6 +850,56 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
       return ok(postingSchedule());
     }
   }
+}
+
+/**
+ * The question for a page of posts, the newest first: those of `status`,
+ * or of every status, that go to `channelId`, or anywhere, after `from`.
+ * Posts that somebody put aside are left out.
+ *
+ * Written so that SQLite walks down an index from where the page begins
+ * and stops at its end, without a sort: `post_status_created_at_idx` with
+ * a status, `post_created_at_idx` without. That takes one status, because
+ * the posts of two are not in one order in the index, and the cursor as
+ * one comparison of a row value: written with `or`, SQLite reads every
+ * post before the cursor to get to it. A test reads the plan.
+ */
+export function postsPage(
+  db: DrizzleSqliteDODatabase,
+  query: {
+    status?: Row<"post">["status"] | undefined;
+    channelId?: string | undefined;
+    from?: { id: string; createdAt: number } | undefined;
+    limit: number;
+  },
+) {
+  const { status, channelId, from } = query;
+  return db
+    .select({ id: posts.id, createdAt: posts.createdAt })
+    .from(posts)
+    .where(
+      and(
+        status === undefined ? undefined : eq(posts.status, status),
+        isNull(posts.trashedAt),
+        channelId === undefined
+          ? undefined
+          : exists(
+              db
+                .select({ id: postTargets.id })
+                .from(postTargets)
+                .where(
+                  and(
+                    eq(postTargets.postId, posts.id),
+                    eq(postTargets.channelId, channelId),
+                  ),
+                ),
+            ),
+        from &&
+          sql`(${posts.createdAt}, ${posts.id}) < (${from.createdAt}, ${from.id})`,
+      ),
+    )
+    .orderBy(desc(posts.createdAt), desc(posts.id))
+    .limit(query.limit);
 }
 
 /**

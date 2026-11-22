@@ -36,6 +36,21 @@ export const apiBasePath = "/api/v1";
 export const maxApiBodyBytes = 256 * 1024;
 
 /**
+ * How many characters of the texts of posts one answer carries at most.
+ * It bounds an answer whatever is in the workspace: a post says its own
+ * text once, and the text of a channel only where the channel has one of
+ * its own, but a post can have fifty channels with a long text each.
+ *
+ * - A page of posts ends before the post that would take it past this,
+ *   and has one post at least.
+ * - One post says the texts that its channels have of their own for as
+ *   long as there is room, and says null for the rest of them, with
+ *   `customized` true. The text of the post itself, at most `maxParts`
+ *   parts of `maxPartTextLength` characters, always has room.
+ */
+export const maxApiAnswerTextLength = 1_000_000;
+
+/**
  * The names of the schemas that the OpenAPI document lists by name. Each
  * is in Zod's registry under its name, with its description, which is
  * where the descriptions of the fields are too.
@@ -244,8 +259,18 @@ const apiTargetSchema = named(
     status: targetStatusSchema.describe(
       "`pending` until the post is to go out, `queued` while it waits its turn on its channel, `sending`, `sent`, `error`, or `uncertain` for a delivery that ended without anybody knowing how far it got.",
     ),
-    text: z.string().describe("The first part of the text that it gets."),
-    thread: z.array(threadPartSchema),
+    text: z
+      .string()
+      .nullable()
+      .describe(
+        `The first part of the text that the channel has of its own. Null if it has none: it gets the text of the post, \`text\` and \`metadata.thread\` of the post. Also null, with \`customized\` true, for a text that the answer has no room for: an answer carries at most ${maxApiAnswerTextLength} characters of texts.`,
+      ),
+    thread: z
+      .array(threadPartSchema)
+      .nullable()
+      .describe(
+        "The further parts of the text that the channel has of its own. Null wherever `text` is.",
+      ),
     customized: z
       .boolean()
       .describe("True if the channel has a text of its own."),
@@ -340,7 +365,7 @@ export type ListPostsQuery = z.infer<typeof listPostsQuerySchema>;
 
 export const apiPostListSchema = named(
   "PostList",
-  "A page of posts, the newest first.",
+  `A page of posts, the newest first. It can have fewer posts than \`first\` asked for, because an answer carries at most ${maxApiAnswerTextLength} characters of texts: \`hasNextPage\` says whether more follow.`,
   z.strictObject({
     posts: z.array(apiPostSchema),
     pageInfo: z.strictObject({

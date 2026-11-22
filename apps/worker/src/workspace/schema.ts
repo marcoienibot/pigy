@@ -50,10 +50,17 @@ export const posts = sqliteTable(
     trashedAt: integer("trashed_at"),
   },
   (table) => [
-    // For the scheduled posts, which the mutators of the queue and every
-    // look at what is due ask for, among all that were ever published.
-    index("post_status_idx").on(table.status),
-    // For the pages of posts that the API lists, the newest first.
+    // By status, and within one by age. For the scheduled posts, which
+    // the mutators of the queue and every look at what is due ask for,
+    // among all that were ever published: the index begins with the
+    // status. And for the pages of the posts of one status that the API
+    // lists, the newest first, which are a walk down it.
+    index("post_status_created_at_idx").on(
+      table.status,
+      table.createdAt,
+      table.id,
+    ),
+    // For the pages of all posts that the API lists, the newest first.
     index("post_created_at_idx").on(table.createdAt, table.id),
   ],
 );

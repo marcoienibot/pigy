@@ -32,6 +32,7 @@ import {
   isNull,
   lt,
   lte,
+  max,
   min,
   ne,
   notExists,
@@ -44,7 +45,16 @@ import {
 } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import { z } from "zod";
-import { type ApiAnswer, type ApiCall, ApiRefusal, carryOut } from "./api.ts";
+import {
+  type ApiAnswer,
+  type ApiBench,
+  type ApiCall,
+  ApiRefusal,
+  carryOut,
+  type KeptApiAnswer,
+  keptOf,
+  replayOf,
+} from "./api.ts";
 import migrations from "./migrations/migrations.js";
 import {
   changeLog,
@@ -1238,38 +1248,64 @@ export class WorkspaceStore {
    * did up to there. The clients hear of the whole or of nothing.
    *
    * With `repeat` the call is carried out once for its key: see `once`.
-   * What is kept under the key is the answer itself, a refusal too, so a
-   * repeat is answered as the first call was, whatever has become of the
-   * post since. The key is the caller's, who sends it with a fingerprint
-   * of the request: a repeat that comes with another fingerprint is
-   * another request under the same key, which is refused and changes
-   * nothing. A call that failed, which is one that threw, has not
-   * happened and is carried out when it is repeated.
+   * What is kept under the key is small, whatever the size of the post:
+   * `KeptApiAnswer` of api.ts. A repeat of a refused call is answered with
+   * the refusal, and a repeat of one that was carried out with the status
+   * of the first answer and with the post as it is now. The key is the
+   * caller's, who sends it with a fingerprint of the request: a repeat
+   * that comes with another fingerprint is another request under the same
+   * key, which is refused and changes nothing. A call that failed, which
+   * is one that threw, has not happened and is carried out when it is
+   * repeated.
    */
   api(
     call: ApiCall,
     now: number,
     repeat?: { key: string; fingerprint: string },
   ): ApiAnswer {
+    const bench: ApiBench = {
+      db: this.db,
+      now,
+      mutate: (name, args) =>
+        this.run([{ name, args }], now, "server")[0] ?? null,
+      pushMark: () =>
+        this.db
+          .select({ last: max(pushOutbox.id) })
+          .from(pushOutbox)
+          .get()?.last ?? 0,
+      dropPushesSince: (mark, notificationId) => {
+        this.db
+          .delete(pushOutbox)
+          .where(
+            and(
+              gt(pushOutbox.id, mark),
+              eq(pushOutbox.notificationId, notificationId),
+            ),
+          )
+          .run();
+      },
+    };
+    const carried: { out?: ApiAnswer } = {};
     const kept = this.once(repeat?.key, now, () => {
       let answer: ApiAnswer;
       try {
         // A transaction within the transaction, for what a refusal undoes:
-        // the answer is kept under the key all the same.
-        answer = this.storage.transactionSync(() =>
-          carryOut(call, {
-            db: this.db,
-            now,
-            mutate: (name, args) =>
-              this.run([{ name, args }], now, "server")[0] ?? null,
-          }),
-        );
+        // the refusal is kept under the key all the same.
+        answer = this.storage.transactionSync(() => carryOut(call, bench));
       } catch (error) {
         if (!(error instanceof ApiRefusal)) throw error;
         answer = error.answer;
       }
-      return { ok: true, fingerprint: repeat?.fingerprint ?? null, answer };
+      carried.out = answer;
+      return {
+        ok: true,
+        fingerprint: repeat?.fingerprint ?? null,
+        // Nothing is kept of a call without a key.
+        answer: repeat ? keptOf(call, answer) : null,
+      };
     });
+    // Carried out now, and answered with what it did.
+    if (carried.out) return carried.out;
     if (repeat && kept.fingerprint !== repeat.fingerprint) {
       return {
         ok: false,
@@ -1278,7 +1314,7 @@ export class WorkspaceStore {
           "This Idempotency-Key was used for another request. A new request takes a new key.",
       };
     }
-    return kept.answer;
+    return replayOf(kept.answer as KeptApiAnswer, bench);
   }
 
   /**

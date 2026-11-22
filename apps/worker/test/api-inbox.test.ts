@@ -189,6 +189,102 @@ it("says of a scheduled post that it is held, changes it, shares it and deletes 
   expect(posts()).toEqual(["First, edited"]);
 });
 
+it("edits a held post without telling the inbox or the devices of it a second time", async () => {
+  onTestFinished(idle);
+  const { test, browser, workspace, channel, api, posts } = await ready(
+    "live",
+    { env: { VAPID_PRIVATE_KEY: vapidPrivateKey } },
+  );
+  const phone = await turnOn(test, browser);
+  const dueAt = new Date(test.clock.time.getTime() + minute).toISOString();
+  const scheduled = (text: string) =>
+    api.create({ text, channelIds: [channel], mode: "customScheduled", dueAt });
+  const read = await scheduled("Read");
+  const unread = await scheduled("Unread");
+  const dismissed = await scheduled("Dismissed");
+  test.advance(2 * hour);
+  await alarm(workspace);
+  // The devices are told of each post that is held, once.
+  expect(await received(test, phone, 3)).toHaveLength(3);
+
+  // The person reads what the inbox says of the first post, and takes
+  // what it says of the third out.
+  const person = new SyncClient();
+  await person.connect(browser, workspace);
+  const noticeOf = (id: string) => {
+    const notice = person.table("notification").find((one) => one.id === id);
+    if (!notice) throw new Error(`The inbox says nothing of ${id}`);
+    return notice;
+  };
+  const seen = ({ id, createdAt }: { id: string; createdAt: number }) => ({
+    id,
+    createdAt,
+  });
+  person.mutate("notification.read", {
+    notifications: [seen(noticeOf(read.id))],
+  });
+  await person.patch();
+  person.mutate("notification.dismiss", seen(noticeOf(dismissed.id)));
+  await person.patch();
+
+  // A script corrects the three posts, and sends the time that each has
+  // with one of them, as a script does that sends the whole post.
+  test.advance(minute);
+  for (const [post, json] of [
+    [read, { text: "Read, edited" }],
+    [unread, { text: "Unread, edited", mode: "customScheduled", dueAt }],
+    [dismissed, { text: "Dismissed, edited" }],
+  ] as const) {
+    const edited = await api.ok(`/posts/${post.id}`, { method: "PATCH", json });
+    expect(edited).toMatchObject({ status: "scheduled", dueAt });
+    expect(edited).toHaveProperty("heldAt", expect.any(String));
+  }
+  expect(posts()).toEqual([]);
+
+  // The inbox is as the person left it: one notification that is read,
+  // one that is not, and none of the post whose notification they took
+  // out.
+  const after = new SyncClient();
+  await after.connect(browser, workspace);
+  expect(
+    after
+      .table("notification")
+      .map(({ id, kind, readAt }) => ({ id, kind, read: readAt !== null }))
+      .sort((a, b) => (a.id < b.id ? -1 : 1)),
+  ).toEqual(
+    [
+      { id: read.id, kind: "post_held", read: true },
+      { id: unread.id, kind: "post_held", read: false },
+    ].sort((a, b) => (a.id < b.id ? -1 : 1)),
+  );
+  // And no device was told again. A fourth post that is held is told
+  // of, which shows that the messages of the edits would have arrived
+  // by now: the device has four, not seven.
+  const fourth = await api.create({
+    text: "Fourth",
+    channelIds: [channel],
+    mode: "customScheduled",
+    dueAt,
+  });
+  const messages = await received(test, phone, 4);
+  expect(messages).toHaveLength(4);
+  expect(messages.at(-1)).toMatchObject({
+    kind: "post_held",
+    postId: fourth.id,
+  });
+
+  // Another time is something new, which is told of: this one is missed
+  // as well, by more than an hour.
+  await api.ok(`/posts/${read.id}`, {
+    method: "PATCH",
+    json: {
+      mode: "customScheduled",
+      dueAt: new Date(test.clock.time.getTime() - 90 * minute).toISOString(),
+    },
+  });
+  expect(await received(test, phone, 5)).toHaveLength(5);
+});
+
 it("has nothing of a scheduled post that somebody put aside in the app, until they take that back", async () => {
   const { test, workspace, channel, api } = await ready();
   const dueAt = new Date(test.clock.time.getTime() + hour).toISOString();

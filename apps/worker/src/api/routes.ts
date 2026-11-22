@@ -341,6 +341,9 @@ export function apiRoutes(dependencies: AppDependencies): Hono<ApiEnv> {
         call,
         operation.method === "get" ? undefined : await repeatOf(c, text),
       );
+      // What the call was answered with before, said again: it was not
+      // carried out now.
+      if (answer.replayed) c.header("Idempotent-Replayed", "true");
       if (!answer.ok) {
         const status = answer.status as ContentfulStatusCode;
         throw answer.field === undefined
