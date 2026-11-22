@@ -610,7 +610,7 @@ export const apiOperations = {
     path: "/posts/{id}",
     summary: "Change a post",
     description:
-      "Changes a draft or a scheduled post. A post that has gone out is refused with a 409. A scheduled post keeps its time, and a post of the queue its place, unless the request gives it another: a request that says the mode that the post has, with the time that it has, changes neither. One that is held is held still then, and nobody is told of it a second time.",
+      "Changes a draft or a scheduled post. A post that has gone out is refused with a 409. A scheduled post keeps its time, and a post of the queue its place, unless the request gives it another: a request that says the mode that the post has, with the time that it has as `dueAt` of an answer says it, changes neither. One that is held is held still then, and nobody is told of it a second time.",
     scope: "posts:write",
     request: updatePostRequestSchema,
     status: 200,

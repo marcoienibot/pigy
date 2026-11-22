@@ -690,6 +690,24 @@ it("says a time that is after the year 9999 as the last of that year, and takes 
     { id: draft.id, dueAt: Date.UTC(20266, 0, 1) },
   ]);
 
+  // A script that sends the whole post back with a change sends the time
+  // that the answer said, which is not the one of the row. It asks for
+  // nothing new by that, and the post is not moved to the year 9999:
+  // with and without a change besides.
+  for (const text of ["Later still", "Later still"]) {
+    const read = await api.post(draft.id);
+    expect(
+      await api.ok(`/posts/${draft.id}`, {
+        method: "PATCH",
+        json: { text, mode: read.mode, dueAt: read.dueAt },
+      }),
+    ).toMatchObject({ status: "scheduled", text, dueAt: lastMoment });
+    await device.patch();
+    expect(device.table("post")).toMatchObject([
+      { id: draft.id, dueAt: Date.UTC(20266, 0, 1) },
+    ]);
+  }
+
   // The API takes the last moment of the year 9999, and nothing later:
   // also not a time of that year which is in the next one in UTC.
   for (const dueAt of [

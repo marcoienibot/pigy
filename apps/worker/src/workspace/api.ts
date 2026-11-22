@@ -3,6 +3,7 @@ import {
   defaultSettings,
   type MutatorArgs,
   type MutatorName,
+  maxApiTime,
   type Network,
   networks,
   ownParts,
@@ -667,8 +668,14 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
       const ahead = place > 0 ? (queued[place - 1]?.id ?? null) : null;
       // What the request leaves of when the post goes out. A request
       // that says what the post has already asks for nothing new: a
-      // script may send the whole post with every change.
+      // script may send the whole post with every change. The time that
+      // the post has is, for that, the one that an answer says, which
+      // `apiTime` makes of a time after the year 9999: a script that
+      // sends that back has named the time of the post, and does not
+      // move it to the year 9999.
       const time = timeOf(body.dueAt);
+      const said =
+        before.dueAt === null ? null : Math.min(before.dueAt, maxApiTime);
       const keepsPlace =
         scheduled &&
         before.mode === "queue" &&
@@ -679,7 +686,7 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
         before.mode === "custom" &&
         !body.saveToDraft &&
         (body.mode === undefined ||
-          (body.mode === "customScheduled" && time === before.dueAt));
+          (body.mode === "customScheduled" && time === said));
       // What the inbox says of a post that is held, and the push messages
       // that wait, to leave both as they are if the post is held still.
       const notice =
