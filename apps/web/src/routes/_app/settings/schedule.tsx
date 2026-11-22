@@ -1,4 +1,4 @@
-import { uuidv7 } from "@pigy/core";
+import { sameTimeZone, uuidv7 } from "@pigy/core";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { Plus, X } from "lucide-react";
 import { type FormEvent, useId, useMemo, useState } from "react";
@@ -106,7 +106,7 @@ function PostingSchedule() {
             {zoneLabel(schedule.zoneName ?? "")} all the same.
           </p>
         )}
-        {chosen !== device && (
+        {(chosen === null || !sameTimeZone(chosen, device)) && (
           <p className="mt-2 text-xs text-muted-foreground">
             This device is in {zoneLabel(device)}.{" "}
             <button

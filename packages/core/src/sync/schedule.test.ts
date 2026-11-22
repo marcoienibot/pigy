@@ -698,6 +698,23 @@ it("sets the time zone of a device only for a workspace that has none", () => {
   ]);
 });
 
+it("stores a time zone under its one name, however a client wrote it", () => {
+  const workspace = memoryWorkspace();
+
+  workspace.mutate("settings.setTimeZone", { timeZone: "eUrOpE/rOmE" });
+
+  // Not as it came: a device in Rome would be told that the times are
+  // in another zone than its own, "eUrOpE/rOmE".
+  expect(workspace.rows("settings")).toMatchObject([
+    { timeZone: "Europe/Rome" },
+  ]);
+  // The same zone in another spelling is no change, and does not give
+  // the posts of the queue their times anew.
+  const before = requeues.count;
+  workspace.mutate("settings.setTimeZone", { timeZone: "EUROPE/ROME" });
+  expect(requeues.count).toBe(before);
+});
+
 it("refuses a time zone that it does not know", () => {
   const workspace = memoryWorkspace();
 

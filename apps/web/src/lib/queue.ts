@@ -10,6 +10,7 @@ import {
   ownParts,
   partsFor,
   type Row,
+  sameTimeZone,
   settingsId,
   type Tables,
   timeOf,
@@ -128,7 +129,7 @@ export function zoneNote(
     case "none":
       return "Times are in UTC until this workspace has a time zone.";
     case "set":
-      return timeZone === device
+      return sameTimeZone(timeZone, device)
         ? null
         : `Times are in ${zoneLabel(timeZone)}, the time zone of this workspace.`;
     case "device":

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { idSchema } from "../id.ts";
 import { limitsSchema } from "../network/limits.ts";
-import { isTimeZone, slotTimes } from "../schedule/zone.ts";
+import { canonicalTimeZone, slotTimes } from "../schedule/zone.ts";
 import {
   channelRowSchema,
   defaultSettings,
@@ -1248,15 +1248,22 @@ export const mutators = {
    * first slot is added or its first post is scheduled. The posts of the queue take the slots as they are in the new zone.
    *
    * The zone has to be one that the server knows: a mutator that computed
-   * with a zone it does not know would compute with another.
+   * with a zone it does not know would compute with another. It is stored
+   * under the name that whoever runs the mutator has for it,
+   * `canonicalTimeZone`: "europe/rome" as "Europe/Rome". So a workspace
+   * has one spelling of its zone, the server's, whatever a client sent,
+   * and what is stored is one of the few hundred names that the server
+   * has, not one of the many ways to write them.
    */
   "settings.setTimeZone": mutator(
     z.strictObject({
       timeZone: z.string().min(1).max(maxTimeZoneLength),
       onlyIfUnset: z.boolean().optional(),
     }),
-    (tx, { timeZone, onlyIfUnset }) => {
-      if (!isTimeZone(timeZone)) {
+    (tx, args) => {
+      const { onlyIfUnset } = args;
+      const timeZone = canonicalTimeZone(args.timeZone);
+      if (timeZone === null || timeZone.length > maxTimeZoneLength) {
         throw new MutationRejected(
           "invalid_arguments",
           "timeZone: This is not a time zone that pigy knows",

@@ -35,7 +35,19 @@ export type LocalTime = {
 /** A day of the calendar. */
 export type LocalDate = Pick<LocalTime, "year" | "month" | "day">;
 
+/**
+ * The formats that read the clocks of a zone, by the name that was asked
+ * for. Only `formatOf` fills it, and not without end: a format is some
+ * tens of kilobytes, and the objects of many workspaces share the memory
+ * of one isolate.
+ */
 const formats = new Map<string, Intl.DateTimeFormat>();
+
+/** How many formats are kept: more zones than one isolate computes with. */
+export const maxFormats = 64;
+
+/** How many formats are kept now, for a test of that bound. */
+export const keptFormats = () => formats.size;
 
 function make(timeZone: string): Intl.DateTimeFormat {
   return new Intl.DateTimeFormat("en-US", {
@@ -52,15 +64,43 @@ function make(timeZone: string): Intl.DateTimeFormat {
   });
 }
 
+/**
+ * The name of the time zone `name` as this runtime spells it, or null if
+ * it knows no such zone. The names of zones are read without regard to
+ * case, and a zone can have several: "europe/rome" is "Europe/Rome", and
+ * "Etc/UTC" is "UTC" where the runtime says so. Which of the names of a
+ * zone a runtime takes for its own differs between runtimes and their
+ * versions, so two names are compared with `sameTimeZone`, and never as
+ * they are written.
+ *
+ * Nothing is kept of the question: what is asked here is what a client
+ * sent, and anybody can send every spelling of every zone.
+ */
+export function canonicalTimeZone(name: string): string | null {
+  try {
+    return new Intl.DateTimeFormat("en-US", {
+      timeZone: name,
+    }).resolvedOptions().timeZone;
+  } catch {
+    return null;
+  }
+}
+
 /** Whether this runtime knows the time zone `name`. */
 export function isTimeZone(name: string): boolean {
-  if (formats.has(name)) return true;
-  try {
-    formats.set(name, make(name));
-    return true;
-  } catch {
-    return false;
-  }
+  // A zone that was computed with is known.
+  return formats.has(name) || canonicalTimeZone(name) !== null;
+}
+
+/**
+ * Whether two names are names of one time zone, as far as this runtime
+ * knows. Two names that it does not know are the same only if they are
+ * written the same.
+ */
+export function sameTimeZone(a: string, b: string): boolean {
+  if (a === b) return true;
+  const [first, second] = [canonicalTimeZone(a), canonicalTimeZone(b)];
+  return first !== null && first === second;
 }
 
 /**
@@ -70,10 +110,20 @@ export function isTimeZone(name: string): boolean {
  * shows times that the server then corrects.
  */
 function formatOf(zone: string): Intl.DateTimeFormat {
-  const format = formats.get(zone);
-  if (format) return format;
-  if (isTimeZone(zone)) return formatOf(zone);
-  return formatOf("UTC");
+  const kept = formats.get(zone);
+  if (kept) return kept;
+  let format: Intl.DateTimeFormat;
+  try {
+    format = make(zone);
+  } catch (error) {
+    if (zone === "UTC") throw error;
+    // Kept under the name that was asked for, like any other: the
+    // question comes again with every time that is computed.
+    format = formatOf("UTC");
+  }
+  if (formats.size >= maxFormats) formats.clear();
+  formats.set(zone, format);
+  return format;
 }
 
 /** What the clocks of `zone` show at `time`, as if they were UTC's. */

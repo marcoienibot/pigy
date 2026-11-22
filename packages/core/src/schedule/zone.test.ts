@@ -1,9 +1,13 @@
 import { expect, it } from "vitest";
 import {
   addDays,
+  canonicalTimeZone,
   isTimeZone,
+  keptFormats,
   localTimeAt,
+  maxFormats,
   offsetAt,
+  sameTimeZone,
   slotTimes,
   timeOf,
 } from "./zone.ts";
@@ -322,6 +326,68 @@ it("knows a zone of the IANA database and no other", () => {
   expect(isTimeZone("UTC")).toBe(true);
   expect(isTimeZone("Europe/Atlantis")).toBe(false);
   expect(isTimeZone("")).toBe(false);
+});
+
+/** `name` in every way to write it in capitals and small letters. */
+function spellings(name: string, count: number): string[] {
+  const letters = [...name].flatMap((character, index) =>
+    /[a-z]/i.test(character) ? [index] : [],
+  );
+  return Array.from({ length: count }, (_, number) =>
+    [...name]
+      .map((character, index) => {
+        const bit = letters.indexOf(index);
+        // The bits of the number say which letters are capitals.
+        return bit >= 0 && (number >> bit) & 1
+          ? character.toUpperCase()
+          : character.toLowerCase();
+      })
+      .join(""),
+  );
+}
+
+it("keeps nothing of the zones that it is asked about, however they are written", () => {
+  // Computed with once, so that the zone itself is among what is kept.
+  offsetAt("Europe/Rome", 0);
+  const before = keptFormats();
+  const names = spellings("Europe/Rome", 500);
+  expect(new Set(names).size).toBe(500);
+
+  // What a client can send: every spelling is a name of the zone, and a
+  // format for each would be tens of megabytes in the memory that the
+  // objects of all workspaces share.
+  for (const name of names) {
+    expect(isTimeZone(name)).toBe(true);
+    expect(canonicalTimeZone(name)).toBe("Europe/Rome");
+  }
+
+  expect(keptFormats()).toBe(before);
+});
+
+it("keeps the formats of the zones that it computes with, up to a bound", () => {
+  // More names than are kept, each computed with.
+  for (const name of spellings("Europe/Rome", maxFormats * 3)) {
+    expect(offsetAt(name, at("2026-01-15T12:00:00Z"))).toBe(60 * 60 * 1000);
+    expect(keptFormats()).toBeLessThanOrEqual(maxFormats);
+  }
+  // Names that it does not know are kept too, and count: a browser that
+  // is behind the server computes with one for every time that it shows.
+  for (let number = 0; number < maxFormats * 3; number += 1) {
+    expect(offsetAt(`Europe/Atlantis${number}`, 0)).toBe(0);
+    expect(keptFormats()).toBeLessThanOrEqual(maxFormats);
+  }
+});
+
+it("takes two names for one zone where they are spellings or names of the same, and not otherwise", () => {
+  expect(sameTimeZone("Europe/Rome", "europe/rome")).toBe(true);
+  // An older name of a zone and its newer one, which runtimes do not
+  // agree on which to report.
+  expect(sameTimeZone("Asia/Calcutta", "Asia/Kolkata")).toBe(true);
+  expect(sameTimeZone("Europe/Rome", "Europe/Paris")).toBe(false);
+  // Unknown to this runtime: the same only as they are written.
+  expect(sameTimeZone("Europe/Atlantis", "Europe/Atlantis")).toBe(true);
+  expect(sameTimeZone("Europe/Atlantis", "europe/atlantis")).toBe(false);
+  expect(canonicalTimeZone("Europe/Atlantis")).toBeNull();
 });
 
 it("reads a zone that it does not know as UTC", () => {

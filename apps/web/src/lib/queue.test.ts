@@ -171,6 +171,17 @@ it("names the zone of the workspace where it is not the zone of the device, and 
     "Times are in Europe/Rome, the time zone of this workspace.",
   );
   expect(zoneNote(schedule, rome)).toBeNull();
+  // Also where the device has another name for the same zone: browsers
+  // do not agree on which name of a zone to report.
+  const india = selectSchedule(
+    tablesOf({
+      settings: [
+        { id: settingsId, timeZone: "Asia/Calcutta", queuePaused: false },
+      ],
+    }),
+    "Asia/Kolkata",
+  );
+  expect(zoneNote(india, "Asia/Kolkata")).toBeNull();
   expect(fieldZone(schedule)).toBe(
     "In the time zone of this workspace, Europe/Rome.",
   );
