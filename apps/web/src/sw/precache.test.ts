@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Build } from "./build.ts";
 import { keeps, type Platform, precache, refusal } from "./precache.ts";
+import { memoryShares } from "./shares.ts";
 
 const origin = "https://pigy.example";
 
@@ -466,12 +467,63 @@ describe("answering", () => {
     expect(app.answer(request(address, { mode }))).toBe(undefined);
   });
 
-  it("leaves what is not a GET to the network", async () => {
+  it("leaves what is not a GET to the network, but for a share", async () => {
     const { app } = await installed();
 
-    // A form that is posted to a screen of the app, as the share target of
-    // phase 9 will be: it has a body that the app shell would drop.
+    // A form that is posted to a screen of the app: it has a body that the
+    // app shell would drop.
     expect(app.answer(request("/", { method: "POST" }))).toBe(undefined);
+    // A share that a page posts, and does not navigate with, is nothing
+    // that the share target of the manifest sends.
+    expect(
+      app.answer(request("/share", { method: "POST", mode: "cors" })),
+    ).toBe(undefined);
+  });
+
+  it("keeps the files of a share on the device and sends the browser on to the share screen", async () => {
+    const { fetch } = server(files);
+    const shares = memoryShares();
+    const app = precache(build, {
+      caches: browserCaches().caches,
+      fetch,
+      origin,
+      shares: { store: shares, now: () => 1000, newId: () => "share-1" },
+    });
+    await app.install();
+    const form = new FormData();
+    form.set("text", "A harbour");
+    form.append(
+      "images",
+      new File([Uint8Array.of(1, 2, 3)], "harbour.jpg", {
+        type: "image/jpeg",
+      }),
+    );
+    const posted = new Request(`${origin}/share`, {
+      method: "POST",
+      body: form,
+    });
+    // A navigation, as the browser makes one of a share: `new Request()`
+    // cannot.
+    Object.defineProperty(posted, "mode", { value: "navigate" });
+
+    const answer = await app.answer(posted);
+
+    expect(answer?.status).toBe(303);
+    expect(answer?.headers.get("Location")).toBe(
+      `${origin}/share?text=A+harbour&files=share-1`,
+    );
+    expect(shares.all()).toMatchObject([
+      { id: "share-1", at: 1000, files: [{ name: "harbour.jpg" }], left: 0 },
+    ]);
+  });
+
+  it("leaves a share to the network without a place for its files, as a service worker of a version before them does", async () => {
+    // Cloudflare answers it with a 405 then: a device that runs such a
+    // version cannot be shared files to until it runs the next one.
+    const { app } = await installed();
+    expect(
+      app.answer(request("/share", { method: "POST", mode: "navigate" })),
+    ).toBe(undefined);
   });
 
   it("asks the server when the cache is gone", async () => {

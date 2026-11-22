@@ -1,4 +1,5 @@
 import type { Build } from "./build.ts";
+import { receiveShare, type ShareTools } from "./shares.ts";
 import { workerPaths } from "./worker-paths.ts";
 
 /** What the service worker takes from its browser: `caches` and `fetch`. */
@@ -16,6 +17,12 @@ export type Platform = {
   fetch(input: string | Request, init?: RequestInit): Promise<Response>;
   /** The origin of the app. */
   origin: string;
+  /**
+   * Where the files of a share wait for the share screen. Without it, a
+   * share with files is left to the network, as by a service worker of a
+   * version before them.
+   */
+  shares?: ShareTools;
 };
 
 /**
@@ -96,7 +103,10 @@ export async function keeps(
  * after the build, and nothing else is kept: no answer of the API and no
  * synced data.
  */
-export function precache(build: Build, { caches, fetch, origin }: Platform) {
+export function precache(
+  build: Build,
+  { caches, fetch, origin, shares }: Platform,
+) {
   const name = `${prefix}${build.version}`;
   const files = new Set(build.files);
   const toWorker = workerPaths(build.workerFirst);
@@ -118,6 +128,20 @@ export function precache(build: Build, { caches, fetch, origin }: Platform) {
     // That goes for a navigation only: a script that asks for a file that
     // is not there must not be handed a page.
     return request.mode === "navigate" ? shell : undefined;
+  };
+
+  /**
+   * Whether `request` is what the share target of the manifest sends: a
+   * navigation that posts a form to `/share`, with the files of a share.
+   * The Worker has no such route, and the static files of the app take no
+   * `POST`, so it is the service worker's to answer or nobody's: a version
+   * of it from before shares had files leaves it to the network, which
+   * answers 405.
+   */
+  const isShare = (request: Request): boolean => {
+    if (request.method !== "POST" || request.mode !== "navigate") return false;
+    const url = new URL(request.url);
+    return url.origin === origin && url.pathname === "/share";
   };
 
   return {
@@ -173,6 +197,9 @@ export function precache(build: Build, { caches, fetch, origin }: Platform) {
      * that is not a file of the app, and above all the paths of the Worker.
      */
     answer(request: Request): Promise<Response> | undefined {
+      if (shares && isShare(request)) {
+        return receiveShare(request, origin, shares);
+      }
       const path = fileFor(request);
       if (path === undefined) return undefined;
       return (

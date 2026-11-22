@@ -13,7 +13,7 @@ import { renewNotifications } from "@/lib/notifications";
 import { useOnline } from "@/lib/online";
 import { checkForUpdate, onSubscriptionChanged } from "@/lib/service-worker";
 import { checkSession, loadSession, SessionUnknown } from "@/lib/session";
-import { dropShared, keepShared } from "@/lib/share";
+import { dropShared, forgetOldShares, keepShared } from "@/lib/share";
 import { chosenWorkspace, keepsAddress, showWorkspace } from "@/lib/workspace";
 import { SyncProvider } from "@/sync/react";
 import { syncUnsent, workspaceSync } from "@/sync/workspace-sync";
@@ -29,6 +29,9 @@ import { syncUnsent, workspaceSync } from "@/sync/workspace-sync";
  * at the same time, and if the session has ended, the app leaves for the
  * sign-in page when the answer is in.
  */
+/** Whether this page has deleted the files of shares that are old. */
+let prunedShares = false;
+
 export const Route = createFileRoute("/_app")({
   // Runs on every navigation, so somebody whose session has ended is sent
   // to the sign-in page by the next link they follow. It also runs for a
@@ -69,8 +72,14 @@ export const Route = createFileRoute("/_app")({
     }
     // What a tab has kept of a share, for the sign-in, is for the share
     // screen. Somebody who goes to another screen without deciding there
-    // has left it, as they leave a share that the address holds.
+    // has left it, as they leave a share that the address holds, and its
+    // files go from the device.
     if (!preload && !keepsAddress(location.pathname)) dropShared();
+    // The files of shares that no screen took up, once a page load.
+    if (!preload && !prunedShares) {
+      prunedShares = true;
+      void forgetOldShares();
+    }
     // An address can name the workspace that it is about: the one that a
     // notification leads to, which the person has pressed on a device
     // whose tab may show the other one. A post of the sandbox is not in

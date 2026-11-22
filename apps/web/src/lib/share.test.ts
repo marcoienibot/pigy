@@ -1,6 +1,11 @@
 import { maxPartTextLength } from "@pigy/core";
-import { expect, it } from "vitest";
-import { sharedFrom, sharedText } from "./share.ts";
+import { describe, expect, it } from "vitest";
+import {
+  sharedFrom,
+  sharedImages,
+  sharedText,
+  sharesSomething,
+} from "./share.ts";
 
 it.each([
   [
@@ -83,4 +88,60 @@ it("reads what was shared from an address with or without its question mark, and
     });
   }
   expect(sharedFrom("")).toEqual({});
+});
+
+it("reads the name of the files that the service worker keeps for a share, and a share of files alone shares something", () => {
+  const shared = sharedFrom("files=0193-share");
+  expect(shared).toEqual({ files: "0193-share" });
+  expect(sharedText(shared)).toBe("");
+  expect(sharesSomething(shared)).toBe(true);
+  expect(sharesSomething(sharedFrom("files="))).toBe(false);
+  expect(sharesSomething(sharedFrom("text=+"))).toBe(false);
+});
+
+describe("sharedImages", () => {
+  const file = (name: string, text: string) => ({
+    name,
+    type: "image/png",
+    file: new Blob([text]),
+  });
+  // Reads a file as the editor does: here, by what it holds.
+  const read = async (blob: Blob) =>
+    (await blob.text()) === "image"
+      ? { facts: {} }
+      : { refused: "is not a JPEG, PNG, WebP or GIF image" };
+
+  it("shows the files that are images, by their bytes, and says of the others why not", async () => {
+    const { images, notes } = await sharedImages(
+      {
+        id: "share",
+        at: 0,
+        files: [
+          file("photo.png", "image"),
+          // A page that says that it is a picture.
+          file("page.png", "<html>"),
+          file("", "nothing"),
+        ],
+        left: 2,
+      },
+      read,
+    );
+    expect(images.map(({ name, type }) => ({ name, type }))).toEqual([
+      { name: "photo.png", type: "image/png" },
+    ]);
+    expect(notes).toEqual([
+      "page.png is not a JPEG, PNG, WebP or GIF image.",
+      "A file is not a JPEG, PNG, WebP or GIF image.",
+      "2 more files were shared. A post takes 4 images, of 20 MB at most each.",
+    ]);
+  });
+
+  it("says that the images are gone where the device no longer has them", async () => {
+    expect(await sharedImages(undefined, read)).toEqual({
+      images: [],
+      notes: [
+        "The images of this share are no longer on this device. Share them again.",
+      ],
+    });
+  });
 });

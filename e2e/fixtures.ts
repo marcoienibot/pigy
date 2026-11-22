@@ -475,4 +475,11 @@ export const test = pinned.extend<{
   },
 });
 
-export { expect, type Locator, type Page, type Route, type WebSocketRoute };
+export {
+  type BrowserContext,
+  expect,
+  type Locator,
+  type Page,
+  type Route,
+  type WebSocketRoute,
+};

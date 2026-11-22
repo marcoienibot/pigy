@@ -3,6 +3,7 @@ import type { Build } from "./build.ts";
 import { activateMessage } from "./messages.ts";
 import { precache } from "./precache.ts";
 import { push } from "./push.ts";
+import { indexedDbShares } from "./shares.ts";
 import { workerPaths } from "./worker-paths.ts";
 
 /**
@@ -14,9 +15,9 @@ import { workerPaths } from "./worker-paths.ts";
  * precache.ts and push.ts, where it can be tested: this file only listens
  * to the browser.
  *
- * What is shared to pigy needs nothing here: the share target of the
- * manifest is an address of the app, which is a navigation like any
- * other and gets the app shell.
+ * What is shared to pigy with files arrives here as a form that is
+ * posted to `/share`: the files wait on the device for the share screen,
+ * which the browser is sent on to. See shares.ts.
  *
  * It is one file, /sw.js, built apart from the app: see
  * service-worker-plugin.ts.
@@ -30,6 +31,11 @@ const app = precache(__BUILD__, {
   caches,
   fetch: (input, init) => fetch(input, init),
   origin: self.location.origin,
+  shares: {
+    store: indexedDbShares(indexedDB),
+    now: () => Date.now(),
+    newId: () => crypto.randomUUID(),
+  },
 });
 
 self.addEventListener("install", (event) => {
