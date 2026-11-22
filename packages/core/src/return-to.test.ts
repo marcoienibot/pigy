@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { safeReturnTo } from "./return-to.ts";
+import { appPath, safeReturnTo } from "./return-to.ts";
 
 it.each([
   ["/queue", "/queue"],
@@ -34,4 +34,30 @@ it("returns the form a browser would resolve, not the raw input", () => {
   // The ".." is resolved here, so that the check and the redirect cannot
   // disagree about where this leads.
   expect(safeReturnTo("/settings/../queue")).toBe("/queue");
+});
+
+// Where a notification leads: the service worker reads the address back
+// from the notification and may open a window there, and the window that
+// it tells goes there. Both ask this.
+
+it.each([
+  ["a screen", "/inbox"],
+  ["a screen with what it is to show", "/sent?post=1&inWorkspace=a-b"],
+  ["the first screen", "/"],
+])("takes %s for a path of the app", (_what, address) => {
+  expect(appPath(address)).toBe(address);
+});
+
+it.each([
+  ["an address at another site", "https://elsewhere.example/"],
+  ["an address that leaves the site", "//elsewhere.example/"],
+  // A browser reads a backslash as a slash, and drops a tab: it would
+  // resolve both to another site.
+  ["the same with a backslash", "/\\elsewhere.example/"],
+  ["the same with a tab in it", "/\t/elsewhere.example/"],
+  ["a script", "javascript:alert(1)"],
+  ["what is no address", 7],
+  ["no address at all", undefined],
+])("takes %s for no path of the app", (_what, address) => {
+  expect(appPath(address)).toBeNull();
 });

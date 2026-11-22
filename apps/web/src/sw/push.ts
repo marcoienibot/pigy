@@ -1,3 +1,6 @@
+// Not from "@pigy/core": the service worker is one file, and that entry
+// point would put all of the package into it.
+import { appPath } from "@pigy/core/return-to";
 import { navigateMessage, subscriptionChangedMessage } from "./messages.ts";
 
 /**
@@ -37,12 +40,16 @@ export type AppWindow = {
 export type Reply = { port: unknown; answered: Promise<boolean> };
 
 /**
- * How long a window has to say that it has heard where to go, in
- * milliseconds. A window of the app answers as soon as it is told, so
- * this is how long the person waits for a new window where the one that
- * was asked cannot answer.
+ * How long the service worker waits, from the press of a notification,
+ * for a window to say that it has heard where to go, in milliseconds,
+ * the time that the browser takes to list its windows included.
+ *
+ * A browser lets a worker bring a window to the front and open one only
+ * for a while after the press: Firefox for about a second, and what comes
+ * later is refused. So this is well under a second, and a window that
+ * answers later has gone where it was told all the same.
  */
-export const answerWithinMs = 1000;
+export const answerWithinMs = 400;
 
 /** What this takes from the browser. */
 export type PushPlatform = {
@@ -207,17 +214,22 @@ export function shownFor(text: string | undefined, now: number): Shown {
 }
 
 /**
- * `url` if it is a path of the app, as a notification of this worker
- * carries one, and the inbox otherwise. What a notification holds is read
- * back from the browser, and nothing but a path of the app is opened.
+ * `url` of what a notification holds if it is a path of the app, as a
+ * notification of this worker carries one, and the inbox otherwise. What
+ * a notification holds is read back from the browser, and nothing but a
+ * path of the app is opened: by the rule that the window has for where
+ * it lets itself be led, `appPath`, which also refuses what a browser
+ * reads as another site, such as "/\host".
  */
 function pathOf(data: unknown): string {
   const url =
     typeof data === "object" && data !== null && "url" in data
       ? data.url
       : undefined;
-  return typeof url === "string" && /^\/(?!\/)/.test(url) ? url : unread.url;
+  return appPath(url) ?? unread.url;
 }
+
+const noop = () => undefined;
 
 export function push({
   showNotification,
@@ -252,7 +264,8 @@ export function push({
     /**
      * The person has pressed a notification that holds `data`: brings a
      * window of the app to the front and has it go to where the thing is
-     * dealt with, or opens one there.
+     * dealt with, or opens one there. It never fails: what the browser
+     * refuses is left undone.
      *
      * A window that is open is told where to go and goes there itself,
      * without being loaded again: it may hold what it has not stored. The
@@ -261,31 +274,53 @@ export function push({
      * page of a simulated network, has the address of the app and
      * nothing that listens.
      *
-     * The window says that it has heard. One that does not, in the time
-     * that it has, is a page that is still starting and does not listen
-     * yet, or one that is stuck: a window is opened then, so that
-     * pressing a notification always leads somewhere.
+     * The window says that it has heard. One that does not, in what is
+     * left of `answerWithinMs` since the press, is a page that is still
+     * starting and does not listen yet, a window of another version of
+     * the app, or one that is stuck: a window is opened then, so that
+     * pressing a notification leads somewhere.
+     *
+     * A browser gives a worker little for a press: about a second in
+     * Firefox, and Chrome, as far as is known, one thing of the two,
+     * bringing a window to the front or opening one (PLAN.md section 19).
+     * So the order goes by what the window can do:
+     *
+     * - One that is hidden may have been put aside by the browser, as the
+     *   app of a phone that is not on screen, and hears nothing before it
+     *   is brought forward. It is brought to the front first, and then
+     *   told. If the browser opens no window after that, the person is
+     *   in the app at least, and the window goes where it was told when
+     *   it hears.
+     * - One that the person sees can answer where it is. It is told
+     *   first, and brought to the front when it has answered, so that a
+     *   window can still be opened when it has not.
      */
     async clicked(data: unknown): Promise<void> {
+      const pressedAt = now();
       const url = pathOf(data);
+      // Refused when the press no longer counts for the browser. Nothing
+      // is left to do about it then.
+      const openOne = () => openWindow(url).then(noop, noop);
       const open = (await windows()).filter(isApp);
       const window =
         open.find(({ focused }) => focused) ??
         open.find(({ visibilityState }) => visibilityState === "visible") ??
         open[0];
-      if (!window) {
-        await openWindow(url);
-        return;
-      }
-      const { port, answered } = reply(answerWithinMs);
-      window.postMessage({ ...navigateMessage, url }, [port]);
-      if (!(await answered)) {
-        await openWindow(url);
-        return;
-      }
+      if (!window) return openOne();
       // A browser may refuse to bring a window to the front. The window
-      // has gone where it was told all the same.
-      await window.focus().catch(() => undefined);
+      // goes where it is told all the same.
+      const bring = () => window.focus().then(noop, noop);
+      const hidden = window.visibilityState !== "visible";
+      // Not waited for before the window is told: the time runs from the
+      // press, and a window that the browser takes long to bring forward
+      // has its message waiting for it.
+      const brought = hidden ? bring() : undefined;
+      const { port, answered } = reply(
+        Math.max(0, answerWithinMs - (now() - pressedAt)),
+      );
+      window.postMessage({ ...navigateMessage, url }, [port]);
+      if (!(await answered)) return openOne();
+      await (brought ?? bring());
     },
 
     /**

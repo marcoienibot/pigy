@@ -1,4 +1,4 @@
-import { safeReturnTo } from "@pigy/core";
+import { appPath } from "@pigy/core";
 import { useSyncExternalStore } from "react";
 import {
   activateMessage,
@@ -285,14 +285,12 @@ export function pressedPath(message: unknown): string | null {
     message === null ||
     !("type" in message) ||
     message.type !== navigateMessage.type ||
-    !("url" in message) ||
-    typeof message.url !== "string"
+    !("url" in message)
   ) {
     return null;
   }
-  // The path that is returned is the one that was checked.
-  const path = safeReturnTo(message.url);
-  return path === "/" && message.url !== "/" ? null : path;
+  // The rule that the service worker has for what it opens: `appPath`.
+  return appPath(message.url);
 }
 
 /**

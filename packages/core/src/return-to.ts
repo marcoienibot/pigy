@@ -26,3 +26,18 @@ export function safeReturnTo(returnTo: string | null | undefined): string {
   if (path.startsWith("//")) return "/";
   return path;
 }
+
+/**
+ * `address` if it is a path within pigy, in the form that was checked,
+ * and null otherwise: for an address that is to lead somewhere or
+ * nowhere, as the one that a notification holds, where `safeReturnTo`
+ * always leads somewhere. The service worker and the window that it tells
+ * where to go both go by this, so that neither takes an address that the
+ * other refuses.
+ */
+export function appPath(address: unknown): string | null {
+  if (typeof address !== "string") return null;
+  const path = safeReturnTo(address);
+  // The home page is also what `safeReturnTo` falls back to.
+  return path === "/" && address !== "/" ? null : path;
+}
