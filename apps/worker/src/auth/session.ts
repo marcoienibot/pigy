@@ -1,8 +1,14 @@
-import { and, eq, inArray, lte, ne } from "drizzle-orm";
+import { and, eq, inArray, isNull, lte, ne, type SQL } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import type { Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
-import { allowedEmails, sessions, users } from "../db/schema.ts";
+import {
+  allowedEmails,
+  apiKeys,
+  sessions,
+  users,
+  workspaces,
+} from "../db/schema.ts";
 import { randomHex, sha256Hex } from "../digest.ts";
 import type { AppEnv, Auth } from "../env.ts";
 
@@ -92,47 +98,102 @@ export async function revokeSession(
   if (session) await deleteSession(db, session.id);
 }
 
+/** The workspaces of the accounts that `accounts` selects. */
+const workspacesOf = (db: DrizzleD1Database, accounts: SQL | undefined) =>
+  db
+    .select({ id: workspaces.id })
+    .from(workspaces)
+    .innerJoin(users, eq(users.id, workspaces.ownerId))
+    .where(accounts);
+
+/** Revokes the API keys of the accounts that `accounts` selects. */
+const revokeKeysOf = (
+  db: DrizzleD1Database,
+  accounts: SQL | undefined,
+  now: Date,
+) =>
+  db
+    .update(apiKeys)
+    .set({ revokedAt: now })
+    .where(
+      and(
+        isNull(apiKeys.revokedAt),
+        inArray(apiKeys.workspaceId, workspacesOf(db, accounts)),
+      ),
+    );
+
 /**
- * Ends every session of the Google account `googleSub`, on all devices. Does
- * nothing for an account that has never signed in.
+ * Ends every session of the Google account `googleSub`, on all devices,
+ * because Google has just said that the account is nobody who may sign
+ * in. Does nothing for an account that has never signed in.
+ *
+ * `verifiedEmail` is the address that Google has verified for the account
+ * today, if it has one. Unless that is the address that the account is
+ * stored with, the account has lost the identity that it was let in with:
+ * its address is no longer verified, or it has another one. Its API keys
+ * are then revoked with its sessions, in one batch. A key is good for as
+ * long as the stored address of its owner is invited, and that address
+ * stays stored, so the keys would go on working for somebody of whom
+ * nothing says any more that the address is theirs. They do not come
+ * back: the person makes new ones once they have signed in again.
+ *
+ * An account that still has its address and is only no longer invited
+ * keeps its keys, which stop by themselves: `verifyApiKey` looks the
+ * invitation up with every request, and they work again when the person
+ * is invited again.
  */
 export async function revokeSessionsOfAccount(
   db: DrizzleD1Database,
   googleSub: string,
+  verifiedEmail: string | undefined,
+  now: Date,
 ): Promise<void> {
-  await db
-    .delete(sessions)
-    .where(
-      inArray(
-        sessions.userId,
-        db
-          .select({ id: users.id })
-          .from(users)
-          .where(eq(users.googleSub, googleSub)),
+  const account = eq(users.googleSub, googleSub);
+  await db.batch([
+    db
+      .delete(sessions)
+      .where(
+        inArray(
+          sessions.userId,
+          db.select({ id: users.id }).from(users).where(account),
+        ),
       ),
-    );
+    revokeKeysOf(
+      db,
+      verifiedEmail === undefined
+        ? account
+        : and(account, ne(users.email, verifiedEmail)),
+      now,
+    ),
+  ]);
 }
 
 /**
  * Ends every session of the accounts that are stored with `email` and are
- * not the Google account `googleSub`. Google has just said that the address
- * belongs to `googleSub` today, so an account that was let in with it
- * earlier has lost it since.
+ * not the Google account `googleSub`, and revokes their API keys, in one
+ * batch. Google has just said that the address belongs to `googleSub`
+ * today, so an account that was let in with it earlier has lost it since:
+ * its sessions and its keys are matched against that address, and would
+ * go on working with the role of the address.
  */
-export async function revokeSessionsOfOtherAccountsWith(
+export async function revokeAccessOfOtherAccountsWith(
   db: DrizzleD1Database,
   email: string,
   googleSub: string,
+  now: Date,
 ): Promise<void> {
-  await db.delete(sessions).where(
-    inArray(
-      sessions.userId,
-      db
-        .select({ id: users.id })
-        .from(users)
-        .where(and(eq(users.email, email), ne(users.googleSub, googleSub))),
-    ),
-  );
+  const others = and(eq(users.email, email), ne(users.googleSub, googleSub));
+  await db.batch([
+    db
+      .delete(sessions)
+      .where(
+        inArray(
+          sessions.userId,
+          db.select({ id: users.id }).from(users).where(others),
+        ),
+      ),
+    revokeKeysOf(db, others, now),
+  ]);
 }
 
 /**

@@ -174,6 +174,13 @@ const unknown = { refused: "This API key is not valid" };
  * work again if the person is invited again, as their workspaces are
  * there again.
  *
+ * That lookup goes by the address that is stored for the owner, which
+ * says who they were at their last sign-in that succeeded. When Google
+ * says at a sign-in that the account no longer has that address, or that
+ * another account has it, the address stays stored and may stay invited:
+ * the keys are revoked then, with the sessions, by `auth/session.ts`,
+ * and do not come back.
+ *
  * Until the secret has been found right, every refusal reads the same:
  * whoever has no key learns nothing of the keys that exist.
  */

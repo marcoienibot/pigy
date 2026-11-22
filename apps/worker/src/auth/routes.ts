@@ -21,9 +21,9 @@ import {
   deleteExpiredSessions,
   isSecure,
   readSessionCookie,
+  revokeAccessOfOtherAccountsWith,
   revokeSession,
   revokeSessionsOfAccount,
-  revokeSessionsOfOtherAccountsWith,
   writeSessionCookie,
 } from "./session.ts";
 
@@ -151,10 +151,13 @@ export function authRoutes(dependencies: AppDependencies): Hono<AppEnv> {
       // The stored address stays as it is. Nothing is stored about somebody
       // who is not invited, which is what the address Google reports now
       // would be, and an unverified one proves nothing. The old address
-      // gives no access any more either: with the sessions gone, only a
+      // gives no access any more either. With the sessions gone, only a
       // sign-in that succeeds starts one, and it stores the address of that
-      // day first.
-      await revokeSessionsOfAccount(db, identity.sub);
+      // day first. And the API keys of the account, which are good for as
+      // long as its stored address is invited, are revoked here unless
+      // Google has verified that very address for the account today: then
+      // it is only not invited, and its keys stop by that.
+      await revokeSessionsOfAccount(db, identity.sub, email, now());
       return identity.emailVerified
         ? c.redirect("/invite-only")
         : signInFailed(c, "email_not_verified");
@@ -182,7 +185,8 @@ export function authRoutes(dependencies: AppDependencies): Hono<AppEnv> {
     // it before is still stored with it, and its sessions are matched
     // against that address, so they would go on working with the role of
     // the address without that account ever signing in again.
-    await revokeSessionsOfOtherAccountsWith(db, email, identity.sub);
+    // Its API keys are matched against it too, and are revoked.
+    await revokeAccessOfOtherAccountsWith(db, email, identity.sub, time);
 
     // The session a browser had before this sign-in ends here. The new one
     // gets a token that never left the server before, so nobody can have

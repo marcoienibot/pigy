@@ -9,8 +9,11 @@ import {
   breakDatabase,
   expectErrors,
   invite,
+  locationOf,
   logged,
+  me,
   signedIn,
+  signIn,
 } from "./helpers.ts";
 import { workspaceIds } from "./sync-client.ts";
 
@@ -254,6 +257,114 @@ it("stops the keys of a person who is no longer invited, and takes them again wh
   );
   // Nothing was done to the key: the owner is looked up with every
   // request, so it is good again when they are.
+  await invite(test, "member@example.com");
+  await api.ok("/account");
+});
+
+it("revokes the keys of an account whose address Google no longer verifies, with its sessions", async () => {
+  const { test } = await startedApi();
+  await invite(test, "member@example.com");
+  const account = { email: "member@example.com", sub: "1001" };
+  const member = await signedIn(test, account);
+  const ids = await workspaceIds(member);
+  const live = apiClient(test, (await makeKey(member, ids.live)).secret);
+  const sandbox = apiClient(test, (await makeKey(member, ids.sandbox)).secret);
+  await live.ok("/account");
+  await sandbox.ok("/account");
+
+  // Google says at a later sign-in that the address is not verified. The
+  // address stays stored and stays invited, which is all that a key is
+  // matched against: without the revocation both keys would go on.
+  const refused = await signIn(test, test.browser(), {
+    ...account,
+    verified: false,
+  });
+  expect(locationOf(refused)).toBe("/sign-in?error=email_not_verified");
+  expect(await me(member)).toBeNull();
+  for (const api of [live, sandbox]) {
+    expect((await api.refused("/account", {}, 401)).message).toBe(
+      "This API key was revoked",
+    );
+  }
+
+  // They do not come back when the account signs in again: the person
+  // makes new ones.
+  const back = await signedIn(test, account);
+  await live.refused("/account", {}, 401);
+  expect(await listed(back, ids.live)).toEqual([]);
+  await apiClient(test, (await makeKey(back, ids.live)).secret).ok("/account");
+});
+
+it("revokes the keys of an account whose address another Google account has taken over", async () => {
+  const { test } = await startedApi();
+  await invite(test, "member@example.com");
+  const before = await signedIn(test, {
+    email: "member@example.com",
+    sub: "1001",
+  });
+  const { secret } = await makeKey(before, (await workspaceIds(before)).live);
+  const api = apiClient(test, secret);
+  await api.ok("/account");
+
+  // The address is given to somebody new, who signs in with it. The
+  // account that had it is still stored with it.
+  const after = await signedIn(test, {
+    email: "member@example.com",
+    sub: "2002",
+  });
+  expect(await me(before)).toBeNull();
+  expect((await api.refused("/account", {}, 401)).message).toBe(
+    "This API key was revoked",
+  );
+  // The new account has workspaces and keys of its own, which work.
+  const theirs = await makeKey(after, (await workspaceIds(after)).live);
+  await apiClient(test, theirs.secret).ok("/account");
+  await api.refused("/account", {}, 401);
+});
+
+it("revokes the keys of an account that Google reports with another address, which is not invited", async () => {
+  const { test } = await startedApi();
+  await invite(test, "member@example.com");
+  const member = await signedIn(test, {
+    email: "member@example.com",
+    sub: "1001",
+  });
+  const { secret } = await makeKey(member, (await workspaceIds(member)).live);
+  const api = apiClient(test, secret);
+
+  // The account is stored with the address that is invited, and no
+  // longer has it.
+  const refused = await signIn(test, test.browser(), {
+    email: "renamed@example.com",
+    sub: "1001",
+  });
+  expect(locationOf(refused)).toBe("/invite-only");
+  expect((await api.refused("/account", {}, 401)).message).toBe(
+    "This API key was revoked",
+  );
+});
+
+it("keeps the keys of somebody who is only no longer invited and tries to sign in: they stop, and work again", async () => {
+  const { test, browser } = await startedApi();
+  await invite(test, "member@example.com");
+  const account = { email: "member@example.com", sub: "1001" };
+  const member = await signedIn(test, account);
+  const { secret } = await makeKey(member, (await workspaceIds(member)).live);
+  const api = apiClient(test, secret);
+
+  const removed = await browser.fetch(
+    "/api/admin/allowed-emails/member%40example.com",
+    { method: "DELETE" },
+  );
+  expect(removed.status).toBe(204);
+  // The sign-in is refused, and Google has verified the address that the
+  // account is stored with: nothing is lost but the invitation.
+  expect(locationOf(await signIn(test, test.browser(), account))).toBe(
+    "/invite-only",
+  );
+  expect((await api.refused("/account", {}, 401)).message).toBe(
+    "The owner of this API key no longer has access",
+  );
   await invite(test, "member@example.com");
   await api.ok("/account");
 });
