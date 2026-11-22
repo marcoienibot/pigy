@@ -18,6 +18,8 @@ import m0015 from './0015_media.sql';
 import m0016 from './0016_media_abort.sql';
 import m0017 from './0017_media_upload_given_up.sql';
 import m0018 from './0018_stats.sql';
+import m0019 from './0019_frozen.sql';
+import m0020 from './0020_publish_record.sql';
 
   export default {
     journal,
@@ -40,7 +42,9 @@ m0014,
 m0015,
 m0016,
 m0017,
-m0018
+m0018,
+m0019,
+m0020
     }
   }
   

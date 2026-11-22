@@ -19,6 +19,7 @@ export * from "./network/mastodon.ts";
 export * from "./network/network.ts";
 export * from "./network/threads.ts";
 export * from "./preview.ts";
+export * from "./publish-record.ts";
 export * from "./push.ts";
 export * from "./return-to.ts";
 export * from "./sandbox.ts";

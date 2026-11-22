@@ -86,6 +86,26 @@
       "name": "API_RATE_LIMITER",
       "namespace_id": "1001",
       "simple": { "limit": 120, "period": 60 }
+    },
+    // How many requests of reports of the content security policy one
+    // client may send, counted by its address, of IPv6 by its first 64
+    // bits: src/policy-reports.ts. A browser sends what it has gathered
+    // once a minute with the Reporting API, and one request for each
+    // refusal without it. Another number of this account's own choosing,
+    // which no other limiter may share.
+    {
+      "name": "POLICY_REPORT_LIMITER",
+      "namespace_id": "1002",
+      "simple": { "limit": 20, "period": 60 }
+    },
+    // And how many all clients may send together, which bounds what
+    // anybody can have written into the log, whatever addresses they
+    // send from: at most 5 lines a request. One more number of this
+    // account's own.
+    {
+      "name": "POLICY_REPORT_TOTAL_LIMITER",
+      "namespace_id": "1003",
+      "simple": { "limit": 60, "period": 60 }
     }
   ],
   "assets": {

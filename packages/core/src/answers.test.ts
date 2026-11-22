@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { uploadCompleteSchema, uploadStateSchema } from "./media/upload.ts";
 import { linkCardResponseSchema, mentionsResponseSchema } from "./preview.ts";
+import { publishRecordResponseSchema } from "./publish-record.ts";
 import { sandboxFaultsSchema, sandboxFeedSchema } from "./sandbox.ts";
 
 describe("the schemas of answers that a client fetches", () => {
@@ -96,6 +97,71 @@ describe("the schemas of answers that a client fetches", () => {
     });
     expect(mentionsResponseSchema.parse({ known: ["a"], later: 1 })).toEqual({
       known: ["a"],
+    });
+  });
+
+  it("read a word of the record of publishing that a later release has added as other", () => {
+    // A new source of requests, a new network and a new way for a
+    // delivery to end are what the record is likely to get next: each
+    // would otherwise make the whole list unreadable to the app before.
+    expect(
+      publishRecordResponseSchema.parse({
+        requests: [
+          {
+            postId: "p",
+            requestedAt: 1,
+            source: "webhook",
+            apiKeyId: null,
+            deliveries: [
+              {
+                targetId: "t",
+                channelId: "c",
+                network: "pixelfed",
+                outcome: "partly",
+                endedAt: 2,
+                later: 1,
+              },
+              {
+                targetId: "u",
+                channelId: "d",
+                network: "mastodon",
+                outcome: null,
+                endedAt: null,
+              },
+            ],
+            later: 1,
+          },
+        ],
+        more: false,
+        later: 1,
+      }),
+    ).toEqual({
+      requests: [
+        {
+          postId: "p",
+          requestedAt: 1,
+          source: "other",
+          apiKeyId: null,
+          deliveries: [
+            {
+              targetId: "t",
+              channelId: "c",
+              network: "other",
+              outcome: "other",
+              endedAt: 2,
+            },
+            // Under way is no word that the app does not know.
+            {
+              targetId: "u",
+              channelId: "d",
+              network: "mastodon",
+              outcome: null,
+              endedAt: null,
+            },
+          ],
+        },
+      ],
+      more: false,
     });
   });
 });

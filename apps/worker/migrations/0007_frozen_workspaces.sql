@@ -1,0 +1,1 @@
+ALTER TABLE `workspace` ADD `frozen_at` integer;

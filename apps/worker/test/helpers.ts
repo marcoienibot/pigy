@@ -155,6 +155,13 @@ export function setup(
      * limiter of the local runtime, for a test that is about the limit.
      */
     rateLimiter?: RateLimit;
+    /**
+     * Counts the reports of the content security policy that a client
+     * sends, in place of the limiter of the local runtime.
+     */
+    policyReportLimiter?: RateLimit;
+    /** The same for the reports of all clients together. */
+    policyReportTotalLimiter?: RateLimit;
   } = {},
 ) {
   clock.time = new Date("2026-11-14T10:00:00Z");
@@ -298,6 +305,10 @@ export function setup(
     SIM_WORLD: env.SIM_WORLD,
     PUBLISH: env.PUBLISH,
     API_RATE_LIMITER: options.rateLimiter ?? env.API_RATE_LIMITER,
+    POLICY_REPORT_LIMITER:
+      options.policyReportLimiter ?? env.POLICY_REPORT_LIMITER,
+    POLICY_REPORT_TOTAL_LIMITER:
+      options.policyReportTotalLimiter ?? env.POLICY_REPORT_TOTAL_LIMITER,
     ASSETS: assets,
     MEDIA: env.MEDIA,
     IMAGES: env.IMAGES,
@@ -696,6 +707,58 @@ export function breakDatabase(
   const mend = () => broken.mockRestore();
   onTestFinished(mend);
   return mend;
+}
+
+/**
+ * Has `meanwhile` overtake a request: when the app is about to run the
+ * first statement of D1 that `at` picks out, `meanwhile` begins, and the
+ * statement runs once it is over. For a request that something else
+ * comes in the middle of, at a point of the test's choosing, such as an
+ * admin who removes an address while a sign-in is on its way. With
+ * `late`, the statement runs first, and only its answer waits for
+ * `meanwhile`: an answer that arrives after what `meanwhile` did, which
+ * it is older than. The statements of `meanwhile` are not picked out,
+ * and neither is a statement of a batch. Returns what `meanwhile`
+ * returned, once it has begun.
+ */
+export function overtake(
+  at: (sql: string) => boolean,
+  meanwhile: () => Promise<unknown>,
+  { late = false }: { late?: boolean } = {},
+): () => Promise<unknown> | undefined {
+  const prepare = env.DB.prepare.bind(env.DB);
+  let picked = false;
+  let over: Promise<unknown> | undefined;
+  const begin = () => {
+    over ??= meanwhile();
+    return over;
+  };
+  const spy = vi.spyOn(env.DB, "prepare").mockImplementation((sql) => {
+    const statement = prepare(sql);
+    if (picked || !at(sql)) return statement;
+    picked = true;
+    const bind = statement.bind.bind(statement);
+    statement.bind = (...values) => {
+      const bound = bind(...values) as unknown as Record<
+        string,
+        (...args: unknown[]) => Promise<unknown>
+      >;
+      for (const method of ["all", "raw", "run", "first"]) {
+        const run = bound[method]?.bind(bound);
+        if (!run) continue;
+        bound[method] = async (...args) => {
+          if (!late) await begin();
+          const answer = await run(...args);
+          if (late) await begin();
+          return answer;
+        };
+      }
+      return bound as unknown as D1PreparedStatement;
+    };
+    return statement;
+  });
+  onTestFinished(() => spy.mockRestore());
+  return () => over;
 }
 
 /** Puts `email` on the allowlist without going through the API. */

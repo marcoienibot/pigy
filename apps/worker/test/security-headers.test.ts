@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import worker from "../src/index.ts";
 import {
   dataPolicy,
+  imagePolicy,
   pagePolicy,
   securityHeaders,
 } from "../src/security-headers.ts";
@@ -28,6 +29,11 @@ function expectCommonHeaders(response: Response) {
     "same-origin",
   );
   expect(response.headers.get("Permissions-Policy")).toContain("camera=()");
+  // Where a browser reports what a policy refused, which every policy of
+  // the Worker names: src/policy-reports.ts.
+  expect(response.headers.get("Reporting-Endpoints")).toBe(
+    'csp="/api/policy-reports"',
+  );
 }
 
 describe("an answer of the API", () => {
@@ -119,7 +125,7 @@ describe("a page of a simulated network", () => {
     // The hash of the style sheet as it is in the page that was answered:
     // a browser computes the same and shows the page with its styles.
     expect(response.headers.get("Content-Security-Policy")).toBe(
-      `default-src 'none'; style-src ${await hashOf(sheet)}; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
+      `default-src 'none'; style-src ${await hashOf(sheet)}; form-action 'self'; base-uri 'none'; frame-ancestors 'none'; report-to csp; report-uri /api/policy-reports`,
     );
     expectCommonHeaders(response);
     expect(response.headers.get("Cache-Control")).toBe("no-store");
@@ -156,7 +162,7 @@ describe("the page that describes the public API", () => {
     // The policy of a page, which the route does not have to say: the
     // page is plain HTML, and a browser lays it out with its styles.
     expect(response.headers.get("Content-Security-Policy")).toBe(
-      `default-src 'none'; style-src ${await hashOf(sheet)}; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
+      `default-src 'none'; style-src ${await hashOf(sheet)}; form-action 'self'; base-uri 'none'; frame-ancestors 'none'; report-to csp; report-uri /api/policy-reports`,
     );
     expectCommonHeaders(response);
   });
@@ -175,7 +181,7 @@ describe("the policy of a page", () => {
     );
 
     expect(policy).toBe(
-      `default-src 'none'; style-src ${await hashOf("a { color: red; }")} ${await hashOf("b{}")}; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
+      `default-src 'none'; style-src ${await hashOf("a { color: red; }")} ${await hashOf("b{}")}; form-action 'self'; base-uri 'none'; frame-ancestors 'none'; report-to csp; report-uri /api/policy-reports`,
     );
   });
 
@@ -201,7 +207,7 @@ describe("the policy of a page", () => {
     );
 
     expect(policy).toBe(
-      "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+      "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'; report-to csp; report-uri /api/policy-reports",
     );
   });
 
@@ -212,7 +218,24 @@ describe("the policy of a page", () => {
 
     // Without `style-src` and `script-src`, `default-src 'none'` decides.
     expect(policy).toBe(
-      "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+      "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'; report-to csp; report-uri /api/policy-reports",
+    );
+  });
+});
+
+describe("the policies of what is no page", () => {
+  it("allow nothing, and report where every policy of pigy reports", () => {
+    // The tests of the routes compare with these, so here is what they
+    // say, once.
+    expect(dataPolicy).toBe(
+      "default-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'; report-to csp; report-uri /api/policy-reports",
+    );
+    // The bytes of an image, which a browser asks the policy of only when
+    // the image is opened by itself in a tab: `sandbox` gives that
+    // document an origin of its own. A report from it is taken as from
+    // any page of pigy: policy-reports.test.ts.
+    expect(imagePolicy).toBe(
+      "default-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'; report-to csp; report-uri /api/policy-reports; sandbox",
     );
   });
 });

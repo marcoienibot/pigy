@@ -24,6 +24,11 @@ export type LogKind =
   /** A secret of the Worker is missing or not valid. */
   | "configuration"
   | "sign-in"
+  /**
+   * Who may use pigy, beyond signing in: the workspaces of a person who
+   * has lost their access, which are frozen.
+   */
+  | "access"
   /** Connecting and disconnecting an account. */
   | "connection"
   /** Renewing the access of a channel by the timer. */
@@ -43,7 +48,12 @@ export type LogKind =
   /** The sync protocol: a mutation, a message, a patch. */
   | "sync"
   /** The alarm of a workspace, which could not be set. */
-  | "alarm";
+  | "alarm"
+  /**
+   * What the content security policy of a page refused, as a browser
+   * reported it: src/policy-reports.ts.
+   */
+  | "policy";
 
 /** Where it happened, as far as the place knows. All of it is IDs. */
 export type LogContext = {
@@ -65,6 +75,19 @@ export type LogContext = {
   host?: string;
   /** The status that somebody else answered with. */
   status?: number;
+  /**
+   * Of a report of the content security policy: the directive that
+   * refused, what it refused, as an origin or a keyword, the page, as a
+   * pattern of its path, whether the policy was enforced or only
+   * reported, and how often a request reported the same. None of them
+   * holds a query, a path of somebody else's or a word that pigy's own
+   * paths do not have: src/policy-reports.ts.
+   */
+  directive?: string;
+  blocked?: string;
+  page?: string;
+  disposition?: string;
+  count?: number;
 };
 
 type Level = "warn" | "error";

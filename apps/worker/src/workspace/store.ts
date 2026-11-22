@@ -2,6 +2,7 @@ import {
   applyMutation,
   type Change,
   type ChannelStatus,
+  type DeliveryOutcome,
   environmentSchema,
   expiryNoticeMs,
   type ImageFacts,
@@ -10,11 +11,16 @@ import {
   MutationRejected,
   type MutationSource,
   type MutatorArgs,
+  maxPublishRecordDeliveries,
   mediaRowLimits,
   type Network,
   originalLifetimeMs,
   type PostContent,
+  type PublishRecordResponse,
+  type PublishSource,
   type PushMessage,
+  publishRecordLifetimeMs,
+  publishRecordPageSize,
   type Rejection,
   type RejectionCode,
   type Row,
@@ -29,6 +35,7 @@ import {
   and,
   asc,
   count,
+  desc,
   eq,
   gt,
   gte,
@@ -76,6 +83,7 @@ import {
   postParts,
   posts,
   postTargets,
+  publishRecords,
   pushOutbox,
   rejections,
   targetPartResults,
@@ -101,8 +109,22 @@ export type WorkspaceIdentity = z.infer<typeof workspaceIdentitySchema>;
 /** A mutation as it is run: where it came from does not matter here. */
 type MutatorCall = { name: string; args: unknown };
 
+/**
+ * Who asks for what a mutation that the server runs publishes, for the
+ * record of publishing: a call of the public API with its key. A mutation
+ * of a client is the app's, and a scheduled post that is due is the
+ * schedule's.
+ */
+type Requester = { source: PublishSource; apiKeyId: string | null };
+
 /** Why a mutation was refused. */
 export type Refusal = { code: RejectionCode; message: string };
+
+/** Why a client has its mutations refused while the workspace is frozen. */
+const frozenRefusal: Refusal = {
+  code: "frozen",
+  message: "Your access to pigy has ended",
+};
 
 /** The result of a mutation that did not come from a client. */
 export type MutationOutcome = { ok: true } | ({ ok: false } & Refusal);
@@ -887,8 +909,9 @@ export class WorkspaceStore {
    * the alarm, which runs when a time has come and nothing else happens.
    */
   publishDue(now: number): void {
+    if (this.frozenAt !== null) return;
     this.storage.transactionSync(() => {
-      this.run([], now, "server", true);
+      this.run([], now, "server", { retryDue: true });
     });
   }
 
@@ -898,6 +921,8 @@ export class WorkspaceStore {
    * that `publishDue` did not get done.
    */
   get nextDueAt(): number | null {
+    // Nothing is taken up while the workspace is frozen.
+    if (this.frozenAt !== null) return null;
     const next = this.db
       .select({ dueAt: sql<number | null>`min(${posts.dueAt})` })
       .from(posts)
@@ -996,6 +1021,36 @@ export class WorkspaceStore {
   }
 
   /**
+   * Since when the workspace is frozen, or null if it is not: its owner
+   * has lost their access to pigy, and the workspace does nothing by
+   * itself until they have it again. It takes up no scheduled post, before
+   * a mutation, after one or by the alarm, renews no access and begins no
+   * delivery: what it would do for somebody who looks after it. The posts
+   * whose time comes meanwhile are taken up when it thaws, by the rule for
+   * a post that is found late, which holds the ones that are more than an
+   * hour late and tells the person of them in the inbox. The deliveries
+   * that wait their turn end as not sent, `haltDeliveries`, and a client
+   * has every mutation refused, `applyFrom`. A delivery that is under way
+   * goes to its end: one that is cut off halfway is a post that nobody
+   * knows the fate of.
+   */
+  get frozenAt(): number | null {
+    return this.record().frozenAt;
+  }
+
+  /**
+   * Freezes the workspace at `at`, or thaws it with null, and returns
+   * whether that changed anything. `frozen_at` of D1 is what decides, and
+   * the object hands on what it read there.
+   */
+  setFrozen(at: number | null): boolean {
+    const before = this.frozenAt;
+    if ((before === null) === (at === null)) return false;
+    this.db.update(workspaceRecord).set({ frozenAt: at }).run();
+    return true;
+  }
+
+  /**
    * Begins the deliveries whose turn has come: for every channel that has
    * none under way, the one that has waited longest. The deliveries to one
    * channel go out one after the other, because no adapter can tell two
@@ -1004,6 +1059,11 @@ export class WorkspaceStore {
    * and the delivery begins when it has had its turn.
    */
   startDeliveries(now: number): void {
+    // A frozen workspace begins none: the ones that wait end.
+    if (this.frozenAt !== null) {
+      this.haltDeliveries(now);
+      return;
+    }
     this.storage.transactionSync(() => {
       const busy = new Set([
         ...this.db
@@ -1038,6 +1098,41 @@ export class WorkspaceStore {
           .set({ startedAt: this.record().time })
           .where(eq(postTargets.id, id))
           .run();
+      }
+    });
+  }
+
+  /**
+   * Ends every delivery that waits its turn as not sent, through the
+   * mutator `target.halt`, which says why: for a workspace that is frozen.
+   * Nothing goes out for somebody who is no longer let in, also not what
+   * they asked for before, which can be hundreds of posts that would take
+   * hours where a network asks to be tried again. The deliveries that are
+   * under way are left to end. Once the owner is back, they try the ones
+   * that ended so again, from the Sent screen.
+   */
+  haltDeliveries(now: number): void {
+    this.storage.transactionSync(() => {
+      const waiting = this.db
+        .select({ id: postTargets.id })
+        .from(postTargets)
+        .where(eq(postTargets.status, "queued"))
+        .orderBy(asc(postTargets.queuedAt), asc(postTargets.id))
+        .all();
+      if (waiting.length === 0) return;
+      const refusals = this.run(
+        waiting.map(({ id }) => ({
+          name: "target.halt",
+          args: { id } satisfies MutatorArgs<"target.halt">,
+        })),
+        now,
+        "server",
+      );
+      for (const refusal of refusals) {
+        // Each of them waits its turn in this transaction: a bug.
+        if (refusal) {
+          throw new Error(`A delivery was not stopped: ${refusal.message}`);
+        }
       }
     });
   }
@@ -1808,6 +1903,9 @@ export class WorkspaceStore {
    * as it takes, and what it refuses, at whatever point, undoes what it
    * did up to there. The clients hear of the whole or of nothing.
    *
+   * What it asks to be published is recorded as asked by `apiKeyId`, the
+   * ID of the key that the call came with: `recordPublishing`.
+   *
    * With `repeat` the call is carried out once for its key: see `once`.
    * What is kept under the key is small, whatever the size of the post:
    * `KeptApiAnswer` of api.ts. A repeat of a refused call is answered with
@@ -1822,13 +1920,16 @@ export class WorkspaceStore {
   api(
     call: ApiCall,
     now: number,
+    apiKeyId: string,
     repeat?: { key: string; fingerprint: string },
   ): ApiAnswer {
     const bench: ApiBench = {
       db: this.db,
       now,
       mutate: (name, args) =>
-        this.run([{ name, args }], now, "server")[0] ?? null,
+        this.run([{ name, args }], now, "server", {
+          requester: { source: "api", apiKeyId },
+        })[0] ?? null,
       pushMark: () =>
         this.db
           .select({ last: max(pushOutbox.id) })
@@ -1920,6 +2021,8 @@ export class WorkspaceStore {
    * ones that are overdue come first: a delivery may be waiting for one.
    */
   renewalsDue(now: number): DueRenewal[] {
+    // An access that nobody can use is left to end at its network.
+    if (this.frozenAt !== null) return [];
     const busy = new Set(
       this.db
         .select({ channelId: postTargets.channelId })
@@ -1964,6 +2067,10 @@ export class WorkspaceStore {
    * with a later time to renew at or with none, whatever comes of it.
    */
   private renewalsOverdue(now: number): Set<string> {
+    // No renewal comes while the workspace is frozen, so no delivery waits
+    // for one: the deliveries that were asked for before go to their end,
+    // and one whose access the network refuses renews it in its step.
+    if (this.frozenAt !== null) return new Set();
     return new Set(
       this.db
         .select({ id: channels.id })
@@ -1985,6 +2092,7 @@ export class WorkspaceStore {
    * milliseconds since the epoch, or null if none ever is.
    */
   get nextRenewalAt(): number | null {
+    if (this.frozenAt !== null) return null;
     return (
       this.db
         .select({ at: min(channels.refreshAt) })
@@ -2021,9 +2129,14 @@ export class WorkspaceStore {
   /**
    * The reads of stats that are due at `now`, `limit` at most, the one
    * that was due first first: of deliveries that are sent, each with the
-   * first part that it published and the access of its channel.
+   * first part that it published and the access of its channel. None
+   * while the workspace is frozen: a read is made with the access of the
+   * channel, which nobody uses for somebody who is no longer let in. The
+   * reads that come due meanwhile are made when it thaws, at the moment
+   * that is ahead then, as after any time in which nothing read them.
    */
   metricsDue(now: number, limit: number): DueMetrics[] {
+    if (this.frozenAt !== null) return [];
     return metricsDueQuery(this.db, now, limit)
       .all()
       .map(({ targetId, channelId, sentAt }) => {
@@ -2110,9 +2223,11 @@ export class WorkspaceStore {
    * When the stats of a delivery are next to be read, in milliseconds
    * since the epoch, or null if none ever are. Of the deliveries that are
    * sent, as `metricsDue` reads them: a time that the pass would not read
-   * would bring the alarm back at once, for good.
+   * would bring the alarm back at once, for good. Null while the
+   * workspace is frozen, for the same reason.
    */
   get nextMetricsAt(): number | null {
+    if (this.frozenAt !== null) return null;
     // Every change asks this, so it is one look into an index: see
     // `nextMetricsQuery`.
     return nextMetricsQuery(this.db).get()?.at ?? null;
@@ -2130,7 +2245,14 @@ export class WorkspaceStore {
     const last = mutations.at(-1);
     if (!last) return [];
     return this.storage.transactionSync(() => {
-      const outcomes = this.run(mutations, now, "client");
+      // A frozen workspace takes no change from a client: its owner has
+      // lost their access, and the sessions with it. The object closes the
+      // sockets of a workspace that it finds frozen, and opens none, so
+      // this is for a socket that is open all the same.
+      const outcomes: (Refusal | null)[] =
+        this.frozenAt === null
+          ? this.run(mutations, now, "client")
+          : mutations.map(() => frozenRefusal);
       const rejected = mutations.flatMap(({ id }, index) => {
         const refusal = outcomes[index];
         return refusal ? [{ id, ...refusal }] : [];
@@ -2171,18 +2293,36 @@ export class WorkspaceStore {
    * has come with the time of that mutation. Between the mutations of
    * one message as between two messages: what becomes of a post does not
    * depend on how a client packs what it sends.
+   *
+   * What a mutation asks to be published, and how the deliveries that it
+   * ends have ended, goes into the record of publishing, in its
+   * transaction: `recordPublishing`. `requester` says who asks, for a
+   * mutation of the server's that publishes for somebody: the public API.
    */
   private run(
     mutations: MutatorCall[],
     now: number,
     source: MutationSource,
-    // Also the due posts that could not be taken up before: for the alarm.
-    retryDue = false,
+    {
+      retryDue = false,
+      requester,
+    }: {
+      // Also the due posts that could not be taken up before: for the
+      // alarm.
+      retryDue?: boolean;
+      requester?: Requester;
+    } = {},
   ): (Refusal | null)[] {
     this.forgetHandedBack(now);
     const before = this.record();
     let { seq, time } = before;
+    // Whether a request to publish was recorded, which is when the record
+    // is kept to its bounds.
+    let recorded = false;
     const due = () => {
+      // A frozen workspace takes up nothing: `frozenAt`. No mutator
+      // freezes or thaws it, so this holds for the whole run.
+      if (before.frozenAt !== null) return;
       // One at a time, and looked for anew after each: taking up a post
       // of the queue can give the others that were due another time.
       const tried = new Set<string>();
@@ -2245,6 +2385,8 @@ export class WorkspaceStore {
       ) {
         this.noteAttachments(time);
       }
+      recorded =
+        this.recordPublishing(tx, time, mutation, from, requester) || recorded;
       if (tx.changed.size > 0) {
         seq += 1;
         // One statement per row: a statement takes at most 100 values.
@@ -2266,6 +2408,8 @@ export class WorkspaceStore {
       return outcome;
     });
 
+    if (recorded) this.boundPublishRecord(time);
+
     // The log is kept from growing by dropping what is older than the
     // window. A cursor from before the floor can no longer be served from
     // the log.
@@ -2277,6 +2421,182 @@ export class WorkspaceStore {
       this.db.update(workspaceRecord).set({ seq, logFloor, time }).run();
     }
     return outcomes;
+  }
+
+  /**
+   * Writes into the record of publishing what the mutation of `tx`, run at
+   * `time`, has asked for and what it has ended, and returns whether it
+   * asked for something. Every way that a delivery is asked for queues its
+   * target with the time of its mutation, which no other mutation of the
+   * workspace has: publishing a post, a scheduled post that is due, and a
+   * delivery that is tried again, and whatever is added later. Every way
+   * that one ends leaves its target `sent`, `error` or `uncertain`. So
+   * this goes by the targets that the mutation wrote, and not by the names
+   * of mutators.
+   *
+   * The source of a request is the post's schedule where its time has
+   * come, `post.due`, and otherwise whoever ran the mutation: a client, or
+   * `requester`. Also where that mutation sends a post because its time
+   * has passed, as `post.schedule` and `post.restore` do: whoever gave
+   * the post a time that has passed asked for it to go out now, and no
+   * schedule did. A mutation of the server's own that asks for a delivery
+   * and names nobody would be a bug, which is logged.
+   */
+  private recordPublishing(
+    tx: RecordingTransaction,
+    time: number,
+    mutation: MutatorCall,
+    from: MutationSource,
+    requester: Requester | undefined,
+  ): boolean {
+    let requested = false;
+    for (const { table, id } of tx.changed.values()) {
+      if (table !== "post_target") continue;
+      const target = readRow(this.db, "post_target", id);
+      if (!target) continue;
+      if (target.status === "queued" && target.queuedAt === time) {
+        const by = this.requesterOf(mutation, target.postId, from, requester);
+        const channel = readRow(this.db, "channel", target.channelId);
+        if (!by || !channel) {
+          log.error(
+            "delivery",
+            "A delivery that was asked for was not recorded: nothing says who asked",
+            { ...this.where, targetId: id },
+          );
+          continue;
+        }
+        this.db
+          .insert(publishRecords)
+          .values({
+            postId: target.postId,
+            requestedAt: time,
+            source: by.source,
+            apiKeyId: by.apiKeyId,
+            targetId: id,
+            channelId: channel.id,
+            network: channel.network,
+          })
+          .run();
+        requested = true;
+        continue;
+      }
+      const outcome: DeliveryOutcome | undefined =
+        target.status === "error" && target.disconnected
+          ? "disconnected"
+          : target.status === "sent" ||
+              target.status === "error" ||
+              target.status === "uncertain"
+            ? target.status
+            : undefined;
+      if (outcome === undefined) continue;
+      // The request that is open for the target: a delivery is asked for
+      // again only once it has ended, so there is one at most.
+      this.db
+        .update(publishRecords)
+        .set({ outcome, endedAt: time })
+        .where(
+          and(eq(publishRecords.targetId, id), isNull(publishRecords.outcome)),
+        )
+        .run();
+    }
+    return requested;
+  }
+
+  /** Who asked for the deliveries of `postId` that `mutation` asked for. */
+  private requesterOf(
+    mutation: MutatorCall,
+    postId: string,
+    from: MutationSource,
+    requester: Requester | undefined,
+  ): Requester | undefined {
+    if (mutation.name === "post.due") {
+      const post = readRow(this.db, "post", postId);
+      return {
+        source: post?.mode === "queue" ? "queue" : "schedule",
+        apiKeyId: null,
+      };
+    }
+    if (from === "client") return { source: "app", apiKeyId: null };
+    return requester;
+  }
+
+  /**
+   * Keeps the record of publishing to its bounds at `now`: no request that
+   * is older than `publishRecordLifetimeMs`, and no more deliveries than
+   * `maxPublishRecordDeliveries`, the requests of the oldest going first,
+   * each as a whole.
+   */
+  private boundPublishRecord(now: number): void {
+    this.db
+      .delete(publishRecords)
+      .where(lt(publishRecords.requestedAt, now - publishRecordLifetimeMs))
+      .run();
+    // The first delivery past the bound, the newest first. Its request
+    // goes with it, as a whole, and every older one.
+    const beyond = this.db
+      .select({ requestedAt: publishRecords.requestedAt })
+      .from(publishRecords)
+      .orderBy(desc(publishRecords.requestedAt))
+      .limit(1)
+      .offset(maxPublishRecordDeliveries)
+      .get();
+    if (beyond) {
+      this.db
+        .delete(publishRecords)
+        .where(lte(publishRecords.requestedAt, beyond.requestedAt))
+        .run();
+    }
+  }
+
+  /**
+   * The newest requests of the record of publishing at `now`, those before
+   * `before` if it is a time, `publishRecordPageSize` at most, the newest
+   * first. A request that is older than the record keeps is not among
+   * them, also before the next request has taken it out.
+   */
+  publishRecord(now: number, before: number | null): PublishRecordResponse {
+    const kept = and(
+      gte(publishRecords.requestedAt, now - publishRecordLifetimeMs),
+      before === null ? undefined : lt(publishRecords.requestedAt, before),
+    );
+    const times = this.db
+      .selectDistinct({ at: publishRecords.requestedAt })
+      .from(publishRecords)
+      .where(kept)
+      .orderBy(desc(publishRecords.requestedAt))
+      .limit(publishRecordPageSize + 1)
+      .all();
+    const page = times.slice(0, publishRecordPageSize);
+    const oldest = page.at(-1)?.at;
+    if (oldest === undefined) return { requests: [], more: false };
+    const rows = this.db
+      .select()
+      .from(publishRecords)
+      .where(and(kept, gte(publishRecords.requestedAt, oldest)))
+      .orderBy(desc(publishRecords.requestedAt), asc(publishRecords.id))
+      .all();
+    const requests: PublishRecordResponse["requests"] = [];
+    for (const row of rows) {
+      let request = requests.at(-1);
+      if (request?.requestedAt !== row.requestedAt) {
+        request = {
+          postId: row.postId,
+          requestedAt: row.requestedAt,
+          source: row.source,
+          apiKeyId: row.apiKeyId,
+          deliveries: [],
+        };
+        requests.push(request);
+      }
+      request.deliveries.push({
+        targetId: row.targetId,
+        channelId: row.channelId,
+        network: row.network,
+        outcome: row.outcome,
+        endedAt: row.endedAt,
+      });
+    }
+    return { requests, more: times.length > publishRecordPageSize };
   }
 
   /**
@@ -2542,6 +2862,7 @@ export class WorkspaceStore {
         seq: workspaceRecord.seq,
         logFloor: workspaceRecord.logFloor,
         time: workspaceRecord.time,
+        frozenAt: workspaceRecord.frozenAt,
       })
       .from(workspaceRecord)
       .get();

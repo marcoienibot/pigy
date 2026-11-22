@@ -78,7 +78,7 @@ export async function connectInSandbox(
  * The versions in packages/core/src/sync/protocol.ts, which a client says
  * with its hello: `e2e` imports no application code.
  */
-const versions = { protocolVersion: 2, schemaVersion: 11 };
+const versions = { protocolVersion: 2, schemaVersion: 12 };
 
 /**
  * The posts of a workspace as its server has them, read by a client of

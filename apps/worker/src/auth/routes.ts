@@ -11,6 +11,7 @@ import { z } from "zod";
 import { users } from "../db/schema.ts";
 import type { AppDependencies, AppEnv } from "../env.ts";
 import { log } from "../log.ts";
+import { reviewFreezeOf } from "../workspace/workspaces.ts";
 import { roleOf } from "./access.ts";
 import { accessConfig } from "./config.ts";
 import {
@@ -30,6 +31,7 @@ import {
   revokeAccessAtRefusedSignIn,
   revokeAccessOfOtherAccountsWith,
   revokeSession,
+  thawWorkspacesOf,
   writeSessionCookie,
 } from "./session.ts";
 
@@ -175,7 +177,17 @@ export function authRoutes(dependencies: AppDependencies): Hono<AppEnv> {
       // accounts that are stored with it ends here too, as at a sign-in
       // that succeeds: their keys would otherwise work again the day the
       // address is invited for the person who has it now.
-      await revokeAccessAtRefusedSignIn(db, identity.sub, email, now());
+      //
+      // The workspaces of the accounts whose keys are revoked are frozen
+      // with them, and their objects are told, through `waitUntil`: the
+      // browser is sent on without waiting for that.
+      const frozen = await revokeAccessAtRefusedSignIn(
+        db,
+        identity.sub,
+        email,
+        now(),
+      );
+      c.executionCtx.waitUntil(reviewFreezeOf(c.env.WORKSPACE, frozen));
       return identity.emailVerified
         ? c.redirect("/invite-only")
         : signInFailed(c, "email_not_verified");
@@ -203,8 +215,22 @@ export function authRoutes(dependencies: AppDependencies): Hono<AppEnv> {
     // it before is still stored with it, and its sessions are matched
     // against that address, so they would go on working with the role of
     // the address without that account ever signing in again.
-    // Its API keys are matched against it too, and are revoked.
-    await revokeAccessOfOtherAccountsWith(db, email, identity.sub, time);
+    // Its API keys are matched against it too, and are revoked, and its
+    // workspaces are frozen.
+    const frozen = await revokeAccessOfOtherAccountsWith(
+      db,
+      email,
+      identity.sub,
+      time,
+    );
+    // The account that signs in has its access, so its workspaces thaw,
+    // if they were frozen, before it has a session: the first thing that
+    // the app does with one is to open a workspace. Only if it still has
+    // the access, which the statement asks again: `thawWorkspacesOf`.
+    const thawed = await thawWorkspacesOf(db, user.id, email, adminEmails);
+    c.executionCtx.waitUntil(
+      reviewFreezeOf(c.env.WORKSPACE, [...frozen, ...thawed]),
+    );
 
     // The session a browser had before this sign-in ends here. The new one
     // gets a token that never left the server before, so nobody can have

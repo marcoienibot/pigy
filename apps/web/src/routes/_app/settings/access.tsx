@@ -182,10 +182,23 @@ function Access() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Remove {removing}?</AlertDialogTitle>
-            <AlertDialogDescription>
-              They are signed out at once, on every device, and cannot sign in
-              until they are invited again. Their API keys are revoked, and do
-              not work again with a new invitation.
+            {/* One description, which the dialog is described by. */}
+            <AlertDialogDescription
+              render={<div className="flex flex-col gap-2" />}
+            >
+              <p>
+                They are signed out at once, on every device, and cannot sign in
+                until they are invited again. Their API keys are revoked, and do
+                not work again with a new invitation.
+              </p>
+              <p>
+                Their workspaces are frozen until they sign in again: no
+                scheduled post goes out, the posts that wait their turn are not
+                sent, and the access to their accounts is not renewed, so that
+                it ends at each network by itself. A post that is being sent at
+                this moment still goes out. An access to Mastodon does not end
+                by itself: it stays, unused, until they disconnect the account.
+              </p>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

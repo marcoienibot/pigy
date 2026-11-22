@@ -54,6 +54,11 @@ test("an admin invites a member, changes their role and removes them", async ({
   await row.getByRole("button", { name: `Remove ${email}` }).click();
   const dialog = admin.getByRole("alertdialog");
   await expect(dialog).toContainText(`Remove ${email}?`);
+  // What a removal does besides: the admin decides knowing it.
+  await expect(dialog).toContainText("Their workspaces are frozen");
+  await expect(dialog).toContainText(
+    "being sent at this moment still goes out",
+  );
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await expect(dialog).toBeHidden();
   await expect(row).toBeVisible();

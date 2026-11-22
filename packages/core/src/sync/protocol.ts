@@ -13,7 +13,7 @@ import { rowSchemas, type TableName, tableNames } from "./tables.ts";
 export const syncProtocolVersion = 2;
 
 /** Changes when the synced tables or the mutators change. */
-export const syncSchemaVersion = 11;
+export const syncSchemaVersion = 12;
 
 /** Lengths are in UTF-16 code units, which is what `String.length` counts. */
 export const syncLimits = {

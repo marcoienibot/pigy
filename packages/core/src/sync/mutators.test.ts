@@ -1,6 +1,10 @@
 import { expect, it } from "vitest";
 import { memoryWorkspace } from "../../test/memory-transaction.ts";
-import { MutationRejected, type RejectionCode } from "./mutators.ts";
+import {
+  haltedMessage,
+  MutationRejected,
+  type RejectionCode,
+} from "./mutators.ts";
 import { ownTextMutations } from "./own-text.ts";
 import {
   inReadingOrder,
@@ -1825,6 +1829,62 @@ function sendingToTwo() {
   workspace.mutate("target.start", { id: otherTargetId }, 4001, "server");
   return workspace;
 }
+
+it("ends the deliveries of a frozen workspace that wait their turn, and leaves the one under way to its end", () => {
+  const workspace = withTarget();
+  workspace.mutate(
+    "target.add",
+    { id: otherTargetId, postId, channelId: otherChannelId },
+    2500,
+  );
+  workspace.mutate("post.publish", { id: postId }, 3000);
+  workspace.mutate("target.start", { id: targetId }, 4000, "server");
+
+  workspace.mutate("target.halt", { id: otherTargetId }, 5000, "server");
+
+  expect(targetsOf(workspace)).toEqual({
+    [channelId]: "sending 1",
+    [otherChannelId]: "error 0",
+  });
+  expect(
+    workspace.rows("post_target").find(({ id }) => id === otherTargetId),
+  ).toMatchObject({ error: haltedMessage, disconnected: false });
+  // The delivery under way is not this mutator's: it goes to its end, and
+  // the post is sending until then.
+  expect(
+    rejectionOf(() =>
+      workspace.mutate("target.halt", { id: targetId }, 5001, "server"),
+    ),
+  ).toBe("not_current");
+  expect(workspace.rows("post")).toMatchObject([{ status: "sending" }]);
+
+  workspace.mutate(
+    "target.end",
+    { id: targetId, attempt: 1, status: "sent" },
+    6000,
+    "server",
+  );
+
+  // The post has ended, not everywhere: the inbox says so, as of every
+  // post that failed, for the person to try it again once they are back.
+  expect(workspace.rows("post")).toMatchObject([{ status: "error" }]);
+  expect(workspace.rows("notification")).toEqual([ofPost(6000)]);
+  workspace.mutate("target.retry", { id: otherTargetId }, 7000);
+  expect(targetsOf(workspace)[otherChannelId]).toBe("queued 0");
+});
+
+it("refuses target.halt from a client", () => {
+  const workspace = withTarget();
+  workspace.mutate("post.publish", { id: postId }, 3000);
+
+  // A client that could end deliveries as failed would say that pigy did.
+  expect(
+    rejectionOf(() =>
+      workspace.mutate("target.halt", { id: targetId }, 4000, "client"),
+    ),
+  ).toBe("not_allowed");
+  expect(targetsOf(workspace)).toEqual({ [channelId]: "queued 0" });
+});
 
 it("tells the inbox of a post whose delivery has failed", () => {
   const workspace = sending();

@@ -85,6 +85,16 @@ export const workspaces = sqliteTable(
       .references(() => users.id),
     environment: text("environment", { enum: environments }).notNull(),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    /**
+     * When the owner lost their access to pigy, or null while they have
+     * it. A workspace that is frozen does nothing by itself: no access is
+     * renewed, no scheduled post is taken up, no delivery begins and no
+     * stats are read, until the owner signs in again. Set and cleared with
+     * the sessions and the API keys of the owner, in the same batch:
+     * src/auth/session.ts. The object of the workspace reads it here, and
+     * keeps no word of anybody else's for it.
+     */
+    frozenAt: integer("frozen_at", { mode: "timestamp_ms" }),
   },
   (table) => [
     // One workspace per user and environment. This is also what makes
