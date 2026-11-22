@@ -58,9 +58,10 @@ jobs:
 
   # The browser tests in three parts, each on a runner of its own with a
   # build of its own: the whole suite took longer than one job may. A part
-  # is a third of the tests, which Playwright deals out one by one, since
-  # the suite is fullyParallel. `pnpm e2e` runs the same command with no
-  # shard, which passes nothing on to Playwright.
+  # is a third of the tests, counted test by test since the suite is
+  # fullyParallel: Playwright cuts its list, the desktop project first, into
+  # three runs in a row. `pnpm e2e` runs the same command with no shard,
+  # which passes nothing on to Playwright.
   e2e:
     name: e2e (${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
