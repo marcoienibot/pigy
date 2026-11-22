@@ -8,7 +8,7 @@ import {
   maxApiKeys,
   type Role,
 } from "@pigy/core";
-import { and, count, desc, eq, isNull, lte, or } from "drizzle-orm";
+import { and, desc, eq, isNull, lte, or, sql } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { allowedEmails, apiKeys, users, workspaces } from "../db/schema.ts";
 import { randomHex, sha256Hex } from "../digest.ts";
@@ -93,14 +93,6 @@ export async function createApiKey(
   { name, scopes, expiresAt }: CreateApiKeyRequest,
   now: Date,
 ): Promise<{ apiKey: ApiKey; secret: string } | null> {
-  const [kept] = await db
-    .select({ count: count() })
-    .from(apiKeys)
-    .where(
-      and(eq(apiKeys.workspaceId, workspace.id), isNull(apiKeys.revokedAt)),
-    );
-  if ((kept?.count ?? 0) >= maxApiKeys) return null;
-
   const id = randomHex(8);
   const secret = randomHex(32);
   const prefix = apiKeyPrefixes[workspace.environment];
@@ -116,7 +108,29 @@ export async function createApiKey(
     lastUsedAt: null,
     expiresAt: expiresAt === null ? null : new Date(expiresAt),
   };
-  await db.insert(apiKeys).values(row);
+  // Counted and stored in one statement: of the requests that arrive
+  // together when there is room for one key, one finds the room. The
+  // values are written as the columns of `apiKeys` store them.
+  const stored = await db.run(sql`
+    insert into ${apiKeys} (
+      ${sql.identifier(apiKeys.id.name)},
+      ${sql.identifier(apiKeys.workspaceId.name)},
+      ${sql.identifier(apiKeys.name.name)},
+      ${sql.identifier(apiKeys.prefix.name)},
+      ${sql.identifier(apiKeys.secretHash.name)},
+      ${sql.identifier(apiKeys.scopes.name)},
+      ${sql.identifier(apiKeys.createdAt.name)},
+      ${sql.identifier(apiKeys.expiresAt.name)}
+    )
+    select ${row.id}, ${row.workspaceId}, ${row.name}, ${row.prefix},
+      ${row.secretHash}, ${JSON.stringify(row.scopes)},
+      ${row.createdAt.getTime()}, ${row.expiresAt?.getTime() ?? null}
+    where (
+      select count(*) from ${apiKeys}
+      where ${apiKeys.workspaceId} = ${row.workspaceId}
+        and ${apiKeys.revokedAt} is null
+    ) < ${maxApiKeys}`);
+  if (stored.meta.changes === 0) return null;
   return { apiKey: apiKeyOf(row), secret: `${prefix}${id}_${secret}` };
 }
 

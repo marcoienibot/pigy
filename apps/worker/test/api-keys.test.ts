@@ -138,6 +138,25 @@ it("keeps a workspace to a number of keys, which revoking makes room in", async 
   expect((await make()).status).toBe(201);
 });
 
+it("keeps to the number of keys when two are made at once", async () => {
+  const { browser, workspaces } = await startedApi();
+  for (let index = 0; index < maxApiKeys - 1; index += 1) {
+    await makeKey(browser, workspaces.live);
+  }
+  const make = () =>
+    browser.fetch(`/api/workspaces/${workspaces.live}/api-keys`, {
+      method: "POST",
+      json: { name: "The last one", scopes: ["posts:read"], expiresAt: null },
+    });
+  // Room for one, and two requests that arrive together: counting and
+  // storing in two statements would let both find the room.
+  const statuses = (await Promise.all([make(), make()])).map(
+    ({ status }) => status,
+  );
+  expect(statuses.sort()).toEqual([201, 409]);
+  expect(await listed(browser, workspaces.live)).toHaveLength(maxApiKeys);
+});
+
 it("lets only the person who is signed in manage the keys of their workspace", async () => {
   const { test, browser, workspaces } = await startedApi();
   const { apiKey, secret } = await makeKey(browser, workspaces.live);
