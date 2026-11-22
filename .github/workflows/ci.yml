@@ -56,20 +56,30 @@ jobs:
       - uses: ./.github/actions/setup
       - run: pnpm build
 
+  # The browser tests in three parts, each on a runner of its own with a
+  # build of its own: the whole suite took longer than one job may. A part
+  # is a third of the tests, which Playwright deals out one by one, since
+  # the suite is fullyParallel. `pnpm e2e` runs the same command with no
+  # shard, which passes nothing on to Playwright.
   e2e:
+    name: e2e (${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
       - run: pnpm --filter @pigy/e2e exec playwright install --with-deps chromium
-      - run: pnpm e2e
+      - run: pnpm --filter @pigy/e2e exec playwright test --shard=${{ matrix.shard }}/3
       - if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: playwright
+          name: playwright-${{ matrix.shard }}
           path: |
             e2e/playwright-report/
             e2e/test-results/

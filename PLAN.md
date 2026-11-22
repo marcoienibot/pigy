@@ -854,7 +854,7 @@ The run is started by `pnpm --filter @pigy/providers conformance:live <network>`
 
 The conformance suite runs in Node, like the other tests of the packages, and not in the Workers runtime as an earlier draft of this plan had it. The adapters use nothing but web-standard APIs, the live run needs Node to reach the network, and the pipeline tests run the same adapters in the Workers runtime.
 
-**CI (GitHub Actions)**: lint, typecheck, unit and Workers-runtime tests, Playwright with traces on failure, build. Every end-to-end test is also a test of the content security policy: the `test` of `e2e/fixtures.ts` fails one whose page did what the policy refuses.
+**CI (GitHub Actions)**: lint, typecheck, unit and Workers-runtime tests, Playwright with traces on failure, build. Playwright runs in three jobs, each a third of the tests with a build of its own (`--shard`), since the whole suite took longer than one job may. Every end-to-end test is also a test of the content security policy: the `test` of `e2e/fixtures.ts` fails one whose page did what the policy refuses.
 
 **Deployment from CI**, since phase 11a: a push to `main` that passes every check is deployed by the same workflow, in a job of its own, and so is a run that is started by hand on `main`. What was decided:
 
