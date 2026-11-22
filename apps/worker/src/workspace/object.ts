@@ -429,9 +429,10 @@ export function workspaceObject(dependencies: RenewalDependencies) {
      * deliveries whose turn has come, each as a run of the publishing
      * workflow, and ends the ones whose workflow is over without having
      * said so. Then it renews the access of every channel whose time for
-     * that has come. It runs soon after anything changes that can make a
-     * delivery begin, every `deliveryWatchMs` while one is under way, and
-     * when the next access is due.
+     * that has come, and begins the deliveries that waited for one of
+     * those. It runs soon after anything changes that can make a delivery
+     * begin, every `deliveryWatchMs` while one is under way, and when the
+     * next access is due.
      *
      * What goes wrong in looking after them does not fail the alarm: it
      * is logged, and tried again the next time. The one thing that does
@@ -446,7 +447,11 @@ export function workspaceObject(dependencies: RenewalDependencies) {
       // accesses come last: a post that waits to go out is more urgent
       // than an access that is good for weeks. The runtime runs one alarm
       // of an object at a time, and deliveries begin here alone, so none
-      // begins while an access is being renewed.
+      // begins while an access is being renewed. One access goes before
+      // the post all the same: one whose renewal is overdue, which the
+      // deliveries to its channel have kept waiting. No delivery begins
+      // there before it was renewed, and the ones that waited for that
+      // begin last, in the same alarm.
       for (const [look, failed] of [
         [
           () => this.#watchDeliveries(),
@@ -459,6 +464,10 @@ export function workspaceObject(dependencies: RenewalDependencies) {
         [
           () => this.#renewAccesses(),
           "The accesses of a workspace were not renewed",
+        ],
+        [
+          () => this.#startDeliveries(),
+          "The deliveries of a workspace were not looked after",
         ],
       ] as const) {
         try {
@@ -487,7 +496,9 @@ export function workspaceObject(dependencies: RenewalDependencies) {
     #nextLookIn(): number | null {
       // Also for a delivery that can begin: one that became ready while
       // this alarm ran has set the alarm for itself, `#wake`, and sooner.
-      if (this.#store.deliveriesNeed !== "nothing") return deliveryWatchMs;
+      if (this.#store.deliveriesNeed(now().getTime()) !== "nothing") {
+        return deliveryWatchMs;
+      }
       const renewal = this.#store.nextRenewalAt;
       return renewal === null
         ? null
@@ -517,7 +528,9 @@ export function workspaceObject(dependencies: RenewalDependencies) {
      * A renewal waits for a network, for up to half a minute, and no
      * delivery begins meanwhile. So it stops after a channel when a
      * delivery has become ready to begin: the alarm that the change set
-     * for it, `#wake`, begins it and takes the rest of the channels.
+     * for it, `#wake`, begins it and takes the rest of the channels. So
+     * too when the delivery is one that waited for this renewal, which
+     * the alarm begins as its last step.
      */
     async #renewAccesses(): Promise<void> {
       const workspace = this.#store.identity;
@@ -576,7 +589,7 @@ export function workspaceObject(dependencies: RenewalDependencies) {
           );
         }
         this.#publish(from);
-        if (this.#store.deliveriesNeed === "begin") return;
+        if (this.#store.deliveriesNeed(now().getTime()) === "begin") return;
       }
     }
 
@@ -957,6 +970,8 @@ export function workspaceObject(dependencies: RenewalDependencies) {
     /**
      * Has the alarm run at once if a change has made a delivery ready to
      * begin: a post was published, or the delivery before it has ended.
+     * Also where the delivery has to wait for an access that is overdue
+     * for renewal: the alarm renews it, and begins the delivery then.
      * The alarm is stored with the change that it follows, so it runs also
      * if the object stops before it gets there.
      *
@@ -976,7 +991,8 @@ export function workspaceObject(dependencies: RenewalDependencies) {
           error,
         );
       try {
-        if (this.#store.deliveriesNeed === "begin") {
+        const need = this.#store.deliveriesNeed(now().getTime());
+        if (need === "begin" || need === "renew") {
           this.ctx.storage.setAlarm(Date.now()).catch(failed);
         }
       } catch (error) {

@@ -174,6 +174,17 @@ export type StoredChannelAccess = {
 };
 
 /** A channel whose access is due to be renewed, with that access. */
+/**
+ * How long the renewal of an access may be due, in milliseconds, before
+ * it goes first: from then on no delivery to its channel begins until the
+ * renewal has had its turn. A renewal waits for the delivery that is
+ * under way to its channel, and a channel that always has a post waiting
+ * would begin the next one whenever one ends, so its access would never be
+ * renewed and would end. A day is far longer than any delivery takes, and
+ * far less than an access has left when its renewal comes due.
+ */
+export const renewalOverdueMs = 24 * 60 * 60 * 1000;
+
 export type DueRenewal = StoredChannelAccess & {
   channelId: string;
   /** Sealed: a channel without credentials has nothing to renew. */
@@ -652,18 +663,21 @@ export class WorkspaceStore {
    * Begins the deliveries whose turn has come: for every channel that has
    * none under way, the one that has waited longest. The deliveries to one
    * channel go out one after the other, because no adapter can tell two
-   * apart that go to one account together.
+   * apart that go to one account together. None begins to a channel whose
+   * access is overdue for renewal: the renewal goes first, `renewalsDue`,
+   * and the delivery begins when it has had its turn.
    */
   startDeliveries(now: number): void {
     this.storage.transactionSync(() => {
-      const busy = new Set(
-        this.db
+      const busy = new Set([
+        ...this.db
           .select({ channelId: postTargets.channelId })
           .from(postTargets)
           .where(eq(postTargets.status, "sending"))
           .all()
           .map(({ channelId }) => channelId),
-      );
+        ...this.renewalsOverdue(now),
+      ]);
       const waiting = this.db
         .select({ id: postTargets.id, channelId: postTargets.channelId })
         .from(postTargets)
@@ -874,13 +888,15 @@ export class WorkspaceStore {
   }
 
   /**
-   * What is left to do for the deliveries: `begin` if a target that waits
-   * can begin, because its channel has no delivery under way. `watch` if
-   * none can and some are under way: there is nothing to do at once, but
-   * to come back and see that they end, and to create the workflow of one
+   * What is left to do for the deliveries at `now`: `begin` if a target
+   * that waits can begin, because its channel has no delivery under way.
+   * So if its channel is one whose access is overdue for renewal: the
+   * renewal can run now, and the delivery begins after it. `watch` if none
+   * can and some are under way: there is nothing to do at once, but to
+   * come back and see that they end, and to create the workflow of one
    * that has none yet. `nothing` if none waits or is under way.
    */
-  get deliveriesNeed(): "begin" | "watch" | "nothing" {
+  deliveriesNeed(now: number): "begin" | "renew" | "watch" | "nothing" {
     const targets = this.db
       .select({
         channelId: postTargets.channelId,
@@ -894,10 +910,14 @@ export class WorkspaceStore {
         .filter(({ status }) => status === "sending")
         .map(({ channelId }) => channelId),
     );
-    const begin = targets.some(
+    const ready = targets.filter(
       ({ status, channelId }) => status === "queued" && !busy.has(channelId),
     );
-    return begin ? "begin" : targets.length > 0 ? "watch" : "nothing";
+    if (ready.length === 0) return targets.length > 0 ? "watch" : "nothing";
+    const overdue = this.renewalsOverdue(now);
+    return ready.some(({ channelId }) => !overdue.has(channelId))
+      ? "begin"
+      : "renew";
   }
 
   /**
@@ -1052,7 +1072,8 @@ export class WorkspaceStore {
    * with a time for it that has come, and with no delivery under way. A
    * delivery renews the access of its channel itself where the network
    * asks, and two refreshes of one account must not run together, so a
-   * channel that is being sent to waits for its delivery to end.
+   * channel that is being sent to waits for its delivery to end. The
+   * ones that are overdue come first: a delivery may be waiting for one.
    */
   renewalsDue(now: number): DueRenewal[] {
     const busy = new Set(
@@ -1063,7 +1084,8 @@ export class WorkspaceStore {
         .all()
         .map(({ channelId }) => channelId),
     );
-    return this.db
+    const overdue = this.renewalsOverdue(now);
+    const due = this.db
       .select({
         channelId: channels.id,
         network: channels.network,
@@ -1085,6 +1107,33 @@ export class WorkspaceStore {
           ? []
           : [{ ...channel, credentials }],
       );
+    return [
+      ...due.filter(({ channelId }) => overdue.has(channelId)),
+      ...due.filter(({ channelId }) => !overdue.has(channelId)),
+    ];
+  }
+
+  /**
+   * The channels whose access has been due to be renewed for
+   * `renewalOverdueMs` or longer at `now`. No delivery to one of them
+   * begins before its renewal has had its turn, which leaves the channel
+   * with a later time to renew at or with none, whatever comes of it.
+   */
+  private renewalsOverdue(now: number): Set<string> {
+    return new Set(
+      this.db
+        .select({ id: channels.id })
+        .from(channels)
+        .where(
+          and(
+            eq(channels.status, "connected"),
+            isNotNull(channels.credentials),
+            lte(channels.refreshAt, now - renewalOverdueMs),
+          ),
+        )
+        .all()
+        .map(({ id }) => id),
+    );
   }
 
   /**

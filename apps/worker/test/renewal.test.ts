@@ -275,6 +275,54 @@ describe("the access of a Threads channel", () => {
   });
 });
 
+describe("an access whose renewal is overdue", () => {
+  it("is renewed between two deliveries to its channel, which would else keep it waiting for as long as posts keep coming", async () => {
+    const publishing = gate((request) => request === threadsPublish);
+    const context = await withChannel("threads", {
+      interceptNetwork: publishing.intercept,
+    });
+    const { test, workspace, client } = context;
+    // Due for nearly a day, with nobody having looked: not overdue yet.
+    test.advance(week + day - 60 * 1000);
+    const { id } = await context.channel();
+    const texts = ["First", "Second", "Third"];
+    const drafts = [];
+    for (const text of texts) {
+      drafts.push(await writeDraft(client, workspace, text));
+    }
+    publishing.close();
+    // The first delivery begins, and is held in the middle of its step
+    // that publishes: the access is not renewed meanwhile.
+    const targets: string[] = [];
+    for (const draft of drafts) {
+      const [targetId = ""] = await publishTo(client, draft.postId, id);
+      targets.push(targetId);
+      if (targets.length === 1) await publishing.reached();
+    }
+    // Two more wait behind it when the renewal becomes overdue.
+    test.advance(2 * 60 * 1000);
+    await context.channel();
+    expect(asked(test, threadsRefresh)).toBe(0);
+
+    publishing.open();
+    await follow(client, () =>
+      targets.every((targetId) => targetOf(client, targetId).status === "sent"),
+    );
+    // What the app asked of Threads, of these two requests, in order:
+    // the renewal had its turn when the first delivery had ended, before
+    // the second began, and not after the last of them.
+    expect(
+      test.network.requests
+        .map((made) => made.replace(/\?.*$/, ""))
+        .filter((made) => made === threadsPublish || made === threadsRefresh),
+    ).toEqual([threadsPublish, threadsRefresh, threadsPublish, threadsPublish]);
+    // And each delivery went out once, in the order in which it was asked for.
+    expect(
+      feed(test.network.world, ["threads"]).map(({ post }) => post.text),
+    ).toEqual(texts);
+  });
+});
+
 describe("the access of a Bluesky channel", () => {
   it("is renewed by the timer too, and the next post goes out with what the refresh returned", async () => {
     const context = await withChannel("bluesky");
