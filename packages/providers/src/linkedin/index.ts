@@ -6,7 +6,7 @@ import {
   linkedInMaxCharacters,
 } from "@pigy/core";
 import { z } from "zod";
-import { ProviderError, quotable } from "../errors.ts";
+import { forGood, ProviderError, quotable, understanding } from "../errors.ts";
 import {
   type HttpAnswer,
   httpsUrl,
@@ -24,13 +24,14 @@ import { escapeLittleText } from "./text.ts";
 
 /**
  * The adapter for LinkedIn, for an application that posts as a member. It
- * is written from LinkedIn's documentation at
+ * follows LinkedIn's documentation at
  * https://learn.microsoft.com/en-us/linkedin: "Authorization Code Flow
  * (3-legged OAuth)", "Sign In with LinkedIn using OpenID Connect", "Posts
- * API", "Little Text Format" and "Error Handling". Nothing of it has met
- * the real LinkedIn: PLAN.md section 19 lists what a first run has to
- * settle. Text only so far, and members only: no media, and no pages of
- * organizations.
+ * API", "Little Text Format" and "Error Handling". It was written without
+ * access to those pages, from what its author knew of them, and nothing
+ * of it has met the real LinkedIn: what had to be assumed is marked GUESS,
+ * and PLAN.md section 19 lists what a first run has to settle. Text only
+ * so far, and members only: no media, and no pages of organizations.
  *
  * LinkedIn differs from the other networks in three ways that shape this
  * file:
@@ -140,6 +141,11 @@ type Call = {
   secrets?: readonly string[];
 };
 
+/** `value` as `schema` describes it. Throws if LinkedIn sent other. */
+const understood = understanding(
+  (who) => `${who} did not answer the way pigy expects it to.`,
+);
+
 export function createLinkedInProvider({
   fetch,
   now,
@@ -242,21 +248,6 @@ export function createLinkedInProvider({
     );
   }
 
-  /** `value` as `schema` describes it. Throws if LinkedIn sent other. */
-  function understood<Schema extends z.ZodType>(
-    schema: Schema,
-    value: unknown,
-  ): z.output<Schema> {
-    const parsed = schema.safeParse(value);
-    if (!parsed.success) {
-      throw new ProviderError(
-        "fail",
-        "LinkedIn did not answer the way pigy expects it to.",
-      );
-    }
-    return parsed.data;
-  }
-
   /** The JSON that LinkedIn answers a request with. Throws otherwise. */
   async function call(host: string, path: string, options: Call = {}) {
     const answer = await request(host, path, options);
@@ -271,21 +262,6 @@ export function createLinkedInProvider({
     "LinkedIn-Version": apiVersion,
     "X-Restli-Protocol-Version": "2.0.0",
   };
-
-  /**
-   * A failure to complete a connection, as the contract wants it: for
-   * good. The code of the callback is spent, or may be.
-   */
-  function forGood(error: unknown): unknown {
-    if (!(error instanceof ProviderError) || error.kind === "fail") {
-      return error;
-    }
-    return new ProviderError(
-      "fail",
-      `${error.message} Connect the account again.`,
-      { status: error.status, cause: error },
-    );
-  }
 
   function parseCredentials(credentials: Json): LinkedInCredentials {
     const parsed = credentialsSchema.safeParse(credentials);
@@ -390,6 +366,7 @@ export function createLinkedInProvider({
             },
             secrets: [code],
           }),
+          "LinkedIn",
         );
         // LinkedIn has been seen to list scopes with commas between them,
         // and its documentation has spaces.
@@ -407,6 +384,7 @@ export function createLinkedInProvider({
         const member = understood(
           userinfoSchema,
           await call(apiHost, "/v2/userinfo", { token: token.access_token }),
+          "LinkedIn",
         );
         const name =
           member.name ||

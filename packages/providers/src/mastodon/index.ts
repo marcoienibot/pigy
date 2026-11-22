@@ -5,7 +5,7 @@ import {
   type Limits,
 } from "@pigy/core";
 import { z } from "zod";
-import { ProviderError, quotable } from "../errors.ts";
+import { forGood, ProviderError, quotable, understanding } from "../errors.ts";
 import {
   base64Url,
   type HttpAnswer,
@@ -275,6 +275,11 @@ function isNewer(id: string, other: string): boolean {
   return id.length > other.length || (id.length === other.length && id > other);
 }
 
+/** `value` as `schema` describes it. Throws if the instance sent other. */
+const understood = understanding(
+  (domain) => `${domain} did not answer the way a Mastodon server does.`,
+);
+
 export function createMastodonProvider({
   fetch,
   now,
@@ -373,22 +378,6 @@ export function createMastodonProvider({
       throw failure(domain, answer, options);
     }
     return answer.json;
-  }
-
-  /** `value` as `schema` describes it. Throws if the instance sent other. */
-  function understood<Schema extends z.ZodType>(
-    schema: Schema,
-    value: unknown,
-    domain: string,
-  ): z.output<Schema> {
-    const parsed = schema.safeParse(value);
-    if (!parsed.success) {
-      throw new ProviderError(
-        "fail",
-        `${domain} did not answer the way a Mastodon server does.`,
-      );
-    }
-    return parsed.data;
   }
 
   async function readInstance(domain: string, token?: string) {
@@ -500,22 +489,6 @@ export function createMastodonProvider({
     }
     await apps.put(domain, app);
     return app;
-  }
-
-  /**
-   * A failure to complete a connection, as the contract wants it: for
-   * good. The code of the callback is spent, or may be, so no second call
-   * can do better, whatever the trouble of the instance was.
-   */
-  function forGood(error: unknown): unknown {
-    if (!(error instanceof ProviderError) || error.kind === "fail") {
-      return error;
-    }
-    return new ProviderError(
-      "fail",
-      `${error.message} Connect the account again.`,
-      { status: error.status, cause: error },
-    );
   }
 
   /** Statuses of an account, newest first: methods/accounts, "statuses". */

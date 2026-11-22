@@ -6,7 +6,7 @@ import {
   type Limits,
 } from "@pigy/core";
 import { z } from "zod";
-import { ProviderError, quotable } from "../errors.ts";
+import { forGood, ProviderError, quotable, understanding } from "../errors.ts";
 import { publicOrigin, publicUrl } from "../host.ts";
 import {
   type HttpAnswer,
@@ -398,6 +398,11 @@ function errorOf({ headers, json }: Answer): string | undefined {
   return /error="([^"]+)"/.exec(headers.get("WWW-Authenticate") ?? "")?.[1];
 }
 
+/** `value` as `schema` describes it. Throws if the server sent other. */
+const understood = understanding(
+  (what) => `${what} did not answer the way atproto has it.`,
+);
+
 export function createBlueskyProvider({
   fetch,
   now,
@@ -520,22 +525,6 @@ export function createBlueskyProvider({
         : `${host} refused the request (HTTP ${status}).`,
       { status },
     );
-  }
-
-  /** `value` as `schema` describes it. Throws if the server sent other. */
-  function understood<Schema extends z.ZodType>(
-    schema: Schema,
-    value: unknown,
-    what: string,
-  ): z.output<Schema> {
-    const parsed = schema.safeParse(value);
-    if (!parsed.success) {
-      throw new ProviderError(
-        "fail",
-        `${what} did not answer the way atproto has it.`,
-      );
-    }
-    return parsed.data;
   }
 
   /** The JSON that a server answers with. Throws otherwise. */
@@ -793,21 +782,6 @@ export function createBlueskyProvider({
       pushedEndpoint: endpoints.pushed,
       revocationEndpoint: endpoints.revocation,
     };
-  }
-
-  /**
-   * A failure to complete a connection, as the contract wants it: for
-   * good. The code of the callback is spent, or may be.
-   */
-  function forGood(error: unknown): unknown {
-    if (!(error instanceof ProviderError) || error.kind === "fail") {
-      return error;
-    }
-    return new ProviderError(
-      "fail",
-      `${error.message} Connect the account again.`,
-      { status: error.status, cause: error },
-    );
   }
 
   /**

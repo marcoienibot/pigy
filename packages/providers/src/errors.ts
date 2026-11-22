@@ -1,3 +1,5 @@
+import type { z } from "zod";
+
 /**
  * What to do about a failure. It is all a caller needs to decide on:
  *
@@ -65,6 +67,40 @@ export class ProviderError extends Error {
     this.status = options.status;
     this.declined = options.declined ?? false;
   }
+}
+
+/**
+ * A failure to complete a connection, as the contract wants it: for good.
+ * The code of the callback is spent, or may be, so no second call can do
+ * better, whatever the trouble of the network was. What is no
+ * `ProviderError` is no failure of a network, and stays what it is.
+ */
+export function forGood(error: unknown): unknown {
+  if (!(error instanceof ProviderError) || error.kind === "fail") {
+    return error;
+  }
+  return new ProviderError(
+    "fail",
+    `${error.message} Connect the account again.`,
+    { status: error.status, cause: error },
+  );
+}
+
+/**
+ * Makes the check that an adapter reads every answer with: the function
+ * that it returns hands out `value` as `schema` describes it, and fails
+ * for good otherwise, with what `message` says of `who` answered.
+ */
+export function understanding(message: (who: string) => string) {
+  return <Schema extends z.ZodType>(
+    schema: Schema,
+    value: unknown,
+    who: string,
+  ): z.output<Schema> => {
+    const parsed = schema.safeParse(value);
+    if (!parsed.success) throw new ProviderError("fail", message(who));
+    return parsed.data;
+  };
 }
 
 // What stands in for a secret in a message.
