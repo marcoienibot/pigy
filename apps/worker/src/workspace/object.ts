@@ -243,7 +243,7 @@ export function workspaceObject(
     }
 
     /**
-     * Runs a mutator for Worker code, such as the REST API. The clients that
+     * Runs a mutator for Worker code. The clients that
      * are connected receive the change like any other. A call with a `key`
      * is carried out once, and answered the same way every time it comes.
      * Returns nothing if `workspace` is not the one that the object holds.

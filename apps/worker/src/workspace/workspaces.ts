@@ -115,7 +115,7 @@ export function connectWorkspace(
 
 /**
  * Runs the mutator `name` in `workspace` on behalf of the Worker itself, for
- * code that changes a workspace without a client, such as the REST API. The
+ * code that changes a workspace without a client. The
  * caller answers for `workspace` being the one it may change. Clients that
  * are connected receive the change at once.
  *
