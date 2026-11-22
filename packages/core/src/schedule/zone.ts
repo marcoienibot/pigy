@@ -14,6 +14,12 @@
 
 const dayMs = 24 * 60 * 60 * 1000;
 
+/**
+ * More than any zone is ahead of UTC, in milliseconds: the furthest is 14
+ * hours ahead.
+ */
+const maxAheadMs = 15 * 60 * 60 * 1000;
+
 /** The time on the clocks of a place: a day of the calendar and a time. */
 export type LocalTime = {
   year: number;
@@ -137,6 +143,25 @@ export function addDays(
  * This is what `Temporal` calls "compatible", and what most calendars do.
  */
 export function timeOf(zone: string, date: LocalDate, minute: number): number {
+  const key = `${zone} ${date.year}-${date.month}-${date.day} ${minute}`;
+  const known = moments.get(key);
+  if (known !== undefined) return known;
+  const moment = momentOf(zone, date, minute);
+  // The queue asks for the same days again with every change, so the
+  // answers are kept: reading the clocks of a zone is the slow part of
+  // giving the posts of a queue their times. Not without end.
+  if (moments.size >= maxMoments) moments.clear();
+  moments.set(key, moment);
+  return moment;
+}
+
+/** The moments that `timeOf` has worked out, by zone, day and minute. */
+const moments = new Map<string, number>();
+
+/** How many moments are kept: some years of a full schedule. */
+const maxMoments = 100_000;
+
+function momentOf(zone: string, date: LocalDate, minute: number): number {
   const wanted = Date.UTC(date.year, date.month - 1, date.day, 0, minute);
   // How far the zone is ahead a day before and a day after: the same,
   // unless the clocks are changed in between. No zone changes them twice
@@ -178,18 +203,41 @@ export function* slotTimes(
   const minutes: number[][] = [[], [], [], [], [], [], []];
   for (const { weekday, minute } of slots) minutes[weekday]?.push(minute);
   const today = localTimeAt(zone, after);
-  let last = after;
-  // From the day before: where the clocks skip midnight, a slot late on
-  // one day is a moment of the next.
-  for (let days = -1; ; days += 1) {
+  /** The moments of the slots of the day `days` days from today. */
+  const timesOf = (days: number) => {
     const date = addDays(today, days);
-    const times = (minutes[date.weekday] ?? [])
-      .map((minute) => timeOf(zone, date, minute))
-      .sort((a, b) => a - b);
-    for (const time of times) {
-      if (time <= last) continue;
-      last = time;
-      yield time;
+    return (minutes[date.weekday] ?? []).map((minute) =>
+      timeOf(zone, date, minute),
+    );
+  };
+  /**
+   * No slot of the day `days` days from today is a moment before this
+   * one: no zone is further ahead of UTC than this.
+   */
+  const earliest = (days: number) => {
+    const { year, month, day } = addDays(today, days);
+    return Date.UTC(year, month - 1, day) - maxAheadMs;
+  };
+  // The days do not follow each other in their moments where the clocks
+  // skip midnight: a slot late on one day is then carried over the gap,
+  // to after a slot early on the next. So the moments of a day are kept
+  // until no later day can have an earlier one, and come out in order.
+  // From two days before: a slot of the day before today can be a moment
+  // of today for the same reason.
+  const waiting: number[] = [];
+  let next = -2;
+  let last = after;
+  for (;;) {
+    const first = waiting[0];
+    if (first === undefined || earliest(next) <= first) {
+      waiting.push(...timesOf(next));
+      waiting.sort((a, b) => a - b);
+      next += 1;
+      continue;
     }
+    waiting.shift();
+    if (first <= last) continue;
+    last = first;
+    yield first;
   }
 }

@@ -233,6 +233,86 @@ it("uses a slot at a time that the clocks show twice once", () => {
   ]);
 });
 
+it("keeps the slots of two days in the order of their moments where the clocks skip the hour before midnight", () => {
+  const saturday = 6;
+  const slots = [
+    { weekday: saturday, minute: 23 * 60 + 30 },
+    { weekday: sunday, minute: 0 },
+  ];
+  // The clocks of Nuuk go from 23:00 on Saturday 28 March 2026 to 00:00
+  // on Sunday, at 01:00 UTC. Saturday's 23:30 is carried to the moment
+  // that shows 00:30 on Sunday, which is after Sunday's own slot at
+  // midnight: the slot of the later day comes first, and is not lost. A
+  // week later they are in the order of their days again, an hour ahead
+  // of UTC less than before.
+  expect(first(4, "America/Nuuk", slots, at("2026-03-28T12:00:00Z"))).toEqual([
+    "2026-03-29T01:00:00.000Z",
+    "2026-03-29T01:30:00.000Z",
+    "2026-04-05T00:30:00.000Z",
+    "2026-04-05T01:00:00.000Z",
+  ]);
+});
+
+it("computes with a zone that is three quarters of an hour off the hour", () => {
+  // The Chatham Islands are 12:45 ahead of UTC, and 13:45 in summer. In
+  // 2026 their clocks go back on 5 April, from 03:45 to 02:45, at 14:00
+  // UTC of the 4th, and forward on 27 September, from 02:45 to 03:45, at
+  // 14:00 UTC of the 26th.
+  const zone = "Pacific/Chatham";
+  expect(offsetAt(zone, at("2026-01-15T00:00:00Z"))).toBe(13.75 * hour);
+  expect(offsetAt(zone, at("2026-07-15T00:00:00Z"))).toBe(12.75 * hour);
+  expect(iso(timeOf(zone, { year: 2026, month: 6, day: 1 }, 9 * 60))).toBe(
+    "2026-05-31T20:15:00.000Z",
+  );
+  // 03:00 on 5 April is shown twice: the first time counts.
+  expect(iso(timeOf(zone, { year: 2026, month: 4, day: 5 }, 3 * 60))).toBe(
+    "2026-04-04T13:15:00.000Z",
+  );
+  // 03:00 on 27 September is skipped: it is the moment that shows 04:00.
+  expect(iso(timeOf(zone, { year: 2026, month: 9, day: 27 }, 3 * 60))).toBe(
+    "2026-09-26T14:15:00.000Z",
+  );
+});
+
+it("computes with a zone whose clocks change by half an hour", () => {
+  // Lord Howe Island is 10:30 ahead of UTC, and 11:00 in summer. In 2026
+  // its clocks go back on 5 April, from 02:00 to 01:30, at 15:00 UTC of
+  // the 4th, and forward on 4 October, from 02:00 to 02:30, at 15:30 UTC
+  // of the 3rd.
+  const zone = "Australia/Lord_Howe";
+  expect(offsetAt(zone, at("2026-01-15T00:00:00Z"))).toBe(11 * hour);
+  expect(offsetAt(zone, at("2026-07-15T00:00:00Z"))).toBe(10.5 * hour);
+  // 01:45 on 5 April is shown twice: the first time counts.
+  expect(iso(timeOf(zone, { year: 2026, month: 4, day: 5 }, 105))).toBe(
+    "2026-04-04T14:45:00.000Z",
+  );
+  // 02:15 on 4 October is skipped: it is the moment that shows 02:45.
+  expect(iso(timeOf(zone, { year: 2026, month: 10, day: 4 }, 135))).toBe(
+    "2026-10-03T15:45:00.000Z",
+  );
+  // So a slot at 02:15 and one at 02:45 are one moment on that day, and
+  // two a week later.
+  const slots = [
+    { weekday: sunday, minute: 135 },
+    { weekday: sunday, minute: 165 },
+  ];
+  expect(first(3, zone, slots, at("2026-10-03T00:00:00Z"))).toEqual([
+    "2026-10-03T15:45:00.000Z",
+    "2026-10-10T15:15:00.000Z",
+    "2026-10-10T15:45:00.000Z",
+  ]);
+});
+
+it("hands out the slots of a zone of the southern hemisphere over the end of its summer time", () => {
+  // The clocks of Sydney go back on 5 April 2026, from 03:00 to 02:00, at
+  // 16:00 UTC of the 4th: 02:30 is shown twice, and the slot is used the
+  // first time. A week later it is an hour later by UTC.
+  const slots = [{ weekday: sunday, minute: 150 }];
+  expect(
+    first(2, "Australia/Sydney", slots, at("2026-04-03T00:00:00Z")),
+  ).toEqual(["2026-04-04T15:30:00.000Z", "2026-04-11T16:30:00.000Z"]);
+});
+
 it("hands out nothing without slots", () => {
   expect(first(1, "Europe/Rome", [], at("2026-01-16T17:00:00Z"))).toEqual([]);
 });
