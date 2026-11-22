@@ -27,10 +27,16 @@ export type OwnTextMutation =
  * at the front of its outbox and keep everything behind it from the
  * server.
  *
- * The steps are not one: if another device gives the account a text in
- * the same moment and its `target.customize` comes first, the parts that
- * are added here go to the end of that text. A client uses this for a
- * target that it has just made itself, which no other device has seen.
+ * The steps are not one, and a text is never made of two all the same.
+ * If the account has a text by the time they run, given to it on another
+ * device or on this one, the `target.customize` does nothing, as it does
+ * for the later of two devices. The parts that follow say `mustFollow`,
+ * each after the part before it, which is one that these steps make: in
+ * a text that these steps did not begin, that part is not there, and
+ * every one of them is refused with `not_found`. So the text comes back
+ * whole, or its first parts do not come and the others are refused, for
+ * the person to be told. A client does not use this for an account that
+ * has a text on its copy.
  */
 export function ownTextMutations(
   postId: string,
@@ -61,6 +67,7 @@ export function ownTextMutations(
         postId,
         channelId,
         afterId: parts[first + index - 1]?.id ?? null,
+        mustFollow: true,
         text,
       },
     });

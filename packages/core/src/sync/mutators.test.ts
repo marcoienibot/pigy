@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 import { memoryWorkspace } from "../../test/memory-transaction.ts";
 import { MutationRejected, type RejectionCode } from "./mutators.ts";
+import { ownTextMutations } from "./own-text.ts";
 import {
   inReadingOrder,
   maxOwnTextLength,
@@ -1573,6 +1574,74 @@ it.each([
     expect(workspace.rows("post_part")).toHaveLength(2);
   },
 );
+
+it("puts a part that continues a text after the part that it names, or nowhere", () => {
+  const workspace = customized();
+  const add = (afterId: string) =>
+    workspace.mutate("part.add", {
+      id: thirdPartId,
+      postId,
+      channelId,
+      afterId,
+      mustFollow: true,
+      text: "Own three",
+    });
+
+  // A part of the post's own text is of the post and not of this text,
+  // and the part goes to the end after such a one without `mustFollow`.
+  expect(rejectionOf(() => add(partId))).toBe("not_found");
+  expect(textsOf(workspace, targetId)).toEqual(["Own one", "Own two"]);
+
+  add(ownPartId);
+  expect(textsOf(workspace, targetId)).toEqual([
+    "Own one",
+    "Own three",
+    "Own two",
+  ]);
+});
+
+it("never puts a part of a text that is brought back into the text that the account was given meanwhile", () => {
+  const workspace = withTarget();
+  // A text that an account had and that is brought back, of more than
+  // one mutation carries: the last of its parts comes with a `part.add`.
+  const old = Array.from({ length: 5 }, (_, index) =>
+    `Old ${index} `.padEnd(9000, "x"),
+  );
+  expect(old.join("").length).toBeGreaterThan(maxOwnTextLength);
+  let next = 0;
+  const mutations = ownTextMutations(postId, channelId, old, () => {
+    next += 1;
+    return `01932c07-0000-7000-8000-10000000000${next}`;
+  });
+  expect(mutations.map(({ name }) => name)).toEqual([
+    "target.customize",
+    "part.add",
+  ]);
+  // Before they run, the account is given a text anew: by the person, who
+  // then presses the Undo of an older notice, or by another device.
+  workspace.mutate("target.customize", {
+    postId,
+    channelId,
+    parts: [{ id: ownPartId, text: "New" }],
+  });
+
+  const refused: string[] = [];
+  for (const { name, args } of mutations) {
+    try {
+      workspace.mutate(name, args);
+    } catch (error) {
+      if (!(error instanceof MutationRejected)) throw error;
+      refused.push(`${name}: ${error.code}`);
+    }
+  }
+
+  // The text that came first stays as it is. The `target.customize`
+  // does nothing, as for two devices, and the part that was to go on
+  // from what it would have made has nothing to go after: it is
+  // refused, with its text, and not put at the end of the other text.
+  expect(textsOf(workspace, targetId)).toEqual(["New"]);
+  expect(refused).toEqual(["part.add: not_found"]);
+});
 
 it("refuses to remove the only part of the text of an account", () => {
   const workspace = customized();

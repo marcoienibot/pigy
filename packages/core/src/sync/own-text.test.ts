@@ -140,6 +140,7 @@ it.each([
       postId,
       channelId,
       afterId: partId,
+      mustFollow: true,
       text: "\u0000".repeat(maxPartTextLength),
     },
   ],

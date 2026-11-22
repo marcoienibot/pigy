@@ -300,6 +300,12 @@ export const mutators = {
    * is not of this text, the new one goes to the end: what was typed
    * into it is kept.
    *
+   * Not so with `mustFollow`, which is for a part that continues a text
+   * of the client's own making, as the parts of a text that is brought
+   * back do: it goes after the part that it names or nowhere. If that
+   * part is not of this text, the text is another one than the client
+   * began, and the part is refused rather than put at its end.
+   *
    * A part for an account whose text is gone is refused, whether the text
    * was dropped or went with its target: it is never put anywhere else.
    */
@@ -309,9 +315,10 @@ export const mutators = {
       postId: idSchema,
       channelId: idSchema.nullable(),
       afterId: idSchema.nullable(),
+      mustFollow: z.boolean().optional(),
       text: partTextSchema,
     }),
-    (tx, { id, postId, channelId, afterId, text }) => {
+    (tx, { id, postId, channelId, afterId, mustFollow, text }) => {
       const post = draft(tx, postId);
       if (tx.get("post_part", id)) {
         throw new MutationRejected(
@@ -356,6 +363,12 @@ export const mutators = {
         text,
       };
       const after = parts.findIndex((part) => part.id === afterId);
+      if (mustFollow && afterId !== null && after < 0) {
+        throw new MutationRejected(
+          "not_found",
+          "The text that this part continues is no longer there",
+        );
+      }
       parts.splice(
         afterId === null ? 0 : after < 0 ? parts.length : after + 1,
         0,
