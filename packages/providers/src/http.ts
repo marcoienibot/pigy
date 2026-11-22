@@ -14,6 +14,13 @@ export type HttpLimits = {
   timeoutMs: number;
   /** The longest body to read, in bytes. */
   maxBytes: number;
+  /**
+   * What to do with a body that is longer: fail, unless this is true.
+   * Then the first `maxBytes` of it are the answer and the rest is not
+   * read. For an answer whose beginning is all that is asked of it, as
+   * the head of a page.
+   */
+  partial?: boolean;
 };
 
 export type HttpAnswer = {
@@ -25,14 +32,18 @@ export type HttpAnswer = {
   text: string;
 };
 
-/** The body of `response`, or null if it is longer than `maxBytes`. */
+/**
+ * The body of `response`, or null if it is longer than `maxBytes`. With
+ * `partial`, the first `maxBytes` of a body that is longer.
+ */
 async function boundedText(
   response: Response,
   maxBytes: number,
+  partial: boolean,
 ): Promise<string | null> {
   // The header is a hint that spares the reading. The count below is what
   // holds, also for a server that sends no header or a wrong one.
-  if (Number(response.headers.get("Content-Length")) > maxBytes) {
+  if (!partial && Number(response.headers.get("Content-Length")) > maxBytes) {
     await response.body?.cancel();
     return null;
   }
@@ -44,10 +55,13 @@ async function boundedText(
   for (;;) {
     const { done, value } = await reader.read();
     if (done) return text + decoder.decode();
+    const room = maxBytes - bytes;
     bytes += value.byteLength;
     if (bytes > maxBytes) {
       await reader.cancel();
-      return null;
+      if (!partial) return null;
+      // A character that the cut goes through is left out.
+      return text + decoder.decode(value.subarray(0, room), { stream: true });
     }
     text += decoder.decode(value, { stream: true });
   }
@@ -173,7 +187,7 @@ async function exchange(
   host: string,
   url: string,
   init: RequestInit,
-  { maxBytes }: HttpLimits,
+  { maxBytes, partial = false }: HttpLimits,
   timeout: AbortSignal,
 ): Promise<HttpAnswer> {
   const unreachable = (cause: unknown) =>
@@ -195,7 +209,7 @@ async function exchange(
   }
   let text: string | null;
   try {
-    text = await boundedText(response, maxBytes);
+    text = await boundedText(response, maxBytes, partial);
   } catch (cause) {
     // An answer that breaks off on the way, or takes too long. Nothing
     // else makes the reading of a body fail.

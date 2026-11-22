@@ -86,6 +86,30 @@ describe("send", () => {
     expect(pulled).toBeLessThanOrEqual(3);
   });
 
+  it("takes the beginning of a body that is longer than allowed, where it is asked to", async () => {
+    let pulled = 0;
+    const endless = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled++;
+        // "é" is two bytes: 30 of them in a chunk of 60.
+        controller.enqueue(new TextEncoder().encode("é".repeat(30)));
+      },
+    });
+    const answer = await send(
+      // The length that it names is no reason to refuse it either.
+      async () =>
+        new Response(endless, { headers: { "Content-Length": "1000000" } }),
+      "mastodon.example",
+      url,
+      {},
+      { timeoutMs: 1000, maxBytes: 99, partial: true },
+    );
+    // 99 bytes are 49 letters and half of one, which is left out and not
+    // handed over as a broken character.
+    expect(answer.text).toBe("é".repeat(49));
+    expect(pulled).toBeLessThanOrEqual(3);
+  });
+
   it("does not read a body that says it is too long", async () => {
     const error = await failure(() =>
       send(

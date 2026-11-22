@@ -6,6 +6,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./bluesky": "./src/bluesky/index.ts",
+    "./card": "./src/card.ts",
     "./linkedin": "./src/linkedin/index.ts",
     "./mastodon": "./src/mastodon/index.ts",
     "./threads": "./src/threads/index.ts"

@@ -1,24 +1,4 @@
-const namedEntities: Record<string, string> = {
-  amp: "&",
-  lt: "<",
-  gt: ">",
-  quot: '"',
-  apos: "'",
-  nbsp: "\u00a0",
-};
-
-function decodeEntities(text: string): string {
-  return text.replace(
-    /&(?:#(\d+)|#x([0-9a-f]+)|([a-z]+));/gi,
-    (entity, decimal?: string, hex?: string, name?: string) => {
-      if (name) return namedEntities[name.toLowerCase()] ?? entity;
-      const codePoint = decimal
-        ? Number.parseInt(decimal, 10)
-        : Number.parseInt(hex ?? "", 16);
-      return codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : entity;
-    },
-  );
-}
+import { decodeEntities } from "../html.ts";
 
 /**
  * The text of a status from its `content`, which Mastodon gives as HTML:
