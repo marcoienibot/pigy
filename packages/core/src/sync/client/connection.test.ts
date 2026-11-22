@@ -171,7 +171,13 @@ it("sends the outbox once the hello is answered, and drops a mutation when a pat
         {
           op: "put",
           table: "post_part",
-          row: { id: partId, postId: id, position: 0, text: "Hello" },
+          row: {
+            id: partId,
+            postId: id,
+            targetId: null,
+            position: 0,
+            text: "Hello",
+          },
         },
       ],
     }),

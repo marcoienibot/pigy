@@ -4,7 +4,10 @@ import { limitsSchema } from "../network/limits.ts";
 import {
   channelRowSchema,
   inReadingOrder,
+  maxOwnTextLength,
+  maxParts,
   maxPartTextLength,
+  partsFor,
   type Row,
   targetLimits,
   targetPartResultRowSchema,
@@ -40,6 +43,10 @@ export const rejectionCodeSchema = z.enum([
   "not_found",
   /** The post is past being a draft, so it can no longer be edited. */
   "not_a_draft",
+  /** The part is the only one of its text, which has to keep one. */
+  "last_part",
+  /** The text has as many parts as a text can have. */
+  "too_many_parts",
   /** The post has no channel to go to. */
   "no_channels",
   /** The post is on its way to its channels, and stays until it has ended. */
@@ -110,6 +117,69 @@ function existingPost(tx: Transaction, id: string): Row<"post"> {
   return post;
 }
 
+/** The post with this ID, which has to be a draft: only a draft is edited. */
+function draft(tx: Transaction, id: string): Row<"post"> {
+  const post = existingPost(tx, id);
+  if (post.status !== "draft") {
+    throw new MutationRejected("not_a_draft", "Only a draft can be edited");
+  }
+  return post;
+}
+
+/** The target of the post `postId` that goes to `channelId`, if any. */
+function targetTo(
+  tx: Transaction,
+  postId: string,
+  channelId: string,
+): Row<"post_target"> | undefined {
+  return tx
+    .find("post_target", "postId", postId)
+    .find((target) => target.channelId === channelId);
+}
+
+/**
+ * The parts of one text, in the order they are read in: those of the post
+ * `postId` that are written for `targetId`, or the post's own for null.
+ */
+function textOf(
+  tx: Transaction,
+  postId: string,
+  targetId: string | null,
+): Row<"post_part">[] {
+  return inReadingOrder(
+    tx
+      .find("post_part", "postId", postId)
+      .filter((part) => part.targetId === targetId),
+  );
+}
+
+/**
+ * Stores `parts` as one text in this order: each gets its place in the
+ * list as its position. Only the parts that are new or have moved are
+ * written, so a part that stays where it was is no change.
+ */
+function inOrder(
+  tx: Transaction,
+  parts: readonly Row<"post_part">[],
+  added?: Row<"post_part">,
+): void {
+  parts.forEach((part, position) => {
+    if (part === added || part.position !== position) {
+      tx.put("post_part", { ...part, position });
+    }
+  });
+}
+
+/** Removes the text that was written for `targetId`, if there is one. */
+function dropOwnText(
+  tx: Transaction,
+  { id, postId }: Row<"post_target">,
+): boolean {
+  const written = textOf(tx, postId, id);
+  for (const part of written) tx.delete("post_part", part.id);
+  return written.length > 0;
+}
+
 /**
  * Gives a post the status that follows from its targets, when one of them
  * has changed: `sending` while any of them is on its way or waits its
@@ -178,11 +248,20 @@ export const mutators = {
         createdAt: tx.now,
         updatedAt: tx.now,
       });
-      tx.put("post_part", { id: partId, postId: id, position: 0, text });
+      tx.put("post_part", {
+        id: partId,
+        postId: id,
+        targetId: null,
+        position: 0,
+        text,
+      });
     },
   ),
 
-  /** Replaces the text of one part of a draft. */
+  /**
+   * Replaces the text of one part of a draft: of its own text, or of the
+   * text that is written for one of its accounts.
+   */
   "part.setText": mutator(
     z.strictObject({ id: idSchema, text: partTextSchema }),
     (tx, { id, text }) => {
@@ -200,7 +279,126 @@ export const mutators = {
   ),
 
   /**
-   * Deletes a post with its parts, its targets and what they published.
+   * Adds a part to a text of a draft: to the post's own, or with
+   * `channelId` to the text that is written for that account. The part
+   * goes after the part `afterId`, or first for null.
+   *
+   * A mutation names the part to go after and no position: the order is
+   * kept where the mutations are run one after the other, and two devices
+   * that add a part at the same place both get theirs in, the later one
+   * nearer to the part that both named. If that part is gone by now, or
+   * is not of this text, the new one goes to the end: what was typed
+   * into it is kept.
+   */
+  "part.add": mutator(
+    z.strictObject({
+      id: idSchema,
+      postId: idSchema,
+      channelId: idSchema.nullable(),
+      afterId: idSchema.nullable(),
+      text: partTextSchema,
+    }),
+    (tx, { id, postId, channelId, afterId, text }) => {
+      const post = draft(tx, postId);
+      if (tx.get("post_part", id)) {
+        throw new MutationRejected(
+          "already_exists",
+          "This part exists already",
+        );
+      }
+      const target =
+        channelId === null ? undefined : targetTo(tx, postId, channelId);
+      const parts = textOf(tx, postId, target?.id ?? null);
+      // A text for an account begins with `target.customize`. One that
+      // was dropped since, with its account or without, is not begun
+      // anew by a part that was meant for the middle of it.
+      if (channelId !== null && parts.length === 0) {
+        throw new MutationRejected(
+          "not_found",
+          "This account no longer has a text of its own",
+        );
+      }
+      if (parts.length >= maxParts) {
+        throw new MutationRejected(
+          "too_many_parts",
+          `A post has at most ${maxParts} parts`,
+        );
+      }
+      const added = {
+        id,
+        postId,
+        targetId: target?.id ?? null,
+        position: 0,
+        text,
+      };
+      const after = parts.findIndex((part) => part.id === afterId);
+      parts.splice(
+        afterId === null ? 0 : after < 0 ? parts.length : after + 1,
+        0,
+        added,
+      );
+      inOrder(tx, parts, added);
+      tx.put("post", { ...post, updatedAt: tx.now });
+    },
+  ),
+
+  /**
+   * Removes a part from its text. Does nothing if the part is gone: two
+   * devices can remove the same part. A text keeps one part: the last one
+   * is not removed. The text of an account goes as a whole, with
+   * `target.followPost`.
+   */
+  "part.remove": mutator(z.strictObject({ id: idSchema }), (tx, { id }) => {
+    const part = tx.get("post_part", id);
+    if (!part) return;
+    const post = draft(tx, part.postId);
+    const parts = textOf(tx, part.postId, part.targetId);
+    if (parts.length === 1) {
+      throw new MutationRejected(
+        "last_part",
+        "The only part of a text cannot be removed",
+      );
+    }
+    tx.delete("post_part", id);
+    inOrder(
+      tx,
+      parts.filter((other) => other.id !== id),
+    );
+    tx.put("post", { ...post, updatedAt: tx.now });
+  }),
+
+  /**
+   * Moves a part within its text: to after the part `afterId`, or to the
+   * beginning for null. Like `part.add`, it names a part and no position.
+   * If the part to go after is gone by now, or is not of this text, the
+   * part stays where it is.
+   */
+  "part.move": mutator(
+    z.strictObject({ id: idSchema, afterId: idSchema.nullable() }),
+    (tx, { id, afterId }) => {
+      const part = tx.get("post_part", id);
+      if (!part) {
+        throw new MutationRejected("not_found", "This part no longer exists");
+      }
+      const post = draft(tx, part.postId);
+      const parts = textOf(tx, part.postId, part.targetId);
+      const others = parts.filter((other) => other.id !== id);
+      const after = others.findIndex((other) => other.id === afterId);
+      if (afterId !== null && after < 0) return;
+      // The row as `textOf` handed it out, so that `inOrder` compares it
+      // with the place it had.
+      const moved = parts.find((other) => other.id === id);
+      if (!moved) return;
+      others.splice(afterId === null ? 0 : after + 1, 0, moved);
+      if (others.every((other, index) => other === parts[index])) return;
+      inOrder(tx, others);
+      tx.put("post", { ...post, updatedAt: tx.now });
+    },
+  ),
+
+  /**
+   * Deletes a post with its parts, those that are written for one account
+   * included, its targets and what they published.
    * Deleting a post that does not exist does nothing and is not an error:
    * two devices can delete the same post.
    *
@@ -215,9 +413,11 @@ export const mutators = {
         "A post cannot be deleted while it is being sent",
       );
     }
-    // What refers to something goes before it: a part cannot be without
-    // its post, and a result not without its target and its part.
-    for (const target of tx.find("post_target", "postId", id)) {
+    // What refers to something goes before it: a result cannot be without
+    // its target and its part, a part that is written for a target not
+    // without that target, and none of them without the post.
+    const targets = tx.find("post_target", "postId", id);
+    for (const target of targets) {
       for (const result of tx.find(
         "target_part_result",
         "targetId",
@@ -225,11 +425,11 @@ export const mutators = {
       )) {
         tx.delete("target_part_result", result.id);
       }
-      tx.delete("post_target", target.id);
     }
     for (const part of tx.find("post_part", "postId", id)) {
       tx.delete("post_part", part.id);
     }
+    for (const target of targets) tx.delete("post_target", target.id);
     tx.delete("post", id);
   }),
 
@@ -298,7 +498,83 @@ export const mutators = {
         .find("post_target", "postId", postId)
         .find((candidate) => candidate.channelId === channelId);
       if (!target) return;
+      // The text that was written for the account goes with the choice.
+      dropOwnText(tx, target);
       tx.delete("post_target", target.id);
+      tx.put("post", { ...post, updatedAt: tx.now });
+    },
+  ),
+
+  /**
+   * Gives an account of a draft a text of its own, in place of the post's:
+   * `parts`, in this order, which the app fills with the post's text as it
+   * is, for the person to change. From then on the account gets these
+   * parts, however many there are, and the post's own text goes to the
+   * other accounts.
+   *
+   * The whole text comes in one mutation, so that an account never has
+   * half of one, and so that of two devices that begin one, one wins as a
+   * whole: does nothing if the account has a text of its own already. The
+   * account is named by its channel, like in `target.remove`.
+   */
+  "target.customize": mutator(
+    z.strictObject({
+      postId: idSchema,
+      channelId: idSchema,
+      parts: z
+        .array(z.strictObject({ id: idSchema, text: partTextSchema }))
+        .min(1)
+        .max(maxParts)
+        .refine(
+          (parts) =>
+            parts.reduce((length, { text }) => length + text.length, 0) <=
+            maxOwnTextLength,
+          `The text is longer than ${maxOwnTextLength} characters`,
+        ),
+    }),
+    (tx, { postId, channelId, parts }) => {
+      const post = draft(tx, postId);
+      const target = targetTo(tx, postId, channelId);
+      if (!target) {
+        throw new MutationRejected(
+          "not_found",
+          "The post no longer goes to this account",
+        );
+      }
+      if (textOf(tx, postId, target.id).length > 0) return;
+      parts.forEach(({ id, text }, position) => {
+        if (
+          tx.get("post_part", id) ||
+          parts.findIndex((part) => part.id === id) !== position
+        ) {
+          throw new MutationRejected(
+            "already_exists",
+            "This part exists already",
+          );
+        }
+        tx.put("post_part", {
+          id,
+          postId,
+          targetId: target.id,
+          position,
+          text,
+        });
+      });
+      tx.put("post", { ...post, updatedAt: tx.now });
+    },
+  ),
+
+  /**
+   * Takes the text that was written for an account away again: the
+   * account gets the post's own text, like the others. Does nothing if it
+   * does so already, or if the post does not go there.
+   */
+  "target.followPost": mutator(
+    z.strictObject({ postId: idSchema, channelId: idSchema }),
+    (tx, { postId, channelId }) => {
+      const post = draft(tx, postId);
+      const target = targetTo(tx, postId, channelId);
+      if (!target || !dropOwnText(tx, target)) return;
       tx.put("post", { ...post, updatedAt: tx.now });
     },
   ),
@@ -446,7 +722,7 @@ export const mutators = {
    * it. Does nothing if the channel is gone.
    *
    * The posts that were to go to the channel no longer do. A draft loses
-   * the target. A target that waits or is on its way fails, with what it
+   * the target, with the text that was written for it. A target that waits or is on its way fails, with what it
    * has published so far. What has ended stays as it is, for the record:
    * its `channelId` then names a channel that is gone.
    */
@@ -455,6 +731,7 @@ export const mutators = {
     (tx, { id }) => {
       for (const target of tx.find("post_target", "channelId", id)) {
         if (target.status === "pending") {
+          dropOwnText(tx, target);
           tx.delete("post_target", target.id);
         } else if (target.status === "queued" || target.status === "sending") {
           tx.put("post_target", {
@@ -503,7 +780,7 @@ export const mutators = {
 
   /**
    * Records the parts that a delivery has published so far, in the order
-   * of the post: where each stands on the network. A part that is recorded
+   * of the text that the target gets, the post's or its own: where each stands on the network. A part that is recorded
    * already keeps its row, and the `id` that is passed for it is not used.
    */
   "target.progress": mutator(
@@ -516,8 +793,10 @@ export const mutators = {
     }),
     (tx, { id, attempt, parts }) => {
       const target = currentTarget(tx, id, attempt);
-      const postParts = inReadingOrder(
+      // The parts that the target gets: its own, if it has any.
+      const postParts = partsFor(
         tx.find("post_part", "postId", target.postId),
+        id,
       );
       const recorded = new Set(
         tx

@@ -9,6 +9,7 @@ import {
   targetStatuses,
 } from "@pigy/core";
 import {
+  type AnySQLiteColumn,
   index,
   integer,
   primaryKey,
@@ -45,6 +46,14 @@ export const postParts = sqliteTable(
     postId: text("post_id")
       .notNull()
       .references(() => posts.id),
+    /**
+     * The target that the part is written for, in place of the post's own
+     * text, or null for a part of that. The mutators delete such a part
+     * before its target.
+     */
+    targetId: text("target_id").references(
+      (): AnySQLiteColumn => postTargets.id,
+    ),
     position: integer("position").notNull(),
     text: text("text").notNull(),
   },

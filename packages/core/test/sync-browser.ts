@@ -28,6 +28,7 @@ export function draft(text: string, updatedAt = 0) {
   const part: Row<"post_part"> = {
     id: newId(),
     postId: post.id,
+    targetId: null,
     position: 0,
     text,
   };

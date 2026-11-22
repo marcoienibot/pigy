@@ -34,6 +34,20 @@ export type PostStatus = z.infer<typeof postStatusSchema>;
  */
 export const maxPartTextLength = 10_000;
 
+/**
+ * The most parts that one text has: a post, and the text that an account
+ * gets in its place. Far more than a thread that anybody reads.
+ */
+export const maxParts = 100;
+
+/**
+ * The longest text that an account is given in place of the post's own in
+ * one step, all its parts together, in UTF-16 code units. The step is one
+ * mutation, which has to fit one message of the sync protocol, also when
+ * JSON writes every character as six.
+ */
+export const maxOwnTextLength = 40_000;
+
 /** A time, in milliseconds since the Unix epoch. */
 const timeSchema = z.number().int().nonnegative();
 
@@ -46,13 +60,28 @@ export const postRowSchema = z.strictObject({
   updatedAt: timeSchema,
 });
 
-/** One item of a thread. An ordinary post has a single part. */
+/**
+ * One item of a thread. An ordinary post has a single part.
+ *
+ * A post has a text of its own, and an account can be given another in
+ * its place: the parts of a post are those of its own text, whose
+ * `targetId` is null, and those that one of its targets gets instead,
+ * which name the target. A target that no part names gets the post's own.
+ * Each of these texts is a thread of its own, with its own number of
+ * parts.
+ */
 export const postPartRowSchema = z.strictObject({
   id: idSchema,
   postId: idSchema,
   /**
-   * Where the part stands in its post: parts are read in ascending order of
-   * `position`, then of `id`.
+   * The target of the post that this part is written for, in place of the
+   * post's own text. Null for a part of the post's own text.
+   */
+  targetId: idSchema.nullable(),
+  /**
+   * Where the part stands in its text: the parts of one text are read in
+   * ascending order of `position`, then of `id`. The mutators that add,
+   * remove and move a part number the parts of its text anew, from 0.
    */
   position: z.number().int().nonnegative(),
   text: z.string().max(maxPartTextLength),
@@ -65,6 +94,28 @@ export function inReadingOrder<Part extends { id: string; position: number }>(
   return [...parts].sort(
     (a, b) => a.position - b.position || (a.id < b.id ? -1 : 1),
   );
+}
+
+/**
+ * The parts of the post's own text among `parts`, which are those of one
+ * post, in the order they are read in.
+ */
+export function ownParts<
+  Part extends { id: string; position: number; targetId: string | null },
+>(parts: readonly Part[]): Part[] {
+  return inReadingOrder(parts.filter((part) => part.targetId === null));
+}
+
+/**
+ * What the target `targetId` gets of `parts`, which are those of its post,
+ * in the order they are read in: the text that was written for it, or the
+ * post's own if there is none.
+ */
+export function partsFor<
+  Part extends { id: string; position: number; targetId: string | null },
+>(parts: readonly Part[], targetId: string): Part[] {
+  const written = parts.filter((part) => part.targetId === targetId);
+  return written.length > 0 ? inReadingOrder(written) : ownParts(parts);
 }
 
 /** Whether pigy can act for the account of a channel. */
@@ -214,6 +265,10 @@ export const postTargetRowSchema = z.strictObject({
 export const targetPartResultRowSchema = z.strictObject({
   id: idSchema,
   targetId: idSchema,
+  /**
+   * One of the parts that the target gets: the post's own, or the ones
+   * that were written for the target.
+   */
   partId: idSchema,
   /**
    * The network's ID of the post that the part is in. Parts that a network

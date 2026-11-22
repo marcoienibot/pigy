@@ -78,6 +78,13 @@
       "when": 1795309438392,
       "tag": "0010_may_have_sent",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1795311597579,
+      "tag": "0011_own_text",
+      "breakpoints": true
     }
   ]
 }

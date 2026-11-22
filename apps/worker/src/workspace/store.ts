@@ -2,7 +2,6 @@ import {
   applyMutation,
   type Change,
   environmentSchema,
-  inReadingOrder,
   type Limits,
   type Mutation,
   MutationRejected,
@@ -10,6 +9,7 @@ import {
   type MutatorArgs,
   type Network,
   type PostContent,
+  partsFor,
   type Rejection,
   type RejectionCode,
   type Row,
@@ -203,7 +203,10 @@ export type Delivery = {
     limits: Limits | null;
     limitsCheckedAt: number | null;
   };
-  /** The text of the parts of the post, in order. */
+  /**
+   * The text of the parts that the account gets, in order: those of the
+   * post, or the ones that were written for this account in their place.
+   */
   content: PostContent;
   /**
    * How far the attempts before have come, as an adapter returned it, or
@@ -921,8 +924,12 @@ export class WorkspaceStore {
         limitsCheckedAt: channel.limitsCheckedAt,
       },
       content: {
-        parts: inReadingOrder(
+        // What this account gets: the text that was written for it, or
+        // the post's own. Neither changes once the post is published,
+        // so every attempt and every step is handed the same.
+        parts: partsFor(
           findRows(this.db, "post_part", "postId", target.postId),
+          targetId,
         ).map(({ text }) => ({ text })),
       },
       progress: target.progress ?? null,

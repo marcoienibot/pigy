@@ -175,17 +175,13 @@ export function inPlaceOfPosting(
 export type Draft = { postId: string; partIds: string[] };
 
 /**
- * Writes a draft with the given parts through `client`, which applies the
- * patch that confirms it.
- *
- * A draft gets its first part from `post.create`. No mutator adds another
- * until the thread editor of phase 4, so the parts after the first are
- * written into the database of the workspace as that mutator will write
- * them. Clients do not hear of them, and no test here needs them to.
+ * Writes a draft with the given parts through `client`, with the mutators
+ * that the editor of a draft uses, and applies the patches that confirm
+ * them. `_workspaceId` is not used: the client is connected to it.
  */
 export async function writeDraft(
   client: SyncClient,
-  workspaceId: string,
+  _workspaceId: string,
   ...texts: [string, ...string[]]
 ): Promise<Draft> {
   const [first, ...more] = texts;
@@ -197,17 +193,17 @@ export async function writeDraft(
     text: first,
   });
   await client.patch();
-  await runInDurableObject(objectOf(workspaceId), (_, state) => {
-    more.forEach((text, index) => {
-      state.storage.sql.exec(
-        "insert into post_part (id, post_id, position, text) values (?, ?, ?, ?)",
-        partIds[index + 1],
-        postId,
-        index + 1,
-        text,
-      );
+  for (const [index, text] of more.entries()) {
+    client.mutate("part.add", {
+      id: partIds[index + 1] ?? "",
+      postId,
+      channelId: null,
+      // Each after the one before it.
+      afterId: partIds[index] ?? null,
+      text,
     });
-  });
+    await client.patch();
+  }
   return { postId, partIds };
 }
 

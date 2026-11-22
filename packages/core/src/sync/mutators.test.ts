@@ -1,7 +1,14 @@
 import { expect, it } from "vitest";
 import { memoryWorkspace } from "../../test/memory-transaction.ts";
 import { MutationRejected, type RejectionCode } from "./mutators.ts";
-import { maxPartTextLength, postStatuses } from "./tables.ts";
+import {
+  inReadingOrder,
+  maxOwnTextLength,
+  maxParts,
+  maxPartTextLength,
+  partsFor,
+  postStatuses,
+} from "./tables.ts";
 
 const postId = "01932c07-0000-7000-8000-000000000001";
 const partId = "01932c07-0000-7000-8000-000000000002";
@@ -28,7 +35,7 @@ it("creates a post as a draft with one part", () => {
     { id: postId, status: "draft", createdAt: 1000, updatedAt: 1000 },
   ]);
   expect(workspace.rows("post_part")).toEqual([
-    { id: partId, postId, position: 0, text: "Hello" },
+    { id: partId, postId, targetId: null, position: 0, text: "Hello" },
   ]);
 });
 
@@ -58,7 +65,7 @@ it.each([
   expect(code).toBe("already_exists");
   expect(workspace.rows("post")).toHaveLength(1);
   expect(workspace.rows("post_part")).toEqual([
-    { id: partId, postId, position: 0, text: "First" },
+    { id: partId, postId, targetId: null, position: 0, text: "First" },
   ]);
 });
 
@@ -69,7 +76,7 @@ it("replaces the text of a part and notes when the post changed", () => {
   workspace.mutate("part.setText", { id: partId, text: "Hello, world" }, 5000);
 
   expect(workspace.rows("post_part")).toEqual([
-    { id: partId, postId, position: 0, text: "Hello, world" },
+    { id: partId, postId, targetId: null, position: 0, text: "Hello, world" },
   ]);
   // Lists of posts are sorted by the last change, which a change of the
   // text of a part is.
@@ -101,6 +108,7 @@ it.each(postStatuses.filter((status) => status !== "draft"))(
     workspace.put("post_part", {
       id: partId,
       postId,
+      targetId: null,
       position: 0,
       text: "Sent",
     });
@@ -118,11 +126,12 @@ it.each(postStatuses.filter((status) => status !== "draft"))(
 it("deletes a post with all its parts and nothing else", () => {
   const workspace = memoryWorkspace();
   workspace.mutate("post.create", { id: postId, partId, text: "Goes" });
-  // A second part, as a thread has. No mutator adds one yet.
-  workspace.put("post_part", {
+  // A second part, as a thread has.
+  workspace.mutate("part.add", {
     id: "01932c07-0000-7000-8000-000000000005",
     postId,
-    position: 1,
+    channelId: null,
+    afterId: partId,
     text: "Goes too",
   });
   workspace.mutate("post.create", {
@@ -476,7 +485,7 @@ const otherResultId = "01932c07-0000-7000-8000-00000000000b";
 
 /**
  * A workspace with two connected accounts and a draft of two parts, at the
- * time 1000. No mutator adds a part yet, so the second is stored directly.
+ * time 1000.
  */
 function withDraft() {
   const workspace = memoryWorkspace();
@@ -488,12 +497,11 @@ function withDraft() {
     "server",
   );
   workspace.mutate("post.create", { id: postId, partId, text: "One" }, 1000);
-  workspace.put("post_part", {
-    id: otherPartId,
-    postId,
-    position: 1,
-    text: "Two",
-  });
+  workspace.mutate(
+    "part.add",
+    { id: otherPartId, postId, channelId: null, afterId: partId, text: "Two" },
+    1000,
+  );
   return workspace;
 }
 
@@ -513,6 +521,34 @@ function sending() {
 }
 
 type Workspace = ReturnType<typeof memoryWorkspace>;
+
+const thirdPartId = "01932c07-0000-7000-8000-00000000000c";
+const fourthPartId = "01932c07-0000-7000-8000-00000000000d";
+const ownPartId = "01932c07-0000-7000-8000-00000000000e";
+const otherOwnPartId = "01932c07-0000-7000-8000-00000000000f";
+
+/**
+ * The text of the parts of one text of the post, in the order they are
+ * read in: the post's own, or the one written for `target`.
+ */
+const textsOf = (workspace: Workspace, target: string | null = null) =>
+  inReadingOrder(
+    workspace.rows("post_part").filter(({ targetId }) => targetId === target),
+  ).map(({ text }) => text);
+
+/** Adds a part to the post's own text, after `afterId`, at `now`. */
+const add = (
+  workspace: Workspace,
+  id: string,
+  afterId: string | null,
+  text: string,
+  now = 2000,
+) =>
+  workspace.mutate(
+    "part.add",
+    { id, postId, channelId: null, afterId, text },
+    now,
+  );
 
 const statusOf = (workspace: Workspace) => workspace.rows("post")[0]?.status;
 
@@ -658,6 +694,29 @@ it("leaves a post as it is from the moment it is published", () => {
       }),
     ),
   ).toBe("not_a_draft");
+  // Neither can its parts be added to, removed or moved, nor an account
+  // be given another text or lose the one it has: a delivery that is
+  // tried again compares what it finds on the network with what it sent.
+  const edits: [string, unknown][] = [
+    [
+      "part.add",
+      { id: thirdPartId, postId, channelId: null, afterId: null, text: "" },
+    ],
+    ["part.remove", { id: otherPartId }],
+    ["part.move", { id: otherPartId, afterId: null }],
+    [
+      "target.customize",
+      { postId, channelId, parts: [{ id: thirdPartId, text: "Own" }] },
+    ],
+    ["target.followPost", { postId, channelId }],
+  ];
+  for (const [name, args] of edits) {
+    expect(
+      rejectionOf(() => workspace.mutate(name, args)),
+      name,
+    ).toBe("not_a_draft");
+  }
+  expect(textsOf(workspace)).toEqual(["One", "Two"]);
   // Deleted now, it would leave posts on the networks that nothing in
   // pigy knows of.
   expect(
@@ -1165,4 +1224,401 @@ it.each([
     "not_allowed",
   );
   expect(workspace.rows("post_target")).toEqual(before);
+});
+
+it("adds a part after the part that it names, or first", () => {
+  const workspace = withDraft();
+
+  add(workspace, thirdPartId, partId, "One and a half", 2000);
+  add(workspace, fourthPartId, null, "Zero", 3000);
+
+  expect(textsOf(workspace)).toEqual(["Zero", "One", "One and a half", "Two"]);
+  // The parts of a text are numbered from 0 with no gap, whatever was
+  // added where.
+  expect(
+    inReadingOrder(workspace.rows("post_part")).map(({ position }) => position),
+  ).toEqual([0, 1, 2, 3]);
+  // A part is part of the draft.
+  expect(workspace.rows("post")[0]?.updatedAt).toBe(3000);
+});
+
+it("keeps both parts that two devices add at the same place", () => {
+  const workspace = withDraft();
+
+  // Both devices saw "One", "Two" and added a part after "One". The server
+  // runs one mutation and then the other, each on the rows as they are.
+  add(workspace, thirdPartId, partId, "From the first device");
+  add(workspace, fourthPartId, partId, "From the second device");
+
+  // Neither is lost, no two parts share a position, and the parts that
+  // were there keep their order.
+  expect(textsOf(workspace)).toEqual([
+    "One",
+    "From the second device",
+    "From the first device",
+    "Two",
+  ]);
+  expect(
+    workspace
+      .rows("post_part")
+      .map(({ position }) => position)
+      .sort(),
+  ).toEqual([0, 1, 2, 3]);
+});
+
+it("adds a part at the end when the part to go after is gone", () => {
+  const workspace = withDraft();
+  // Another device removed "Two" before this one's part, which was to
+  // follow it, arrived.
+  workspace.mutate("part.remove", { id: otherPartId });
+
+  add(workspace, thirdPartId, otherPartId, "Three");
+
+  // What was typed into the part is kept.
+  expect(textsOf(workspace)).toEqual(["One", "Three"]);
+});
+
+it("refuses a part with the ID of another, and one for a post that is gone", () => {
+  const workspace = withDraft();
+
+  expect(rejectionOf(() => add(workspace, otherPartId, partId, "Again"))).toBe(
+    "already_exists",
+  );
+  expect(
+    rejectionOf(() =>
+      workspace.mutate("part.add", {
+        id: thirdPartId,
+        postId: otherPostId,
+        channelId: null,
+        afterId: null,
+        text: "Nowhere",
+      }),
+    ),
+  ).toBe("not_found");
+  expect(textsOf(workspace)).toEqual(["One", "Two"]);
+});
+
+it("refuses one part more than a text can have", () => {
+  const workspace = memoryWorkspace();
+  workspace.mutate("post.create", { id: postId, partId, text: "1" });
+  const id = (index: number) =>
+    `01932c07-0000-7000-8000-1${index.toString().padStart(11, "0")}`;
+  for (let index = 1; index < maxParts; index += 1) {
+    add(workspace, id(index), null, String(index));
+  }
+
+  expect(rejectionOf(() => add(workspace, id(maxParts), null, "More"))).toBe(
+    "too_many_parts",
+  );
+  expect(workspace.rows("post_part")).toHaveLength(maxParts);
+});
+
+it("removes a part and closes the gap", () => {
+  const workspace = withDraft();
+  add(workspace, thirdPartId, otherPartId, "Three");
+
+  workspace.mutate("part.remove", { id: otherPartId }, 4000);
+  // Two devices can remove the same part.
+  workspace.mutate("part.remove", { id: otherPartId }, 5000);
+
+  expect(textsOf(workspace)).toEqual(["One", "Three"]);
+  expect(
+    inReadingOrder(workspace.rows("post_part")).map(({ position }) => position),
+  ).toEqual([0, 1]);
+  // The second removal changed nothing, so the draft is as old as the
+  // first made it.
+  expect(workspace.rows("post")[0]?.updatedAt).toBe(4000);
+});
+
+it("refuses to remove the only part of a post", () => {
+  const workspace = withDraft();
+  workspace.mutate("part.remove", { id: otherPartId });
+
+  // A post always has a part: the editor has a field to type into.
+  expect(
+    rejectionOf(() => workspace.mutate("part.remove", { id: partId })),
+  ).toBe("last_part");
+  expect(textsOf(workspace)).toEqual(["One"]);
+});
+
+it("moves a part to after the part that it names, or to the beginning", () => {
+  const workspace = withDraft();
+  add(workspace, thirdPartId, otherPartId, "Three");
+
+  workspace.mutate("part.move", { id: partId, afterId: thirdPartId }, 4000);
+  expect(textsOf(workspace)).toEqual(["Two", "Three", "One"]);
+
+  workspace.mutate("part.move", { id: thirdPartId, afterId: null }, 5000);
+  expect(textsOf(workspace)).toEqual(["Three", "Two", "One"]);
+  expect(workspace.rows("post")[0]?.updatedAt).toBe(5000);
+
+  // To where it is already: nothing changes, and the draft is no newer.
+  workspace.mutate(
+    "part.move",
+    { id: otherPartId, afterId: thirdPartId },
+    6000,
+  );
+  expect(textsOf(workspace)).toEqual(["Three", "Two", "One"]);
+  expect(workspace.rows("post")[0]?.updatedAt).toBe(5000);
+});
+
+it("keeps every part when two devices move parts at once", () => {
+  const workspace = withDraft();
+  add(workspace, thirdPartId, otherPartId, "Three");
+
+  // Both devices saw "One", "Two", "Three". The first moved "Three" to
+  // the beginning, the second moved "One" down by one, to after "Two".
+  workspace.mutate("part.move", { id: thirdPartId, afterId: null });
+  workspace.mutate("part.move", { id: partId, afterId: otherPartId });
+
+  // Each move is carried out on what the one before left: every part is
+  // there once, and each is where its move put it.
+  expect(textsOf(workspace)).toEqual(["Three", "Two", "One"]);
+  expect(
+    workspace
+      .rows("post_part")
+      .map(({ position }) => position)
+      .sort(),
+  ).toEqual([0, 1, 2]);
+});
+
+it("leaves a part where it is when the part to go after is gone, and refuses to move one that is gone", () => {
+  const workspace = withDraft();
+  add(workspace, thirdPartId, otherPartId, "Three");
+  workspace.mutate("part.remove", { id: otherPartId });
+
+  workspace.mutate("part.move", { id: thirdPartId, afterId: otherPartId });
+  // After itself is nowhere.
+  workspace.mutate("part.move", { id: thirdPartId, afterId: thirdPartId });
+
+  expect(textsOf(workspace)).toEqual(["One", "Three"]);
+  expect(
+    rejectionOf(() =>
+      workspace.mutate("part.move", { id: otherPartId, afterId: null }),
+    ),
+  ).toBe("not_found");
+});
+
+/** `withTarget()`, with a text of two parts written for its account. */
+function customized() {
+  const workspace = withTarget();
+  workspace.mutate(
+    "target.customize",
+    {
+      postId,
+      channelId,
+      parts: [
+        { id: ownPartId, text: "Own one" },
+        { id: otherOwnPartId, text: "Own two" },
+      ],
+    },
+    3000,
+  );
+  return workspace;
+}
+
+it("gives an account a text of its own, which leaves the post's alone", () => {
+  const workspace = customized();
+
+  expect(textsOf(workspace, targetId)).toEqual(["Own one", "Own two"]);
+  expect(textsOf(workspace)).toEqual(["One", "Two"]);
+  expect(workspace.rows("post")[0]?.updatedAt).toBe(3000);
+  // The parts of the two texts are edited apart, with the same mutators.
+  workspace.mutate("part.setText", { id: ownPartId, text: "Own, edited" });
+  workspace.mutate("part.remove", { id: otherOwnPartId });
+  workspace.mutate("part.add", {
+    id: thirdPartId,
+    postId,
+    channelId,
+    afterId: ownPartId,
+    text: "Own three",
+  });
+  workspace.mutate("part.move", { id: thirdPartId, afterId: null });
+  expect(textsOf(workspace, targetId)).toEqual(["Own three", "Own, edited"]);
+  expect(textsOf(workspace)).toEqual(["One", "Two"]);
+});
+
+it("hands a target the text that is written for it, and the others the post's", () => {
+  const workspace = customized();
+  workspace.mutate("target.add", {
+    id: otherTargetId,
+    postId,
+    channelId: otherChannelId,
+  });
+  const parts = workspace.rows("post_part");
+
+  expect(partsFor(parts, targetId).map(({ text }) => text)).toEqual([
+    "Own one",
+    "Own two",
+  ]);
+  expect(partsFor(parts, otherTargetId).map(({ text }) => text)).toEqual([
+    "One",
+    "Two",
+  ]);
+});
+
+it("keeps the text that came first when two devices give an account its own", () => {
+  const workspace = customized();
+
+  // A second device began from the post's text before it had heard of
+  // the first.
+  workspace.mutate(
+    "target.customize",
+    { postId, channelId, parts: [{ id: thirdPartId, text: "Late" }] },
+    4000,
+  );
+
+  // The account has one text, whole, and not parts of both.
+  expect(textsOf(workspace, targetId)).toEqual(["Own one", "Own two"]);
+  expect(workspace.rows("post")[0]?.updatedAt).toBe(3000);
+});
+
+it.each([
+  [
+    "an account that the post does not go to",
+    { postId, channelId: otherChannelId, parts: [{ id: ownPartId, text: "" }] },
+    "not_found",
+  ],
+  [
+    "the ID of another part",
+    { postId, channelId, parts: [{ id: partId, text: "" }] },
+    "already_exists",
+  ],
+  [
+    "the same ID twice",
+    {
+      postId,
+      channelId,
+      parts: [
+        { id: ownPartId, text: "" },
+        { id: ownPartId, text: "" },
+      ],
+    },
+    "already_exists",
+  ],
+  ["no parts", { postId, channelId, parts: [] }, "invalid_arguments"],
+  [
+    // One mutation has to fit one message of the protocol.
+    "more text than one mutation carries",
+    {
+      postId,
+      channelId,
+      parts: Array.from({ length: 5 }, (_, index) => ({
+        id: `01932c07-0000-7000-8000-20000000000${index}`,
+        text: "x".repeat(maxOwnTextLength / 5 + 1),
+      })),
+    },
+    "invalid_arguments",
+  ],
+])("refuses a text of its own for %s", (_name, args, code) => {
+  const workspace = withTarget();
+
+  expect(rejectionOf(() => workspace.mutate("target.customize", args))).toBe(
+    code,
+  );
+  // Nothing of a text that is refused stays.
+  expect(workspace.rows("post_part")).toHaveLength(2);
+});
+
+it("refuses a part for the text of an account that has none of its own", () => {
+  const workspace = withTarget();
+
+  // A text for an account begins as a whole. A part that arrives after
+  // another device dropped the text must not begin one of a single part.
+  expect(
+    rejectionOf(() =>
+      workspace.mutate("part.add", {
+        id: thirdPartId,
+        postId,
+        channelId,
+        afterId: null,
+        text: "Stray",
+      }),
+    ),
+  ).toBe("not_found");
+  expect(workspace.rows("post_part")).toHaveLength(2);
+});
+
+it("refuses to remove the only part of the text of an account", () => {
+  const workspace = customized();
+  workspace.mutate("part.remove", { id: otherOwnPartId });
+
+  // The post has three parts in all, and this text has one.
+  expect(
+    rejectionOf(() => workspace.mutate("part.remove", { id: ownPartId })),
+  ).toBe("last_part");
+});
+
+it("gives an account the post's text again", () => {
+  const workspace = customized();
+
+  workspace.mutate("target.followPost", { postId, channelId }, 4000);
+  // Two devices can do so.
+  workspace.mutate("target.followPost", { postId, channelId }, 5000);
+
+  expect(textsOf(workspace, targetId)).toEqual([]);
+  expect(textsOf(workspace)).toEqual(["One", "Two"]);
+  expect(workspace.rows("post_target")).toHaveLength(1);
+  expect(workspace.rows("post")[0]?.updatedAt).toBe(4000);
+});
+
+it.each([
+  ["target.remove", { postId, channelId }, "client"],
+  ["channel.disconnect", { id: channelId }, "server"],
+  ["post.delete", { id: postId }, "client"],
+] as const)(
+  "takes the text of an account away with %s",
+  (name, args, source) => {
+    const workspace = customized();
+
+    workspace.mutate(name, args, 4000, source);
+
+    // A part that names a target which is gone would be a text that nobody
+    // gets and nothing removes.
+    expect(textsOf(workspace, targetId)).toEqual([]);
+    expect(workspace.rows("post_target")).toEqual([]);
+  },
+);
+
+it("records what a delivery has published by the parts that its account gets", () => {
+  const workspace = customized();
+  workspace.mutate("target.add", {
+    id: otherTargetId,
+    postId,
+    channelId: otherChannelId,
+  });
+  workspace.mutate("post.publish", { id: postId }, 4000);
+  workspace.mutate("target.start", { id: targetId }, 5000, "server");
+  workspace.mutate("target.start", { id: otherTargetId }, 5001, "server");
+  const report = (id: string, results: string[]) =>
+    workspace.mutate(
+      "target.progress",
+      {
+        id,
+        attempt: 1,
+        parts: results.map((result) => ({
+          id: result,
+          remoteId: result,
+          url: null,
+        })),
+      },
+      6000,
+      "server",
+    );
+
+  report(targetId, [resultId, otherResultId]);
+  report(otherTargetId, [thirdPartId, fourthPartId]);
+
+  // Each result names the part that was published there: the account's
+  // own for the one, the post's for the other.
+  expect(
+    workspace
+      .rows("target_part_result")
+      .map(({ targetId: target, partId: part }) => [target, part]),
+  ).toEqual([
+    [targetId, ownPartId],
+    [targetId, otherOwnPartId],
+    [otherTargetId, partId],
+    [otherTargetId, otherPartId],
+  ]);
 });

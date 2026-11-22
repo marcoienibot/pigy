@@ -1,0 +1,1 @@
+ALTER TABLE `post_part` ADD `target_id` text REFERENCES post_target(id);

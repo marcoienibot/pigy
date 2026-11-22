@@ -46,7 +46,14 @@ export function part(
   postId: string,
   fields: Partial<Row<"post_part">> = {},
 ): Row<"post_part"> {
-  return { id: id(), postId, position: 0, text: "Hello", ...fields };
+  return {
+    id: id(),
+    postId,
+    targetId: null,
+    position: 0,
+    text: "Hello",
+    ...fields,
+  };
 }
 
 export function target(

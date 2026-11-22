@@ -76,7 +76,9 @@ it("answers the first hello of a client with a snapshot", async () => {
   const createdAt = Date.parse("2026-11-14T10:00:00Z");
   expect(client.copy).toEqual({
     post: [{ id: postId, status: "draft", createdAt, updatedAt: createdAt }],
-    post_part: [{ id: partId, postId, position: 0, text: "Hello" }],
+    post_part: [
+      { id: partId, postId, targetId: null, position: 0, text: "Hello" },
+    ],
     channel: [],
     post_target: [],
     target_part_result: [],
@@ -768,7 +770,7 @@ it("sends a change that the Worker makes to the clients that are connected", asy
     rejected: [],
   });
   expect(client.table("post_part")).toEqual([
-    { id: partId, postId, position: 0, text: "From the API" },
+    { id: partId, postId, targetId: null, position: 0, text: "From the API" },
   ]);
 });
 

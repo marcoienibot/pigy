@@ -8,9 +8,14 @@ import type { MutatorName } from "@pigy/core";
 const refused: Record<MutatorName, string> = {
   "post.create": "A new draft was not saved",
   "part.setText": "An edit was not saved",
+  "part.add": "A part was not added to a draft",
+  "part.remove": "A part was not removed from a draft",
+  "part.move": "A part was not moved",
   "post.delete": "A post was not deleted",
   "target.add": "An account was not added to a draft",
   "target.remove": "An account was not taken off a draft",
+  "target.customize": "An account was not given a text of its own",
+  "target.followPost": "An account was not given the text of the post again",
   "post.publish": "A post was not published",
   "target.retry": "A post was not sent again",
   // Only the server runs the ones below, so no copy holds one that the app

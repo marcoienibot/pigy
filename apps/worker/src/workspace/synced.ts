@@ -36,6 +36,7 @@ const synced = {
     columns: {
       id: postParts.id,
       postId: postParts.postId,
+      targetId: postParts.targetId,
       position: postParts.position,
       text: postParts.text,
     },

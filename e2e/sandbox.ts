@@ -117,7 +117,7 @@ export function publishNow(
               type: "hello",
               // The versions in packages/core/src/sync/protocol.ts.
               protocolVersion: 2,
-              schemaVersion: 5,
+              schemaVersion: 6,
               clientId: id(),
               cursor: null,
               lastMutationId: 0,
