@@ -13,7 +13,7 @@ import { rowSchemas, type TableName, tableNames } from "./tables.ts";
 export const syncProtocolVersion = 2;
 
 /** Changes when the synced tables or the mutators change. */
-export const syncSchemaVersion = 7;
+export const syncSchemaVersion = 8;
 
 /** Lengths are in UTF-16 code units, which is what `String.length` counts. */
 export const syncLimits = {
@@ -146,6 +146,7 @@ export const changeSchema = z.union([
   putSchema("channel"),
   putSchema("post_target"),
   putSchema("target_part_result"),
+  putSchema("notification"),
   z.strictObject({
     op: z.literal("delete"),
     table: z.enum(tableNames),

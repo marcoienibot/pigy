@@ -1758,3 +1758,360 @@ it("records what a delivery has published by the parts that its account gets", (
     [otherTargetId, otherPartId],
   ]);
 });
+// Notifications: what the inbox says of posts and channels.
+
+const failed = {
+  id: targetId,
+  attempt: 1,
+  status: "error",
+  error: "The network refused the post.",
+  refusedConnection: null,
+} as const;
+
+/** The notification that the inbox has of the post, made at `at`. */
+const ofPost = (at: number, readAt: number | null = null) => ({
+  id: postId,
+  kind: "post_failed",
+  postId,
+  channelId: null,
+  createdAt: at,
+  readAt,
+});
+
+/** `sending()`, with the post going to both accounts, both under way. */
+function sendingToTwo() {
+  const workspace = withTarget();
+  workspace.mutate(
+    "target.add",
+    { id: otherTargetId, postId, channelId: otherChannelId },
+    2500,
+  );
+  workspace.mutate("post.publish", { id: postId }, 3000);
+  workspace.mutate("target.start", { id: targetId }, 4000, "server");
+  workspace.mutate("target.start", { id: otherTargetId }, 4001, "server");
+  return workspace;
+}
+
+it("tells the inbox of a post whose delivery has failed", () => {
+  const workspace = sending();
+
+  workspace.mutate("target.end", failed, 5000, "server");
+
+  expect(workspace.rows("notification")).toEqual([ofPost(5000)]);
+});
+
+it("tells the inbox of a post whose delivery nobody knows the end of", () => {
+  const workspace = sending();
+
+  workspace.mutate(
+    "target.end",
+    { ...failed, status: "uncertain" },
+    5000,
+    "server",
+  );
+
+  expect(workspace.rows("notification")).toEqual([ofPost(5000)]);
+});
+
+it("says nothing of a post that has arrived", () => {
+  const workspace = sending();
+
+  workspace.mutate(
+    "target.end",
+    { id: targetId, attempt: 1, status: "sent" },
+    5000,
+    "server",
+  );
+
+  expect(workspace.rows("notification")).toEqual([]);
+});
+
+it("tells the inbox of a post once, when the last of its deliveries has ended", () => {
+  const workspace = sendingToTwo();
+
+  workspace.mutate("target.end", failed, 5000, "server");
+  // The other delivery is still under way: the post has not ended, and
+  // how it ends is said in one notification, not in one per delivery.
+  expect(workspace.rows("notification")).toEqual([]);
+
+  workspace.mutate(
+    "target.end",
+    { ...failed, id: otherTargetId },
+    6000,
+    "server",
+  );
+  expect(workspace.rows("notification")).toEqual([ofPost(6000)]);
+});
+
+it("tells the inbox of a post that arrived only in part", () => {
+  const workspace = sendingToTwo();
+  workspace.mutate("target.end", failed, 5000, "server");
+
+  workspace.mutate(
+    "target.end",
+    { id: otherTargetId, attempt: 1, status: "sent" },
+    6000,
+    "server",
+  );
+
+  expect(workspace.rows("notification")).toEqual([ofPost(6000)]);
+});
+
+it("takes the notification of a post back while the post is tried again, and tells anew if it fails again", () => {
+  const workspace = sending();
+  workspace.mutate("target.end", failed, 5000, "server");
+  workspace.mutate("notification.read", { ids: [postId] }, 5500);
+
+  workspace.mutate("target.retry", { id: targetId }, 6000);
+  // The post is on its way: that it failed is no longer what is so.
+  expect(workspace.rows("notification")).toEqual([]);
+
+  workspace.mutate("target.start", { id: targetId }, 6500, "server");
+  workspace.mutate("target.end", { ...failed, attempt: 2 }, 7000, "server");
+  // Unread again: it is news, though the person had read the first.
+  expect(workspace.rows("notification")).toEqual([ofPost(7000)]);
+});
+
+it("takes the notification of a post away when a later try arrives", () => {
+  const workspace = sendingToTwo();
+  workspace.mutate("target.end", failed, 5000, "server");
+  workspace.mutate(
+    "target.end",
+    { id: otherTargetId, attempt: 1, status: "sent" },
+    6000,
+    "server",
+  );
+  workspace.mutate("target.retry", { id: targetId }, 7000);
+  workspace.mutate("target.start", { id: targetId }, 7500, "server");
+
+  workspace.mutate(
+    "target.end",
+    { id: targetId, attempt: 2, status: "sent" },
+    8000,
+    "server",
+  );
+
+  expect(statusOf(workspace)).toBe("sent");
+  expect(workspace.rows("notification")).toEqual([]);
+});
+
+it("deletes the notification of a post with the post", () => {
+  const workspace = sending();
+  workspace.mutate("target.end", failed, 5000, "server");
+
+  workspace.mutate("post.delete", { id: postId }, 6000);
+
+  expect(workspace.rows("notification")).toEqual([]);
+});
+
+it("says nothing in the inbox of a post that failed because its account was disconnected", () => {
+  const workspace = sending();
+
+  // The person has done that themselves, a moment ago.
+  workspace.mutate("channel.disconnect", { id: channelId }, 5000, "server");
+
+  expect(statusOf(workspace)).toBe("error");
+  expect(workspace.rows("notification")).toEqual([]);
+});
+
+it("tells the inbox that a channel needs connecting again, next to the post that found out", () => {
+  const workspace = sending();
+
+  workspace.mutate(
+    "target.end",
+    { ...failed, refusedConnection: 1000 },
+    5000,
+    "server",
+  );
+
+  expect(workspace.rows("notification")).toEqual([
+    {
+      id: channelId,
+      kind: "channel_needs_reconnect",
+      postId: null,
+      channelId,
+      createdAt: 5000,
+      readAt: null,
+    },
+    ofPost(5000),
+  ]);
+});
+
+it("says nothing of a channel that was connected again before its refusal was recorded", () => {
+  const workspace = sending();
+  workspace.mutate("channel.connect", account(), 4500, "server");
+
+  workspace.mutate(
+    "target.end",
+    { ...failed, refusedConnection: 1000 },
+    5000,
+    "server",
+  );
+
+  // Only the post: the channel has an access that nothing has refused.
+  expect(workspace.rows("notification")).toEqual([ofPost(5000)]);
+});
+
+it.each([
+  ["connected again", "channel.connect", account()],
+  ["disconnected", "channel.disconnect", { id: channelId }],
+])(
+  "takes the notification of a channel away when the channel is %s",
+  (_how, name, args) => {
+    const workspace = sending();
+    workspace.mutate(
+      "target.end",
+      { ...failed, refusedConnection: 1000 },
+      5000,
+      "server",
+    );
+
+    workspace.mutate(name, args, 6000, "server");
+
+    // What is left is about the post, which is still not sent.
+    expect(workspace.rows("notification")).toEqual([ofPost(5000)]);
+  },
+);
+
+const week = 7 * 24 * 60 * 60 * 1000;
+
+/** A workspace with a channel whose access ends at `expiresAt`. */
+function withAccessUntil(expiresAt: number | null) {
+  const workspace = memoryWorkspace();
+  workspace.mutate("channel.connect", account({ expiresAt }), 1000, "server");
+  return workspace;
+}
+
+it("tells the inbox that the access of a channel ends within a week", () => {
+  const workspace = withAccessUntil(10 * week);
+
+  workspace.mutate(
+    "channel.warnOfExpiry",
+    { id: channelId },
+    9 * week,
+    "server",
+  );
+
+  expect(workspace.rows("notification")).toEqual([
+    {
+      id: channelId,
+      kind: "channel_expiring",
+      postId: null,
+      channelId,
+      createdAt: 9 * week,
+      readAt: null,
+    },
+  ]);
+});
+
+it.each([
+  ["does not end", null, 9 * week],
+  ["ends later than in a week", 10 * week, 9 * week - 1],
+  ["has ended", 10 * week, 10 * week],
+])("says nothing of an access that %s", (_what, expiresAt, now) => {
+  const workspace = withAccessUntil(expiresAt);
+
+  workspace.mutate("channel.warnOfExpiry", { id: channelId }, now, "server");
+
+  expect(workspace.rows("notification")).toEqual([]);
+});
+
+it("does not put a reminder in the place of the word that a channel needs connecting again", () => {
+  const workspace = withAccessUntil(10 * week);
+  const [connected] = workspace.rows("channel");
+  if (!connected) throw new Error("The channel is not there");
+  workspace.put("channel", { ...connected, status: "needs_reconnect" });
+
+  workspace.mutate(
+    "channel.warnOfExpiry",
+    { id: channelId },
+    9 * week,
+    "server",
+  );
+
+  expect(workspace.rows("notification")).toEqual([]);
+});
+
+it("takes the reminder away when the access is renewed", () => {
+  const workspace = withAccessUntil(10 * week);
+  workspace.mutate(
+    "channel.warnOfExpiry",
+    { id: channelId },
+    9 * week,
+    "server",
+  );
+
+  workspace.mutate(
+    "channel.renew",
+    { id: channelId, expiresAt: 20 * week },
+    9 * week + 1,
+    "server",
+  );
+
+  expect(workspace.rows("notification")).toEqual([]);
+});
+
+it("marks notifications as read, and leaves the time of one that was read before", () => {
+  const workspace = sending();
+  workspace.mutate(
+    "target.end",
+    { ...failed, refusedConnection: 1000 },
+    5000,
+    "server",
+  );
+  workspace.mutate("notification.read", { ids: [postId] }, 6000);
+
+  // Both, as "mark all read" on a device that has not heard of the first
+  // reading, and one that is gone, which another device has dismissed.
+  workspace.mutate(
+    "notification.read",
+    { ids: [postId, channelId, otherPostId] },
+    7000,
+  );
+
+  expect(
+    workspace.rows("notification").map(({ id, readAt }) => [id, readAt]),
+  ).toEqual([
+    [channelId, 7000],
+    [postId, 6000],
+  ]);
+});
+
+it("dismisses a notification, and leaves what it was about", () => {
+  const workspace = sending();
+  workspace.mutate("target.end", failed, 5000, "server");
+
+  workspace.mutate("notification.dismiss", { id: postId }, 6000);
+  // A second device does the same: nothing to do, and no refusal.
+  workspace.mutate("notification.dismiss", { id: postId }, 6001);
+
+  expect(workspace.rows("notification")).toEqual([]);
+  expect(statusOf(workspace)).toBe("error");
+});
+
+it("removes the notifications that the server names as old", () => {
+  const workspace = sending();
+  workspace.mutate(
+    "target.end",
+    { ...failed, refusedConnection: 1000 },
+    5000,
+    "server",
+  );
+
+  workspace.mutate("notification.prune", { ids: [postId] }, 6000, "server");
+
+  expect(workspace.rows("notification").map(({ id }) => id)).toEqual([
+    channelId,
+  ]);
+});
+
+it.each([
+  ["channel.warnOfExpiry", { id: channelId }],
+  ["notification.prune", { ids: [postId] }],
+])("refuses a client that sends %s", (name, args) => {
+  const workspace = sending();
+
+  expect(rejectionOf(() => workspace.mutate(name, args, 5000))).toBe(
+    "not_allowed",
+  );
+});

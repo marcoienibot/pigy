@@ -3,6 +3,8 @@ import {
   environments,
   type Limits,
   networks,
+  notificationKinds,
+  type PushMessage,
   postStatuses,
   type RejectionCode,
   tableNames,
@@ -98,6 +100,13 @@ export const channels = sqliteTable(
      * not work. The alarm of the object goes by it: src/workspace/renewal.ts.
      */
     refreshAt: integer("refresh_at"),
+    /**
+     * The access that the person was told the end of, a week before it:
+     * the `connectedAt` of the connection that the reminder was for. A
+     * reminder is given once per access, and this is what says that it
+     * was. Null until the first.
+     */
+    expiryWarnedFor: integer("expiry_warned_for"),
   },
   (table) => [
     // An account is one channel, however often it is connected.
@@ -201,7 +210,39 @@ export const targetPartResults = sqliteTable(
   ],
 );
 
+/** What the inbox of the app says: see `notificationRowSchema`. */
+export const notifications = sqliteTable(
+  "notification",
+  {
+    // The ID of the post or the channel that it is about. No reference to
+    // either: it is one or the other.
+    id: text("id").primaryKey(),
+    kind: text("kind", { enum: notificationKinds }).notNull(),
+    postId: text("post_id"),
+    channelId: text("channel_id"),
+    createdAt: integer("created_at").notNull(),
+    readAt: integer("read_at"),
+  },
+  // For the oldest, which is the next to go.
+  (table) => [index("notification_created_at_idx").on(table.createdAt)],
+);
+
 // The tables below never leave the object.
+
+/**
+ * The push messages that are to go to the devices of the owner and have
+ * not gone yet. A row is written in the transaction of the change that
+ * the message is about, and removed when the message has been handed to
+ * the push services, by the alarm of the object: store.ts and object.ts.
+ */
+export const pushOutbox = sqliteTable("push_outbox", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  /** What the message says. It holds no text of a post and no name. */
+  message: text("message", { mode: "json" }).$type<PushMessage>().notNull(),
+  /** The notification of the inbox that it goes with. */
+  notificationId: text("notification_id").notNull(),
+  queuedAt: integer("queued_at").notNull(),
+});
 
 /**
  * A single row: which workspace this object holds, and how far its changes

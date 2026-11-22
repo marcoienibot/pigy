@@ -85,6 +85,13 @@
       "when": 1795311658556,
       "tag": "0011_own_text",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1795316614420,
+      "tag": "0012_notifications",
+      "breakpoints": true
     }
   ]
 }

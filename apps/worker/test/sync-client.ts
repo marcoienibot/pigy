@@ -113,6 +113,7 @@ export class SyncClient {
     channel: new Map(),
     post_target: new Map(),
     target_part_result: new Map(),
+    notification: new Map(),
   };
   private socket: WebSocket | undefined;
   /** Messages that no test has looked at yet. */
@@ -308,6 +309,7 @@ export class SyncClient {
       channel: this.table("channel"),
       post_target: this.table("post_target"),
       target_part_result: this.table("target_part_result"),
+      notification: this.table("notification"),
     };
   }
 }

@@ -4,6 +4,7 @@ import type { DrizzleSqliteDODatabase } from "drizzle-orm/durable-sqlite";
 import type { SQLiteColumn, SQLiteTable } from "drizzle-orm/sqlite-core";
 import {
   channels,
+  notifications,
   postParts,
   posts,
   postTargets,
@@ -79,6 +80,17 @@ const synced = {
       partId: targetPartResults.partId,
       remoteId: targetPartResults.remoteId,
       url: targetPartResults.url,
+    },
+  },
+  notification: {
+    table: notifications,
+    columns: {
+      id: notifications.id,
+      kind: notifications.kind,
+      postId: notifications.postId,
+      channelId: notifications.channelId,
+      createdAt: notifications.createdAt,
+      readAt: notifications.readAt,
     },
   },
 } satisfies {

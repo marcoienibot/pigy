@@ -112,6 +112,10 @@ function latestTime(rows: Tables): number {
     look(queuedAt);
     look(sentAt);
   }
+  for (const { createdAt, readAt } of rows.notification.values()) {
+    look(createdAt);
+    look(readAt);
+  }
   return latest;
 }
 

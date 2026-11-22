@@ -3,6 +3,7 @@ import { idSchema } from "../id.ts";
 import { limitsSchema } from "../network/limits.ts";
 import {
   channelRowSchema,
+  expiryNoticeMs,
   inReadingOrder,
   maxOwnTextLength,
   maxParts,
@@ -230,6 +231,42 @@ function currentTarget(
     );
   }
   return target;
+}
+
+/**
+ * Tells the person, in the inbox, that the post `postId` has ended and has
+ * not arrived everywhere, or tells them again: the notification is new and
+ * unread. A post has one, under its own ID.
+ */
+function notifyOfPost(tx: Transaction, postId: string): void {
+  tx.put("notification", {
+    id: postId,
+    kind: "post_failed",
+    postId,
+    channelId: null,
+    createdAt: tx.now,
+    readAt: null,
+  });
+}
+
+/**
+ * Tells the person something about a channel, in the inbox. A channel has
+ * one notification, under its own ID: what is said later takes the place
+ * of what was said before.
+ */
+function notifyOfChannel(
+  tx: Transaction,
+  channelId: string,
+  kind: "channel_needs_reconnect" | "channel_expiring",
+): void {
+  tx.put("notification", {
+    id: channelId,
+    kind,
+    postId: null,
+    channelId,
+    createdAt: tx.now,
+    readAt: null,
+  });
 }
 
 // What a target is told when its account is disconnected under it.
@@ -467,6 +504,10 @@ export const mutators = {
       tx.delete("post_part", part.id);
     }
     for (const target of targets) tx.delete("post_target", target.id);
+    // What the inbox says of the post, which is under the ID of the post.
+    if (tx.get("notification", id)?.postId === id) {
+      tx.delete("notification", id);
+    }
     tx.delete("post", id);
   }),
 
@@ -672,6 +713,11 @@ export const mutators = {
       queuedAt: tx.now,
     });
     settle(tx, target.postId);
+    // The post is on its way again: what the inbox said of how it ended
+    // is no longer so. It says so anew if this try ends badly too.
+    if (tx.get("notification", target.postId)?.postId === target.postId) {
+      tx.delete("notification", target.postId);
+    }
   }),
 
   /**
@@ -700,6 +746,11 @@ export const mutators = {
           "already_exists",
           "This channel exists already",
         );
+      }
+      // A new connection is what the inbox asked for, if it said anything
+      // of the channel.
+      if (existing && tx.get("notification", existing.id)?.channelId) {
+        tx.delete("notification", existing.id);
       }
       tx.put("channel", {
         ...channel,
@@ -750,6 +801,10 @@ export const mutators = {
         );
       }
       tx.put("channel", { ...channel, expiresAt });
+      // A reminder that the access ends is about the end that it had.
+      if (tx.get("notification", id)?.kind === "channel_expiring") {
+        tx.delete("notification", id);
+      }
     },
     { serverOnly: true },
   ),
@@ -797,6 +852,9 @@ export const mutators = {
           });
           settle(tx, target.postId);
         }
+      }
+      if (tx.get("notification", id)?.channelId === id) {
+        tx.delete("notification", id);
       }
       tx.delete("channel", id);
     },
@@ -926,9 +984,91 @@ export const mutators = {
         // workspace are run at the same time.
         if (channel?.connectedAt === end.refusedConnection) {
           tx.put("channel", { ...channel, status: "needs_reconnect" });
+          notifyOfChannel(tx, channel.id, "channel_needs_reconnect");
         }
       }
       settle(tx, target.postId);
+      // The inbox says how a post ended, once, when the last of its
+      // deliveries has: not for each of them.
+      const post = tx.get("post", target.postId);
+      if (post?.status === "error") {
+        notifyOfPost(tx, post.id);
+      } else if (
+        post?.status === "sent" &&
+        tx.get("notification", post.id)?.postId === post.id
+      ) {
+        tx.delete("notification", post.id);
+      }
+    },
+    { serverOnly: true },
+  ),
+
+  /**
+   * Tells the person that the access of a channel ends within
+   * `expiryNoticeMs`, on a network where it ends by a date and is not
+   * renewed. The server runs this once for each access, when that time
+   * has come. It says nothing of a channel that needs connecting again
+   * already, which the inbox has said, nor of one whose access does not
+   * end within that time, or has ended.
+   */
+  "channel.warnOfExpiry": mutator(
+    z.strictObject({ id: idSchema }),
+    (tx, { id }) => {
+      const channel = tx.get("channel", id);
+      if (!channel) {
+        throw new MutationRejected(
+          "not_found",
+          "This account is no longer connected",
+        );
+      }
+      if (
+        channel.status !== "connected" ||
+        channel.expiresAt === null ||
+        channel.expiresAt <= tx.now ||
+        channel.expiresAt - tx.now > expiryNoticeMs
+      ) {
+        return;
+      }
+      notifyOfChannel(tx, id, "channel_expiring");
+    },
+    { serverOnly: true },
+  ),
+
+  /**
+   * Marks notifications as read, on every device. One that is gone or
+   * read already is left as it is: two devices can read the same one.
+   */
+  "notification.read": mutator(
+    z.strictObject({ ids: z.array(idSchema).min(1).max(100) }),
+    (tx, { ids }) => {
+      for (const id of ids) {
+        const notification = tx.get("notification", id);
+        if (notification && notification.readAt === null) {
+          tx.put("notification", { ...notification, readAt: tx.now });
+        }
+      }
+    },
+  ),
+
+  /**
+   * Takes a notification out of the inbox. What it was about stays as it
+   * is. Does nothing if the notification is gone.
+   */
+  "notification.dismiss": mutator(
+    z.strictObject({ id: idSchema }),
+    (tx, { id }) => {
+      tx.delete("notification", id);
+    },
+  ),
+
+  /**
+   * Removes notifications that the person has not dismissed: the server
+   * runs this for the ones that are older than it keeps them.
+   */
+  "notification.prune": mutator(
+    z.strictObject({ ids: z.array(idSchema).min(1).max(100) }),
+    (tx, { ids }) => {
+      for (const id of ids) tx.delete("notification", id);
     },
     { serverOnly: true },
   ),

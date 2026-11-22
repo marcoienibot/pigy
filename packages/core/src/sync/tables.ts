@@ -282,6 +282,56 @@ export const targetPartResultRowSchema = z.strictObject({
   url: httpsUrlSchema.nullable(),
 });
 
+/** What a notification of the inbox is about. */
+export const notificationKinds = [
+  /**
+   * A post has ended and has not arrived everywhere: a delivery of it has
+   * failed, or nobody knows how one ended. `postId` names the post.
+   */
+  "post_failed",
+  /**
+   * A network no longer takes the access of a channel, which has to be
+   * connected again. `channelId` names the channel.
+   */
+  "channel_needs_reconnect",
+  /**
+   * The access of a channel ends in a week, on a network where it ends by
+   * a date. `channelId` names the channel.
+   */
+  "channel_expiring",
+] as const;
+
+export const notificationKindSchema = z.enum(notificationKinds);
+
+export type NotificationKind = z.infer<typeof notificationKindSchema>;
+
+/**
+ * How long before the access of a channel ends the person is told, in
+ * milliseconds: a week.
+ */
+export const expiryNoticeMs = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Something that the person has to hear of and may have to deal with, in
+ * the inbox of the app. There is at most one about a post and one about a
+ * channel: its `id` is the ID of what it is about. It goes when what it is
+ * about is dealt with or gone, when the person dismisses it, and when it
+ * is old.
+ */
+export const notificationRowSchema = z.strictObject({
+  /** The ID of the post or of the channel that it is about. */
+  id: idSchema,
+  kind: notificationKindSchema,
+  /** The post that it is about, or null. */
+  postId: idSchema.nullable(),
+  /** The channel that it is about, or null. */
+  channelId: idSchema.nullable(),
+  /** When what it tells of happened, or happened again. */
+  createdAt: timeSchema,
+  /** When the person read it, on any device. Null until then. */
+  readAt: timeSchema.nullable(),
+});
+
 /** The schema of a row of every synced table, by the name of the table. */
 export const rowSchemas = {
   post: postRowSchema,
@@ -289,6 +339,7 @@ export const rowSchemas = {
   channel: channelRowSchema,
   post_target: postTargetRowSchema,
   target_part_result: targetPartResultRowSchema,
+  notification: notificationRowSchema,
 } as const;
 
 export type TableName = keyof typeof rowSchemas;
