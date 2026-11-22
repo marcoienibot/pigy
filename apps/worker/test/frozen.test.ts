@@ -1,5 +1,6 @@
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
-import { haltedMessage, syncCloseCodes } from "@pigy/core";
+import { haltedMessage, syncCloseCodes, uploadChunks } from "@pigy/core";
+import { feed } from "@pigy/simulators/world";
 import { eq } from "drizzle-orm";
 import { expect, it } from "vitest";
 import {
@@ -17,14 +18,28 @@ import {
   locationOf,
   me,
   overtake,
+  realMastodonDomain,
   signedIn,
   signIn,
   type TestSetup,
 } from "./helpers.ts";
 import {
+  attach,
+  beginUpload,
+  completeUpload,
+  createMedia,
+  endedWithImages,
+  kept,
+  photo,
+  sendChunk,
+  upload,
+} from "./media.ts";
+import {
+  connectAccount,
   ended,
   gate,
   patience,
+  postStatus,
   publishTo,
   retry,
   started,
@@ -410,6 +425,151 @@ it("lets a delivery that is under way at the freeze go to its end, and ends the 
   expect(asked(test, threadsPublish)).toBe(2);
 });
 
+it("ends a delivery with an image that waits its turn at the freeze as any other, records it so, and sends it with its image once the person is back", async () => {
+  const held = gate((request) => request === postStatus);
+  const { test, browser } = await started({ interceptNetwork: held.intercept });
+  await invite(test, member.email);
+  const removed = await signedIn(test, member);
+  const { live } = await workspaceIds(removed);
+  const channelId = await connectAccount(test, removed, live);
+  const client = new SyncClient();
+  await client.connect(removed, live);
+  const image = await upload(removed, client, live, await photo());
+  held.close();
+  const first = await writeDraft(client, live, "Now");
+  const [underWay = ""] = await publishTo(client, first.postId, channelId);
+  await held.reached();
+  // A post with an image waits its turn behind the first.
+  const second = await writeDraft(client, live, "Next, with an image");
+  await attach(client, second.partIds[0] ?? "", image.id, "A picture");
+  const [waiting = ""] = await publishTo(client, second.postId, channelId);
+
+  await remove(test, browser, member.email);
+  expect(await targetIn(live, waiting)).toEqual({
+    status: "error",
+    error: haltedMessage,
+  });
+  held.open();
+  await expect
+    .poll(() => targetIn(live, underWay), patience)
+    .toMatchObject({ status: "sent" });
+
+  // The record says how each ended, the one that waited as not sent.
+  const record = () =>
+    runInDurableObject(objectOf(live), (_, state) =>
+      state.storage.sql
+        .exec<{ post_id: string; target_id: string; outcome: string }>(
+          "select post_id, target_id, outcome from publish_record order by id",
+        )
+        .toArray(),
+    );
+  expect(await record()).toEqual([
+    { post_id: first.postId, target_id: underWay, outcome: "sent" },
+    { post_id: second.postId, target_id: waiting, outcome: "error" },
+  ]);
+  // The image stays with its post, which did not go out everywhere: the
+  // bytes are for the next try.
+  expect(await kept(live)).toContain(`${image.id}/original`);
+
+  // The person is invited again, signs in, and tries it again.
+  await invite(test, member.email);
+  const back = await signedIn(test, member);
+  await Promise.all(test.keptAlive);
+  const again = new SyncClient();
+  await again.connect(back, live);
+  await retry(again, waiting);
+  expect(await endedWithImages(again, second.postId)).toMatchObject({
+    status: "sent",
+  });
+  expect(
+    feed(test.network.world, ["mastodon"]).map(({ post }) => [
+      post.text,
+      (post.images ?? []).map(({ alt }) => alt),
+    ]),
+  ).toEqual([
+    ["Now", []],
+    ["Next, with an image", ["A picture"]],
+  ]);
+  expect(await record()).toEqual([
+    { post_id: first.postId, target_id: underWay, outcome: "sent" },
+    { post_id: second.postId, target_id: waiting, outcome: "error" },
+    { post_id: second.postId, target_id: waiting, outcome: "sent" },
+  ]);
+});
+
+it("reads no stats once the workspace is frozen, and stops a pass under way before its next read, also where the object was not told", async () => {
+  const readsStatus = (request: string) =>
+    request.startsWith(`GET https://${realMastodonDomain}/api/v1/statuses/`) &&
+    /\/statuses\/\d+$/.test(request);
+  const reads = () => test.network.requests.filter(readsStatus).length;
+  /** When a workspace reads the stats of a delivery next. */
+  const nextReadOf = (workspaceId: string, targetId: string) =>
+    runInDurableObject(objectOf(workspaceId), (_, state) =>
+      state.storage.sql
+        .exec<{ metrics_at: number | null }>(
+          "select metrics_at from post_target where id = ?",
+          targetId,
+        )
+        .one(),
+    ).then(({ metrics_at }) => metrics_at);
+  const held = gate(readsStatus);
+  const { test, browser, workspaces } = await started({
+    interceptNetwork: held.intercept,
+  });
+  const live = workspaces.live;
+  const channelId = await connectAccount(test, browser, live);
+  const client = new SyncClient();
+  await client.connect(browser, live);
+  const targets: string[] = [];
+  for (const text of ["First", "Second"]) {
+    const draft = await writeDraft(client, live, text);
+    const [targetId = ""] = await publishTo(client, draft.postId, channelId);
+    expect((await ended(client, draft.postId)).status).toBe("sent");
+    targets.push(targetId);
+  }
+  // Each is read at once when it is sent.
+  await expect.poll(reads, patience).toBe(2);
+  const [first = "", second = ""] = targets;
+  const secondDue = await nextReadOf(live, second);
+  await expect
+    .poll(() => nextReadOf(live, first), patience)
+    .toBeLessThanOrEqual(secondDue ?? 0);
+
+  // Both are due for their next read, which the alarm begins.
+  test.clock.time = new Date(secondDue ?? 0);
+  held.close();
+  const alarm = look(live);
+  // The first read waits for its network, and the access of the person
+  // ends meanwhile, with a word of it to the object that is lost.
+  await held.reached();
+  await freezeInD1(test, live);
+  held.open();
+  await alarm;
+
+  // The read that was under way went to its end. The next was not made:
+  // the object read D1 before it, and stays due for when it thaws.
+  expect(reads()).toBe(3);
+  expect(await frozenInObject(live)).not.toBeNull();
+  expect(await nextReadOf(live, second)).toBe(secondDue);
+  // A frozen workspace has no stats to read, and its alarm does not come
+  // back for them: there is nothing else for it to do.
+  expect(await nextLookIn(live)).toBeNull();
+
+  // Its owner signs in again, here in D1, and opens the app, which is how
+  // the object hears of a thaw whose word was lost. What came due is read
+  // at once.
+  await test.db
+    .update(workspaceTable)
+    .set({ frozenAt: null })
+    .where(eq(workspaceTable.id, live));
+  const back = new SyncClient();
+  await back.connect(browser, live);
+  await expect.poll(reads, patience).toBe(4);
+  await expect
+    .poll(() => nextReadOf(live, second), patience)
+    .toBeGreaterThan(secondDue ?? 0);
+});
+
 it("begins no delivery that waits and takes up no post that has come due when a delivery reports after a freeze that the object was not told of", async () => {
   const held = gate((request) => request.startsWith(threadsPublish));
   const { test, client, channelId, memberWorkspaces } = await memberWithChannel(
@@ -460,6 +620,40 @@ it("begins no delivery that waits and takes up no post that has come due when a 
     held_at: null,
   });
   expect(asked(test, threadsPublish)).toBe(1);
+});
+
+it("takes up no post that has come due when an upload ends after a freeze that the object was not told of", async () => {
+  const {
+    test,
+    member: browser,
+    client,
+    memberWorkspaces,
+    postId,
+  } = await memberWithChannel();
+  const live = memberWorkspaces.live;
+  const file = await photo(64, 48);
+  const mediaId = await createMedia(client, file);
+  await beginUpload(browser, live, mediaId);
+  for (let number = 1; number <= uploadChunks(file.length); number++) {
+    expect((await sendChunk(browser, live, mediaId, file, number)).status).toBe(
+      200,
+    );
+  }
+
+  await freezeInD1(test, live);
+  // The scheduled post comes due, on time, before the last request of the
+  // upload.
+  test.advance(2 * day + minute);
+  expect((await completeUpload(browser, live, mediaId)).status).toBe(200);
+
+  // The workspace is told how the upload ended with a mutation, which
+  // takes up the posts that are due, and the object asks D1 first.
+  // Without that, the post would go out.
+  expect(await postIn(live, postId)).toEqual({
+    status: "scheduled",
+    held_at: null,
+  });
+  expect(await frozenInObject(live)).not.toBeNull();
 });
 
 it("renews no further access once the workspace is frozen in the middle of renewing, also where the object was not told", async () => {

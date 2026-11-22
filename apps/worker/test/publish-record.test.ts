@@ -1,20 +1,26 @@
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import {
   maxPublishRecordDeliveries,
+  originalLifetimeMs,
   type PublishRecordResponse,
   publishRecordLifetimeMs,
   publishRecordPageSize,
   publishRecordResponseSchema,
 } from "@pigy/core";
-import { expect, it, vi } from "vitest";
+import { feed } from "@pigy/simulators/world";
+import { expect, it, onTestFinished, vi } from "vitest";
 import { apiClient, makeKey, startedApi } from "./api.ts";
 import { disconnected } from "./channels.ts";
 import {
   type Browser,
+  entriesOf,
+  expectErrors,
   invite,
   realMastodonDomain,
   signedIn,
 } from "./helpers.ts";
+import { attach, endedWithImages, kept, look, photo, upload } from "./media.ts";
 import {
   connectAccount,
   ended,
@@ -391,6 +397,99 @@ it("records a delivery that a disconnect ended as such", async () => {
   expect((await recordOf(browser, workspace)).requests).toMatchObject([
     { deliveries: [{ channelId, outcome: "disconnected" }] },
   ]);
+});
+
+it("records a delivery whose images could not be made ready as failed and its retry as a request of its own, and keeps both after the bytes of the image are gone", async () => {
+  const { test, browser, workflows, workspaces } = await started();
+  const workspace = workspaces.live;
+  const channelId = await connectAccount(test, browser, workspace);
+  const client = new SyncClient();
+  await client.connect(browser, workspace);
+  const image = await upload(browser, client, workspace, await photo());
+  const draft = await writeDraft(client, workspace, "With an image");
+  await attach(client, draft.partIds[0] ?? "", image.id);
+  // The bucket fails whenever the step that makes the images ready asks
+  // it for the image: the delivery ends in that step, before anything is
+  // asked of the network, as images.test.ts shows.
+  const errors = expectErrors();
+  const bucket = Object.getPrototypeOf(env.MEDIA) as R2Bucket;
+  const head = bucket.head;
+  const failing = vi.spyOn(bucket, "head").mockImplementation(function (
+    this: R2Bucket,
+    key,
+  ) {
+    if (key.endsWith("/original")) {
+      return Promise.reject(
+        new Error(
+          "head: We encountered an internal error. Please try again. (10001)",
+        ),
+      );
+    }
+    return head.call(this, key);
+  });
+  onTestFinished(() => failing.mockRestore());
+  await workflows.modifyAll(async (modifier) => {
+    await modifier.disableRetryDelays();
+  });
+
+  const [targetId = ""] = await publishTo(client, draft.postId, channelId);
+  expect(await ended(client, draft.postId)).toMatchObject({ status: "error" });
+  expect(entriesOf(errors)).toContainEqual(
+    expect.objectContaining({ kind: "media", step: "media", targetId }),
+  );
+  failing.mockRestore();
+
+  // The step that makes the images ready ends the delivery through the
+  // same mutation as every other step, which the record goes by.
+  const failed = await recordOf(browser, workspace);
+  expect(failed.requests).toEqual([
+    {
+      postId: draft.postId,
+      requestedAt: expect.any(Number),
+      source: "app",
+      apiKeyId: null,
+      deliveries: [
+        {
+          targetId,
+          channelId,
+          network: "mastodon",
+          outcome: "error",
+          endedAt: expect.any(Number),
+        },
+      ],
+    },
+  ]);
+
+  // The person tries it again once the bucket works: a request of its
+  // own, which goes out with the image.
+  await retry(client, targetId);
+  expect(await endedWithImages(client, draft.postId)).toMatchObject({
+    status: "sent",
+  });
+  expect(
+    feed(test.network.world, ["mastodon"]).map(
+      ({ post }) => post.images?.length,
+    ),
+  ).toEqual([1]);
+  const sent = await recordOf(browser, workspace);
+  expect(sent.requests).toHaveLength(2);
+  expect(sent.requests[0]).toMatchObject({
+    postId: draft.postId,
+    source: "app",
+    deliveries: [{ targetId, outcome: "sent" }],
+  });
+  expect(sent.requests[1]).toEqual(failed.requests[0]);
+
+  // 30 days after the post was sent everywhere, the server lets go of the
+  // bytes of its image, by a mutation of its own. It asks for nothing and
+  // ends nothing, and the record stays as it was. The person goes on
+  // using pigy meanwhile: a session lasts 30 days from its last use.
+  test.advance(originalLifetimeMs / 2);
+  expect((await browser.fetch("/api/workspaces")).status).toBe(200);
+  test.advance(originalLifetimeMs / 2 + day);
+  await look(workspace);
+  expect(await kept(workspace)).not.toContain(`${image.id}/original`);
+  expect(await recordOf(browser, workspace)).toEqual(sent);
 });
 
 it("keeps what it records to 90 days and a number of deliveries, a request whole, and hands it out in pages", async () => {

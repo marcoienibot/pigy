@@ -623,15 +623,18 @@ export function workspaceObject(
      * afterwards, and nothing if `workspace` is not the one that the
      * object holds.
      */
-    finishUpload(
+    async finishUpload(
       workspace: WorkspaceIdentity,
       mediaId: string,
       outcome: UploadOutcome,
       key?: string,
-    ): FinishedUpload | undefined {
+    ): Promise<FinishedUpload | undefined> {
       if (!this.#store.bind(workspaceIdentitySchema.parse(workspace))) {
         return undefined;
       }
+      // Whether it is frozen, first: a mutation takes up the posts that
+      // are due, which a frozen workspace does not.
+      await this.#frozen();
       const from = this.#store.seq;
       const ended = this.#store.finishUpload(
         mediaId,
@@ -721,11 +724,12 @@ export function workspaceObject(
      * Where the object reads it, `#frozen`: before it opens a socket, at
      * every mutation that the Worker asks for, which would take up the
      * scheduled posts that are due, and in its alarm, before it takes up a
-     * post, before every renewal of an access, and before it begins a
-     * delivery. A word of the Worker that is lost costs no more than what
-     * a client does on a socket that was open before: its mutations take
-     * up a post that has come due, for up to `socketLifetimeMs`, and the
-     * delivery of that post never begins.
+     * post, before every renewal of an access, before every read of the
+     * stats of a delivery, and before it begins a delivery. A word of the
+     * Worker that is lost costs no more than what a client does on a
+     * socket that was open before: its mutations take up a post that has
+     * come due, for up to `socketLifetimeMs`, and the delivery of that
+     * post never begins.
      */
     async #checkFreeze(): Promise<boolean> {
       const read = ++this.#freezeReads;
@@ -860,16 +864,19 @@ export function workspaceObject(
         // The channels whose access this alarm turned to, or undefined
         // if it did not get to say: see `#nextLookIn`.
         let renewed: ReadonlySet<string> | undefined;
-        // Before it takes up a post, the alarm asks D1 whether the
-        // workspace is frozen. The Worker says so when it freezes the
-        // workspace, and what it says can be lost on its way: this is
-        // where that would cost something. A renewal and a delivery ask
-        // again where they begin. A workspace that is frozen asks whether
-        // it still is, which is how one whose thaw was lost thaws when its
-        // alarm runs for something else.
+        // Before it takes up a post or begins to read stats, the alarm
+        // asks D1 whether the workspace is frozen. The Worker says so when
+        // it freezes the workspace, and what it says can be lost on its
+        // way: this is where that would cost something. A renewal, a
+        // delivery and each read of stats ask again where they begin. A
+        // workspace that is frozen asks whether it still is, which is how
+        // one whose thaw was lost thaws when its alarm runs for something
+        // else.
+        const time = now().getTime();
         if (
           this.#store.frozenAt !== null ||
-          (this.#store.nextDueAt ?? Number.POSITIVE_INFINITY) <= now().getTime()
+          (this.#store.nextDueAt ?? Number.POSITIVE_INFINITY) <= time ||
+          (this.#store.nextMetricsAt ?? Number.POSITIVE_INFINITY) <= time
         ) {
           await this.#frozen();
         }
@@ -1265,8 +1272,9 @@ export function workspaceObject(
      *   asked, which stays due, with the pass behind: it takes a change to
      *   get there, so that ends too.
      *
-     * A workspace that is frozen has no scheduled post and no access in
-     * this list: the store says that none is due, `frozenAt` of the store.
+     * A workspace that is frozen has no scheduled post, no access and no
+     * stats in this list: the store says that none is due, `frozenAt` of
+     * the store.
      *
      * `after` says who asks: a change, or the alarm when it has looked.
      */
@@ -1658,6 +1666,16 @@ export function workspaceObject(
       for (const due of list) {
         if (Date.now() - began >= metricsPassMs) return;
         if (due.channel && resting.has(due.channel.channelId)) continue;
+        // Before each read, whether the workspace is frozen: a read is
+        // made with the access of its channel, and the pass runs beside
+        // the alarm, for as long as its networks take, while the owner can
+        // lose their access, with a word of it that is lost. A frozen
+        // workspace reads nothing, and has nothing left that is due: the
+        // rest is read once it thaws, at once, as what it took up is.
+        if (await this.#frozen()) {
+          this.#metricsBehind = false;
+          return;
+        }
         const outcome = await readMetrics(
           dependencies,
           this.env,

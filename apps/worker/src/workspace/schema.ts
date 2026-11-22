@@ -487,8 +487,8 @@ export const workspaceRecord = sqliteTable("workspace", {
    * and which the object reads anew whenever the Worker says that it has
    * changed, and where a copy that is out of date would matter: see
    * `#checkFreeze` of object.ts. While it is set, the workspace takes up
-   * no scheduled post, renews no access, begins no delivery and takes no
-   * change from a client: `WorkspaceStore`.
+   * no scheduled post, renews no access, begins no delivery, reads no
+   * stats and takes no change from a client: `WorkspaceStore`.
    */
   frozenAt: integer("frozen_at"),
 });

@@ -1,4 +1,6 @@
+import { mediaFilePath, sandboxImagePath } from "@pigy/core";
 import { expect, it } from "vitest";
+import { mediaLinkPath } from "../src/media/links.ts";
 import {
   maxLinesPerRequest,
   maxPageSegments,
@@ -215,6 +217,48 @@ it("writes into the log nothing of a page or an address but what pigy's own path
   ]);
   const log = logged(warnings.mock.calls);
   for (const secret of ["someone", "example.com", "s3cret", "abcdefgh"]) {
+    expect(log).not.toContain(secret);
+  }
+});
+
+it("takes a report of an image that was opened by itself in a tab, and writes of its address the pattern of its route alone", async () => {
+  const test = setup();
+  const warnings = expectWarnings();
+  const workspace = "0193a1d9-7e50-7c08-a6a0-4187f6e57d2c";
+  const image = "0193a1d9-7e51-7a00-8000-4187f6e57d2d";
+
+  // The bytes of an image are no page, and their policy is asked of none
+  // in the app: only of an image that somebody opens by itself in a tab,
+  // a document of its own, which `sandbox` of the policy gives an origin
+  // of its own too. Its address is still pigy's, and says what it is.
+  await report(
+    test,
+    JSON.stringify(
+      [
+        mediaFilePath(workspace, image, "original"),
+        // A signed link is a secret while it lasts, and its signature is
+        // in the query.
+        `${mediaLinkPath}/${workspace}/${image}/variants/jpeg-1000000-0?expires=1795389859516&signature=c2lnbmVkLWJ5LXBpZ3k`,
+        sandboxImagePath(
+          "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku",
+        ),
+      ].map((path) =>
+        reportingApi({
+          documentURL: `${origin}${path}`,
+          blockedURL: "inline",
+          effectiveDirective: "style-src-elem",
+        }),
+      ),
+    ),
+  );
+
+  expect(entriesOf(warnings).map(({ page }) => page)).toEqual([
+    "/api/workspaces/:id/media/:id/original",
+    "/api/media-links/:id/:id/variants/:other",
+    "/api/sandbox/images/:other",
+  ]);
+  const log = logged(warnings.mock.calls);
+  for (const secret of ["c2lnbmVkLWJ5LXBpZ3k", "1795389859516", "bafkrei"]) {
     expect(log).not.toContain(secret);
   }
 });

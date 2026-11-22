@@ -34,6 +34,7 @@ import {
 import {
   connectAccount,
   ended,
+  follow,
   publishTo,
   started,
   targetOf,
@@ -238,7 +239,7 @@ it("makes a smaller image for Bluesky of one that is over its limit, once, and p
   const draft = await writeDraft(client, workspaceId, "From the harbour");
   await attach(client, draft.partIds[0] ?? "", large.id, "The harbour");
   await attach(client, draft.partIds[0] ?? "", small.id, "A detail");
-  await publishTo(client, draft.postId, channel);
+  const [firstTarget] = await publishTo(client, draft.postId, channel);
   expect(await endedWithImages(client, draft.postId)).toMatchObject({
     status: "sent",
   });
@@ -280,6 +281,12 @@ it("makes a smaller image for Bluesky of one that is over its limit, once, and p
   // A second post with the same image goes out with the image that was
   // made for the first: the file in the bucket is not written again.
   const made = await env.MEDIA.head(`${workspaceId}/${variant}`);
+  // The stats of the first are read at once after it was sent, and reach
+  // the client by themselves: once they are there, the next patch that it
+  // reads is the answer to what it asks for, and not those.
+  await follow(client, () =>
+    client.table("metric").some(({ id }) => id === firstTarget),
+  );
   const second = await writeDraft(client, workspaceId, "Once more");
   await attach(client, second.partIds[0] ?? "", large.id);
   await publishTo(client, second.postId, channel);

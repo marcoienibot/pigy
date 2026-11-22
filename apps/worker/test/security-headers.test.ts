@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import worker from "../src/index.ts";
 import {
   dataPolicy,
+  imagePolicy,
   pagePolicy,
   securityHeaders,
 } from "../src/security-headers.ts";
@@ -218,6 +219,23 @@ describe("the policy of a page", () => {
     // Without `style-src` and `script-src`, `default-src 'none'` decides.
     expect(policy).toBe(
       "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'; report-to csp; report-uri /api/policy-reports",
+    );
+  });
+});
+
+describe("the policies of what is no page", () => {
+  it("allow nothing, and report where every policy of pigy reports", () => {
+    // The tests of the routes compare with these, so here is what they
+    // say, once.
+    expect(dataPolicy).toBe(
+      "default-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'; report-to csp; report-uri /api/policy-reports",
+    );
+    // The bytes of an image, which a browser asks the policy of only when
+    // the image is opened by itself in a tab: `sandbox` gives that
+    // document an origin of its own. A report from it is taken as from
+    // any page of pigy: policy-reports.test.ts.
+    expect(imagePolicy).toBe(
+      "default-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'; report-to csp; report-uri /api/policy-reports; sandbox",
     );
   });
 });

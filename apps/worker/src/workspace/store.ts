@@ -2129,9 +2129,14 @@ export class WorkspaceStore {
   /**
    * The reads of stats that are due at `now`, `limit` at most, the one
    * that was due first first: of deliveries that are sent, each with the
-   * first part that it published and the access of its channel.
+   * first part that it published and the access of its channel. None
+   * while the workspace is frozen: a read is made with the access of the
+   * channel, which nobody uses for somebody who is no longer let in. The
+   * reads that come due meanwhile are made when it thaws, at the moment
+   * that is ahead then, as after any time in which nothing read them.
    */
   metricsDue(now: number, limit: number): DueMetrics[] {
+    if (this.frozenAt !== null) return [];
     return metricsDueQuery(this.db, now, limit)
       .all()
       .map(({ targetId, channelId, sentAt }) => {
@@ -2218,9 +2223,11 @@ export class WorkspaceStore {
    * When the stats of a delivery are next to be read, in milliseconds
    * since the epoch, or null if none ever are. Of the deliveries that are
    * sent, as `metricsDue` reads them: a time that the pass would not read
-   * would bring the alarm back at once, for good.
+   * would bring the alarm back at once, for good. Null while the
+   * workspace is frozen, for the same reason.
    */
   get nextMetricsAt(): number | null {
+    if (this.frozenAt !== null) return null;
     // Every change asks this, so it is one look into an index: see
     // `nextMetricsQuery`.
     return nextMetricsQuery(this.db).get()?.at ?? null;

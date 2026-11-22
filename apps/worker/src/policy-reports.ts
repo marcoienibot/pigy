@@ -227,6 +227,18 @@ const pathWords = new Set([
   "oauth",
   "sim",
   "v1",
+  // The bytes of images, which are no page: their policy is asked only of
+  // an image that is opened by itself in a tab, which `sandbox` gives an
+  // origin of its own. A signed link has its signature in the query, which
+  // is never written.
+  "images",
+  "media",
+  "media-links",
+  "original",
+  "sandbox",
+  "thumbnail",
+  "variants",
+  "workspaces",
 ]);
 
 /** An ID that pigy makes: a UUID, or a long string of hex digits. */
