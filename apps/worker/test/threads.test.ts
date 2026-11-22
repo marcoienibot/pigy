@@ -86,7 +86,7 @@ async function withChannel(
       ]);
     return flat(
       sandboxFeedSchema
-        .parse(await (await browser.fetch("/api/sandbox/feed")).json())
+        .parse(await (await browser.fetch("/api/sandbox/feed?marks=1")).json())
         .accounts.filter(({ network }) => network === "threads")
         .flatMap(({ posts }) => posts),
       null,

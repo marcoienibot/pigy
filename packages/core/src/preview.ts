@@ -38,7 +38,7 @@ export const linkCardRequestSchema = z.strictObject({
 export type LinkCardRequest = z.infer<typeof linkCardRequestSchema>;
 
 /** Response of `POST /api/workspaces/<workspace ID>/link-card`. */
-export const linkCardResponseSchema = z.strictObject({
+export const linkCardResponseSchema = z.object({
   card: linkCardSchema.nullable(),
 });
 
@@ -63,7 +63,7 @@ export const mentionsRequestSchema = z.strictObject({
 export type MentionsRequest = z.infer<typeof mentionsRequestSchema>;
 
 /** Response of `POST /api/workspaces/<workspace ID>/mentions`. */
-export const mentionsResponseSchema = z.strictObject({
+export const mentionsResponseSchema = z.object({
   /**
    * The names that are accounts, of the ones that were asked about. Null
    * where nothing is looked up: on a network that finds the accounts of a

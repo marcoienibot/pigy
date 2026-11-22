@@ -4,8 +4,12 @@ import { z } from "zod";
  * What a link shows as where a network shows more than its address: the
  * card of the page. The text is what the page says of itself, which is
  * anybody's to write: it is shown as text and never as markup.
+ *
+ * A field that this does not know is left out and refuses nothing: a card
+ * is part of an answer that a client fetches, and the client of one
+ * release reads the answers of the next.
  */
-export const linkCardSchema = z.strictObject({
+export const linkCardSchema = z.object({
   /** The address of the link, with its scheme. */
   url: z.string().min(1).max(2048),
   title: z.string().max(300),

@@ -1,6 +1,9 @@
 import {
+  type SandboxFeed,
+  type SandboxPost,
   sandboxFaultSchema,
   sandboxFaultsSchema,
+  sandboxFeedMarks,
   sandboxFeedSchema,
 } from "@pigy/core";
 import { drizzle } from "drizzle-orm/d1";
@@ -109,6 +112,31 @@ export function simRoutes(dependencies: AppDependencies): Hono<AppEnv> {
   return app;
 }
 
+/** A post of the feed as it was before a post had marks and a card. */
+type PlainPost = Pick<SandboxPost, "id" | "text" | "createdAt"> & {
+  replies: PlainPost[];
+};
+
+const plainPost = ({
+  id,
+  text,
+  createdAt,
+  replies,
+}: SandboxPost): PlainPost => ({
+  id,
+  text,
+  createdAt,
+  replies: replies.map(plainPost),
+});
+
+/** `feed` as it was answered before phase 4b: see `sandboxFeedMarks`. */
+const withoutMarks = ({ accounts }: SandboxFeed) => ({
+  accounts: accounts.map((account) => ({
+    ...account,
+    posts: account.posts.map(plainPost),
+  })),
+});
+
 /**
  * Under `/api/sandbox`: what a person sees and does of the simulated world
  * of their sandbox, besides connecting accounts. @pigy/core has the
@@ -127,8 +155,15 @@ export function sandboxRoutes(dependencies: AppDependencies): Hono<AppEnv> {
 
   app.get("/feed", async (c) => {
     const sandbox = await ownSandbox(c, dependencies);
+    const feed = sandboxFeedSchema.parse(
+      await worldFeed(c.env.SIM_WORLD, sandbox),
+    );
+    // The marks and the card of a post are for a client that asks for
+    // them. The app from before they were there refuses a post with a
+    // field that it does not know, and with it the whole feed, and a
+    // device goes on running that app until it is next started there.
     return c.json(
-      sandboxFeedSchema.parse(await worldFeed(c.env.SIM_WORLD, sandbox)),
+      c.req.query(sandboxFeedMarks) === undefined ? withoutMarks(feed) : feed,
     );
   });
 

@@ -80,7 +80,9 @@ async function withChannel(
     where === "live"
       ? feed(test.network.world, ["linkedin"]).map(({ post }) => post)
       : sandboxFeedSchema
-          .parse(await (await browser.fetch("/api/sandbox/feed")).json())
+          .parse(
+            await (await browser.fetch("/api/sandbox/feed?marks=1")).json(),
+          )
           .accounts.filter(({ network }) => network === "linkedin")
           .flatMap(({ posts }) => posts);
   /** How often LinkedIn was asked to publish, for real. */

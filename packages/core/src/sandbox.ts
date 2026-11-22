@@ -77,9 +77,18 @@ export const sandboxLink = "https://example.test/";
  * `/api/sandbox` and name no workspace: they answer for the sandbox of
  * whoever is signed in, and for no other.
  *
- * - `GET /api/sandbox/feed` answers with a `SandboxFeed`: what is published
- *   in the world, by account, each post with its links, mentions and
- *   hashtags as its network has them, and with the card of its link.
+ * - `GET /api/sandbox/feed?marks=1` answers with a `SandboxFeed`: what is
+ *   published in the world, by account, each post with its links,
+ *   mentions and hashtags as its network has them, and with the card of
+ *   its link. Without the query, `sandboxFeedMarks`, the posts come
+ *   without `entities` and `card`, as the feed was before phase 4b: the
+ *   app of that time takes no field that it does not know, and a device
+ *   runs the app that it has until it is next started there.
+ *
+ * The schemas of the answers here take a field that they do not know and
+ * leave it out, as every schema of an answer that a client fetches does
+ * from phase 4b on: the next field needs no such query. AGENTS.md, "Add
+ * an API route", has the rule.
  * - `GET /api/sandbox/faults` answers with `SandboxFaults`: the ways each
  *   simulated network can be made to fail, and the faults that are armed.
  * - `POST /api/sandbox/faults` takes a `SandboxFault` and arms it: the next
@@ -122,19 +131,25 @@ export type SandboxEntity = {
   end: number;
 };
 
-export const sandboxPostSchema: z.ZodType<SandboxPost> = z.strictObject({
+/**
+ * The parameter of the query with which a client asks `/api/sandbox/feed`
+ * for the `entities` and the `card` of each post.
+ */
+export const sandboxFeedMarks = "marks";
+
+export const sandboxPostSchema: z.ZodType<SandboxPost> = z.object({
   id: z.string().min(1),
   text: z.string(),
   createdAt: z.number().int().nonnegative(),
   entities: z.array(
-    z.strictObject({
+    z.object({
       kind: z.enum(["link", "mention", "hashtag"]),
       start: z.number().int().nonnegative(),
       end: z.number().int().nonnegative(),
     }),
   ),
   card: z
-    .strictObject({
+    .object({
       url: z.string(),
       title: z.string(),
       description: z.string(),
@@ -146,13 +161,13 @@ export const sandboxPostSchema: z.ZodType<SandboxPost> = z.strictObject({
 });
 
 /** Response of `GET /api/sandbox/feed`. */
-export const sandboxFeedSchema = z.strictObject({
+export const sandboxFeedSchema = z.object({
   /**
    * Every account of the simulated world, in the order of their networks
    * and handles, also the ones that have posted nothing.
    */
   accounts: z.array(
-    z.strictObject({
+    z.object({
       network: networkSchema,
       /**
        * The simulated network's own ID of the account. It is not the
@@ -191,10 +206,10 @@ export const sandboxFaultSchema = z.strictObject({
 export type SandboxFault = z.infer<typeof sandboxFaultSchema>;
 
 /** Response of the routes under `/api/sandbox/faults`. */
-export const sandboxFaultsSchema = z.strictObject({
+export const sandboxFaultsSchema = z.object({
   /** The simulated networks of the sandbox. */
   networks: z.array(
-    z.strictObject({
+    z.object({
       network: networkSchema,
       /** The ways the network can be made to fail, such as "rate-limit". */
       kinds: z.array(z.string()),
@@ -205,7 +220,7 @@ export const sandboxFaultsSchema = z.strictObject({
        * first. `operation` is null for a fault that strikes any request.
        */
       armed: z.array(
-        z.strictObject({ kind: z.string(), operation: z.string().nullable() }),
+        z.object({ kind: z.string(), operation: z.string().nullable() }),
       ),
     }),
   ),

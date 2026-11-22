@@ -26,6 +26,7 @@ import {
   type SandboxFeed,
   type Schedule,
   sandboxFaultsSchema,
+  sandboxFeedMarks,
   sandboxFeedSchema,
   type Workspace,
   workspaceListResponseSchema,
@@ -274,7 +275,11 @@ export async function disconnectChannel(
 export async function fetchSandboxFeed(
   signal: AbortSignal,
 ): Promise<SandboxFeed> {
-  const response = await request("/api/sandbox/feed", { signal });
+  // With the marks and the card of each post, which are answered only
+  // to whoever asks for them.
+  const response = await request(`/api/sandbox/feed?${sandboxFeedMarks}=1`, {
+    signal,
+  });
   return sandboxFeedSchema.parse(await response.json());
 }
 

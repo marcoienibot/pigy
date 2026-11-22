@@ -8,6 +8,7 @@ import {
 } from "@pigy/core";
 import { feed } from "@pigy/simulators/world";
 import { expect, it } from "vitest";
+import { z } from "zod";
 import { connectInSandbox } from "./channels.ts";
 import { type Browser, invite, signedIn } from "./helpers.ts";
 import {
@@ -24,10 +25,15 @@ import { SyncClient, workspaceIds } from "./sync-client.ts";
 
 /** The feed of the sandbox of whoever `browser` is signed in as. */
 async function feedOf(browser: Browser): Promise<SandboxFeed> {
-  const response = await browser.fetch("/api/sandbox/feed");
+  // As the app asks: with the marks and the card of each post.
+  const response = await browser.fetch("/api/sandbox/feed?marks=1");
   expect(response.status).toBe(200);
-  // Strict: a field that the schema does not have fails the test.
-  return sandboxFeedSchema.parse(await response.json());
+  const answer = await response.json();
+  const feed = sandboxFeedSchema.parse(answer);
+  // The schema leaves out a field that it does not have. Nothing was
+  // left out: the answer has no such field.
+  expect(feed).toEqual(answer);
+  return feed;
 }
 
 /** The faults of the sandbox of whoever `browser` is signed in as. */
@@ -265,6 +271,56 @@ it("shows nobody the sandbox of another, and nothing of a live workspace", async
   expect(await armedFor(browser)).toEqual([
     { kind: "server-error", operation: null },
   ]);
+});
+
+it("answers the app from before a post had marks and a card with the feed that it takes", async () => {
+  const { browser, workspace, channel, client } = await inSandbox();
+  const draft = await writeDraft(
+    client,
+    workspace,
+    "A post with a #tag",
+    "And a reply",
+  );
+  await publishTo(client, draft.postId, channel);
+  await ended(client, draft.postId);
+
+  // The schema of a post as that app has it, written out: it refuses a
+  // post with any other field, and the whole feed with it. A device goes
+  // on running that app after a deploy, until it is next started there.
+  type Post = { replies: Post[] };
+  const post: z.ZodType<Post> = z.strictObject({
+    id: z.string().min(1),
+    text: z.string(),
+    createdAt: z.number().int().nonnegative(),
+    get replies() {
+      return z.array(post);
+    },
+  });
+  const feed = z.strictObject({
+    accounts: z.array(
+      z.strictObject({
+        network: z.string(),
+        id: z.string(),
+        handle: z.string(),
+        name: z.string(),
+        posts: z.array(post),
+      }),
+    ),
+  });
+  // And its request, which has no query.
+  const answer = await (await browser.fetch("/api/sandbox/feed")).json();
+  const read = feed.parse(answer);
+  // The post is in it, with its reply: the test is about a feed that is
+  // not empty.
+  const posts = read.accounts.flatMap((account) => account.posts);
+  expect(posts).toHaveLength(1);
+  expect(posts[0]?.replies).toHaveLength(1);
+
+  // The app of today asks for the marks, and gets them.
+  const [marked] = (await feedOf(browser)).accounts.flatMap(
+    (account) => account.posts,
+  );
+  expect(marked?.entities).toEqual([{ kind: "hashtag", start: 14, end: 18 }]);
 });
 
 it("refuses somebody who is not signed in, and a request from another site", async () => {
