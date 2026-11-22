@@ -1,23 +1,8 @@
-import type { SimWorld } from "../world/index.ts";
+import { json, type SimWorld } from "../world/index.ts";
 
 /** What the handlers of the simulated Threads answer with. */
 
-export function json(status: number, body: unknown): Response {
-  return Response.json(body, {
-    status,
-    headers: { "Cache-Control": "no-store" },
-  });
-}
-
-export function html(status: number, body: string): Response {
-  return new Response(body, {
-    status,
-    headers: {
-      "Content-Type": "text/html; charset=utf-8",
-      "Cache-Control": "no-store",
-    },
-  });
-}
+export { html, json } from "../world/index.ts";
 
 /** What makes an error of the Graph API. */
 export type GraphError = {
@@ -65,7 +50,7 @@ export function graphError(
  * rest of the API. GUESS: this form is that of the same endpoint of
  * Instagram's API, which the Threads API was made after.
  */
-export function oauthError(message: string, code = 400): Response {
+export function tokenError(message: string, code = 400): Response {
   return json(code, {
     error_type: "OAuthException",
     code,

@@ -115,6 +115,11 @@ export type ThreadsSimulator = {
   addApp(
     app: Pick<ThreadsApp, "name"> & Partial<Omit<ThreadsApp, "name">>,
   ): ThreadsApp;
+  /**
+   * Enters `redirectUris` as the redirect addresses of an app, in place of
+   * the ones it had, as its developer does in Meta's dashboard.
+   */
+  setRedirectUris(appId: string, redirectUris: string[]): void;
   /** Adds an account, for somebody to connect as. */
   addUser(user: { username: string; name: string }): ThreadsUser;
   /** Arms a fault, which strikes the next request it applies to. */
@@ -412,6 +417,12 @@ export function createThreadsSimulator(world: SimWorld): ThreadsSimulator {
       const app: ThreadsApp = { appId, appSecret, name, redirectUris, scopes };
       state.apps.put(appId, app);
       return app;
+    },
+
+    setRedirectUris(appId, redirectUris) {
+      const app = state.apps.get(appId);
+      if (!app) throw new Error(`There is no app ${appId}`);
+      state.apps.put(appId, { ...app, redirectUris });
     },
 
     addUser({ username, name }) {

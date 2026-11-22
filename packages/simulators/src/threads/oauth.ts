@@ -4,7 +4,7 @@ import {
   isSimulatedSecret,
   simulatedSecret,
 } from "../world/index.ts";
-import { graphError, html, json, oauthError, parameters } from "./http.ts";
+import { graphError, html, json, parameters, tokenError } from "./http.ts";
 import {
   codeLifetimeMs,
   longLifetimeMs,
@@ -130,7 +130,7 @@ export async function accessToken(
 ): Promise<Response> {
   const params = await parameters(request);
   if (!params) {
-    return oauthError("The request must be application/x-www-form-urlencoded");
+    return tokenError("The request must be application/x-www-form-urlencoded");
   }
   for (const name of [
     "client_id",
@@ -140,24 +140,24 @@ export async function accessToken(
     "code",
   ]) {
     if (!params.get(name)) {
-      return oauthError(`Missing required parameter: ${name}`);
+      return tokenError(`Missing required parameter: ${name}`);
     }
   }
   if (params.get("grant_type") !== "authorization_code") {
-    return oauthError("The grant_type must be authorization_code");
+    return tokenError("The grant_type must be authorization_code");
   }
   const app = state.apps.get(params.get("client_id") ?? "");
   if (!app || !isSecretOf(app, params.get("client_secret"))) {
-    return oauthError("Invalid client secret");
+    return tokenError("Invalid client secret");
   }
   const code = params.get("code") ?? "";
   const grant = isSimulatedSecret(code) ? state.codes.get(code) : undefined;
   const now = state.world.now().getTime();
   if (!grant || grant.appId !== app.appId || grant.expiresAt <= now) {
-    return oauthError("This authorization code has expired or been used");
+    return tokenError("This authorization code has expired or been used");
   }
   if (grant.redirectUri !== params.get("redirect_uri")) {
-    return oauthError(
+    return tokenError(
       "Error validating verification code. Please make sure your redirect_uri is identical to the one you used in the OAuth dialog request",
     );
   }

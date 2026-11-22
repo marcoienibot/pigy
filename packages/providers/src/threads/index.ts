@@ -5,7 +5,7 @@ import {
   threadsMaxCharacters,
 } from "@pigy/core";
 import { z } from "zod";
-import { ProviderError, quotable } from "../errors.ts";
+import { forGood, ProviderError, quotable, understanding } from "../errors.ts";
 import {
   type HttpAnswer,
   httpsUrl,
@@ -23,12 +23,14 @@ import {
 
 /**
  * The adapter for Threads, for an app that posts text for an account. It
- * is written from Meta's documentation of the Threads API at
+ * follows Meta's documentation of the Threads API at
  * https://developers.facebook.com/docs/threads: "Get Access Tokens and
  * Permissions", "Long-Lived Access Tokens", "Posts", "Reply Management",
  * "Retrieve Threads Media Objects", "Delete Posts" and "Troubleshooting".
- * Nothing of it has met the real Threads: PLAN.md section 19 lists what a
- * first run has to settle. Text only so far.
+ * It was written without access to those pages, from what its author knew
+ * of them, and nothing of it has met the real Threads: what had to be
+ * assumed is marked GUESS, and PLAN.md section 19 lists what a first run
+ * has to settle. Text only so far.
  *
  * Threads differs from the other networks in three ways that shape this
  * file:
@@ -193,6 +195,11 @@ const maxPages = 5;
 const maxPolls = 6;
 const pollSeconds = 10;
 
+/** `value` as `schema` describes it. Fails if Threads sent other. */
+const understood = understanding(
+  (who) => `${who} did not answer the way pigy expects it to.`,
+);
+
 type Call = {
   method?: "GET" | "POST" | "DELETE";
   /** The parameters: in the address, or as a form for a `POST`. */
@@ -300,21 +307,6 @@ export function createThreadsProvider({
     );
   }
 
-  /** `value` as `schema` describes it. Throws if Threads sent other. */
-  function understood<Schema extends z.ZodType>(
-    schema: Schema,
-    value: unknown,
-  ): z.output<Schema> {
-    const parsed = schema.safeParse(value);
-    if (!parsed.success) {
-      throw new ProviderError(
-        "fail",
-        "Threads did not answer the way pigy expects it to.",
-      );
-    }
-    return parsed.data;
-  }
-
   const succeeded = ({ status }: HttpAnswer) => status >= 200 && status < 300;
 
   /** The JSON that Threads answers a request with. Throws otherwise. */
@@ -331,21 +323,6 @@ export function createThreadsProvider({
   function gone(answer: HttpAnswer): boolean {
     const error = errorSchema.safeParse(answer.json).data?.error;
     return error?.code === 100 && error.error_subcode === 33;
-  }
-
-  /**
-   * A failure to complete a connection, as the contract wants it: for
-   * good. The code of the callback is spent, or may be.
-   */
-  function forGood(error: unknown): unknown {
-    if (!(error instanceof ProviderError) || error.kind === "fail") {
-      return error;
-    }
-    return new ProviderError(
-      "fail",
-      `${error.message} Connect the account again.`,
-      { status: error.status, cause: error },
-    );
   }
 
   function parseCredentials(credentials: Json): ThreadsCredentials {
@@ -405,6 +382,7 @@ export function createThreadsProvider({
             ...(after !== undefined && { after }),
           },
         }),
+        "Threads",
       );
       for (const media of data) {
         if (until(media)) return found;
@@ -503,6 +481,7 @@ export function createThreadsProvider({
             },
             secrets: [code],
           }),
+          "Threads",
         );
         // What the code was exchanged for lasts an hour. This is what
         // lasts, and what is renewed.
@@ -517,6 +496,7 @@ export function createThreadsProvider({
             },
             secrets: [short.access_token],
           }),
+          "Threads",
         );
         // The answer to the code names the account too, as a number that
         // can be larger than a program reads one exactly. This is the ID
@@ -530,6 +510,7 @@ export function createThreadsProvider({
             },
             secrets: [short.access_token],
           }),
+          "Threads",
         );
         return {
           account: {
@@ -562,6 +543,7 @@ export function createThreadsProvider({
           token: accessToken,
           params: { grant_type: "th_refresh_token" },
         }),
+        "Threads",
       );
       return accessOf(renewed, issuedAt);
     },
@@ -644,6 +626,7 @@ export function createThreadsProvider({
               ...(before && { reply_to_id: before.id }),
             },
           }),
+          "Threads",
         );
         return {
           parts,
@@ -676,6 +659,7 @@ export function createThreadsProvider({
             token,
             params: { fields: "id,timestamp", limit: "1" },
           }),
+          "Threads",
         );
         const [newest] = data;
         return contain(
@@ -689,6 +673,7 @@ export function createThreadsProvider({
           token,
           params: { fields: "status,error_message" },
         }),
+        "Threads",
       );
       switch (container.status) {
         case "FINISHED": {
@@ -699,6 +684,7 @@ export function createThreadsProvider({
               token,
               params: { creation_id: state.container },
             }),
+            "Threads",
           );
           // The part is published, and this only asks for its link: a
           // step that failed here would have to look for a post whose ID
@@ -711,6 +697,7 @@ export function createThreadsProvider({
                 token,
                 params: { fields: "id,permalink" },
               }),
+              "Threads",
             ));
           } catch (error) {
             if (!(error instanceof ProviderError)) throw error;
@@ -794,7 +781,7 @@ export function createThreadsProvider({
       const answer = await request(`/${version}/${id}`, options);
       if (gone(answer)) return null;
       if (!succeeded(answer)) throw failure(answer, options);
-      const media = understood(mediaSchema, answer.json);
+      const media = understood(mediaSchema, answer.json, "Threads");
       return {
         id: media.id,
         url: httpsUrl(media.permalink),
