@@ -6,6 +6,7 @@ import {
   deleteForGood,
   entriesByDay,
   fieldZone,
+  lastTimeInput,
   minuteFromInput,
   minuteLabel,
   monthName,
@@ -18,6 +19,7 @@ import {
   slotsByDay,
   suggestedTime,
   timeFromInput,
+  timeProblem,
   timeToInput,
   undoNotice,
   weekdayName,
@@ -572,6 +574,25 @@ it("reads the time of a field on the clocks of the zone, and writes one back", (
   expect(iso(timeFromInput("2026-07-15T09:30", "America/New_York"))).toBe(
     "2026-07-15T13:30:00.000Z",
   );
+});
+
+it("says what keeps a time of the field from being the time of a post", () => {
+  const now = Date.UTC(2026, 5, 1);
+  expect(timeProblem(null, now)).toBe("Enter a date and a time.");
+  expect(timeProblem(now, now)).toContain("has passed");
+  expect(timeProblem(now + 1, now)).toBeNull();
+  // The field takes a year of six digits, and a slip makes one of 2026.
+  // The server would take the time, and the API could not say it.
+  const slip = timeFromInput("20266-07-15T09:30", rome);
+  expect(iso(slip)).toBe("+020266-07-15T07:30:00.000Z");
+  expect(timeProblem(slip, now)).toContain("before the year 10000");
+  // The last value of the field is the last minute of the year 9999 on
+  // the clocks of the zone, which is in the year after where the zone is
+  // behind UTC.
+  expect(timeProblem(timeFromInput(lastTimeInput, rome), now)).toBeNull();
+  expect(
+    timeProblem(timeFromInput(lastTimeInput, "America/New_York"), now),
+  ).toContain("before the year 10000");
 });
 
 it("refuses what is no date and time", () => {

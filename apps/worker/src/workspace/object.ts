@@ -83,6 +83,13 @@ export const maxRejectionsKept = 1000;
 export const deliveryWatchMs = 60 * 1000;
 
 /**
+ * The farthest ahead that the alarm of the object is set, in
+ * milliseconds: a year. The runtime refuses a time after the year 2189,
+ * and a post can be scheduled for a later one, by the app and by the API.
+ */
+export const farthestLookMs = 365 * 24 * 60 * 60 * 1000;
+
+/**
  * How many push messages one pass over the queue sends at most, and how
  * long it takes up new ones, in milliseconds: see `#pushPass` of the
  * object. Between two passes the alarm looks after the deliveries and the
@@ -777,7 +784,10 @@ export function workspaceObject(
       if (inbox !== null) {
         waits.push(Math.max(deliveryWatchMs, inbox - time));
       }
-      return waits.length === 0 ? null : Math.min(...waits);
+      // The runtime sets no alarm for a time that is centuries away, and
+      // a post can be scheduled for one. The alarm comes back before
+      // then, finds nothing to do, and is set anew.
+      return waits.length === 0 ? null : Math.min(farthestLookMs, ...waits);
     }
 
     /**

@@ -1,4 +1,4 @@
-import { runDurableObjectAlarm } from "cloudflare:test";
+import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import {
   type Environment,
@@ -14,6 +14,7 @@ import {
 } from "@pigy/core/api";
 import { feed } from "@pigy/simulators/world";
 import { describe, expect, it } from "vitest";
+import { farthestLookMs } from "../src/workspace/object.ts";
 import { type ApiClient, apiClient, makeKey, startedApi } from "./api.ts";
 import { connectInSandbox } from "./channels.ts";
 import { type Browser, realMastodonDomain, type TestSetup } from "./helpers.ts";
@@ -601,6 +602,102 @@ it("changes a scheduled post and keeps its time, shares it, and takes it back", 
       409,
     ),
   ).toMatchObject({ error: "InvalidInputError" });
+});
+
+it("says a time that is after the year 9999 as the last of that year, and takes none", async () => {
+  const { api, channel, browser, workspace } = await ready();
+  const lastMoment = "9999-12-31T23:59:59.999Z";
+  const draft = await api.create({
+    text: "Much later",
+    channelIds: [channel],
+    saveToDraft: true,
+  });
+  // The app's own mutator takes every time that a date can hold, so such
+  // a time can be in the data: a device schedules the post for the year
+  // 20266, which a date writes with six digits.
+  const device = new SyncClient();
+  await device.connect(browser, workspace);
+  device.mutate("post.schedule", {
+    id: draft.id,
+    dueAt: Date.UTC(20266, 0, 1),
+  });
+  expect((await device.patch()).rejected).toEqual([]);
+
+  // The runtime sets no alarm for a time after the year 2189: the
+  // object comes back within a year, to set the next one.
+  const alarmIn = await runInDurableObject(
+    objectOf(workspace),
+    async (_, state) => ((await state.storage.getAlarm()) ?? 0) - Date.now(),
+  );
+  expect(alarmIn).toBeGreaterThan(0);
+  expect(alarmIn).toBeLessThanOrEqual(farthestLookMs);
+
+  // Every answer that has the post is still one, with a time that the
+  // shape of an answer takes.
+  expect((await api.post(draft.id)).dueAt).toBe(lastMoment);
+  expect((await listOf(api)).posts.map(({ dueAt }) => dueAt)).toEqual([
+    lastMoment,
+  ]);
+  // A change that keeps the time of the post keeps the time that it has,
+  // and not the one that the answer said.
+  expect(
+    await api.ok(`/posts/${draft.id}`, {
+      method: "PATCH",
+      json: { text: "Much, much later" },
+    }),
+  ).toMatchObject({ status: "scheduled", dueAt: lastMoment });
+  await device.patch();
+  expect(device.table("post")).toMatchObject([
+    { id: draft.id, dueAt: Date.UTC(20266, 0, 1) },
+  ]);
+
+  // The API takes the last moment of the year 9999, and nothing later:
+  // also not a time of that year which is in the next one in UTC.
+  for (const dueAt of [
+    "+020266-01-01T00:00:00Z",
+    "9999-12-31T23:59:59-01:00",
+  ]) {
+    expect(
+      await api.refused(
+        "/posts",
+        {
+          method: "POST",
+          json: {
+            text: "Never",
+            channelIds: [channel],
+            mode: "customScheduled",
+            dueAt,
+          },
+        },
+        400,
+      ),
+    ).toMatchObject({ field: "dueAt" });
+  }
+  await api.create({
+    text: "At the last moment",
+    channelIds: [channel],
+    mode: "customScheduled",
+    dueAt: lastMoment,
+  });
+
+  // A key cannot be made to expire later either, and one that is stored
+  // with such a time still says whose it is.
+  const late = await browser.fetch(`/api/workspaces/${workspace}/api-keys`, {
+    method: "POST",
+    json: {
+      name: "For ever",
+      scopes: ["posts:read"],
+      expiresAt: Date.UTC(10000, 0, 1),
+    },
+  });
+  expect(late.status).toBe(400);
+  expect(await late.json()).toMatchObject({ field: "expiresAt" });
+  await env.DB.prepare("update api_key set expires_at = ?")
+    .bind(Date.UTC(20266, 0, 1))
+    .run();
+  expect(await api.ok("/account")).toMatchObject({
+    apiKey: { expiresAt: lastMoment },
+  });
 });
 
 it("fills the queue by the posting schedule, at its end and at its front, and moves a post in it", async () => {

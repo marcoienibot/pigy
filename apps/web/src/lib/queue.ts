@@ -7,6 +7,7 @@ import {
   localTimeAt,
   type MutatorArgs,
   type MutatorName,
+  maxApiTime,
   ownParts,
   type Row,
   sameTimeZone,
@@ -499,6 +500,28 @@ export function timeFromInput(value: string, zone: string): number | null {
   if (minute === null || dayKey(addDays(date, 0)) !== dayKey(date)) return null;
   return timeOf(zone, date, minute);
 }
+
+/**
+ * What keeps the time `time` that a field says from being the time of a
+ * post, in words for the person, or null: a value that is no date and
+ * time, a time that has passed, and one after the year 9999. A field for
+ * a date takes a year of six digits, where a slip of a finger makes the
+ * year 20266 of 2026, and such a time cannot be said by the API, which
+ * writes a year with four.
+ */
+export function timeProblem(time: number | null, now: number): string | null {
+  if (time === null) return "Enter a date and a time.";
+  if (time <= now) {
+    return "That time has passed. Choose one that is still to come.";
+  }
+  if (time > maxApiTime) {
+    return "That is too far off. Choose a time before the year 10000.";
+  }
+  return null;
+}
+
+/** The last value that the field for the time of a post takes. */
+export const lastTimeInput = "9999-12-31T23:59";
 
 /**
  * The time that the field for scheduling a post begins with: the next

@@ -11,9 +11,11 @@ import {
 import { Input } from "@/components/ui/input";
 import {
   fieldZone,
+  lastTimeInput,
   type Schedule,
   suggestedTime,
   timeFromInput,
+  timeProblem,
   timeToInput,
 } from "@/lib/queue";
 
@@ -98,13 +100,9 @@ function ScheduleForm({
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const time = timeFromInput(value, timeZone);
-    if (time === null) {
-      setProblem("Enter a date and a time.");
-    } else if (time <= Date.now()) {
-      setProblem("That time has passed. Choose one that is still to come.");
-    } else {
-      onSchedule(time);
-    }
+    const problem = timeProblem(time, Date.now());
+    if (time === null || problem !== null) setProblem(problem);
+    else onSchedule(time);
   };
 
   return (
@@ -126,6 +124,7 @@ function ScheduleForm({
           autoFocus
           value={value}
           min={timeToInput(Date.now(), timeZone)}
+          max={lastTimeInput}
           aria-invalid={problem !== null}
           aria-describedby={`${id}-zone ${id}-problem`}
           onChange={(event) => {

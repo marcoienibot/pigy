@@ -12,7 +12,7 @@ import {
   targetStatusSchema,
 } from "../sync/tables.ts";
 import { environmentSchema } from "../workspace.ts";
-import { type ApiScope, apiScopeSchema } from "./keys.ts";
+import { type ApiScope, apiScopeSchema, maxApiTime } from "./keys.ts";
 
 /**
  * The public API, version 1: what its routes take and answer, and the list
@@ -55,12 +55,28 @@ function named<Schema extends z.ZodType>(
 /** A moment as the API says it: ISO 8601, in UTC. */
 const timeSchema = z.iso.datetime();
 
-/** A moment as the API takes it: ISO 8601, in UTC or with an offset. */
-const givenTimeSchema = z.iso.datetime({ offset: true });
+/**
+ * A moment as the API takes it: ISO 8601, in UTC or with an offset, in the
+ * year 9999 of UTC at the latest. A later one could not be said in an
+ * answer.
+ */
+const givenTimeSchema = z.iso
+  .datetime({ offset: true })
+  .refine(
+    (time) => new Date(time).getTime() <= maxApiTime,
+    "A time is in the year 9999 at the latest",
+  );
 
-/** `time`, milliseconds since the Unix epoch, as the API says it. */
+/**
+ * `time`, milliseconds since the Unix epoch, as the API says it. A time
+ * after the year 9999 is said as the last moment of that year: a date
+ * writes such a year with six digits, which is not what the answers
+ * promise, and the rows can hold one, because the mutator that schedules
+ * a post takes every time that a date can hold. An answer never fails
+ * for a time that is in the data.
+ */
 export function apiTime(time: number): string {
-  return new Date(time).toISOString();
+  return new Date(Math.min(time, maxApiTime)).toISOString();
 }
 
 export const apiErrorSchema = named(
@@ -168,7 +184,7 @@ export const createPostRequestSchema = named(
     dueAt: givenTimeSchema
       .optional()
       .describe(
-        "Required with the mode `customScheduled`, and refused with any other. A time that has passed is taken: the post goes out at once if it is at most an hour late, and is held for a person to decide otherwise.",
+        "Required with the mode `customScheduled`, and refused with any other. In the year 9999 at the latest. A time that has passed is taken: the post goes out at once if it is at most an hour late, and is held for a person to decide otherwise.",
       ),
     saveToDraft: z
       .boolean()
@@ -275,7 +291,7 @@ export const apiPostSchema = named(
     dueAt: timeSchema
       .nullable()
       .describe(
-        "When the post goes out, or was to. Null for a post of the queue while the queue is paused or has no posting times.",
+        "When the post goes out, or was to. Null for a post of the queue while the queue is paused or has no posting times. A time after the year 9999, which the app can be made to store, is said as the last moment of that year.",
       ),
     heldAt: timeSchema
       .nullable()

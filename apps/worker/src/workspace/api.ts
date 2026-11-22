@@ -330,8 +330,12 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
     }
   };
 
-  /** Gives a post that passes the checks its time, by `mode`. */
-  const share = (id: string, mode: ApiMode, dueAt: string | undefined) => {
+  /**
+   * Gives a post that passes the checks its time, by `mode`. `dueAt` is
+   * the time of a post with a time of its own, in milliseconds since the
+   * Unix epoch.
+   */
+  const share = (id: string, mode: ApiMode, dueAt: number | undefined) => {
     publishable(id);
     switch (mode) {
       case "shareNow":
@@ -341,10 +345,7 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
       case "shareNext":
         return mutate("post.enqueue", { id, first: true });
       case "customScheduled":
-        return mutate("post.schedule", {
-          id,
-          dueAt: new Date(dueAt ?? Number.NaN).getTime(),
-        });
+        return mutate("post.schedule", { id, dueAt: dueAt ?? Number.NaN });
     }
   };
 
@@ -357,6 +358,10 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
           (a.queuePosition ?? 0) - (b.queuePosition ?? 0) ||
           (a.id < b.id ? -1 : 1),
       );
+
+  /** The time that a request names, which the Worker has checked. */
+  const timeOf = (dueAt: string | undefined) =>
+    dueAt === undefined ? undefined : new Date(dueAt).getTime();
 
   const settingsOf = () =>
     readRow(db, "settings", settingsId) ?? defaultSettings;
@@ -485,7 +490,9 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
           ...(own.thread ?? []).map(({ text }) => text),
         ]);
       }
-      if (!body.saveToDraft && body.mode) share(postId, body.mode, body.dueAt);
+      if (!body.saveToDraft && body.mode) {
+        share(postId, body.mode, timeOf(body.dueAt));
+      }
       return ok(postResource(postOf(postId)), 201);
     }
 
@@ -578,7 +585,7 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
       if (body.saveToDraft) {
         // A draft from here on, which the lines above have seen to.
       } else if (body.mode) {
-        share(id, body.mode, body.dueAt);
+        share(id, body.mode, timeOf(body.dueAt));
       } else if (scheduled && edits) {
         // As it was: at its time, or at its place in the queue.
         if (before.mode === "queue") {
@@ -588,11 +595,9 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
           const still = queue().some((post) => post.id === ahead);
           mutate("post.move", { id, afterId: still ? ahead : null });
         } else {
-          share(
-            id,
-            "customScheduled",
-            before.dueAt === null ? undefined : apiTime(before.dueAt),
-          );
+          // The time that the row has, which can be one that an answer
+          // does not say as it is: `apiTime`.
+          share(id, "customScheduled", before.dueAt ?? undefined);
         }
       }
       return ok(postResource(postOf(id)));

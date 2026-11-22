@@ -53,6 +53,15 @@ export const maxApiKeyNameLength = 100;
 /** A time, in milliseconds since the Unix epoch. */
 const timeSchema = z.number().int().nonnegative();
 
+/**
+ * The last moment of the year 9999, in milliseconds since the Unix epoch:
+ * the last that ISO 8601 writes with a year of four digits, which is how
+ * the API says a time. The API takes no later one, and neither does the
+ * field of the app for the time of a post. A date can hold later ones,
+ * and so can the rows: `apiTime` says such a time as this one.
+ */
+export const maxApiTime = Date.UTC(9999, 11, 31, 23, 59, 59, 999);
+
 /** A key as the app shows it. Nothing in it lets anybody call the API. */
 export const apiKeySchema = z.object({
   /** Names the key. It is the first part of the key after its prefix. */
@@ -88,7 +97,9 @@ export const createApiKeyRequestSchema = z.strictObject({
       "A scope is listed twice",
     ),
   /** When the key stops working, or null for a key that does not. */
-  expiresAt: timeSchema.max(8.64e15).nullable(),
+  expiresAt: timeSchema
+    .max(maxApiTime, "A key expires in the year 9999 at the latest")
+    .nullable(),
 });
 
 export type CreateApiKeyRequest = z.infer<typeof createApiKeyRequestSchema>;
