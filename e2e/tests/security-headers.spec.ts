@@ -161,7 +161,7 @@ test("the app shell says what a browser may do with it", async ({
   const shell = (await request.get("/queue")).headers();
 
   expect(shell["content-security-policy"]).toMatch(
-    /^default-src 'none'; script-src 'self' 'sha256-[A-Za-z0-9+/]+='; style-src 'self' ('sha256-[A-Za-z0-9+/]+=' ?)+; img-src 'self' https:; font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'$/,
+    /^default-src 'none'; script-src 'self' 'sha256-[A-Za-z0-9+/]+='; style-src 'self' ('sha256-[A-Za-z0-9+/]+=' ?)+; img-src 'self' blob: https:; font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'$/,
   );
   // Nothing is allowed wholesale, and no placeholder of the build is left.
   expect(shell["content-security-policy"]).not.toContain("unsafe");

@@ -15,6 +15,7 @@ import {
   pngSignature,
 } from "@pigy/core/test-images";
 import { expect, test, vi } from "vitest";
+import { imagePolicy } from "../src/security-headers.ts";
 import { WorkspaceStore } from "../src/workspace/store.ts";
 import { adminEmail, invite, setup, signedIn } from "./helpers.ts";
 import {
@@ -83,6 +84,9 @@ test("an image is uploaded, read by the server, kept without what the camera wro
     "x-content-type-options": "nosniff",
     "content-disposition": 'attachment; filename="image.jpeg"',
     "cache-control": "no-store",
+    // The route's own policy, which the middleware that gives every
+    // answer one leaves as it is: nothing of a page, and a sandbox.
+    "content-security-policy": imagePolicy,
   });
   const original = new Uint8Array(await response.arrayBuffer());
   expect(original.length).toBe(media.size);

@@ -8,6 +8,7 @@ import {
 } from "@pigy/core";
 import { feed } from "@pigy/simulators/world";
 import { expect, it, onTestFinished, vi } from "vitest";
+import { imagePolicy } from "../src/security-headers.ts";
 import { WorkspaceStore } from "../src/workspace/store.ts";
 import { connectBlueskyInSandbox, connectInSandbox } from "./channels.ts";
 import { type Browser, expectErrors, invite, signedIn } from "./helpers.ts";
@@ -125,6 +126,10 @@ it("serves an image of a sandbox to nobody but its owner", async () => {
   // Kept by no cache, as nothing under /api is: the middleware of app.ts
   // says so of every answer there.
   expect(served.headers.get("Cache-Control")).toBe("no-store");
+  // The policy of an image, as for an image of a workspace, and not the
+  // one that the middleware gives an answer which sets none.
+  expect(served.headers.get("Content-Security-Policy")).toBe(imagePolicy);
+  expect(served.headers.get("X-Content-Type-Options")).toBe("nosniff");
 
   expect((await test.browser().fetch(path)).status).toBe(401);
   // Somebody else has a sandbox of their own, whose world has no such

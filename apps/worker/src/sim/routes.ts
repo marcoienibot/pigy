@@ -13,6 +13,7 @@ import { HTTPException } from "hono/http-exception";
 import { requireUser } from "../auth/guards.ts";
 import type { AppDependencies, AppEnv } from "../env.ts";
 import { handleNotFound, InvalidField, parseJsonBody } from "../errors.ts";
+import { imagePolicy } from "../security-headers.ts";
 import type { WorkspaceIdentity } from "../workspace/store.ts";
 import { workspacesOf } from "../workspace/workspaces.ts";
 import {
@@ -181,7 +182,7 @@ export function sandboxRoutes(dependencies: AppDependencies): Hono<AppEnv> {
         "Content-Type": info.type,
         "X-Content-Type-Options": "nosniff",
         "Content-Disposition": "attachment",
-        "Content-Security-Policy": "default-src 'none'; sandbox",
+        "Content-Security-Policy": imagePolicy,
         "Cross-Origin-Resource-Policy": "same-origin",
       },
     });

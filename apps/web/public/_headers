@@ -17,11 +17,16 @@
 #   library adds to the page as it runs, by its hash, which the build
 #   writes too. No 'unsafe-inline': what React sets of a style, it sets
 #   through the style object of an element, which no policy is asked about.
-# - img-src: the app's own, and any HTTPS address. The pictures of the
-#   connected accounts are at the networks: every Mastodon server and every
-#   server of a Bluesky account is a host of its own, which nobody can list.
-#   A network sees that its picture was loaded, and gets no referrer with
-#   it. Phase 7 adds blob:, for the previews of images on the device.
+# - img-src: the app's own, blob: and any HTTPS address. Every picture of
+#   an image is shown from an address that the page makes of bytes that it
+#   holds, blob:: the file that somebody has chosen, before and while it is
+#   uploaded, and the small pictures and the images of the feeds of a
+#   sandbox, which the page fetches with the API and keeps in its own
+#   memory alone. A blob: address names bytes of the page itself and
+#   nothing elsewhere. The pictures of the connected accounts are at the
+#   networks: every Mastodon server and every server of a Bluesky account
+#   is a host of its own, which nobody can list. A network sees that its
+#   picture was loaded, and gets no referrer with it.
 # - connect-src: the API and the sync socket, which 'self' covers as wss.
 # - worker-src and manifest-src: the service worker and the manifest.
 # - form-action: none. No form of the app is sent by the browser. Signing
@@ -29,7 +34,7 @@
 #   directive of this policy is asked about.
 # - frame-ancestors: nobody shows pigy in a frame.
 /*
-  Content-Security-Policy: default-src 'none'; script-src 'self' {{inline-scripts}}; style-src 'self' {{injected-styles}}; img-src 'self' https:; font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'
+  Content-Security-Policy: default-src 'none'; script-src 'self' {{inline-scripts}}; style-src 'self' {{injected-styles}}; img-src 'self' blob: https:; font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'
   X-Content-Type-Options: nosniff
   # A full address within pigy, where the Worker reads the origin of a
   # form that is sent. Nothing to anybody else: an address of pigy names

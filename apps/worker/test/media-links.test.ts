@@ -7,6 +7,7 @@ import {
   mediaLinkPath,
   mediaLinks,
 } from "../src/media/links.ts";
+import { imagePolicy } from "../src/security-headers.ts";
 import { credentialKey, credentialKeys, setup } from "./helpers.ts";
 import { newId } from "./sync-client.ts";
 
@@ -128,6 +129,10 @@ test("the app serves an image at its link without a session, and nothing at a li
   expect(response.status).toBe(200);
   expect(response.headers.get("Content-Type")).toBe("image/png");
   expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+  expect(response.headers.get("Cache-Control")).toBe("no-store");
+  // A network fetches it, and a browser that is sent to the link gets
+  // nothing that it could run.
+  expect(response.headers.get("Content-Security-Policy")).toBe(imagePolicy);
   expect(new Uint8Array(await response.arrayBuffer())).toEqual(file);
 
   // The same answer whatever is wrong: no signature, a wrong one, an

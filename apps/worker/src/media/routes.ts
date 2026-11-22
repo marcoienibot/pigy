@@ -18,6 +18,7 @@ import { requireUser } from "../auth/guards.ts";
 import { uploadUses } from "../db/schema.ts";
 import type { AppDependencies, AppEnv } from "../env.ts";
 import { loggable } from "../log.ts";
+import { imagePolicy } from "../security-headers.ts";
 import type { MediaUpload, WorkspaceIdentity } from "../workspace/store.ts";
 import {
   beginUpload,
@@ -60,7 +61,7 @@ function imageHeaders(file: R2Object, name: string): Headers {
     // Shown where a page of pigy puts it, as a picture, and saved by a
     // browser that is sent to the address itself: never a page.
     "Content-Disposition": `attachment; filename="${name}.${type.slice(type.indexOf("/") + 1)}"`,
-    "Content-Security-Policy": "default-src 'none'; sandbox",
+    "Content-Security-Policy": imagePolicy,
     "Cross-Origin-Resource-Policy": "same-origin",
     "Content-Length": String(file.size),
     "Cache-Control": "no-store",

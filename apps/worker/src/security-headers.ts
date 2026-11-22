@@ -33,6 +33,15 @@ const never = "base-uri 'none'; frame-ancestors 'none'";
  */
 export const dataPolicy = `default-src 'none'; form-action 'none'; ${never}`;
 
+/**
+ * For the bytes of an image, which a page of pigy shows as a picture and
+ * a browser that is sent to their address saves: what is no page, and a
+ * sandbox besides, so that a browser that shows them as a document of
+ * their own gives that document no origin and runs nothing in it. A
+ * route of an image sets it itself, and the middleware leaves it so.
+ */
+export const imagePolicy = `${dataPolicy}; sandbox`;
+
 async function hashSource(text: string): Promise<string> {
   const digest = await crypto.subtle.digest(
     "SHA-256",
