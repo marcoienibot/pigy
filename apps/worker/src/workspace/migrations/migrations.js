@@ -16,6 +16,7 @@ import m0013 from './0013_scheduling.sql';
 import m0014 from './0014_post_indexes_for_the_api.sql';
 import m0015 from './0015_media.sql';
 import m0016 from './0016_media_abort.sql';
+import m0017 from './0017_media_upload_given_up.sql';
 
   export default {
     journal,
@@ -36,7 +37,8 @@ m0012,
 m0013,
 m0014,
 m0015,
-m0016
+m0016,
+m0017
     }
   }
   

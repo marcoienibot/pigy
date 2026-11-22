@@ -331,6 +331,16 @@ export type DueMedia = { id: string; uploadId: string | null };
  */
 export const dropUploadAgainMs = 60 * 60 * 1000;
 
+/**
+ * How long the alarm asks the bucket to drop the parts of an upload that
+ * it has given up, in milliseconds: eight days. The upload began before it
+ * was given up, so by then a lifecycle rule of the bucket that aborts an
+ * upload eight days after it began has dropped them, where the bucket has
+ * one: PLAN.md section 19. The alarm then lets go of the upload, so that
+ * a bucket that never drops one is not asked every hour for ever.
+ */
+export const dropUploadForMs = 8 * 24 * 60 * 60 * 1000;
+
 /** The most images that one look of the alarm deals with, of each kind. */
 export const mediaPerPass = 50;
 
@@ -1570,6 +1580,7 @@ export class WorkspaceStore {
           .set({
             uploadParts: null,
             uploadAbortAt: image.uploadId === null ? null : now,
+            uploadGivenUpAt: image.uploadId === null ? null : now,
           })
           .where(eq(media.id, id))
           .run();
@@ -1591,21 +1602,38 @@ export class WorkspaceStore {
   uploadDropped(id: string): void {
     this.db
       .update(media)
-      .set({ uploadId: null, uploadAbortAt: null })
+      .set({ uploadId: null, uploadAbortAt: null, uploadGivenUpAt: null })
       .where(and(eq(media.id, id), ne(media.status, "uploading")))
       .run();
   }
 
   /**
-   * Notes that the bucket is to be asked again at `at` to drop the parts
-   * of the upload of the image `id`.
+   * Notes that the bucket failed at `now` to drop the parts of the upload
+   * of the image `id`, which was given up: it is asked again
+   * `dropUploadAgainMs` later, until `dropUploadForMs` after the upload
+   * was given up. Returns whether it is asked again: after that, the
+   * caller lets go of the upload, with `uploadDropped`.
    */
-  dropUploadAt(id: string, at: number): void {
+  dropUploadAgain(id: string, now: number): boolean {
+    const image = this.db
+      .select({ givenUpAt: media.uploadGivenUpAt })
+      .from(media)
+      .where(and(eq(media.id, id), isNotNull(media.uploadAbortAt)))
+      .get();
+    if (!image) return false;
+    // An upload that was given up before the time was kept is counted
+    // from now.
+    const givenUpAt = image.givenUpAt ?? now;
+    if (now >= givenUpAt + dropUploadForMs) return false;
     this.db
       .update(media)
-      .set({ uploadAbortAt: at })
-      .where(and(eq(media.id, id), isNotNull(media.uploadAbortAt)))
+      .set({
+        uploadAbortAt: now + dropUploadAgainMs,
+        uploadGivenUpAt: givenUpAt,
+      })
+      .where(eq(media.id, id))
       .run();
+    return true;
   }
 
   /**

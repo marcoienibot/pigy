@@ -43,7 +43,6 @@ import {
   type DeliveryRun,
   type DisconnectChannelOutcome,
   type DueMedia,
-  dropUploadAgainMs,
   type FinishedUpload,
   type MediaUpload,
   type MutationOutcome,
@@ -801,8 +800,10 @@ export function workspaceObject(
      * bucket bills them for as long as it has them, and nothing else
      * names them. So the row keeps the upload until the bucket has
      * dropped them or says that it has no such upload, and the bucket is
-     * asked again an hour after it failed, for as long as it takes. A
-     * row in no part is deleted only after that.
+     * asked again an hour after it failed, for eight days: by then a
+     * lifecycle rule of the bucket has dropped them, and the row lets go
+     * of the upload, with a line in the log. A row in no part is deleted
+     * only after that.
      *
      * Each image is tried by itself, so one that fails does not keep the
      * others.
@@ -849,8 +850,9 @@ export function workspaceObject(
           try {
             await bucket.resumeMultipartUpload(key, uploadId).abort();
           } catch (error) {
-            if (!noSuchUpload(error)) {
-              this.#store.dropUploadAt(id, now().getTime() + dropUploadAgainMs);
+            if (noSuchUpload(error)) {
+              // Gone: nothing is left to drop.
+            } else if (this.#store.dropUploadAgain(id, now().getTime())) {
               log.error(
                 "media",
                 "The upload of an image was not dropped, and is asked for again in an hour",
@@ -858,6 +860,17 @@ export function workspaceObject(
                 error,
               );
               return false;
+            } else {
+              // Asked for eight days: a lifecycle rule of the bucket has
+              // dropped the parts by now, if the bucket has one, and the
+              // bucket may never say so in the way that `noSuchUpload`
+              // reads. Once, and the row lets go of the upload.
+              log.error(
+                "media",
+                "The upload of an image was not dropped in eight days, and is not asked for again: the parts stay unless a lifecycle rule of the bucket drops them",
+                { ...this.#store.where, mediaId: id },
+                error,
+              );
             }
           }
         }

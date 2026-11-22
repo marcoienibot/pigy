@@ -319,9 +319,16 @@ export const media = sqliteTable(
      * `uploadId`, which it has given up, or null while there is nothing to
      * drop. The bucket bills the parts for as long as it has them, so the
      * alarm asks again, an hour later, until the bucket has done so or
-     * says that it has no such upload.
+     * says that it has no such upload, or for `dropUploadForMs`.
      */
     uploadAbortAt: integer("upload_abort_at"),
+    /**
+     * When the alarm gave the upload `uploadId` up, while it asks the
+     * bucket to drop its parts. It stops asking `dropUploadForMs` later:
+     * by then the lifecycle rule of the bucket has dropped them, if the
+     * bucket has one.
+     */
+    uploadGivenUpAt: integer("upload_given_up_at"),
     /**
      * The parts of that upload that the bucket has, each with its number
      * and with what the bucket said of it, which finishing the upload

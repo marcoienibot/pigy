@@ -1,0 +1,1 @@
+ALTER TABLE `media` ADD `upload_given_up_at` integer;

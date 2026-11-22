@@ -16,7 +16,7 @@ import {
 } from "@pigy/core/test-images";
 import { expect, onTestFinished, test, vi } from "vitest";
 import { imagePolicy } from "../src/security-headers.ts";
-import { WorkspaceStore } from "../src/workspace/store.ts";
+import { dropUploadForMs, WorkspaceStore } from "../src/workspace/store.ts";
 import {
   adminEmail,
   entriesOf,
@@ -585,6 +585,79 @@ test.each([
     }
   },
 );
+
+test("an upload whose parts the bucket never drops is let go of eight days after it was given up, and the log says so once", async () => {
+  const { test: app, browser, client, workspaceId } = await ready();
+  const file = await pngFile(1400, 1300, { noise: true });
+  const mediaId = await createMedia(client, file);
+  await beginUpload(browser, workspaceId, mediaId);
+  await sendChunk(browser, workspaceId, mediaId, file, 1);
+
+  // The bucket fails every time that it is told to drop the parts, and
+  // not with the code that pigy takes for an upload that is gone: a
+  // bucket that says so in another way than pigy guessed.
+  const bucket = Object.getPrototypeOf(env.MEDIA) as R2Bucket;
+  const resume = bucket.resumeMultipartUpload;
+  let asked = 0;
+  const spy = vi
+    .spyOn(bucket, "resumeMultipartUpload")
+    .mockImplementation(function (this: R2Bucket, key, uploadId) {
+      const upload = resume.call(this, key, uploadId);
+      return {
+        key: upload.key,
+        uploadId: upload.uploadId,
+        uploadPart: (...args) => upload.uploadPart(...args),
+        complete: (...args) => upload.complete(...args),
+        abort: async () => {
+          asked += 1;
+          throw new Error(
+            "abortMultipartUpload: We encountered an internal error. Please try again. (10001)",
+          );
+        },
+      };
+    });
+  onTestFinished(() => spy.mockRestore());
+  const errors = expectErrors();
+  const said = () =>
+    entriesOf(errors)
+      .filter((entry) => entry.mediaId === mediaId)
+      .map(({ message }) => message);
+  const again =
+    "The upload of an image was not dropped, and is asked for again in an hour";
+  const hour = 60 * 60 * 1000;
+
+  // Given up, and in no part: the bucket is asked to drop the parts, and
+  // asked again an hour later, and until the eight days are nearly over.
+  app.advance(uploadLifetimeMs + 1000);
+  await look(workspaceId);
+  app.advance(hour);
+  await look(workspaceId);
+  app.advance(dropUploadForMs - 2 * hour);
+  await look(workspaceId);
+  expect(asked).toBe(3);
+  expect(said()).toEqual([again, again, again]);
+
+  // Once they are over, it is asked a last time, and the row lets go of
+  // the upload: an image in no part is deleted then. Before, the bucket
+  // was asked every hour for ever, with a line in the log each time, and
+  // the row stayed.
+  app.advance(hour + 1000);
+  await look(workspaceId);
+  expect(asked).toBe(4);
+  expect(said()).toEqual([
+    again,
+    again,
+    again,
+    "The upload of an image was not dropped in eight days, and is not asked for again: the parts stay unless a lifecycle rule of the bucket drops them",
+  ]);
+  const later = new SyncClient();
+  await later.connect(browser, workspaceId);
+  expect(later.table("media")).toEqual([]);
+  app.advance(hour);
+  await look(workspaceId);
+  expect(asked).toBe(4);
+  expect(said()).toHaveLength(4);
+});
 
 test("a person makes only so many requests of an upload in a minute", async () => {
   const { test: app, browser, workspaceId } = await ready();
