@@ -222,28 +222,31 @@ describe("the consent page", () => {
     expect(callback.searchParams.get("code")).toBeNull();
   });
 
-  it("takes a redirect address at any origin only by a path that the application was made with", async () => {
+  it("takes a redirect address only as it was entered for the application, in full", async () => {
     const sim = setup();
-    const sandbox = sim.simulator.addClient({
-      name: "pigy",
-      redirectPaths: ["/connect/linkedin/callback"],
-    });
-    const at = (redirect: string) =>
+    const at = (redirect: string, asked = scope) =>
       sim.simulator.fetch(
-        authorizationUrl(sim, {
-          client_id: sandbox.clientId,
-          redirect_uri: redirect,
-        }),
+        authorizationUrl(sim, { redirect_uri: redirect, scope: asked }),
       );
-    expect(
-      (await at("http://localhost:5173/connect/linkedin/callback")).status,
-    ).toBe(200);
-    expect((await at("http://localhost:5173/elsewhere")).status).toBe(400);
+    expect((await at(redirectUri)).status).toBe(200);
+    // The same path at another origin is somebody else's address. It is
+    // refused on a page of LinkedIn also where the scope is wrong, which
+    // is otherwise said to the application, with a redirect.
+    const elsewhere = `https://evil.example${new URL(redirectUri).pathname}`;
+    expect((await at(elsewhere)).status).toBe(400);
+    expect((await at(elsewhere, "r_member_social")).status).toBe(400);
     // A query could carry what the callback then takes for LinkedIn's.
-    expect(
-      (await at("http://localhost:5173/connect/linkedin/callback?code=x"))
-        .status,
-    ).toBe(400);
+    expect((await at(`${redirectUri}?code=x`)).status).toBe(400);
+  });
+
+  it("takes the redirect addresses that are entered for an application later, and no longer the ones before", async () => {
+    const sim = setup();
+    const moved = "http://localhost:5173/connect/linkedin/callback";
+    sim.simulator.setRedirectUris(sim.client.clientId, [moved]);
+    const at = (redirect: string) =>
+      sim.simulator.fetch(authorizationUrl(sim, { redirect_uri: redirect }));
+    expect((await at(moved)).status).toBe(200);
+    expect((await at(redirectUri)).status).toBe(400);
   });
 });
 

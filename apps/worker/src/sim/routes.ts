@@ -5,6 +5,7 @@ import {
 } from "@pigy/core";
 import { drizzle } from "drizzle-orm/d1";
 import { type Context, Hono } from "hono";
+import { HTTPException } from "hono/http-exception";
 import { requireUser } from "../auth/guards.ts";
 import type { AppDependencies, AppEnv } from "../env.ts";
 import { handleNotFound, InvalidField, parseJsonBody } from "../errors.ts";
@@ -39,6 +40,18 @@ async function ownSandbox(
   return { ...sandbox, ownerId };
 }
 
+/** Whether `location`, as a redirect names it, is an address at `origin`. */
+function leadsBackTo(origin: string, location: string | null): boolean {
+  if (location === null) return false;
+  try {
+    // An address without an origin of its own would be read against the
+    // address of the page, which is at pigy's.
+    return new URL(location, origin).origin === origin;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Under `/sim/network`: the pages of the simulated networks, where a person
  * who connects an account in their sandbox chooses which simulated account
@@ -55,14 +68,19 @@ export function simRoutes(dependencies: AppDependencies): Hono<AppEnv> {
   // `requireUser` also sees to it that a form of these pages is only taken
   // from the page itself, not from another site.
   app.on(["GET", "POST"], "/*", requireUser(dependencies), async (c) => {
-    const { pathname, search } = new URL(c.req.url);
+    const { pathname, search, origin } = new URL(c.req.url);
     const page = worldPage(pathname, search);
     if (!page) return handleNotFound(c);
 
     const sandbox = await ownSandbox(c, dependencies);
     const contentType = c.req.header("Content-Type");
+    let response: Response;
     try {
-      return await worldFetch(c.env.SIM_WORLD, sandbox)(page, {
+      response = await worldFetch(
+        c.env.SIM_WORLD,
+        sandbox,
+        origin,
+      )(page, {
         method: c.req.method,
         ...(contentType && { headers: { "Content-Type": contentType } }),
         ...(c.req.method === "POST" && { body: await c.req.arrayBuffer() }),
@@ -71,6 +89,21 @@ export function simRoutes(dependencies: AppDependencies): Hono<AppEnv> {
       if (error instanceof WorldHostMissing) return handleNotFound(c);
       throw error;
     }
+    // A page of a simulated network sends the browser on to one place:
+    // back to this pigy, with how a connection went. The address of the
+    // page is anybody's to write, and what a simulator makes of it is not
+    // relied on here: an answer that would send the browser of somebody
+    // who is signed in to another site, from pigy's own address, is not
+    // passed on, whichever simulator gave it.
+    if (response.status >= 300 && response.status < 400) {
+      if (!leadsBackTo(origin, response.headers.get("Location"))) {
+        throw new HTTPException(400, {
+          message:
+            "The simulated network would send the browser to another site",
+        });
+      }
+    }
+    return response;
   });
 
   return app;

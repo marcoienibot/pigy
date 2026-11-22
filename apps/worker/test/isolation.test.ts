@@ -505,6 +505,59 @@ describe("the pages of a simulated network", () => {
     expect(answer.headers.get("Location")).toBeNull();
   });
 
+  it("do not send the browser to another site, whatever the simulated network answers", async () => {
+    const { test, admin, ofAdmin } = await start();
+    // The world exists and has the server.
+    await connectInSandbox(admin, ofAdmin.sandbox);
+    // An application of the simulated server whose redirect address is at
+    // another site. Nobody can register one from outside: the API of a
+    // world is the Worker's alone, which is how the test does it. It
+    // stands for whatever a simulator might one day take for an address
+    // to send a browser to.
+    const elsewhere = "https://evil.example/connect/mastodon/callback";
+    const world = worldFetch(
+      env.SIM_WORLD,
+      await identityOf(test, ofAdmin.sandbox),
+    );
+    const registered = await world(
+      `https://${sandboxMastodonDomain}/api/v1/apps`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          client_name: "Elsewhere",
+          redirect_uris: elsewhere,
+          scopes: "read",
+        }),
+      },
+    );
+    const { client_id: clientId } = (await registered.json()) as {
+      client_id: string;
+    };
+    const page = `/sim/network/${sandboxMastodonDomain}/oauth/authorize?${new URLSearchParams(
+      {
+        client_id: clientId,
+        redirect_uri: elsewhere,
+        response_type: "code",
+        scope: "read",
+      },
+    )}`;
+    // The simulated server has the application and would send the browser
+    // to its address: without this, the test would show nothing.
+    const [account = ""] = (
+      await offeredAccounts(await admin.fetch(page))
+    ).values();
+    expect(account).not.toBe("");
+
+    const answered = await admin.fetch(page, { form: { account } });
+
+    expect(answered.status).toBe(400);
+    expect(answered.headers.get("Location")).toBeNull();
+    expect(errorResponseSchema.parse(await answered.json()).message).toBe(
+      "The simulated network would send the browser to another site",
+    );
+  });
+
   it.each([
     // The API of the simulated server, which is for the adapter alone.
     ["GET", "/api/v2/instance"],

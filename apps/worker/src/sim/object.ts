@@ -53,6 +53,13 @@ export type WorldRequest = {
   method: string;
   headers: [string, string][];
   body: ArrayBuffer | null;
+  /**
+   * For a request that a browser makes of a page of the world: the origin
+   * at which that browser reaches pigy, as the Worker read it from the
+   * request. It is where the pigy of this world is, and so where a
+   * simulated network may send the browser back to.
+   */
+  pigy?: string;
 };
 
 /**
@@ -144,12 +151,22 @@ export function simWorldObject({
      */
     async request(
       workspace: WorkspaceIdentity,
-      { url, method, headers, body }: WorldRequest,
+      { url, method, headers, body, pigy }: WorldRequest,
     ): Promise<WorldAnswer | undefined> {
       if (!this.#bind(workspaceIdentitySchema.parse(workspace))) {
         return undefined;
       }
       const { mastodon, bluesky, linkedin } = this.#world();
+      if (pigy !== undefined) {
+        // LinkedIn sends a browser to an address that was entered for the
+        // application, in full, and to no other. The application of a
+        // sandbox is pigy where this browser reaches it, so that is the
+        // one address it has, as an operator enters the address of their
+        // pigy for theirs. A world cannot know it before it is asked.
+        linkedin.setRedirectUris(sandboxLinkedInClient.clientId, [
+          pigy + connectCallbackPath("linkedin"),
+        ]);
+      }
       // The simulators of the networks. Each says which hosts are its own,
       // and the one that owns the host of the request answers it. They are
       // not tried in turn: a simulator fails for a host that is not its own
@@ -324,14 +341,9 @@ export function simWorldObject({
         // LinkedIn knows an application only as somebody has made it in
         // its developer portal. In the world of a sandbox pigy is this
         // one, which is made with the world, and never the application of
-        // the operator's. The world cannot know at which address its pigy
-        // is reached, so the application takes pigy's callback path at
-        // any.
-        linkedin.addClient({
-          name: "pigy",
-          ...sandboxLinkedInClient,
-          redirectPaths: [connectCallbackPath("linkedin")],
-        });
+        // the operator's. It has no redirect address yet: `request` enters
+        // the one of the pigy that a browser asks for a page of LinkedIn.
+        linkedin.addClient({ name: "pigy", ...sandboxLinkedInClient });
         for (const [, name] of seedAccounts) linkedin.addMember(name);
         kv.put(seededLinkedInKey, true);
       }

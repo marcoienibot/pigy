@@ -25,13 +25,6 @@ export type LinkedInClient = {
   /** The redirect addresses that were entered for it, each in full. */
   redirectUris: string[];
   /**
-   * Paths that it takes as a redirect address at any origin. No real
-   * application has this: it stands for a developer who has entered the
-   * address of their app wherever it is reached, for the world of a
-   * sandbox, which cannot know that address.
-   */
-  redirectPaths: string[];
-  /**
    * The permissions that the products of the application give it: "Share
    * on LinkedIn" has `w_member_social`, "Sign In with LinkedIn using
    * OpenID Connect" has `openid`, `profile` and `email`.

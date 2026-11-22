@@ -92,6 +92,11 @@ export type LinkedInSimulator = {
     client: Pick<LinkedInClient, "name"> &
       Partial<Omit<LinkedInClient, "name">>,
   ): LinkedInClient;
+  /**
+   * Enters `redirectUris` as the redirect addresses of an application, in
+   * place of the ones it had, as its developer does in LinkedIn's portal.
+   */
+  setRedirectUris(clientId: string, redirectUris: string[]): void;
   /** Adds a member, for somebody to connect as. */
   addMember(name: string): LinkedInMember;
   /** Arms a fault, which strikes the next request it applies to. */
@@ -378,7 +383,6 @@ export function createLinkedInSimulator(world: SimWorld): LinkedInSimulator {
       clientId = `sim${world.nextNumber().toString().padStart(11, "0")}`,
       clientSecret = simulatedSecret(),
       redirectUris = [],
-      redirectPaths = [],
       scopes = openScopes,
     }) {
       if (!isSimulatedSecret(clientSecret)) {
@@ -394,11 +398,24 @@ export function createLinkedInSimulator(world: SimWorld): LinkedInSimulator {
         clientSecret,
         name,
         redirectUris,
-        redirectPaths,
         scopes,
       };
       state.clients.put(clientId, client);
       return client;
+    },
+
+    setRedirectUris(clientId, redirectUris) {
+      const client = state.clients.get(clientId);
+      if (!client) throw new Error(`There is no application ${clientId}`);
+      // Written out, so that nothing else that a world from before holds
+      // of the application stays.
+      state.clients.put(clientId, {
+        clientId,
+        clientSecret: client.clientSecret,
+        name: client.name,
+        redirectUris,
+        scopes: client.scopes,
+      });
     },
 
     addMember(name) {

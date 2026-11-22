@@ -57,10 +57,16 @@ function isInfrastructureFailure(error: unknown): error is Error {
  * does not have, for an answer that a fault made a simulator lose, and for
  * a world that the runtime could not reach or get an answer from.
  * Anything else that it throws is a failure of pigy's, not of a network.
+ *
+ * `pigy` is for the requests that a browser makes of a page of the world:
+ * the origin at which that browser reaches pigy, which the world takes for
+ * where its pigy is. Whoever passes it has read it from the request and
+ * from nothing that somebody could have written into an address.
  */
 export function worldFetch(
   namespace: Bindings["SIM_WORLD"],
   workspace: WorkspaceIdentity,
+  pigy?: string,
 ): Fetch {
   if (workspace.environment !== "sandbox") {
     throw new Error(`The ${workspace.environment} workspace has no simulation`);
@@ -93,6 +99,7 @@ export function worldFetch(
       method: request.method,
       headers: [...request.headers],
       body: request.body && (await request.arrayBuffer()),
+      ...(pigy !== undefined && { pigy }),
     });
     if (!answer) throw foreign(workspace);
     if ("noSuchHost" in answer) throw new WorldHostMissing(answer.noSuchHost);

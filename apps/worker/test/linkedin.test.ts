@@ -12,8 +12,10 @@ import {
   consentInSandbox,
   consentUrl,
   disconnected,
+  offeredAccounts,
   outcomeOf,
   pathOf,
+  sandboxLinkedInMember,
   startConnect,
   storedAccess,
   worldEntries,
@@ -192,6 +194,73 @@ describe("connecting a LinkedIn account", () => {
     expect(
       JSON.stringify(await worldEntries<unknown>(sandbox, "")),
     ).not.toContain(test.network.linkedinClient.clientSecret);
+  });
+
+  it.each([
+    // Refused by LinkedIn with a redirect to the application, at once.
+    ["a scope that the application does not have", "r_member_social"],
+    // Asked of the member on a page that says "pigy".
+    ["the scopes that pigy asks for", "openid profile w_member_social"],
+  ])(
+    "sends the browser to no other site from an address that names one, with %s",
+    async (_name, scope) => {
+      const test = setup();
+      const browser = await signedIn(test, { email: adminEmail });
+      const { sandbox } = await workspaceIds(browser);
+      // The address of the consent page as pigy makes it, with the redirect
+      // address replaced: pigy's own path on somebody else's site. Anybody
+      // can write such an address and have a person open it.
+      const page = new URL(
+        await consentUrl(browser, sandbox, undefined, "linkedin"),
+      );
+      page.searchParams.set(
+        "redirect_uri",
+        "https://evil.example/connect/linkedin/callback",
+      );
+      page.searchParams.set("scope", scope);
+
+      const shown = await browser.fetch(pathOf(page));
+
+      // A page of the simulated LinkedIn that says what is wrong, and no
+      // way on: no redirect, and no form that would lead to one.
+      expect(shown.status).toBe(400);
+      expect(shown.headers.get("Location")).toBeNull();
+      expect(await shown.text()).not.toContain("<form");
+      // Whoever skips the page and answers it gets the same.
+      const members = await offeredAccounts(
+        await browser.fetch(
+          pathOf(await consentUrl(browser, sandbox, undefined, "linkedin")),
+        ),
+      );
+      const answered = await browser.fetch(pathOf(page), {
+        form: { account: members.get(sandboxLinkedInMember) ?? "" },
+      });
+      expect(answered.status).toBe(400);
+      expect(answered.headers.get("Location")).toBeNull();
+    },
+  );
+
+  it("takes the callback address of the pigy that the browser is at, and connects there", async () => {
+    const test = setup();
+    const browser = await signedIn(test, { email: adminEmail });
+    const { sandbox } = await workspaceIds(browser);
+
+    const callback = await consentInSandbox(
+      browser,
+      await consentUrl(browser, sandbox, undefined, "linkedin"),
+      { handle: sandboxLinkedInMember },
+    );
+
+    expect(new URL(callback).origin).toBe("https://pigy.test");
+    // The one address that the application of the world has, in full.
+    expect(
+      await worldEntries<{ redirectUris: string[] }>(
+        sandbox,
+        "linkedin/client/",
+      ),
+    ).toMatchObject([
+      { redirectUris: ["https://pigy.test/connect/linkedin/callback"] },
+    ]);
   });
 
   it("connects a real member through the fetch of the app, and keeps the token to itself", async () => {

@@ -24,19 +24,6 @@ import {
 
 const service = "LinkedIn";
 
-/** Whether `client` has `redirectUri` among its redirect addresses. */
-function takesRedirect(client: LinkedInClient, redirectUri: string): boolean {
-  if (client.redirectUris.includes(redirectUri)) return true;
-  try {
-    const url = new URL(redirectUri);
-    return (
-      !url.search && !url.hash && client.redirectPaths.includes(url.pathname)
-    );
-  } catch {
-    return false;
-  }
-}
-
 /**
  * `GET /oauth/v2/authorization` shows the page where a member signs in and
  * consents, `POST` takes their answer and sends the browser back to the
@@ -58,7 +45,10 @@ export async function authorize(
     return refuse(400, "The passed in client_id is invalid.");
   }
   const redirectUri = params.get("redirect_uri");
-  if (!redirectUri || !takesRedirect(client, redirectUri)) {
+  // The whole address, as it was entered for the application: LinkedIn
+  // compares nothing less, and an address that is only like one of them
+  // could be anybody's.
+  if (!redirectUri || !client.redirectUris.includes(redirectUri)) {
     return refuse(400, "The redirect_uri does not match the registered value.");
   }
   // GUESS: a wrong `response_type` ends on a page too. LinkedIn documents
