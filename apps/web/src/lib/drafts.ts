@@ -229,8 +229,7 @@ export function useNewDraft() {
  * as its own, all of it, however long it is: for a text that is brought
  * back, with a draft that was deleted or an account that was left out.
  * `ownTextMutations` of `@pigy/core` has how, and why it is more than
- * one mutation for a long text. Returns the ID of the first part, or
- * undefined for no parts.
+ * one mutation for a long text.
  */
 export function restoreOwnText(
   mutate: <Name extends MutatorName>(
@@ -240,7 +239,7 @@ export function restoreOwnText(
   postId: string,
   channelId: string,
   parts: readonly { text: string }[],
-): string | undefined {
+): void {
   const mutations = ownTextMutations(
     postId,
     channelId,
@@ -248,14 +247,12 @@ export function restoreOwnText(
     () => uuidv7(new Date()),
   );
   for (const mutation of mutations) {
+    // Each under its own name: the compiler checks the arguments of a
+    // mutation against its name, which it cannot for one of two.
     if (mutation.name === "target.customize") {
       mutate(mutation.name, mutation.args);
     } else {
       mutate(mutation.name, mutation.args);
     }
   }
-  const [first] = mutations;
-  return first?.name === "target.customize"
-    ? first.args.parts[0]?.id
-    : undefined;
 }
