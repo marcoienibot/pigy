@@ -188,7 +188,6 @@ export const defaultMediaLimits: {
  * the list when its adapter publishes images.
  */
 export const imagesNotPublishedTo: readonly Limits["network"][] = [
-  "linkedin",
   "threads",
 ];
 

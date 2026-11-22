@@ -699,6 +699,13 @@ export async function deliver(
    * the delivery is so old that the workspace no longer vouches for its
    * notes: `stepNoteLifetimeMs` of the store. Nothing was posted then, and
    * the person who looks finds that.
+   *
+   * A step that the adapter says can be run again all the same, because
+   * it posts nothing, `stepRepeatsSafely` of the contract, is not noted:
+   * it is run again like a step of an adapter that repeats safely. That
+   * is an upload of an image to LinkedIn, which leaves an image in no
+   * post when it is run twice, and which would otherwise end a delivery
+   * as `uncertain` with nothing posted whenever its answer was lost.
    */
   const sendingOnce = (provider: Provider): Provider =>
     provider.repeatsSafely
@@ -706,6 +713,9 @@ export async function deliver(
       : {
           ...provider,
           async publishStep(request) {
+            if (provider.stepRepeatsSafely?.(request)) {
+              return provider.publishStep(request);
+            }
             const { name, mark } = running;
             const begun = await asked(async () => {
               // A call that fails may have noted the step all the same,

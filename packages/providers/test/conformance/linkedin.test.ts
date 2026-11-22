@@ -84,8 +84,6 @@ describeProvider("LinkedIn, simulated", async () => {
     redirectUri,
     identifier: undefined,
     thread: "joined",
-    // Until the adapter publishes images.
-    noImages: true,
     // LinkedIn gives pigy no stats of the posts of a member.
     counts: [],
     credentials,

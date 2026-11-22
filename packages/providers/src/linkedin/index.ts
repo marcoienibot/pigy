@@ -1,5 +1,6 @@
 import {
   type Clock,
+  type ContentImage,
   type Fetch,
   joinLinkedInParts,
   type Limits,
@@ -92,6 +93,40 @@ const pendingSchema = z.strictObject({
   redirectUri: z.string().min(1),
 });
 
+// What names an image of the Images API.
+const imageUrn = /^urn:li:image:[A-Za-z0-9_-]+$/;
+
+/**
+ * The adapter's notes between two steps of a post. None of it is secret:
+ * the URN of an image says nothing that lets anybody at it.
+ */
+const notesSchema = z.strictObject({
+  /**
+   * The images of the post that are uploaded, by their URNs, in the order
+   * of the content: those of the first part, then those of the second,
+   * and so on. Recorded image by image, before the post that names them.
+   */
+  images: z.array(z.string().regex(imageUrn)),
+  /**
+   * How often in a row the step that posts found an image that LinkedIn
+   * was still working on.
+   */
+  waits: z.number().int().nonnegative(),
+});
+
+type Notes = z.infer<typeof notesSchema>;
+
+/** The notes of a progress, or undefined if they are not the adapter's. */
+function notesOf(state: Json | undefined): Notes | undefined {
+  // Progress from before pigy posted images to LinkedIn has none.
+  if (state === null || state === undefined) return { images: [], waits: 0 };
+  return notesSchema.safeParse(state).data;
+}
+
+/** The images of a post, those of every part in the order of the parts. */
+const imagesOf = (content: PostContent): ContentImage[] =>
+  content.parts.flatMap(({ media }) => media ?? []);
+
 // What pigy reads of LinkedIn's answers. Everything else is ignored.
 
 const tokenSchema = z.object({
@@ -112,6 +147,17 @@ const userinfoSchema = z.object({
   picture: z.unknown().optional(),
 });
 
+/** What `initializeUpload` answers: where the bytes go, and the image. */
+const initializedSchema = z.object({
+  value: z.object({
+    uploadUrl: z.string(),
+    image: z.string().regex(imageUrn),
+  }),
+});
+
+/** How an image stands: `WAITING_UPLOAD`, `PROCESSING`, `AVAILABLE`, `PROCESSING_FAILED`. */
+const imageStatusSchema = z.object({ status: z.string() });
+
 const authorizationHost = "www.linkedin.com";
 const apiHost = "api.linkedin.com";
 
@@ -121,6 +167,20 @@ const scopes = ["openid", "profile", "w_member_social"];
 
 // Far above any answer that pigy reads.
 const maxBytes = 256 * 1024;
+
+/**
+ * The hosts that LinkedIn may name for the bytes of an image. The token of
+ * the member goes there with them, so no other host is sent anything.
+ * GUESS: the Images API names an address under `www.linkedin.com`, and the
+ * API before it named one under `api.linkedin.com`.
+ */
+const uploadHosts = ["www.linkedin.com", "api.linkedin.com"];
+
+// How long the step that posts waits for an image that LinkedIn is still
+// working on, in seconds, and how often in a row, before it asks to be
+// tried again later: a minute.
+const imageWaitSeconds = 5;
+const maxImageWaits = 12;
 
 const dayMs = 24 * 60 * 60 * 1000;
 
@@ -133,11 +193,13 @@ const duplicateOf =
   /^Content is a duplicate of (urn:li:(?:share|ugcPost):\d+)$/;
 
 type Call = {
-  method?: "GET" | "POST" | "DELETE";
+  method?: "GET" | "POST" | "PUT" | "DELETE";
   /** The access token of a member, for a request made in their name. */
   token?: string;
   json?: unknown;
   form?: Record<string, string>;
+  /** The bytes of an image, as a body of their own. */
+  bytes?: { data: Uint8Array; type: string };
   headers?: Record<string, string>;
   /** What the request carries that must not show up in a message. */
   secrets?: readonly string[];
@@ -160,7 +222,7 @@ type Call = {
  * whose title is blank, which pigy's own reading never makes and the
  * type of a card does not rule out, is not sent: the contract says that
  * a post is not kept back for its card. No picture: an article takes one
- * that was uploaded before, which comes with media.
+ * that was uploaded before, and pigy does not read the picture of a page.
  */
 function articleOf(content: PostContent) {
   const card = content.parts.find((part) => part.card)?.card;
@@ -173,6 +235,25 @@ function articleOf(content: PostContent) {
         ...(card.description && { description: card.description }),
       },
     },
+  };
+}
+
+/**
+ * What gives a post its images: "Posts API", one image as `media` and
+ * several as `multiImage`, each by its URN and with what it shows. The
+ * URNs are those of `images`, in their order.
+ */
+function imagesContent(urns: readonly string[], images: ContentImage[]) {
+  const named = urns.map((id, index) => {
+    const alt = images[index]?.alt ?? "";
+    return { id, ...(alt !== "" && { altText: alt }) };
+  });
+  const [one] = named;
+  return {
+    content:
+      named.length === 1 && one
+        ? { media: one }
+        : { multiImage: { images: named } },
   };
 }
 
@@ -194,7 +275,7 @@ export function createLinkedInProvider({
   function request(
     host: string,
     path: string,
-    { method = "GET", token, json, form, headers }: Call,
+    { method = "GET", token, json, form, bytes, headers }: Call,
   ): Promise<HttpAnswer> {
     return send(
       fetch,
@@ -207,10 +288,12 @@ export function createLinkedInProvider({
           ...(token && { Authorization: `Bearer ${token}` }),
           ...(json !== undefined && { "Content-Type": "application/json" }),
           ...(form && { "Content-Type": "application/x-www-form-urlencoded" }),
+          ...(bytes && { "Content-Type": bytes.type }),
           ...headers,
         },
         ...(json !== undefined && { body: JSON.stringify(json) }),
         ...(form && { body: new URLSearchParams(form).toString() }),
+        ...(bytes && { body: bytes.data as Uint8Array<ArrayBuffer> }),
       },
       { timeoutMs, maxBytes },
     );
@@ -311,6 +394,89 @@ export function createLinkedInProvider({
 
   /** The address of a post for people. */
   const postUrl = (id: string) => `https://www.linkedin.com/feed/update/${id}/`;
+
+  /**
+   * Uploads `bytes` as an image of the member and returns its URN: asks
+   * LinkedIn for an image, and puts the bytes at the address that it
+   * names, with the token of the member. The address is a secret for as
+   * long as it takes bytes, so it goes nowhere else, and out of every
+   * message.
+   */
+  async function upload(
+    { accessToken, memberId }: LinkedInCredentials,
+    image: ContentImage,
+    bytes: Uint8Array,
+  ): Promise<string> {
+    const { value } = understood(
+      initializedSchema,
+      await call(apiHost, "/rest/images?action=initializeUpload", {
+        method: "POST",
+        token: accessToken,
+        headers: versioned,
+        json: {
+          initializeUploadRequest: { owner: `urn:li:person:${memberId}` },
+        },
+      }),
+      "LinkedIn",
+    );
+    let address: URL | undefined;
+    try {
+      address = new URL(value.uploadUrl);
+    } catch {
+      address = undefined;
+    }
+    if (address?.protocol !== "https:" || !uploadHosts.includes(address.host)) {
+      throw new ProviderError(
+        "fail",
+        "LinkedIn named an address for the image that is not its own.",
+      );
+    }
+    await call(address.host, `${address.pathname}${address.search}`, {
+      method: "PUT",
+      token: accessToken,
+      bytes: { data: bytes, type: image.type },
+      secrets: [value.uploadUrl, ...address.searchParams.values()],
+    });
+    return value.image;
+  }
+
+  /**
+   * How the images `urns` stand at LinkedIn, together: all of them
+   * available, one or more still being worked on, or one that LinkedIn
+   * no longer has. Throws for one that LinkedIn could not take.
+   */
+  async function imagesStanding(
+    accessToken: string,
+    urns: readonly string[],
+  ): Promise<"available" | "processing" | "gone"> {
+    let standing: "available" | "processing" = "available";
+    for (const [index, urn] of urns.entries()) {
+      const asked: Call = { token: accessToken, headers: versioned };
+      const answer = await request(
+        apiHost,
+        // A URN in an address has its colons encoded.
+        `/rest/images/${encodeURIComponent(urn)}`,
+        asked,
+      );
+      if (answer.status === 404) return "gone";
+      if (answer.status < 200 || answer.status >= 300) {
+        throw failure(answer, asked);
+      }
+      const { status } = understood(imageStatusSchema, answer.json, "LinkedIn");
+      if (status === "PROCESSING_FAILED") {
+        throw new ProviderError(
+          "fail",
+          urns.length === 1
+            ? "LinkedIn could not take the image of the post."
+            : `LinkedIn could not take image ${index + 1} of the post.`,
+        );
+      }
+      // Still working on it, or waiting for bytes that it has been sent,
+      // or a status that pigy does not know: none of them is posted yet.
+      if (status !== "AVAILABLE") standing = "processing";
+    }
+    return standing;
+  }
 
   return {
     network: "linkedin",
@@ -472,11 +638,43 @@ export function createLinkedInProvider({
     },
 
     /**
-     * One step for the whole post: LinkedIn has no threads of an author's
-     * own, so the parts are joined into one post, and every part is
+     * A step that uploads an image can be run again: it uploads another,
+     * and the one that the run before it uploaded is in no post. Every
+     * other step may post.
+     */
+    stepRepeatsSafely({ content, progress }) {
+      if (progress === null) return imagesOf(content).length > 0;
+      const recorded = publishProgressSchema.safeParse(progress).data;
+      const notes = notesOf(recorded?.state);
+      if (!recorded || !notes) return false;
+      // Published: the step sends nothing.
+      if (recorded.parts.length > 0) return true;
+      return notes.images.length < imagesOf(content).length;
+    },
+
+    /**
+     * One step for each image of the post, and one for the whole post:
+     * LinkedIn has no threads of an author's own, so the parts are joined
+     * into one post, with the images of every part, and every part is
      * published with it, under its ID.
      *
-     * The step records nothing before it sends, because nothing would
+     * An image is uploaded in a step of its own, which asks LinkedIn for
+     * an image of the member and puts the bytes at the address that it
+     * names: the address is a secret for as long as it takes bytes, so
+     * the two requests are one step, and nothing of the address is
+     * recorded. The URN of the image is. Such a step can be run again,
+     * which `stepRepeatsSafely` says: it uploads another image, and the
+     * one before is in no post. So an upload whose answer was lost, or
+     * that was cut off, is tried again and does not end the delivery.
+     *
+     * The step that posts asks LinkedIn first how each image stands, and
+     * waits for one that LinkedIn is still working on. An image that
+     * LinkedIn no longer has, which it may drop when it is in no post
+     * for long (GUESS), makes the images begin anew: nothing was posted
+     * with it. Then it posts, with the images in place of the preview of
+     * a link: a post has one content.
+     *
+     * That step records nothing before it sends, because nothing would
      * help a later run: LinkedIn lets pigy read no posts and takes no key
      * of pigy's making. So the step cannot be run again safely, which the
      * adapter says with `repeatsSafely`, and it is truthful about what it
@@ -503,11 +701,18 @@ export function createLinkedInProvider({
      * delivery again within those minutes, takes that post. LinkedIn would
      * not publish the text a second time whatever pigy did.
      */
-    async publishStep({ credentials, content, progress, mayHaveSentBefore }) {
+    async publishStep({
+      credentials,
+      content,
+      progress,
+      mayHaveSentBefore,
+      media,
+    }) {
       const { accessToken, memberId } = parseCredentials(credentials);
       const recorded =
         progress === null ? null : publishProgressSchema.safeParse(progress);
-      if (recorded && !recorded.success) {
+      const notes = notesOf(recorded?.data?.state);
+      if ((recorded && !recorded.success) || !notes) {
         throw new ProviderError(
           "fail",
           "pigy cannot read how far it had come with this post.",
@@ -525,6 +730,52 @@ export function createLinkedInProvider({
       const [part] = recorded?.data.parts ?? [];
       if (part) return published(part.id);
 
+      /** The progress of a step that has posted nothing. */
+      const stepped = (state: Notes, waitSeconds = 0): PublishProgress => ({
+        parts: [],
+        done: false,
+        waitSeconds,
+        state,
+      });
+      const images = imagesOf(content);
+      if (notes.images.length > images.length) {
+        throw new ProviderError(
+          "fail",
+          "pigy cannot read how far it had come with this post.",
+        );
+      }
+      const next = images[notes.images.length];
+      if (next) {
+        if (!media) {
+          throw new ProviderError(
+            "fail",
+            "pigy cannot read the images of this post.",
+          );
+        }
+        const urn = await upload(
+          { accessToken, memberId },
+          next,
+          await media.read(next.id),
+        );
+        return stepped({ images: [...notes.images, urn], waits: 0 });
+      }
+      if (images.length > 0) {
+        const standing = await imagesStanding(accessToken, notes.images);
+        if (standing === "gone") return stepped({ images: [], waits: 0 });
+        if (standing === "processing") {
+          if (notes.waits >= maxImageWaits) {
+            throw new ProviderError(
+              "retry",
+              "LinkedIn is still working on an image of the post.",
+            );
+          }
+          return stepped(
+            { ...notes, waits: notes.waits + 1 },
+            imageWaitSeconds,
+          );
+        }
+      }
+
       const call: Call = {
         method: "POST",
         token: accessToken,
@@ -532,7 +783,11 @@ export function createLinkedInProvider({
         json: {
           author: `urn:li:person:${memberId}`,
           commentary: littleText(joinLinkedInParts(content)),
-          ...articleOf(content),
+          // The images win over the preview of a link: a post has one
+          // content, and somebody put the images there.
+          ...(images.length > 0
+            ? imagesContent(notes.images, images)
+            : articleOf(content)),
           visibility,
           distribution: {
             feedDistribution: "MAIN_FEED",

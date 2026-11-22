@@ -1,6 +1,7 @@
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { connectErrorSchema, type Fetch, sandboxFeedSchema } from "@pigy/core";
+import { slowProcessingMs } from "@pigy/simulators/linkedin";
 import { feed, type SimToken } from "@pigy/simulators/world";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { sandboxLinkedInClient } from "../src/network/linkedin-client.ts";
@@ -24,7 +25,16 @@ import {
   storedAccess,
   worldEntries,
 } from "./channels.ts";
+import { clock } from "./clock.ts";
 import { adminEmail, expectErrors, setup, signedIn, urlOf } from "./helpers.ts";
+import {
+  attach,
+  endedWithImages,
+  gpsText,
+  holds,
+  photo,
+  upload,
+} from "./media.ts";
 import {
   ended,
   follow,
@@ -729,6 +739,219 @@ describe("a delivery to LinkedIn that goes wrong", () => {
     });
     expect(context.client.table("channel")[0]?.status).toBe("needs_reconnect");
     expect(await context.posted()).toEqual([]);
+  });
+});
+
+describe("images on LinkedIn", () => {
+  /** Uploads an image of `width` by `height` and puts it into `partId`. */
+  async function withImage(
+    { browser, client, workspace }: Context,
+    partId: string,
+    alt: string,
+    width = 320,
+    height = 240,
+  ) {
+    const media = await upload(
+      browser,
+      client,
+      workspace,
+      await photo(width, height),
+    );
+    await attach(client, partId, media.id, alt);
+    return media.id;
+  }
+
+  /** The requests that asked the real LinkedIn for a new image. */
+  const initializes = ({ test }: Context) =>
+    test.network.requests.filter((request) =>
+      request.startsWith("POST https://api.linkedin.com/rest/images"),
+    );
+
+  it.each(["sandbox", "live"] as const)(
+    "publishes a thread with images in a %s workspace as one post, with the images of every part in their order",
+    async (where) => {
+      const context = await withChannel(where);
+      const draft = await writeDraft(
+        context.client,
+        context.workspace,
+        "Harbours",
+        "",
+      );
+      const [first = "", second = ""] = draft.partIds;
+      await withImage(context, first, "A harbour at dusk", 320, 240);
+      await withImage(context, second, "", 240, 320);
+      await withImage(context, second, "Boats", 400, 300);
+      const [targetId = ""] = await publishTo(
+        context.client,
+        draft.postId,
+        context.channel,
+      );
+
+      expect(await endedWithImages(context.client, draft.postId)).toMatchObject(
+        { status: "sent" },
+      );
+      expect(targetOf(context.client, targetId)).toMatchObject({
+        status: "sent",
+        attempt: 1,
+      });
+      const posts = await context.posted();
+      expect(
+        posts.map(({ text, images }) => [
+          text,
+          images?.map(({ alt, width, height }) => [alt, width, height]),
+        ]),
+      ).toEqual([
+        [
+          // The second part is only its images.
+          "Harbours",
+          [
+            ["A harbour at dusk", 320, 240],
+            ["", 240, 320],
+            ["Boats", 400, 300],
+          ],
+        ],
+      ]);
+      if (where === "live") {
+        // Three uploads to the real LinkedIn, and one post, and nothing of
+        // what the camera wrote left pigy.
+        expect(initializes(context)).toHaveLength(3);
+        expect(context.asked()).toBe(1);
+        for (const { post } of feed(context.test.network.world, ["linkedin"])) {
+          for (const { blob } of post.images ?? []) {
+            const bytes = context.test.network.world.blobs.get(blob);
+            expect(bytes && holds(bytes, gpsText)).toBe(false);
+          }
+        }
+      } else {
+        expect(context.asked()).toBe(0);
+      }
+    },
+  );
+
+  it("uploads an image again whose answer was lost, and posts it once: the delivery does not end for it", async () => {
+    const context = await withChannel("live");
+    const draft = await writeDraft(context.client, context.workspace, "Lost");
+    await withImage(context, draft.partIds[0] ?? "", "Uploaded twice");
+    context.test.network.linkedin.arm({
+      kind: "lost-response",
+      operation: "upload",
+    });
+    const noted = vi.spyOn(WorkspaceStore.prototype, "stepBegins");
+    onTestFinished(() => noted.mockRestore());
+    const [targetId = ""] = await publishTo(
+      context.client,
+      draft.postId,
+      context.channel,
+    );
+
+    expect(await endedWithImages(context.client, draft.postId)).toMatchObject({
+      status: "sent",
+    });
+    expect(targetOf(context.client, targetId)).toMatchObject({
+      status: "sent",
+      attempt: 1,
+    });
+    expect(initializes(context)).toHaveLength(2);
+    expect(context.asked()).toBe(1);
+    expect(
+      (await context.posted()).map(({ images }) => images?.length),
+    ).toEqual([1]);
+    // Only the step that posts was noted: an upload can be run again.
+    expect(noted).toHaveBeenCalledTimes(1);
+  });
+
+  it("runs a step again that was cut off while it uploaded, and posts once: no delivery ends as unknown for an upload", async () => {
+    // The answer to the bytes of the image is held, as for a step whose
+    // time runs out while it uploads.
+    const held = { closed: true, arrived: 0 };
+    const context = await withChannel("live", {
+      interceptNetwork:
+        (network: Fetch): Fetch =>
+        async (input, init) => {
+          const response = await network(input, init);
+          if ((init?.method ?? "GET") === "PUT" && held.arrived++ === 0) {
+            while (held.closed) {
+              await new Promise((resolve) => setTimeout(resolve, 5));
+            }
+          }
+          return response;
+        },
+    });
+    onTestFinished(() => {
+      held.closed = false;
+    });
+    const draft = await writeDraft(context.client, context.workspace, "Cut");
+    await withImage(context, draft.partIds[0] ?? "", "Cut off");
+    const [targetId = ""] = await publishTo(
+      context.client,
+      draft.postId,
+      context.channel,
+    );
+    await vi.waitFor(() => expect(held.arrived).toBe(1), patience);
+
+    // Taken up again from its first step, as when somebody restarts it.
+    using run = await runOf(context.workspace, targetId);
+    await run.restart();
+
+    expect(await endedWithImages(context.client, draft.postId)).toMatchObject({
+      status: "sent",
+    });
+    expect(targetOf(context.client, targetId)).toMatchObject({
+      status: "sent",
+      attempt: 1,
+    });
+    // The image was uploaded twice, and is in the post once.
+    expect(initializes(context)).toHaveLength(2);
+    expect(context.asked()).toBe(1);
+    held.closed = false;
+    const posts = await context.posted();
+    expect(posts.map(({ images }) => images?.length)).toEqual([1]);
+  });
+
+  it("waits for an image that LinkedIn is still working on, and posts it when it is done", async () => {
+    // The clock of a test stands still, so an image that is slow stays so
+    // until the test moves the clock. It does when LinkedIn is asked about
+    // the image for the third time: within the request, so that the
+    // workflow, whose waits take no time here, cannot get ahead.
+    let looks = 0;
+    const context = await withChannel("live", {
+      interceptNetwork: (network) => (input, init) => {
+        if (
+          (init?.method ?? "GET") === "GET" &&
+          new URL(urlOf(input)).pathname.startsWith("/rest/images/") &&
+          ++looks === 3
+        ) {
+          clock.time = new Date(clock.time.getTime() + slowProcessingMs);
+        }
+        return network(input, init);
+      },
+    });
+    const draft = await writeDraft(context.client, context.workspace, "Slow");
+    await withImage(context, draft.partIds[0] ?? "", "Worked on");
+    context.test.network.linkedin.arm({
+      kind: "slow-processing",
+      operation: "upload",
+    });
+    const [targetId = ""] = await publishTo(
+      context.client,
+      draft.postId,
+      context.channel,
+    );
+
+    await endedWithImages(context.client, draft.postId);
+    expect(targetOf(context.client, targetId)).toMatchObject({
+      status: "sent",
+      attempt: 1,
+    });
+    // The adapter asked for both waits, between its looks: no step failed.
+    expect(await waitsOf(context.workspace, targetId)).toEqual({
+      "wait-3": 5,
+      "wait-4": 5,
+    });
+    expect(context.asked()).toBe(1);
+    expect(
+      (await context.posted()).map(({ images }) => images?.length),
+    ).toEqual([1]);
   });
 });
 
