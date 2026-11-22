@@ -533,9 +533,8 @@ it("holds a draft with images that the public API shares to what the editor hold
   const channel = await connectAccount(test, browser, workspaceId);
   const client = new SyncClient();
   await client.connect(browser, workspaceId);
-  // Written in the app, because the API takes no image: one part, which
-  // is an image without words, and whose description is longer than
-  // Mastodon takes.
+  // Written in the app: one part, which is an image without words, and
+  // whose description is longer than Mastodon takes.
   const draft = await writeDraft(client, workspaceId, "");
   const image = await upload(browser, client, workspaceId, await photo());
   const attached = await attach(

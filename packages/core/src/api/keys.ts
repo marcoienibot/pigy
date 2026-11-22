@@ -17,8 +17,10 @@ export const apiScopes = [
   /** Read the connected accounts. */
   "channels:read",
   /**
-   * Upload media. Declared for the day that images exist: until then no
-   * key is given it.
+   * Upload images with `POST /media`. A post names images with
+   * `posts:write`: by an address, or by the ID of an image that a key with
+   * this scope has uploaded. Keys made before images existed do not have
+   * it: a key has the scopes that it was made with.
    */
   "media:write",
 ] as const;
@@ -27,11 +29,12 @@ export const apiScopeSchema = z.enum(apiScopes);
 
 export type ApiScope = z.infer<typeof apiScopeSchema>;
 
-/** The scopes that a key can be given today. */
+/** The scopes that a key can be given today: all of them. */
 export const grantableApiScopes = [
   "posts:read",
   "posts:write",
   "channels:read",
+  "media:write",
 ] as const satisfies readonly ApiScope[];
 
 /**

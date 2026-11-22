@@ -378,7 +378,7 @@ it("keeps a small record of a large post under its Idempotency-Key, and answers 
     test,
     workspaces.live,
     maxApiChannels,
-    5,
+    13,
   );
   const part = "x".repeat(10_000);
   const thread = Array.from({ length: 24 }, () => ({ text: part }));
@@ -418,12 +418,15 @@ it("keeps a small record of a large post under its Idempotency-Key, and answers 
   expect(repeated.headers.get("Idempotent-Replayed")).toBe("true");
   expect(await repeated.json()).toEqual(post);
 
-  // The five channels of Mastodon are given a text of their own, as long
-  // as the post's. That is a million and a quarter characters with the
-  // post's own, and an answer carries a million at most: the post's and
-  // the texts of three channels. Of the other two it says that it left
-  // their text out, which a null alone would not: a channel without a
-  // text of its own says null too, and gets the text of the post.
+  // The thirteen channels of Mastodon are given a text of their own, as
+  // long as the post's. That is three and a half million characters with
+  // the post's own, and an answer carries a little over three million at
+  // most, which is what a post of a hundred parts with four described
+  // images each takes: the post's and the texts of eleven channels. Of
+  // the other two it says that it left their text out, which a null
+  // alone would not: a channel without a text of its own says null too,
+  // and gets the text of the post.
+  expect(maxApiAnswerTextLength).toBe(3_040_000);
   const customized = await api.call(`/posts/${post.id}`, {
     method: "PATCH",
     json: { metadata: { mastodon: { text: part, thread } } },
@@ -434,21 +437,22 @@ it("keeps a small record of a large post under its Idempotency-Key, and answers 
   expect(large.length).toBeLessThan(maxApiAnswerTextLength + 50_000);
   const { targets } = apiPostSchema.parse(JSON.parse(large));
   const own = targets.filter((target) => target.customized);
-  expect(own).toHaveLength(5);
+  expect(own).toHaveLength(13);
   const said = own.filter((target) => !target.textOmitted);
   const omitted = own.filter((target) => target.textOmitted);
-  expect(said).toHaveLength(3);
+  expect(said).toHaveLength(11);
+  const answered = thread.map(({ text }) => ({ text, assets: [] }));
   for (const target of said) {
-    expect(target).toMatchObject({ text: part, thread });
+    expect(target).toMatchObject({ text: part, assets: [], thread: answered });
   }
   expect(omitted).toMatchObject([
-    { text: null, thread: null },
-    { text: null, thread: null },
+    { text: null, assets: null, thread: null },
+    { text: null, assets: null, thread: null },
   ]);
   // Nothing is said to be left out of a channel that has no text of its
   // own: it has none to leave out.
   const follows = targets.filter((target) => !target.customized);
-  expect(follows).toHaveLength(maxApiChannels - 5);
+  expect(follows).toHaveLength(maxApiChannels - 13);
   expect(follows.every((target) => !target.textOmitted)).toBe(true);
 
   // What was left out can be read, a channel at a time, and is whole
@@ -457,7 +461,8 @@ it("keeps a small record of a large post under its Idempotency-Key, and answers 
     expect(await targetOf(api, post.id, target.channelId)).toEqual({
       ...target,
       text: part,
-      thread,
+      assets: [],
+      thread: answered,
       textOmitted: false,
     });
   }

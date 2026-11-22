@@ -4,6 +4,7 @@ import {
   type ImageFacts,
   ImageRefused,
   scanImage,
+  uploadChunkBytes,
 } from "@pigy/core";
 import { log } from "../log.ts";
 import type { MediaUpload, UploadOutcome } from "../workspace/store.ts";
@@ -52,6 +53,23 @@ export async function takeIn(
       if (!(await bucket.head(keys.upload))) throw error;
     }
   }
+  return readIn(bucket, transformer, workspaceId, mediaId, upload.size);
+}
+
+/**
+ * Reads the file that the bucket has as the upload of `mediaId`, which
+ * is `size` bytes long, and keeps what pigy keeps of an image: what
+ * `takeIn` does once the parts are put together, and what the public API
+ * does with a file that it has stored, `fileWriter`. Deletes nothing.
+ */
+export async function readIn(
+  bucket: R2Bucket,
+  transformer: ImageTransformer,
+  workspaceId: string,
+  mediaId: string,
+  size: number,
+): Promise<UploadOutcome> {
+  const keys = mediaKeys(workspaceId, mediaId);
   const refused = async (error: string): Promise<UploadOutcome> => ({
     error,
   });
@@ -64,7 +82,7 @@ export async function takeIn(
   let facts: ImageFacts;
   try {
     const file = await whole();
-    if (file.size !== upload.size) {
+    if (file.size !== size) {
       return refused("The file is not as long as the device said.");
     }
     facts = await scanImage(chunksOf(file.body));
@@ -140,4 +158,67 @@ export async function forgetUpload(
   } else {
     await deleteUnder(bucket, keys.prefix);
   }
+}
+
+/**
+ * Writes a file into the bucket as the upload of `mediaId` as its pieces
+ * come, `maxBytes` at most, without holding more of it than one part of
+ * the bucket: `uploadChunkBytes`, the smallest that the bucket takes for
+ * a part that is not the last, and the same for every part, as the
+ * bucket wants them. A file that is smaller is written in one piece.
+ *
+ * For a file that pigy is handed in one go and whose length it does not
+ * know before the end: the body of a request of the public API, and an
+ * image that it fetches from an address.
+ */
+export function fileWriter(
+  bucket: R2Bucket,
+  workspaceId: string,
+  mediaId: string,
+  maxBytes: number,
+) {
+  const key = mediaKeys(workspaceId, mediaId).upload;
+  const part = new Uint8Array(uploadChunkBytes);
+  let filled = 0;
+  let size = 0;
+  let upload: R2MultipartUpload | undefined;
+  const parts: R2UploadedPart[] = [];
+  const send = async (bytes: Uint8Array) => {
+    upload ??= await bucket.createMultipartUpload(key);
+    parts.push(await upload.uploadPart(parts.length + 1, bytes));
+  };
+  return {
+    /** Takes the next piece of the file. False once it is too long. */
+    async write(piece: Uint8Array): Promise<boolean> {
+      size += piece.byteLength;
+      if (size > maxBytes) return false;
+      let at = 0;
+      while (at < piece.byteLength) {
+        const taken = Math.min(part.length - filled, piece.byteLength - at);
+        part.set(piece.subarray(at, at + taken), filled);
+        filled += taken;
+        at += taken;
+        if (filled === part.length) {
+          // A copy: the part is filled anew while the bucket reads.
+          await send(part.slice());
+          filled = 0;
+        }
+      }
+      return true;
+    },
+    /** Ends the file and returns its length. */
+    async close(): Promise<number> {
+      if (!upload) {
+        await bucket.put(key, part.subarray(0, filled));
+        return size;
+      }
+      if (filled > 0) await send(part.subarray(0, filled));
+      await upload.complete(parts);
+      return size;
+    },
+    /** Lets go of what was written of a file that is not taken. */
+    async abort(): Promise<void> {
+      await upload?.abort().catch(() => {});
+    },
+  };
 }

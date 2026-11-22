@@ -123,11 +123,9 @@ it("says of every route which scope it takes, and what a write can be refused wi
       (parameter) =>
         parameter.name === "Idempotency-Key" && parameter.in === "header",
     );
-    expect(takesKey, name).toBe(
-      operation.method !== "get" && operation.available !== false,
-    );
+    expect(takesKey, name).toBe(operation.method !== "get");
     expect(documented.requestBody !== undefined, name).toBe(
-      operation.request !== undefined,
+      operation.request !== undefined || operation.upload !== undefined,
     );
     // The parameters of the path are the ones that the path has.
     expect(
@@ -158,8 +156,72 @@ it("says of every route which scope it takes, and what a write can be refused wi
       "updatePost",
     ].sort(),
   );
-  // What is not there yet says so.
-  expect(document.paths["/media"]?.post?.responses).toHaveProperty("501");
+});
+
+it("describes the body of an upload as the bytes of a file of the types that pigy takes", () => {
+  const upload = document.paths["/media"]?.post as {
+    requestBody: { content: Record<string, unknown> };
+    responses: Record<string, unknown>;
+  };
+  // Any of the four, or bytes of no type that they say: the server reads
+  // what a file is from the bytes. No JSON.
+  expect(Object.keys(upload.requestBody.content).sort()).toEqual(
+    [
+      "application/octet-stream",
+      "image/gif",
+      "image/jpeg",
+      "image/png",
+      "image/webp",
+    ].sort(),
+  );
+  expect(upload.responses).toHaveProperty("201");
+  expect(upload.responses).toHaveProperty("413");
+  // No post is in a state for anything there.
+  expect(upload.responses).not.toHaveProperty("409");
+});
+
+it("describes the images of a post as Buffer has them, by address or by the ID of an upload", () => {
+  const image = (value: object) =>
+    createPostRequestSchema.safeParse({
+      text: "x",
+      saveToDraft: true,
+      assets: [{ image: value }],
+    }).success;
+  expect(image({ url: "https://example.com/a.png" })).toBe(true);
+  expect(
+    image({
+      mediaId: "01939c2e-0000-7000-8000-000000000000",
+      metadata: { altText: "A cat" },
+    }),
+  ).toBe(true);
+  // One way to name it, and only one.
+  expect(image({})).toBe(false);
+  expect(
+    image({
+      url: "https://example.com/a.png",
+      mediaId: "01939c2e-0000-7000-8000-000000000000",
+    }),
+  ).toBe(false);
+  // Buffer's shape before its assets became a list, and what is no shape.
+  expect(
+    createPostRequestSchema.safeParse({
+      text: "x",
+      saveToDraft: true,
+      assets: { images: [{ url: "https://example.com/a.png" }] },
+    }).success,
+  ).toBe(false);
+  expect(image({ url: "https://example.com/a.png", altText: "x" })).toBe(false);
+  // As many as a part takes.
+  expect(
+    createPostRequestSchema.safeParse({
+      text: "x",
+      saveToDraft: true,
+      assets: Array.from({ length: 5 }, () => ({
+        image: { url: "https://example.com/a.png" },
+      })),
+    }).success,
+  ).toBe(false);
+  expect(document.components.schemas.AssetInput).toBeDefined();
 });
 
 it("leaves nothing in Zod's registry under a name that is not a shape of the API", () => {

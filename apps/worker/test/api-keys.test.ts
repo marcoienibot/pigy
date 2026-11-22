@@ -69,7 +69,8 @@ it("makes a key that says its environment, shows its secret once and stores a ha
       id: live.apiKey.id,
       name: "Live script",
       prefix: live.apiKey.prefix,
-      scopes: ["posts:read", "posts:write", "channels:read"],
+      // Every scope, that of images too since they exist.
+      scopes: ["posts:read", "posts:write", "channels:read", "media:write"],
       createdAt: test.clock.time.getTime(),
       lastUsedAt: null,
       expiresAt: null,
@@ -95,15 +96,6 @@ it("refuses a key that it could not honour", async () => {
       json,
     });
   const key = { name: "A script", scopes: ["posts:read"], expiresAt: null };
-
-  // The scope is declared for the day that images exist.
-  const media = await make({ ...key, scopes: ["media:write"] });
-  expect(media.status).toBe(400);
-  expect(await media.json()).toMatchObject({
-    error: "InvalidInputError",
-    field: "scopes",
-    message: expect.stringContaining("media:write"),
-  });
 
   const past = await make({ ...key, expiresAt: test.clock.time.getTime() });
   expect(past.status).toBe(400);

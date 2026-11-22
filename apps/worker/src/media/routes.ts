@@ -6,16 +6,13 @@ import {
   uploadChunkRange,
   uploadChunks,
   uploadCompleteSchema,
-  uploadRequestsPerMinute,
   uploadStateSchema,
 } from "@pigy/core";
-import { sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { type Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { isLocal } from "../auth/config.ts";
 import { requireUser } from "../auth/guards.ts";
-import { uploadUses } from "../db/schema.ts";
 import type { AppDependencies, AppEnv } from "../env.ts";
 import { routeOf } from "../errors.ts";
 import { log } from "../log.ts";
@@ -32,6 +29,7 @@ import { forgetUpload, takeIn } from "./intake.ts";
 import { mediaKeys } from "./keys.ts";
 import { mediaLinkPath, mediaLinksWith } from "./links.ts";
 import { imagesTransformer } from "./transform.ts";
+import { countUploads } from "./uses.ts";
 
 /**
  * The routes that the bytes of images travel through: up, in chunks, to a
@@ -48,8 +46,6 @@ import { imagesTransformer } from "./transform.ts";
  * signed and that expires, to a network that fetches the images of a
  * post, links.ts. The bucket has no address of its own.
  */
-
-const minuteMs = 60_000;
 
 /** The headers that every image is served with. */
 function imageHeaders(file: R2Object, name: string): Headers {
@@ -100,23 +96,10 @@ export function mediaRoutes(dependencies: AppDependencies): Hono<AppEnv> {
 
   /**
    * Counts a request of an upload for whoever makes it, and refuses the
-   * one that is over what a person may make in a minute. One statement,
-   * so that two requests at once are both counted.
+   * one that is over what a person may make in a minute.
    */
   const counted = async (c: Context<AppEnv>) => {
-    const minute = Math.floor(now().getTime() / minuteMs) * minuteMs;
-    const [use] = await drizzle(c.env.DB)
-      .insert(uploadUses)
-      .values({ userId: c.var.auth.user.id, windowStart: minute, count: 1 })
-      .onConflictDoUpdate({
-        target: uploadUses.userId,
-        set: {
-          count: sql`case when ${uploadUses.windowStart} = excluded.window_start then ${uploadUses.count} + 1 else 1 end`,
-          windowStart: sql`excluded.window_start`,
-        },
-      })
-      .returning({ count: uploadUses.count });
-    if ((use?.count ?? 0) > uploadRequestsPerMinute) {
+    if (!(await countUploads(drizzle(c.env.DB), c.var.auth.user.id, now()))) {
       throw new HTTPException(429, {
         message:
           "pigy was sent more of images than it takes in a minute. The upload goes on in a moment.",

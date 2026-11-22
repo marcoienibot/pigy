@@ -106,6 +106,12 @@ export type AppDependencies = {
    * build passes one: see src/simulated-push.ts.
    */
   simulatedPush: SimulatedPush | undefined;
+  /**
+   * How long the way to an image at an address that a request of the
+   * public API names may take, in milliseconds: `assetLimits.timeoutMs`
+   * of @pigy/core/api unless a test says otherwise.
+   */
+  assetTimeoutMs?: number | undefined;
 };
 
 /** Who is making the request. */

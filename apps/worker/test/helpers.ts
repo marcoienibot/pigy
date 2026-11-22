@@ -151,6 +151,11 @@ export function setup(
     /** The same between the app and the push services of the browsers. */
     interceptPush?: (push: Fetch) => Fetch;
     /**
+     * How long the way to an image at an address may take, for a test of
+     * one that never arrives: `assetLimits.timeoutMs` otherwise.
+     */
+    assetTimeoutMs?: number;
+    /**
      * Counts the requests of the keys of the public API in place of the
      * limiter of the local runtime, for a test that is about the limit.
      */
@@ -278,6 +283,7 @@ export function setup(
     // The simulated push service of the build for the end-to-end tests
     // is not what the tests here go through: theirs is behind `fetch`.
     simulatedPush: undefined,
+    assetTimeoutMs: options.assetTimeoutMs,
   });
   const secrets = {
     ADMIN_EMAILS: adminEmail,

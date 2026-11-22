@@ -1,10 +1,19 @@
-import { type ApiScope, idSchema } from "@pigy/core";
+import {
+  type ApiScope,
+  chunksOf,
+  idSchema,
+  maxImageBytes,
+  maxUploadChunks,
+  uploadChunks,
+} from "@pigy/core";
 import {
   type ApiOperation,
   type ApiOperationName,
   apiOperations,
   apiRateLimit,
   apiTime,
+  assetLimits,
+  type CreatePostRequest,
   createPostRequestSchema,
   idempotencyKeySchema,
   listPostsQuerySchema,
@@ -12,6 +21,7 @@ import {
   movePostRequestSchema,
   openApiDocument,
   putPostingScheduleRequestSchema,
+  type UpdatePostRequest,
   updatePostRequestSchema,
 } from "@pigy/core/api";
 import { drizzle } from "drizzle-orm/d1";
@@ -22,11 +32,24 @@ import type { z } from "zod";
 import { readAdminEmails } from "../auth/config.ts";
 import { sha256Hex } from "../digest.ts";
 import type { AppDependencies, Bindings } from "../env.ts";
-import { InvalidField, parseInput } from "../errors.ts";
-import type { ApiCall } from "../workspace/api.ts";
+import { InvalidField, parseInput, routeOf } from "../errors.ts";
+import { log } from "../log.ts";
+import { imagesTransformer } from "../media/transform.ts";
+import { countUploads } from "../media/uses.ts";
+import { reachOf } from "../network/reach.ts";
+import type { ApiAnswer, ApiCall, TakenImages } from "../workspace/api.ts";
 import { callWorkspaceApi } from "../workspace/workspaces.ts";
 import { docsPage } from "./docs.ts";
 import { type ApiKeyAuth, verifyApiKey } from "./keys.ts";
+import {
+  addressesOf,
+  dropImages,
+  FileRefused,
+  type Intake,
+  keepImages,
+  takeAddresses,
+  takeFile,
+} from "./media.ts";
 
 /**
  * The public API, under `/api/v1`. `@pigy/core` has its routes and their
@@ -150,23 +173,16 @@ function idOf(c: ApiContext, what: string, name = "id"): string {
 
 /**
  * Refuses what the schemas of a post cannot say: which of `mode`, `dueAt`
- * and `saveToDraft` go together, and that there are no images yet.
+ * and `saveToDraft` go together.
  */
 function checkSharing(
   body: {
     mode?: string | undefined;
     dueAt?: string | undefined;
     saveToDraft?: boolean | undefined;
-    assets?: unknown[] | undefined;
   },
   modeRequired: boolean,
 ): void {
-  if (body.assets && body.assets.length > 0) {
-    throw new InvalidField(
-      "assets",
-      "assets: Images are not available yet: they come with a later version",
-    );
-  }
   if (modeRequired && !body.saveToDraft && body.mode === undefined) {
     throw new InvalidField(
       "mode",
@@ -204,8 +220,77 @@ function postsQuery(c: ApiContext) {
   );
 }
 
-/** What a route makes of a request: the call into the workspace. */
-type CallOf = (c: ApiContext, body: string) => ApiCall;
+/**
+ * What a route makes of a request: the call into the workspace, and the
+ * images that it has put into the bucket for it, which the call makes the
+ * rows of.
+ */
+type CallOf = (
+  c: ApiContext,
+  body: string,
+  dependencies: AppDependencies,
+) => ApiCall | Promise<{ call: ApiCall; images: TakenImages }>;
+
+/**
+ * The call of a post, with the images that its assets name by their
+ * addresses fetched and taken in before: the workspace is not asked
+ * while the files are on their way. The `fetch` is that of the workspace,
+ * `reachOf`: a sandbox fetches from its simulated web, and from nowhere
+ * else.
+ */
+function withImages(
+  c: ApiContext,
+  { fetch, now, assetTimeoutMs = assetLimits.timeoutMs }: AppDependencies,
+  body: CreatePostRequest | UpdatePostRequest,
+  call: (images: TakenImages | undefined) => ApiCall,
+): ApiCall | Promise<{ call: ApiCall; images: TakenImages }> {
+  const named = new Set(addressesOf(body).map(({ url }) => url));
+  if (named.size === 0) return call(undefined);
+  return (async () => {
+    const at = now();
+    // Counted before anything is fetched, each as the largest file that
+    // the app would upload: what a file has is known when it is there.
+    await countedUploads(
+      c,
+      at,
+      Math.min(named.size, assetLimits.perRequest + 1) * (maxUploadChunks + 2),
+    );
+    const images = await takeAddresses(
+      intakeOf(c, at),
+      reachOf(c.var.api.workspace, c.env, fetch).fetch,
+      body,
+      { ...assetLimits, timeoutMs: assetTimeoutMs },
+      [new URL(c.req.url).host],
+    );
+    return { call: call(images), images };
+  })();
+}
+
+/** What the routes take an image in with, for the workspace of the key. */
+function intakeOf(c: ApiContext, now: Date): Intake {
+  return {
+    bucket: c.env.MEDIA,
+    transformer: imagesTransformer(c.env.IMAGES),
+    workspaceId: c.var.api.workspace.id,
+    now,
+  };
+}
+
+/**
+ * Counts what the person whose key it is uploads, `weight` requests of
+ * the app's, and refuses beyond what they may in a minute: the API and
+ * the app share it.
+ */
+async function countedUploads(c: ApiContext, now: Date, weight: number) {
+  if (await countUploads(drizzle(c.env.DB), c.var.api.owner.id, now, weight)) {
+    return;
+  }
+  c.header("Retry-After", String(apiRateLimit.periodSeconds));
+  throw new HTTPException(429, {
+    message:
+      "This person has uploaded more images in the last minute than pigy takes, in the app and with their API keys together. Try again later.",
+  });
+}
 
 /**
  * The routes that do their work in the workspace of the key, by the name
@@ -222,16 +307,25 @@ const workspaceRoutes = {
     id: idOf(c, "post"),
     channelId: idOf(c, "channel", "channelId"),
   }),
-  createPost: (_, text) => {
+  createPost: (c, text, dependencies) => {
     const body = parseBody(text, createPostRequestSchema);
     checkSharing(body, true);
-    return { op: "createPost", body };
+    return withImages(c, dependencies, body, (images) => ({
+      op: "createPost",
+      body,
+      images,
+    }));
   },
-  updatePost: (c, text) => {
+  updatePost: (c, text, dependencies) => {
     const id = idOf(c, "post");
     const body = parseBody(text, updatePostRequestSchema);
     checkSharing(body, false);
-    return { op: "updatePost", id, body };
+    return withImages(c, dependencies, body, (images) => ({
+      op: "updatePost",
+      id,
+      body,
+      images,
+    }));
   },
   deletePost: (c) => ({ op: "deletePost", id: idOf(c, "post") }),
   movePost: (c, text) => ({
@@ -266,18 +360,8 @@ const ownRoutes = {
       }),
     );
   },
-  // Not thrown: it is no failure of pigy's, and nothing for the log.
-  uploadMedia: (c) =>
-    c.json(
-      apiOperations.uploadMedia.response.parse({
-        error: "UnexpectedError",
-        message:
-          "Uploading media is not available yet: images come with a later version",
-      }),
-      501,
-    ),
 } satisfies Record<
-  Exclude<ApiOperationName, keyof typeof workspaceRoutes>,
+  Exclude<ApiOperationName, keyof typeof workspaceRoutes | "uploadMedia">,
   (c: ApiContext) => Response
 >;
 
@@ -339,42 +423,166 @@ export function apiRoutes(dependencies: AppDependencies): Hono<ApiEnv> {
       await next();
     };
 
+  /**
+   * Carries `call` out in the workspace of the key, and answers as the
+   * workspace says. `images` are what the request has put into the
+   * bucket for the call: what the rows of a call that was carried out
+   * need of them is kept, and all of them go when it was refused or was
+   * a repeat, whose rows were made by the request before. Nothing goes
+   * when the workspace could not be asked or its answer was lost: the
+   * change may have been made.
+   */
+  const answered = async (
+    c: ApiContext,
+    operation: ApiOperation,
+    call: ApiCall,
+    repeat: { key: string; fingerprint: string } | undefined,
+    images: readonly string[],
+  ) => {
+    const { workspace } = c.var.api;
+    const answer: ApiAnswer = await callWorkspaceApi(
+      c.env.WORKSPACE,
+      workspace,
+      call,
+      repeat,
+    );
+    if (images.length > 0) {
+      const made = answer.ok && !answer.replayed;
+      // For the log, read while the request is at its route.
+      const where = { route: routeOf(c), workspaceId: workspace.id };
+      c.executionCtx.waitUntil(
+        (made ? keepImages : dropImages)(
+          c.env.MEDIA,
+          workspace.id,
+          images,
+        ).catch((error) => {
+          log.error(
+            "media",
+            "What the bucket had of an image of the API was not deleted",
+            where,
+            error,
+          );
+        }),
+      );
+    }
+    // What the call was answered with before, said again: it was not
+    // carried out now.
+    if (answer.replayed) c.header("Idempotent-Replayed", "true");
+    if (!answer.ok) {
+      const status = answer.status as ContentfulStatusCode;
+      throw answer.field === undefined
+        ? new HTTPException(status, { message: answer.message })
+        : new InvalidField(answer.field, answer.message, status);
+    }
+    return operation.response === null
+      ? c.body(null, 204)
+      : c.json(
+          operation.response.parse(answer.body),
+          answer.status as ContentfulStatusCode,
+        );
+  };
+
   const inWorkspace =
     (operation: ApiOperation, callOf: CallOf) => async (c: ApiContext) => {
       const text = operation.request ? await bodyText(c) : "";
-      const call = callOf(c, text);
-      const answer = await callWorkspaceApi(
-        c.env.WORKSPACE,
-        c.var.api.workspace,
-        call,
-        operation.method === "get" ? undefined : await repeatOf(c, text),
-      );
-      // What the call was answered with before, said again: it was not
-      // carried out now.
-      if (answer.replayed) c.header("Idempotent-Replayed", "true");
-      if (!answer.ok) {
-        const status = answer.status as ContentfulStatusCode;
-        throw answer.field === undefined
-          ? new HTTPException(status, { message: answer.message })
-          : new InvalidField(answer.field, answer.message, status);
-      }
-      return operation.response === null
-        ? c.body(null, 204)
-        : c.json(
-            operation.response.parse(answer.body),
-            answer.status as ContentfulStatusCode,
+      const prepared = await callOf(c, text, dependencies);
+      const { call, images } =
+        "op" in prepared ? { call: prepared, images: undefined } : prepared;
+      let repeat: Awaited<ReturnType<typeof repeatOf>>;
+      try {
+        repeat =
+          operation.method === "get" ? undefined : await repeatOf(c, text);
+      } catch (error) {
+        if (images) {
+          await dropImages(
+            c.env.MEDIA,
+            c.var.api.workspace.id,
+            images.taken.map(({ id }) => id),
           );
+        }
+        throw error;
+      }
+      return answered(
+        c,
+        operation,
+        call,
+        repeat,
+        images?.taken.map(({ id }) => id) ?? [],
+      );
     };
+
+  /**
+   * `POST /media`: the body is the file. It is written into the bucket as
+   * it comes and read there, `takeFile`, and only then is the workspace
+   * asked to make its row. The file is whole in one request, so that
+   * repeating the request is the way to go on after a broken connection,
+   * with the same `Idempotency-Key`: a script has its file, where a page
+   * on a phone has to take it up again in chunks, as the app does.
+   */
+  const uploadMedia = async (c: ApiContext) => {
+    const at = now();
+    const declared = c.req.header("Content-Length");
+    if (declared !== undefined && Number(declared) > maxImageBytes) {
+      throw new HTTPException(413, {
+        message: `The file is larger than ${maxImageBytes / 1024 / 1024} MiB.`,
+      });
+    }
+    // A key that is refused is refused before the file is read.
+    const header = c.req.header("Idempotency-Key");
+    if (
+      header !== undefined &&
+      !idempotencyKeySchema.safeParse(header).success
+    ) {
+      await repeatOf(c, "");
+    }
+    await countedUploads(
+      c,
+      at,
+      (declared === undefined
+        ? maxUploadChunks
+        : uploadChunks(Number(declared))) + 2,
+    );
+    const body = c.req.raw.body;
+    // The request is told by the digest of its file, for its repeats.
+    const digest = new crypto.DigestStream("SHA-256");
+    const hashing = digest.getWriter();
+    let image: Awaited<ReturnType<typeof takeFile>>;
+    try {
+      image = await takeFile(intakeOf(c, at), async (write) => {
+        if (!body) return;
+        for await (const piece of chunksOf(body)) {
+          await hashing.write(piece);
+          await write(piece);
+        }
+      });
+    } catch (error) {
+      if (!(error instanceof FileRefused)) throw error;
+      throw new HTTPException(error.status, { message: error.message });
+    }
+    await hashing.close();
+    const hex = [...new Uint8Array(await digest.digest)]
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+    return answered(
+      c,
+      apiOperations.uploadMedia,
+      { op: "createMedia", image },
+      await repeatOf(c, `SHA-256 ${hex}`),
+      [image.id],
+    );
+  };
 
   for (const name of Object.keys(apiOperations) as ApiOperationName[]) {
     const operation: ApiOperation = apiOperations[name];
     const handler =
-      name in workspaceRoutes
-        ? inWorkspace(
-            operation,
-            workspaceRoutes[name as keyof typeof workspaceRoutes],
-          )
-        : ownRoutes[name as keyof typeof ownRoutes];
+      name === "uploadMedia"
+        ? uploadMedia
+        : name in workspaceRoutes
+          ? inWorkspace(
+              operation,
+              workspaceRoutes[name as keyof typeof workspaceRoutes],
+            )
+          : ownRoutes[name as keyof typeof ownRoutes];
     app.on(
       operation.method.toUpperCase(),
       operation.path.replace(/\{(\w+)\}/g, ":$1"),

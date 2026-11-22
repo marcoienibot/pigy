@@ -1,13 +1,17 @@
 import { z } from "zod";
 import { errorResponseSchema } from "../error.ts";
 import { idSchema } from "../id.ts";
+import { imageTypes, maxImageBytes, maxImagePixels } from "../media/image.ts";
 import { type Network, networkSchema, networks } from "../network/network.ts";
 import {
   channelStatusSchema,
+  maxAltLength,
+  maxImagesPerPart,
   maxParts,
   maxPartTextLength,
   maxSlots,
   maxTimeZoneLength,
+  mediaStatusSchema,
   postStatusSchema,
   targetStatusSchema,
 } from "../sync/tables.ts";
@@ -36,10 +40,19 @@ export const apiBasePath = "/api/v1";
 export const maxApiBodyBytes = 256 * 1024;
 
 /**
- * How many characters of the texts of posts one answer carries at most.
- * It bounds an answer whatever is in the workspace: a post says its own
- * text once, and the text of a channel only where the channel has one of
- * its own, but a post can have fifty channels with a long text each.
+ * What an image of a part counts for in the budget of an answer,
+ * `maxApiAnswerTextLength`, besides its description: about as many
+ * characters as the rest of its entry in `assets` takes.
+ */
+export const apiImageWeight = 100;
+
+/**
+ * How many characters of the texts of posts one answer carries at most,
+ * with the descriptions of their images, each image counting
+ * `apiImageWeight` more. It bounds an answer whatever is in the
+ * workspace: a post says its own text once, and the text of a channel
+ * only where the channel has one of its own, but a post can have fifty
+ * channels with a long text each.
  *
  * - A page of posts ends before the post that would take it past this,
  *   and has one post at least.
@@ -48,13 +61,16 @@ export const maxApiBodyBytes = 256 * 1024;
  *   the text out, `textOmitted`, and never only null, which is what a
  *   channel without a text of its own says: an answer that lacks
  *   something says so. The text of the post itself, at most `maxParts`
- *   parts of `maxPartTextLength` characters, always has room.
+ *   parts of `maxPartTextLength` characters with `maxImagesPerPart`
+ *   images each, always has room.
  * - What was left out is read with `getPostTarget`, one channel at a
- *   time. The text of one channel always has room: it is at most
- *   `maxParts` parts of `maxPartTextLength` characters too, by the
- *   mutators that write it, which is this budget and no more.
+ *   time. The text of one channel always has room: it is at most as
+ *   much as the post's own, by the mutators that write it, which is this
+ *   budget and no more.
  */
-export const maxApiAnswerTextLength = 1_000_000;
+export const maxApiAnswerTextLength =
+  maxParts *
+  (maxPartTextLength + maxImagesPerPart * (maxAltLength + apiImageWeight));
 
 /**
  * The names of the schemas that the OpenAPI document lists by name. Each
@@ -72,6 +88,9 @@ function named<Schema extends z.ZodType>(
   z.globalRegistry.add(schema, { id, description });
   return schema;
 }
+
+/** How many pixels an image has at most, in words. */
+const maxImagePixelsWords = `${maxImagePixels / 1_000_000} million pixels`;
 
 /** A moment as the API says it: ISO 8601, in UTC. */
 const timeSchema = z.iso.datetime();
@@ -128,23 +147,77 @@ export type ApiMode = z.infer<typeof apiModeSchema>;
 
 const partTextSchema = z.string().max(maxPartTextLength);
 
-/** One further part of a thread. */
-const threadPartSchema = named(
-  "ThreadPart",
-  "One part of a thread after the first.",
-  z.strictObject({ text: partTextSchema }),
+/** The longest address of an image that a request names. */
+export const maxAssetUrlLength = 2048;
+
+/**
+ * How the server fetches the images at the addresses that a request
+ * names, `image.url` of an asset: PLAN.md section 12, "Images".
+ */
+export const assetLimits = {
+  /** How long the whole way to one file may take, its bytes included. */
+  timeoutMs: 30_000,
+  /** How often the request for a file may be sent on. */
+  hops: 3,
+  /** How many files are fetched at a time. */
+  atOnce: 4,
+  /** How many addresses one request may name. */
+  perRequest: 20,
+} as const;
+
+/**
+ * An image of a part as a request names it: one that was uploaded with
+ * `POST /media`, by its ID, or one at an address, which the server
+ * fetches while it takes the request. The shape is Buffer's, with
+ * `mediaId` as what Buffer does not have.
+ */
+const assetInputSchema = named(
+  "AssetInput",
+  `An image of a part: \`image.mediaId\`, the \`id\` of an image uploaded with \`POST /media\`, or \`image.url\`, the address of one, never both. pigy fetches an address while it takes the request, and refuses the request if it cannot: the address has to be HTTPS, at a public host, and lead to the file itself, or send pigy on ${assetLimits.hops} times at most, and the file has to arrive within ${assetLimits.timeoutMs / 1000} seconds, be ${maxImageBytes / 1024 / 1024} MiB at most and be a JPEG, a PNG, a WebP or a GIF, by its bytes and whatever its address or its answer says. \`metadata.altText\` describes the image for whoever cannot see it.`,
+  z.strictObject({
+    image: z
+      .strictObject({
+        mediaId: idSchema.optional(),
+        url: z.string().min(1).max(maxAssetUrlLength).optional(),
+        metadata: z
+          .strictObject({
+            altText: z.string().max(maxAltLength).optional(),
+          })
+          .optional(),
+      })
+      .refine(
+        (image) => (image.mediaId === undefined) !== (image.url === undefined),
+        "Name an image by mediaId or by url, and not by both",
+      ),
+  }),
 );
 
-const threadSchema = z.array(threadPartSchema).max(maxParts - 1);
+export type AssetInput = z.infer<typeof assetInputSchema>;
+
+/** The images of one part, as a request names them. */
+const assetsInputSchema = z.array(assetInputSchema).max(maxImagesPerPart);
+
+/** One further part of a thread, as a request says it. */
+const threadPartInputSchema = named(
+  "ThreadPartInput",
+  "One part of a thread after the first. `assets` are its images: in a new part none when left out, and in a part that a change of a post keeps, the ones that it has.",
+  z.strictObject({
+    text: partTextSchema,
+    assets: assetsInputSchema.optional(),
+  }),
+);
+
+const threadSchema = z.array(threadPartInputSchema).max(maxParts - 1);
 
 /**
  * A text that the channels of one service get in place of the post's own.
  */
 const serviceTextSchema = named(
   "ServiceText",
-  "A text that the chosen channels of one service get in place of the post's own. `text` is its first part and is the post's `text` when left out. `thread` has its further parts, and none when left out: the thread of the post is not taken over.",
+  "A text that the chosen channels of one service get in place of the post's own. `text` is its first part and is the post's `text` when left out, and `assets` are the images of that part, the post's own when left out. `thread` has its further parts, and none when left out: the thread of the post is not taken over.",
   z.strictObject({
     text: partTextSchema.optional(),
+    assets: assetsInputSchema.optional(),
     thread: threadSchema.optional(),
   }),
 );
@@ -182,11 +255,10 @@ const channelIdsSchema = z
     "A channel is listed twice",
   );
 
-const assetsSchema = z
-  .array(z.unknown())
+const assetsSchema = assetsInputSchema
   .optional()
   .describe(
-    "Not available yet: images come with a later version. A request with assets is refused.",
+    `The images of the text, or of the first part of a thread: ${maxImagesPerPart} at most.`,
   );
 
 export const createPostRequestSchema = named(
@@ -254,6 +326,28 @@ export const movePostRequestSchema = named(
 
 export type MovePostRequest = z.infer<typeof movePostRequestSchema>;
 
+/** An image of a part, as an answer says it. */
+const apiAssetSchema = named(
+  "Asset",
+  "An image of a part. `image.mediaId` names it, and can be passed as it is in a request that changes the post. `status` is `ready` once the server has the image, `uploading` while an image that was attached in the app is on its way, and `failed` for one that the server did not take: a post with an image that is not `ready` does not go out.",
+  z.strictObject({
+    image: z.strictObject({
+      mediaId: idSchema,
+      status: mediaStatusSchema,
+      metadata: z.strictObject({ altText: z.string() }),
+    }),
+  }),
+);
+
+export type ApiAsset = z.infer<typeof apiAssetSchema>;
+
+/** One further part of a thread, as an answer says it. */
+const threadPartSchema = named(
+  "ThreadPart",
+  "One part of a thread after the first, with its images.",
+  z.strictObject({ text: z.string(), assets: z.array(apiAssetSchema) }),
+);
+
 export const apiTargetSchema = named(
   "Target",
   "The delivery of a post to one channel.",
@@ -269,7 +363,13 @@ export const apiTargetSchema = named(
       .string()
       .nullable()
       .describe(
-        "The first part of the text that the channel has of its own. Null if it has none: it gets the text of the post, `text` and `metadata.thread` of the post. Also null where `textOmitted` is true.",
+        "The first part of the text that the channel has of its own. Null if it has none: it gets the text of the post, `text`, `assets` and `metadata.thread` of the post. Also null where `textOmitted` is true.",
+      ),
+    assets: z
+      .array(apiAssetSchema)
+      .nullable()
+      .describe(
+        "The images of the first part of the text that the channel has of its own. Null wherever `text` is.",
       ),
     thread: z
       .array(threadPartSchema)
@@ -283,7 +383,7 @@ export const apiTargetSchema = named(
     textOmitted: z
       .boolean()
       .describe(
-        `True if the channel has a text of its own that this answer leaves out: \`text\` and \`thread\` are null, and are not what the channel gets. An answer carries at most ${maxApiAnswerTextLength} characters of texts, and a post says the texts of its channels for as long as there is room. Read the text that was left out with \`GET /posts/{id}/targets/{channelId}\`, which leaves nothing out.`,
+        `True if the channel has a text of its own that this answer leaves out: \`text\`, \`assets\` and \`thread\` are null, and are not what the channel gets. An answer carries at most ${maxApiAnswerTextLength} characters of texts and descriptions of images, and a post says the texts of its channels for as long as there is room. Read the text that was left out with \`GET /posts/{id}/targets/{channelId}\`, which leaves nothing out.`,
       ),
     link: z
       .string()
@@ -317,6 +417,9 @@ export const apiPostSchema = named(
       "`error` if the deliveries ended differently: `targets` says which arrived.",
     ),
     text: z.string(),
+    assets: z
+      .array(apiAssetSchema)
+      .describe("The images of the text, or of the first part of a thread."),
     metadata: z.strictObject({ thread: z.array(threadPartSchema) }),
     channelIds: z.array(idSchema),
     mode: apiModeSchema
@@ -378,7 +481,7 @@ export type ListPostsQuery = z.infer<typeof listPostsQuerySchema>;
 
 export const apiPostListSchema = named(
   "PostList",
-  `A page of posts, the newest first. It can have fewer posts than \`first\` asked for, because an answer carries at most ${maxApiAnswerTextLength} characters of texts: \`hasNextPage\` says whether more follow.`,
+  `A page of posts, the newest first. It can have fewer posts than \`first\` asked for, because an answer carries at most ${maxApiAnswerTextLength} characters of texts and descriptions of images: \`hasNextPage\` says whether more follow.`,
   z.strictObject({
     posts: z.array(apiPostSchema),
     pageInfo: z.strictObject({
@@ -451,6 +554,34 @@ export const apiAccountSchema = named(
 );
 
 export type ApiAccount = z.infer<typeof apiAccountSchema>;
+
+export const apiMediaSchema = named(
+  "Media",
+  "An image that the server has taken: what it read in the bytes, and the copy that it keeps, without what a camera wrote next to the picture. Put it into a post with its `id`, as `image.mediaId` of an asset. An image that is in no post is deleted a day after it was uploaded.",
+  z.strictObject({
+    id: idSchema,
+    status: mediaStatusSchema.describe(
+      "`ready`: the server has the image. The server answers for no other.",
+    ),
+    type: z.enum(imageTypes).describe("Read from the bytes of the file."),
+    size: z
+      .number()
+      .int()
+      .describe(
+        "In bytes, of the copy that the server keeps and publishes, which can be smaller than the file.",
+      ),
+    width: z.number().int().describe("In pixels, as the picture is shown."),
+    height: z.number().int(),
+    animated: z
+      .boolean()
+      .describe(
+        "Whether the picture moves: a GIF of several frames, for one. It goes out as a still picture where a network shows none that moves.",
+      ),
+    createdAt: timeSchema,
+  }),
+);
+
+export type ApiMedia = z.infer<typeof apiMediaSchema>;
 
 /** The days of the week as the API names them, Sunday first. */
 export const apiDays = [
@@ -527,16 +658,19 @@ export type ApiOperation = {
   /** What the query may hold. */
   query?: z.ZodObject;
   /**
-   * The body, for a route that takes one. Every route that is not a GET
-   * takes `Idempotency-Key`, with a body or without.
+   * The body, for a route that takes one as JSON. Every route that is not
+   * a GET takes `Idempotency-Key`, with a body or without.
    */
   request?: z.ZodType;
+  /**
+   * For a route whose body is the bytes of a file, and not JSON: the
+   * types of file that it takes, by their bytes, and how many bytes.
+   */
+  upload?: { types: readonly string[]; maxBytes: number };
   /** The status of a success. */
   status: number;
   /** The body of a success, or null where it has none. */
   response: z.ZodType | null;
-  /** False for a route that only says that it is not there yet. */
-  available?: false;
 };
 
 /** Every route of the API, by the name that the OpenAPI document has for it. */
@@ -657,13 +791,12 @@ export const apiOperations = {
   uploadMedia: {
     method: "post",
     path: "/media",
-    summary: "Upload media",
-    description:
-      "Not available yet: images come with a later version. Every request is answered with a 501.",
-    scope: null,
-    status: 501,
-    response: apiErrorSchema,
-    available: false,
+    summary: "Upload an image",
+    description: `The body is the file itself, as it is, ${maxImageBytes / 1024 / 1024} MiB at most: \`curl --data-binary @photo.jpg\`. What it is, is read from its bytes, and neither its \`Content-Type\` nor its name counts: a JPEG, a PNG, a WebP or a GIF, of ${maxImagePixelsWords} at most. The server keeps a copy without what a camera wrote next to the picture, such as where and when it was taken, and answers when it has it: the image is \`ready\` then, and goes into a post as \`image.mediaId\` of an asset. A file that is no such image, or that cannot be drawn, is refused with a 400. One request carries the whole file: send it again with the same \`Idempotency-Key\` if the connection breaks. Every request counts as many times against the uploads of the owner of the key, which the app shares, as the 5 MiB that it takes in. An image that is in no post a day after it was uploaded is deleted.`,
+    scope: "media:write",
+    upload: { types: imageTypes, maxBytes: maxImageBytes },
+    status: 201,
+    response: apiMediaSchema,
   },
 } as const satisfies Record<string, ApiOperation>;
 

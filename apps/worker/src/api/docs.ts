@@ -110,6 +110,20 @@ const jsonSchemaOf = (content: Json | undefined) =>
     "schema",
   );
 
+/**
+ * What a route takes as its body: a shape of JSON, or the bytes of a file,
+ * which the document says with the types that they may be of.
+ */
+function bodyOf(body: JsonObject): string {
+  const content = objectAt(body, "content");
+  if (isObject(content["application/json"])) {
+    return typeOf(jsonSchemaOf(body));
+  }
+  return `${inline(textOf(body.description))} ${Object.keys(content)
+    .map((type) => `<code>${escaped(type)}</code>`)
+    .join(", ")}`;
+}
+
 function operationSection(method: string, path: string, operation: JsonObject) {
   const parameters = Array.isArray(operation.parameters)
     ? operation.parameters.filter(isObject)
@@ -136,7 +150,7 @@ ${parameters
 }
 ${
   isObject(operation.requestBody)
-    ? `<p>Body: ${typeOf(jsonSchemaOf(operation.requestBody))}</p>`
+    ? `<p>Body: ${bodyOf(operation.requestBody)}</p>`
     : ""
 }
 <p>Answers: ${Object.entries(responses)

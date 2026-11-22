@@ -202,7 +202,12 @@ test("keeps the keys of the two workspaces apart, and a new key off the screen o
   await page
     .getByRole("textbox", { name: "Name of the new key" })
     .fill("Reader");
-  for (const scope of ["Read posts", "Create, change", "Read the connected"]) {
+  for (const scope of [
+    "Read posts",
+    "Create, change",
+    "Read the connected",
+    "Upload images",
+  ]) {
     await page.getByRole("checkbox", { name: new RegExp(scope) }).uncheck();
   }
   await page.getByRole("button", { name: "Create key" }).click();

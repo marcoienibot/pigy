@@ -6,12 +6,12 @@ import { dayOf, whenAgo } from "@/lib/time";
  */
 
 /** What each scope that a key can be given lets it do, in words. */
-export const scopeLabels: {
-  readonly [Scope in Exclude<ApiScope, "media:write">]: string;
-} = {
+export const scopeLabels: { readonly [Scope in ApiScope]: string } = {
   "posts:read": "Read posts and the posting schedule",
-  "posts:write": "Create, change and delete posts, and set the schedule",
+  "posts:write":
+    "Create, change and delete posts, with images at an address, and set the schedule",
   "channels:read": "Read the connected accounts",
+  "media:write": "Upload images",
 };
 
 const day = 24 * 60 * 60 * 1000;

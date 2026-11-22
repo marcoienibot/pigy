@@ -130,7 +130,7 @@ describe.each(["live", "sandbox"] as const)(
         apiKey: {
           id: expect.stringMatching(/^[0-9a-f]{16}$/),
           name: "A script",
-          scopes: ["posts:read", "posts:write", "channels:read"],
+          scopes: ["posts:read", "posts:write", "channels:read", "media:write"],
           expiresAt: null,
         },
       });
@@ -194,6 +194,7 @@ describe.each(["live", "sandbox"] as const)(
           status: "sent",
           // It got the text of the post, which the post says.
           text: null,
+          assets: null,
           thread: null,
           customized: false,
           textOmitted: false,
@@ -260,7 +261,10 @@ describe.each(["live", "sandbox"] as const)(
         metadata: { thread: [{ text: "Two" }, { text: "Three" }] },
       });
       expect(thread.metadata).toEqual({
-        thread: [{ text: "Two" }, { text: "Three" }],
+        thread: [
+          { text: "Two", assets: [] },
+          { text: "Three", assets: [] },
+        ],
       });
       expect((await api.ended(thread.id)).status).toBe("sent");
       expect(await published(context, environment)).toEqual([
@@ -494,20 +498,15 @@ it("refuses a request that says how to share a post in a way that makes no sense
       schedulingType: "automatic",
     }),
   ).toMatchObject({ error: "InvalidInputError" });
-  // Images are not there yet, in a post and by themselves.
+  // An image that is not in the shape of an asset, `{ image: { url } }`,
+  // is refused, and fetched from nowhere.
   expect(
     await create({
       text: "Hello",
       saveToDraft: true,
       assets: [{ url: "https://example.com/cat.png", altText: "A cat" }],
     }),
-  ).toMatchObject({ field: "assets" });
-  expect(
-    await api.refused("/media", { method: "POST", json: {} }, 501),
-  ).toMatchObject({
-    error: "UnexpectedError",
-    message: expect.stringContaining("not available yet"),
-  });
+  ).toMatchObject({ field: expect.stringMatching(/^assets\.0/) });
   expect((await listOf(api)).posts).toEqual([]);
 });
 

@@ -1,10 +1,18 @@
 import { z } from "zod";
+import { maxImageBytes } from "../media/image.ts";
+import {
+  maxWorkspaceMediaBytes,
+  uploadRequestsPerMinute,
+} from "../media/upload.ts";
+import { maxImagesPerPart } from "../sync/tables.ts";
 import {
   type ApiOperation,
   apiBasePath,
+  apiImageWeight,
   apiOperations,
   apiPostSchema,
   apiSchemaNames,
+  assetLimits,
   maxApiAnswerTextLength,
   maxApiBodyBytes,
 } from "./v1.ts";
@@ -36,13 +44,15 @@ const introduction = `The API of pigy does what the app does: it writes posts, s
 
 **For servers and scripts.** The API sends no CORS headers and answers no preflight, so a page in a browser cannot call it from another site: a key is a secret, and a page has no place to keep one. Call it from a server or a command line.
 
-**Limits.** A key may make ${apiRateLimit.limit} requests a minute. Beyond that the answer is a 429 with \`Retry-After\`. A body is at most ${maxApiBodyBytes / 1024} KiB. An answer carries at most ${maxApiAnswerTextLength} characters of the texts of posts: a page of posts ends before the post that would take it past that, and one post leaves out the texts that its channels have of their own once there is no room for more. An entry of \`targets\` whose text was left out says so with \`textOmitted\`, and \`GET /posts/{id}/targets/{channelId}\` has it in full.
+**Images.** A part of a post has up to ${maxImagesPerPart} images, in \`assets\`: the post's \`assets\` for its first part, and \`assets\` of a part of \`metadata.thread\` for that one. Name an image by its address, \`{ "image": { "url": "https://…", "metadata": { "altText": "…" } } }\`, as in Buffer, and pigy fetches it while it takes the request: an address that it cannot read, or a file that is no image, is refused with a 400 that names the field, and nothing of the request is carried out. Or upload the file first, with \`POST /media\`, and name it by the \`id\` of the answer, \`{ "image": { "mediaId": "…" } }\`: for a file that is not on the web, or one that several posts share. Either way the server keeps a copy of the image without what a camera wrote next to the picture, and makes a smaller one for a network that takes no larger, when the post goes out. A post with images does not go to LinkedIn or Threads yet: it is refused like a text that is too long for a channel.
+
+**Limits.** A key may make ${apiRateLimit.limit} requests a minute. Beyond that the answer is a 429 with \`Retry-After\`. A body is at most ${maxApiBodyBytes / 1024} KiB, and the file of \`POST /media\` ${maxImageBytes / 1024 / 1024} MiB. A request names ${assetLimits.perRequest} addresses of images at most. The uploads of a person, in the app and with every key of theirs, are ${uploadRequestsPerMinute} requests of 5 MiB a minute, and the images of a workspace ${maxWorkspaceMediaBytes / 1024 / 1024 / 1024} GiB. An answer carries at most ${maxApiAnswerTextLength} characters of the texts of posts and of the descriptions of their images, each image counting ${apiImageWeight} more: a page of posts ends before the post that would take it past that, and one post leaves out the texts that its channels have of their own once there is no room for more. An entry of \`targets\` whose text was left out says so with \`textOmitted\`, and \`GET /posts/{id}/targets/{channelId}\` has it in full.
 
 **Times** are ISO 8601, in UTC in every answer, and in the year 9999 at the latest.
 
 **Pages.** A list is answered a page at a time, with \`pageInfo\`: pass its \`endCursor\` as \`after\` for the next page while \`hasNextPage\` is true. A page can have fewer posts than were asked for.
 
-**Not there yet.** Images: \`POST /media\` and \`assets\` are refused. Engagement: \`metrics\` is null.`;
+**Not there yet.** Video. Engagement: \`metrics\` is null.`;
 
 /** The schemas that have a name, as JSON Schema, by their names. */
 function namedSchemas(): { [name: string]: JsonObject } {
@@ -118,9 +128,10 @@ function operationOf(name: string, operation: ApiOperation): JsonObject {
       };
     },
   );
-  const hasBody = operation.request !== undefined;
+  const hasBody =
+    operation.request !== undefined || operation.upload !== undefined;
   // What changes something can be named, to be carried out once.
-  const writes = operation.method !== "get" && operation.available !== false;
+  const writes = operation.method !== "get";
   const parameters = [
     ...pathParameters,
     ...queryParameters,
@@ -141,8 +152,7 @@ function operationOf(name: string, operation: ApiOperation): JsonObject {
     operation.response === null
       ? { description: "Done" }
       : {
-          description:
-            operation.available === false ? "Not available yet" : "Success",
+          description: "Success",
           content: {
             "application/json": { schema: schemaOf(operation.response) },
           },
@@ -170,6 +180,20 @@ function operationOf(name: string, operation: ApiOperation): JsonObject {
         },
       },
     }),
+    ...(operation.upload && {
+      requestBody: {
+        required: true,
+        description: `The bytes of the file, ${operation.upload.maxBytes / 1024 / 1024} MiB at most, with any \`Content-Type\`: what the file is, is read from them.`,
+        content: Object.fromEntries(
+          [...operation.upload.types, "application/octet-stream"].map(
+            (type): [string, JsonObject] => [
+              type,
+              { schema: { type: "string", contentMediaType: type } },
+            ],
+          ),
+        ),
+      },
+    }),
     responses: {
       [String(operation.status)]: success,
       ...((writes || operation.query) && {
@@ -194,9 +218,10 @@ function operationOf(name: string, operation: ApiOperation): JsonObject {
               "Only for a repeat, with `Idempotent-Replayed: true`: the post that the request made the first time has been deleted since",
             ),
           }),
-      ...(writes && {
-        "409": error("The post is not in a state for this"),
-      }),
+      ...(writes &&
+        !operation.upload && {
+          "409": error("The post is not in a state for this"),
+        }),
       ...(hasBody && { "413": error("The body is too large") }),
       ...(writes && {
         "422": error("The idempotency key was used for another request"),

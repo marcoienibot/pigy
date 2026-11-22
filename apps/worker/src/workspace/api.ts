@@ -1,9 +1,12 @@
 import {
   canonicalTimeZone,
   defaultSettings,
+  type ImageFacts,
+  inReadingOrder,
   type MutatorArgs,
   type MutatorName,
   maxApiTime,
+  maxWorkspaceMediaBytes,
   type Network,
   networks,
   ownParts,
@@ -16,12 +19,16 @@ import {
   validateContent,
 } from "@pigy/core";
 import {
+  type ApiAsset,
   type ApiChannel,
+  type ApiMedia,
   type ApiMode,
   type ApiPost,
   type ApiPostingSchedule,
   type ApiTarget,
+  type AssetInput,
   apiDays,
+  apiImageWeight,
   apiTime,
   type CreatePostRequest,
   defaultApiPageSize,
@@ -31,10 +38,10 @@ import {
   type PutPostingScheduleRequest,
   type UpdatePostRequest,
 } from "@pigy/core/api";
-import { and, desc, eq, exists, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, exists, isNull, ne, sql } from "drizzle-orm";
 import type { DrizzleSqliteDODatabase } from "drizzle-orm/durable-sqlite";
 import { contentFor } from "./content.ts";
-import { posts, postTargets } from "./schema.ts";
+import { media, posts, postTargets } from "./schema.ts";
 import { findRows, readRow, readRows } from "./synced.ts";
 
 /**
@@ -56,6 +63,23 @@ import { findRows, readRow, readRows } from "./synced.ts";
  * call as the Worker has parsed it, and an answer with its status.
  */
 
+/**
+ * An image that the Worker has put into the bucket for a call and read,
+ * whose row the call makes: an upload of `POST /media`, or the file at an
+ * address that a post names. `facts` are what the Worker read in the
+ * bytes, of the copy that it keeps.
+ */
+export type TakenImage = { id: string; facts: ImageFacts };
+
+/**
+ * The images that the Worker has fetched for a post, `taken`, and which
+ * of them each address names, by the address as the request wrote it.
+ */
+export type TakenImages = {
+  taken: TakenImage[];
+  at: { [url: string]: string };
+};
+
 /** A call of the API, as the Worker hands it to the object. */
 export type ApiCall =
   | { op: "listChannels" }
@@ -63,12 +87,23 @@ export type ApiCall =
   | { op: "listPosts"; query: ListPostsQuery }
   | { op: "getPost"; id: string }
   | { op: "getPostTarget"; id: string; channelId: string }
-  | { op: "createPost"; body: CreatePostRequest }
-  | { op: "updatePost"; id: string; body: UpdatePostRequest }
+  | {
+      op: "createPost";
+      body: CreatePostRequest;
+      images?: TakenImages | undefined;
+    }
+  | {
+      op: "updatePost";
+      id: string;
+      body: UpdatePostRequest;
+      images?: TakenImages | undefined;
+    }
   | { op: "deletePost"; id: string }
   | { op: "movePost"; id: string; body: MovePostRequest }
   | { op: "getPostingSchedule" }
-  | { op: "putPostingSchedule"; body: PutPostingScheduleRequest };
+  | { op: "putPostingSchedule"; body: PutPostingScheduleRequest }
+  | { op: "createMedia"; image: TakenImage }
+  | { op: "getMedia"; id: string };
 
 /**
  * How a call ended: the status, and the body of a success or the refusal.
@@ -98,7 +133,10 @@ export type KeptApiAnswer =
   | { ok: false; status: number; message: string; field?: string };
 
 /** The reads that make the body of a repeat. */
-type ApiRead = Extract<ApiCall, { op: "getPost" | "getPostingSchedule" }>;
+type ApiRead = Extract<
+  ApiCall,
+  { op: "getPost" | "getPostingSchedule" | "getMedia" }
+>;
 
 /** The longest message of a refusal that is kept. None is as long. */
 const maxKeptMessageLength = 1000;
@@ -129,6 +167,12 @@ export function keptOf(call: ApiCall, answer: ApiAnswer): KeptApiAnswer {
       return { ok: true, status, read: { op: "getPost", id: call.id } };
     case "putPostingSchedule":
       return { ok: true, status, read: { op: "getPostingSchedule" } };
+    case "createMedia":
+      return {
+        ok: true,
+        status,
+        read: { op: "getMedia", id: call.image.id },
+      };
     default:
       return { ok: true, status, read: null };
   }
@@ -290,15 +334,51 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
     return post.status === "draft" ? null : "shareNow";
   };
 
-  const lengthOf = (parts: { text: string }[]) =>
-    parts.reduce((length, { text }) => length + text.length, 0);
+  /** The images of the part `partId`, in their order. */
+  const imagesIn = (partId: string) =>
+    inReadingOrder(findRows(db, "part_media", "partId", partId));
+
+  /**
+   * What `parts` take of the budget of an answer: their texts, and the
+   * descriptions of their images with `apiImageWeight` for the rest of
+   * each, `maxApiAnswerTextLength`.
+   */
+  const weightOf = (parts: { id: string; text: string }[]) =>
+    parts.reduce(
+      (weight, { id, text }) =>
+        weight +
+        text.length +
+        imagesIn(id).reduce(
+          (images, { alt }) => images + alt.length + apiImageWeight,
+          0,
+        ),
+      0,
+    );
 
   /**
    * How many characters the answer of a post has room for besides the
    * post's own text: `maxApiAnswerTextLength` has what this is for.
    */
   const roomAfter = (parts: Row<"post_part">[]) => ({
-    left: maxApiAnswerTextLength - lengthOf(ownParts(parts)),
+    left: maxApiAnswerTextLength - weightOf(ownParts(parts)),
+  });
+
+  /** The images of the part `partId` as an answer says them. */
+  const assetsOf = (partId: string): ApiAsset[] =>
+    imagesIn(partId).map(({ mediaId, alt }) => ({
+      image: {
+        mediaId,
+        // A row of `part_media` names an image that is there: the server
+        // removes only images that are in no part.
+        status: readRow(db, "media", mediaId)?.status ?? "failed",
+        metadata: { altText: alt },
+      },
+    }));
+
+  /** A part after the first, as an answer says it. */
+  const threadPart = (part: Row<"post_part">) => ({
+    text: part.text,
+    assets: assetsOf(part.id),
   });
 
   /**
@@ -325,14 +405,16 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
     // own, and where the answer has room for it. Every other account
     // gets the text of the post, which the post says once. A text that
     // has no room is said to be left out: `textOmitted`.
-    const own = customized && (!room || lengthOf(gets) <= room.left);
-    if (own && room) room.left -= lengthOf(gets);
+    const weight = customized && room ? weightOf(gets) : 0;
+    const own = customized && (!room || weight <= room.left);
+    if (own && room) room.left -= weight;
     return {
       channelId: target.channelId,
       service: readRow(db, "channel", target.channelId)?.network ?? null,
       status: target.status,
       text: own ? (text?.text ?? "") : null,
-      thread: own ? further.map((part) => ({ text: part.text })) : null,
+      assets: own ? (text ? assetsOf(text.id) : []) : null,
+      thread: own ? further.map(threadPart) : null,
       customized,
       textOmitted: customized && !own,
       link: published?.url ?? null,
@@ -360,7 +442,8 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
       id: post.id,
       status: post.status,
       text: first?.text ?? "",
-      metadata: { thread: thread.map(({ text }) => ({ text })) },
+      assets: first ? assetsOf(first.id) : [],
+      metadata: { thread: thread.map(threadPart) },
       channelIds: targets.map(({ channelId }) => channelId),
       mode: modeOf(post),
       dueAt: post.dueAt === null ? null : apiTime(post.dueAt),
@@ -368,6 +451,24 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
       createdAt: apiTime(post.createdAt),
       updatedAt: apiTime(post.updatedAt),
       targets: targets.map((target) => targetResource(target, parts, room)),
+    };
+  };
+
+  /** The image `id` as the API says it, or a 404 if it is gone. */
+  const mediaResource = (id: string): ApiMedia => {
+    const row = readRow(db, "media", id);
+    if (!row || row.originalGoneAt !== null) {
+      throw new ApiRefusal(404, "There is no such image");
+    }
+    return {
+      id: row.id,
+      status: row.status,
+      type: row.type,
+      size: row.size,
+      width: row.width,
+      height: row.height,
+      animated: row.animated,
+      createdAt: apiTime(row.createdAt),
     };
   };
 
@@ -385,11 +486,98 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
   };
 
   /**
-   * Gives the channels of `service` that the post goes to the text
-   * `texts` in place of the post's own, as "Customize" does in the editor.
-   * A text that they had before is replaced.
+   * The images that the assets of a request at `field` name, with their
+   * descriptions: those of `POST /media` by their IDs, and those at an
+   * address as the Worker has fetched them, `images`.
    */
-  const customize = (postId: string, service: Network, texts: string[]) => {
+  const imagesNamed = (
+    field: string,
+    assets: AssetInput[],
+    images: TakenImages | undefined,
+  ): Image[] =>
+    assets.map(({ image }, index) => {
+      const at = `${field}.${index}.image`;
+      const mediaId =
+        image.url === undefined ? image.mediaId : images?.at[image.url];
+      // The Worker fetches every address before it calls.
+      if (mediaId === undefined) {
+        throw new Error(`The image at ${at} was not fetched`);
+      }
+      const row = readRow(db, "media", mediaId);
+      if (!row || row.originalGoneAt !== null) {
+        throw new ApiRefusal(
+          400,
+          `${at}.mediaId: There is no such image in this workspace, or pigy has let go of it`,
+          `${at}.mediaId`,
+        );
+      }
+      return { mediaId, alt: image.metadata?.altText ?? "" };
+    });
+
+  /** The images that the part `partId` has, to give another part. */
+  const imagesOfPart = (partId: string): Image[] =>
+    imagesIn(partId).map(({ mediaId, alt }) => ({ mediaId, alt }));
+
+  /** Puts `images` into the part `partId`, after the ones that it has. */
+  const attach = (partId: string, images: Image[]) => {
+    for (const { mediaId, alt } of images) {
+      mutate("media.attach", { id: newId(), partId, mediaId, alt });
+    }
+  };
+
+  /**
+   * Gives the part `partId` the images `images`, in the place of the
+   * ones that it has. Where they are the same images in the same order,
+   * only the descriptions that differ change: a script that sends a post
+   * back as it read it changes nothing.
+   */
+  const replaceImages = (partId: string, images: Image[]) => {
+    const has = imagesIn(partId);
+    const same =
+      has.length === images.length &&
+      has.every(({ mediaId }, index) => mediaId === images[index]?.mediaId);
+    if (same) {
+      has.forEach(({ id, alt }, index) => {
+        const wanted = images[index]?.alt ?? "";
+        if (alt !== wanted) mutate("media.setAlt", { id, alt: wanted });
+      });
+      return;
+    }
+    for (const { id } of has) mutate("media.detach", { id });
+    attach(partId, images);
+  };
+
+  /**
+   * Makes the rows of images that the Worker has put into the bucket for
+   * this call, as `ready`: it has read them. Refuses where they would
+   * take the workspace past the bytes of images that it holds.
+   */
+  const makeImages = (taken: TakenImage[]) => {
+    const adds = taken.reduce((bytes, { facts }) => bytes + facts.size, 0);
+    if (adds > 0 && heldBytes(db) + adds > maxWorkspaceMediaBytes) {
+      throw new ApiRefusal(
+        413,
+        "The workspace holds as many images as it can. Delete drafts with images that you no longer need, or wait: pigy lets go of the images of a post 30 days after it was sent.",
+      );
+    }
+    for (const { id, facts } of taken) {
+      mutate("media.create", { id, name: "", ...facts });
+      mutate("media.ready", { id, ...facts });
+    }
+  };
+
+  /**
+   * Gives the channels of `service` that the post goes to the text
+   * `texts` in place of the post's own, as "Customize" does in the editor,
+   * with the images `images` of each part of it. A text that they had
+   * before is replaced.
+   */
+  const customize = (
+    postId: string,
+    service: Network,
+    texts: string[],
+    images: Image[][],
+  ) => {
     const chosen = targetsOf(postId).filter(
       ({ channelId }) => readRow(db, "channel", channelId)?.network === service,
     );
@@ -400,10 +588,17 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
         `metadata.${service}`,
       );
     }
-    for (const { channelId } of chosen) {
+    for (const { id, channelId } of chosen) {
       mutate("target.followPost", { postId, channelId });
       // In as many steps as a client would take for a text of this length.
       ownTextMutations(postId, channelId, texts, newId).forEach(run);
+      // The parts that the mutations made, in their order, each with its
+      // images, as "Customize" begins a text with the images of the
+      // post's.
+      const parts = partsFor(findRows(db, "post_part", "postId", postId), id);
+      parts.forEach((part, index) => {
+        attach(part.id, images[index] ?? []);
+      });
     }
   };
 
@@ -413,8 +608,9 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
    * somewhere, to no account that needs connecting again, no part of a
    * text that an account gets is empty, which a part with an image is
    * not, and every account takes the text that it gets with its images,
-   * by `validateContent` with the limits of the account. The API takes
-   * no image, and a draft that was written in the app can have some.
+   * by `validateContent` with the limits of the account: an image that is
+   * not `ready`, one that is gone, one of a network that pigy publishes
+   * no images to yet.
    * The refusal names the field of the request that the text came from.
    */
   const publishable = (postId: string): void => {
@@ -580,7 +776,7 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
         const post = readRow(db, "post", id);
         if (post) {
           const parts = findRows(db, "post_part", "postId", id);
-          const length = lengthOf(parts);
+          const length = weightOf(parts);
           if (shown.length > 0 && length > room) break;
           shown.push(postResource(post, parts));
           room -= length;
@@ -618,11 +814,14 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
     }
 
     case "createPost": {
-      const { body } = call;
+      const { body, images } = call;
+      makeImages(images?.taken ?? []);
       const postId = newId();
-      let partId = newId();
+      const firstId = newId();
+      let partId = firstId;
       mutate("post.create", { id: postId, partId, text: body.text });
-      for (const { text } of body.metadata?.thread ?? []) {
+      attach(partId, imagesNamed("assets", body.assets ?? [], images));
+      for (const [index, part] of (body.metadata?.thread ?? []).entries()) {
         const id = newId();
         mutate("part.add", {
           id,
@@ -630,8 +829,16 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
           channelId: null,
           afterId: partId,
           mustFollow: true,
-          text,
+          text: part.text,
         });
+        attach(
+          id,
+          imagesNamed(
+            `metadata.thread.${index}.assets`,
+            part.assets ?? [],
+            images,
+          ),
+        );
         partId = id;
       }
       for (const channelId of body.channelIds ?? []) {
@@ -641,10 +848,26 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
       for (const service of networks) {
         const own = body.metadata?.[service];
         if (!own) continue;
-        customize(postId, service, [
-          own.text ?? body.text,
-          ...(own.thread ?? []).map(({ text }) => text),
-        ]);
+        customize(
+          postId,
+          service,
+          [
+            own.text ?? body.text,
+            ...(own.thread ?? []).map(({ text }) => text),
+          ],
+          [
+            own.assets === undefined
+              ? imagesOfPart(firstId)
+              : imagesNamed(`metadata.${service}.assets`, own.assets, images),
+            ...(own.thread ?? []).map((part, index) =>
+              imagesNamed(
+                `metadata.${service}.thread.${index}.assets`,
+                part.assets ?? [],
+                images,
+              ),
+            ),
+          ],
+        );
       }
       if (!body.saveToDraft && body.mode) {
         share(postId, body.mode, timeOf(body.dueAt));
@@ -663,6 +886,7 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
       }
       const edits =
         body.text !== undefined ||
+        body.assets !== undefined ||
         body.channelIds !== undefined ||
         body.metadata !== undefined;
       const scheduled = before.status === "scheduled";
@@ -702,20 +926,30 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
         mutate("post.unschedule", { id });
       }
 
+      const { images } = call;
+      makeImages(images?.taken ?? []);
       const own = () => ownParts(findRows(db, "post_part", "postId", id));
       const [first, ...further] = own();
       if (!first) throw new Error(`The post ${id} has no part`);
       if (body.text !== undefined && body.text !== first.text) {
         mutate("part.setText", { id: first.id, text: body.text });
       }
+      if (body.assets !== undefined) {
+        replaceImages(first.id, imagesNamed("assets", body.assets, images));
+      }
       const thread = body.metadata?.thread;
       if (thread !== undefined) {
         let afterId = first.id;
-        thread.forEach(({ text }, index) => {
+        thread.forEach(({ text, assets }, index) => {
           const part = further[index];
+          const named =
+            assets &&
+            imagesNamed(`metadata.thread.${index}.assets`, assets, images);
           if (part) {
             if (part.text !== text)
               mutate("part.setText", { id: part.id, text });
+            // Left out, a part that the post keeps keeps its images.
+            if (named) replaceImages(part.id, named);
             afterId = part.id;
           } else {
             const partId = newId();
@@ -727,6 +961,7 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
               mustFollow: true,
               text,
             });
+            attach(partId, named ?? []);
             afterId = partId;
           }
         });
@@ -758,10 +993,26 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
           }
           continue;
         }
-        customize(id, service, [
-          text.text ?? own()[0]?.text ?? "",
-          ...(text.thread ?? []).map((part) => part.text),
-        ]);
+        customize(
+          id,
+          service,
+          [
+            text.text ?? own()[0]?.text ?? "",
+            ...(text.thread ?? []).map((part) => part.text),
+          ],
+          [
+            text.assets === undefined
+              ? imagesOfPart(first.id)
+              : imagesNamed(`metadata.${service}.assets`, text.assets, images),
+            ...(text.thread ?? []).map((part, index) =>
+              imagesNamed(
+                `metadata.${service}.thread.${index}.assets`,
+                part.assets ?? [],
+                images,
+              ),
+            ),
+          ],
+        );
       }
 
       if (body.saveToDraft) {
@@ -836,6 +1087,13 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
     case "getPostingSchedule":
       return ok(postingSchedule());
 
+    case "createMedia":
+      makeImages([call.image]);
+      return ok(mediaResource(call.image.id), 201);
+
+    case "getMedia":
+      return ok(mediaResource(call.id));
+
     case "putPostingSchedule": {
       const { body } = call;
       const before = settingsOf();
@@ -894,6 +1152,23 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
       return ok(postingSchedule());
     }
   }
+}
+
+/** An image as a part has it: which, and what it shows. */
+type Image = { mediaId: string; alt: string };
+
+/**
+ * How many bytes of images the workspace holds: of those that the server
+ * has, and of those that are on their way, as their rows say. What the
+ * store counts, `mediaBytes`, against `maxWorkspaceMediaBytes`.
+ */
+export function heldBytes(db: DrizzleSqliteDODatabase): number {
+  const held = db
+    .select({ bytes: sql<number>`coalesce(sum(${media.size}), 0)` })
+    .from(media)
+    .where(and(ne(media.status, "failed"), isNull(media.originalGoneAt)))
+    .get();
+  return held?.bytes ?? 0;
 }
 
 /**

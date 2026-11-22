@@ -56,6 +56,7 @@ import {
   type ApiCall,
   ApiRefusal,
   carryOut,
+  heldBytes,
   type KeptApiAnswer,
   keptOf,
   replayOf,
@@ -1266,12 +1267,7 @@ export class WorkspaceStore {
    * server has, and of those that are on their way, as their rows say.
    */
   get mediaBytes(): number {
-    const held = this.db
-      .select({ bytes: sql<number>`coalesce(sum(${media.size}), 0)` })
-      .from(media)
-      .where(and(ne(media.status, "failed"), isNull(media.originalGoneAt)))
-      .get();
-    return held?.bytes ?? 0;
+    return heldBytes(this.db);
   }
 
   /**
