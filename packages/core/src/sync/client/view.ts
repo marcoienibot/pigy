@@ -96,9 +96,9 @@ class ViewTransaction implements Transaction {
  * columns: `createdAt` of a post and its `updatedAt`, which is that time or
  * a later one, its `heldAt` and its `trashedAt`, when a channel was
  * connected and its limits were read, when a target was asked for and
- * sent, and when the stats of a delivery were counted. A mutator that
- * writes the time of its transaction to another column needs that column
- * looked at here too.
+ * sent, when the stats of a delivery were counted, and when an image was
+ * made and its bytes were let go of. A mutator that writes the time of its
+ * transaction to another column needs that column looked at here too.
  */
 function latestTime(rows: Tables): number {
   let latest = 0;
@@ -119,6 +119,10 @@ function latestTime(rows: Tables): number {
     look(sentAt);
   }
   for (const { countedAt } of rows.metric.values()) look(countedAt);
+  for (const { createdAt, originalGoneAt } of rows.media.values()) {
+    look(createdAt);
+    look(originalGoneAt);
+  }
   for (const { createdAt, readAt } of rows.notification.values()) {
     look(createdAt);
     look(readAt);

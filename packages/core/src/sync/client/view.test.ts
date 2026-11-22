@@ -188,7 +188,7 @@ it("runs every pending mutation after the one before it, whatever the clock of t
   expect(changed(view, third)).toBe(202);
 });
 
-it("runs a pending mutation after every time that the server has put into a channel or a target", () => {
+it("runs a pending mutation after every time that the server has put into a channel, a target, its stats or an image", () => {
   const { post, part, puts } = draft("Text", 1_000);
   const channel = {
     id: newId(),
@@ -298,6 +298,31 @@ it("runs a pending mutation after every time that the server has put into a chan
     },
   ]);
   expect(edited(counted)?.updatedAt).toBe(8_001);
+  // An image, which a device made and the server took at a time of its
+  // own, `createdAt`, and whose bytes the server let go of later:
+  // `originalGoneAt`.
+  const image = {
+    id: newId(),
+    kind: "image",
+    status: "ready",
+    name: "photo.png",
+    type: "image/png",
+    size: 100,
+    width: 10,
+    height: 10,
+    animated: false,
+    createdAt: 9_000,
+    error: null,
+    originalGoneAt: null,
+  } as const;
+  const taken = applyChanges(rows, false, [
+    { op: "put", table: "media", row: image },
+  ]);
+  expect(edited(taken)?.updatedAt).toBe(9_001);
+  const letGo = applyChanges(rows, false, [
+    { op: "put", table: "media", row: { ...image, originalGoneAt: 10_000 } },
+  ]);
+  expect(edited(letGo)?.updatedAt).toBe(10_001);
 });
 
 it("lets a pending mutation see what the ones before it did", () => {
