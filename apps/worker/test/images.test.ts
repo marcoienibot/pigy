@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { sandboxFeedSchema, sandboxImagePath } from "@pigy/core";
 import { feed } from "@pigy/simulators/world";
 import { expect, it } from "vitest";
-import { connectInSandbox } from "./channels.ts";
+import { connectBlueskyInSandbox, connectInSandbox } from "./channels.ts";
 import { type Browser, invite, signedIn } from "./helpers.ts";
 import {
   attach,
@@ -191,4 +191,73 @@ it("does not publish a post while an image of it is still on its way, and says w
   });
   expect(feed(test.network.world)).toEqual([]);
   expect(await env.MEDIA.list()).toMatchObject({ objects: [] });
+});
+
+it("makes a smaller image for Bluesky of one that is over its limit, once, and publishes that", async () => {
+  const { browser, workspaces } = await started();
+  const workspaceId = workspaces.sandbox;
+  const { channel = "" } = await connectBlueskyInSandbox(browser, workspaceId);
+  const client = new SyncClient();
+  await client.connect(browser, workspaceId);
+  // Noise in a JPEG of this size is far over a million bytes.
+  const large = await upload(
+    browser,
+    client,
+    workspaceId,
+    await photo(1600, 1200),
+  );
+  expect(large.size).toBeGreaterThan(1_000_000);
+  const small = await upload(browser, client, workspaceId, await photo(64, 48));
+
+  const draft = await writeDraft(client, workspaceId, "From the harbour");
+  await attach(client, draft.partIds[0] ?? "", large.id, "The harbour");
+  await attach(client, draft.partIds[0] ?? "", small.id, "A detail");
+  await publishTo(client, draft.postId, channel);
+  expect(await ended(client, draft.postId)).toMatchObject({ status: "sent" });
+
+  const [post] = await sandboxPosts(browser);
+  expect(post).toMatchObject({
+    network: "bluesky",
+    text: "From the harbour",
+    images: [
+      { alt: "The harbour" },
+      { alt: "A detail", width: 64, height: 48 },
+    ],
+  });
+  // What Bluesky got of the large one is within its limit, is still the
+  // picture in its shape, and has nothing of the camera.
+  const [shown] = post?.images ?? [];
+  const response = await browser.fetch(sandboxImagePath(shown?.id ?? ""));
+  const published = new Uint8Array(await response.arrayBuffer());
+  expect(published.length).toBeLessThanOrEqual(1_000_000);
+  const facts = await factsOf(published);
+  expect(facts.type).toBe("image/jpeg");
+  expect(facts.width / facts.height).toBeCloseTo(1600 / 1200, 1);
+  expect(shown).toMatchObject({ width: facts.width, height: facts.height });
+  expect(holds(published, gpsText)).toBe(false);
+
+  // Kept next to the original, under the name of what it was made
+  // within. The small image went out as it is: nothing was made of it.
+  const variant = `${large.id}/variants/jpeg-1000000-0`;
+  expect(await kept(workspaceId)).toEqual(
+    [
+      `${large.id}/original`,
+      `${large.id}/thumbnail`,
+      variant,
+      `${small.id}/original`,
+      `${small.id}/thumbnail`,
+    ].sort(),
+  );
+
+  // A second post with the same image goes out with the image that was
+  // made for the first: the file in the bucket is not written again.
+  const made = await env.MEDIA.head(`${workspaceId}/${variant}`);
+  const second = await writeDraft(client, workspaceId, "Once more");
+  await attach(client, second.partIds[0] ?? "", large.id);
+  await publishTo(client, second.postId, channel);
+  expect(await ended(client, second.postId)).toMatchObject({ status: "sent" });
+  const after = await env.MEDIA.head(`${workspaceId}/${variant}`);
+  expect(after?.uploaded).toEqual(made?.uploaded);
+  expect(after?.etag).toBe(made?.etag);
+  expect(await sandboxPosts(browser)).toHaveLength(2);
 });

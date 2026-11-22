@@ -245,6 +245,14 @@ describe("validateContent with images", () => {
     network: "linkedin",
     maxCharacters: 3000,
   });
+  /**
+   * What is wrong for Threads besides that pigy publishes no images
+   * there yet, which is said of every post with an image.
+   */
+  const onThreads = (content: Parameters<typeof validateContent>[1]) =>
+    validateContent(threads, content).filter(
+      ({ code }) => code !== "images_not_published",
+    );
   const codes = (found: ReturnType<typeof validateContent>) =>
     found.map(({ code }) => code);
 
@@ -305,12 +313,35 @@ describe("validateContent with images", () => {
     ).toEqual(["too_many_images", "alt_too_long", "alt_too_long"]);
   });
 
+  it("says so for a network that pigy publishes no images to yet, once for the post", () => {
+    const found = validateContent(threads, {
+      parts: [
+        { text: "a", media: [image] },
+        { text: "b", media: [image] },
+      ],
+    });
+    expect(found).toEqual([
+      {
+        part: null,
+        code: "images_not_published",
+        message:
+          "pigy does not publish images to Threads yet. Leave this account out, or give it a text of its own without the images.",
+      },
+    ]);
+    // The text alone goes out as before.
+    expect(validateContent(threads, { parts: [{ text: "a" }] })).toEqual([]);
+  });
+
   it("counts the images of all parts together where a thread is one post", () => {
     const parts = Array.from({ length: 6 }, () => ({
       text: "a",
       media: [image, image, image, image],
     }));
-    expect(validateContent(linkedin, { parts })).toEqual([
+    expect(
+      validateContent(linkedin, { parts }).filter(
+        ({ code }) => code !== "images_not_published",
+      ),
+    ).toEqual([
       {
         part: null,
         code: "too_many_images",
@@ -326,7 +357,7 @@ describe("validateContent with images", () => {
     // 1001 emoji are 2002 UTF-16 code units and 1001 characters.
     const alt = "😀".repeat(1001);
     expect(
-      validateContent(threads, {
+      onThreads({
         parts: [{ text: "a", media: [image, { ...image, alt }] }],
       }),
     ).toEqual([
@@ -341,7 +372,7 @@ describe("validateContent with images", () => {
       },
     ]);
     expect(
-      validateContent(threads, {
+      onThreads({
         parts: [{ text: "a", media: [{ ...image, alt: "😀".repeat(1000) }] }],
       }),
     ).toEqual([]);
@@ -354,7 +385,7 @@ describe("validateContent with images", () => {
     ] as const) {
       expect(
         codes(
-          validateContent(threads, {
+          onThreads({
             parts: [{ text: "a", media: [{ ...image, width, height }] }],
           }),
         ),
@@ -362,9 +393,9 @@ describe("validateContent with images", () => {
     }
     // Ten to one is taken, and Bluesky has no such limit.
     const panorama = { ...image, width: 3000, height: 300 };
-    expect(
-      validateContent(threads, { parts: [{ text: "a", media: [panorama] }] }),
-    ).toEqual([]);
+    expect(onThreads({ parts: [{ text: "a", media: [panorama] }] })).toEqual(
+      [],
+    );
     expect(
       validateContent(bluesky, {
         parts: [{ text: "a", media: [{ ...panorama, width: 30_000 }] }],

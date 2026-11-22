@@ -181,6 +181,17 @@ export const defaultMediaLimits: {
   },
 };
 
+/**
+ * The networks that pigy does not publish images to yet. A post with an
+ * image is not sent to an account of one of them, and `validateContent`
+ * says so: PLAN.md section 10 has what is left to build. A network leaves
+ * the list when its adapter publishes images.
+ */
+export const imagesNotPublishedTo: readonly Limits["network"][] = [
+  "linkedin",
+  "threads",
+];
+
 /** What the account of `limits` takes of images. */
 export function mediaLimitsOf(limits: Limits): MediaLimits {
   return limits.media ?? defaultMediaLimits[limits.network];
@@ -319,6 +330,8 @@ export type ContentIssue = {
       characters: number;
       maxCharacters: number;
     }
+  /** The post has images, and pigy publishes none to this network yet. */
+  | { code: "images_not_published" }
   /** The image `image` of the part is of a shape that the network refuses. */
   | { code: "image_shape"; image: number }
   /**
@@ -359,6 +372,13 @@ export function validateContent(
     (count, part) => count + (part.media?.length ?? 0),
     0,
   );
+  if (images > 0 && imagesNotPublishedTo.includes(limits.network)) {
+    issues.push({
+      part: null,
+      code: "images_not_published",
+      message: `pigy does not publish images to ${network} yet. Leave this account out, or give it a text of its own without the images.`,
+    });
+  }
   if (together && images > media.maxImages) {
     issues.push({
       part: null,
