@@ -116,7 +116,7 @@ To switch it on, in the settings of the repository on GitHub:
 
 Check: the next push to `main` has a job "deploy" that ends green, and `curl https://<host>/api/health` answers with a new `version`.
 
-What the job does, in order: it asks GitHub whether its commit is still the newest of `main`, builds with `pnpm build`, checks that what `wrangler` would deploy is that build, applies the migrations of D1, and deploys. It does not set the secrets of the Worker: those are yours, section 4. One deploy runs at a time, and a run whose commit is no longer the newest of `main` deploys nothing. A run that cannot get an answer from GitHub fails, and deploys nothing either: start it again with "Re-run jobs". The two secrets of the environment are handed to the two steps that call Cloudflare and to no other: the install of the dependencies, the build and the checks never see them.
+What the job does, in order: it asks GitHub whether its commit is still the newest of `main`, builds with `pnpm build`, checks that what `wrangler` would deploy is that build, applies the migrations of D1, and deploys. It does not set the secrets of the Worker: those are yours, section 4. One deploy runs at a time, and a run whose commit is no longer the newest of `main` deploys nothing: the run of the newer commit deploys it with that one, or, where that commit says `[no deploy]`, a deploy by hand does. A run that cannot get an answer from GitHub fails, and deploys nothing either: start it again with "Re-run jobs". The two secrets of the environment are handed to the two steps that call Cloudflare and to no other: the install of the dependencies, the build and the checks never see them.
 
 Three things that the job cannot see for you, from `AGENTS.md`, "Deployment":
 

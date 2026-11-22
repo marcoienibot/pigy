@@ -156,7 +156,7 @@ jobs:
             echo "is=true" >> "$GITHUB_OUTPUT"
           else
             echo "is=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Not deployed::main has moved on to $head, whose own run deploys."
+            echo "::notice title=Not deployed::main is at a newer commit, $head: its run, or a deploy by hand, deploys this one."
           fi
       - if: steps.newest.outputs.is == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
