@@ -34,6 +34,7 @@ export function threadsLiveHarness(options: {
     thread: "chain",
     // Until the adapter publishes images.
     noImages: true,
+    counts: ["likes", "reposts", "replies", "quotes", "views"],
     credentials,
     refusedCredentials: { ...credentials, accessToken: unknownToken },
     revokes: false,

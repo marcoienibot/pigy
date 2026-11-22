@@ -174,6 +174,11 @@ export type BlueskyProviderOptions = {
   dnsResolver?: string;
   /** The directory of `did:plc`. */
   plcDirectory?: string;
+  /**
+   * The host of the app view whose public API has the counts of a post:
+   * Bluesky's own, which answers anybody without a token.
+   */
+  appView?: string;
   /** How long to wait for a server to answer. 30 seconds by default. */
   timeoutMs?: number;
 };
@@ -345,6 +350,24 @@ const postSchema = z.object({
 /** What com.atproto.repo.uploadBlob answers with. */
 const uploadedSchema = z.object({ blob: blobSchema });
 
+/**
+ * What `app.bsky.feed.getPosts` of an app view answers: the posts that it
+ * shows of those that it was asked for, each a `postView` with its
+ * counts. A post that it does not show is left out. A count is optional
+ * in the lexicon, and is null for pigy where it is left out.
+ */
+const postViewsSchema = z.object({
+  posts: z.array(
+    z.object({
+      uri: z.string(),
+      likeCount: z.number().int().nonnegative().optional(),
+      repostCount: z.number().int().nonnegative().optional(),
+      replyCount: z.number().int().nonnegative().optional(),
+      quoteCount: z.number().int().nonnegative().optional(),
+    }),
+  ),
+});
+
 const profileSchema = z.object({
   displayName: z.string().optional(),
   avatar: z.object({ ref: z.object({ $link: z.string() }) }).optional(),
@@ -508,6 +531,7 @@ export function createBlueskyProvider({
   keys,
   dnsResolver = "cloudflare-dns.com",
   plcDirectory = "plc.directory",
+  appView = "public.api.bsky.app",
   timeoutMs = 30_000,
 }: BlueskyProviderOptions): Provider {
   /** Sends a request and returns the answer as it is. */
@@ -1644,6 +1668,46 @@ export function createBlueskyProvider({
         replyToId: post.reply?.parent.uri ?? null,
         images: (post.embed?.images ?? []).map(({ alt }) => ({ alt })),
       };
+    },
+
+    async metrics(credentials, id) {
+      const { pds, did } = parseCredentials(credentials);
+      const record = parseRecordUri(id);
+      if (!record || record.did !== did) return null;
+      // The counts are the app view's, which sees every post of the
+      // network. It answers anybody: no token, as for a record.
+      const answer = await request(
+        `https://${appView}/xrpc/app.bsky.feed.getPosts?${new URLSearchParams({ uris: id })}`,
+        {},
+      );
+      if (answer.status !== 200) throw failure(answer);
+      const shown = understood(
+        postViewsSchema,
+        answer.json,
+        appView,
+      ).posts.find(({ uri }) => uri === id);
+      if (shown) {
+        return {
+          likes: shown.likeCount ?? null,
+          reposts: shown.repostCount ?? null,
+          replies: shown.replyCount ?? null,
+          quotes: shown.quoteCount ?? null,
+          // Bluesky does not count who saw a post.
+          views: null,
+        };
+      }
+      // An app view leaves out a post that was deleted, and one that it
+      // has not seen yet: it learns of a post a moment after the PDS has
+      // written it. The PDS of the account tells the two apart.
+      if (!(await getRecord(pds, did, record.collection, record.rkey))) {
+        return null;
+      }
+      // Only this post waits: the app view answered.
+      throw new ProviderError(
+        "retry",
+        "Bluesky does not show this post yet, or no longer.",
+        { notShown: true },
+      );
     },
 
     async deletePost(credentials, id) {

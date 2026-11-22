@@ -285,6 +285,26 @@ export type RemotePost = {
   images: { alt: string }[];
 };
 
+/** A count of what people did with a post. */
+const countSchema = z.number().int().nonnegative().nullable();
+
+/**
+ * How a post is doing on its network: what people did with it, as the
+ * network counts. Each count is null where the network has no such count,
+ * which is not the same as none: Mastodon has no views.
+ */
+export const postMetricsSchema = z.strictObject({
+  likes: countSchema,
+  reposts: countSchema,
+  replies: countSchema,
+  /** Posts that quote this one, where the network has quotes. */
+  quotes: countSchema,
+  /** How often the post was seen, where the network counts that. */
+  views: countSchema,
+});
+
+export type PostMetrics = z.infer<typeof postMetricsSchema>;
+
 export type Provider = {
   readonly network: Network;
 
@@ -519,6 +539,36 @@ export type Provider = {
    * that let pigy read posts have the method.
    */
   readPost?(credentials: Json, id: string): Promise<RemotePost | null>;
+
+  /**
+   * How the post with this ID is doing: the counts that the network shows
+   * for it, checked with `postMetricsSchema`, or null if the network no
+   * longer has the post. Only networks that let pigy read them have the
+   * method: a network that has none for pigy, as LinkedIn for the posts of
+   * a member, has no method rather than one that fails.
+   *
+   * The counts are of the one post that `id` names, as the network shows
+   * them under it, and nothing is added up: a caller that wants them for
+   * a thread asks for its first part, which is what people see in a feed.
+   * Where a network counts the replies of the account itself, the replies
+   * of the first part of a thread count its second, and on Threads, which
+   * counts every reply in the thread under the post that begins it, all
+   * of its parts after the first.
+   *
+   * It reads and changes nothing, so it can be called at any time, as
+   * often as the caller likes and the network lets it. It fails as every
+   * method does: `retry` where the network asks to be asked later or is
+   * out of reach, `reconnect` where it no longer takes the access. Where
+   * the network answers and does not show the post, yet or any more, while
+   * it still has it, as Bluesky's app view a moment after the post was
+   * written and for good after its moderators took it down, it fails with
+   * `retry` and `notShown`: that post alone is to wait. Where
+   * the access reaches the post and not its stats, because the person did
+   * not grant what reading them takes, it fails with `fail`, and a message
+   * that says what the person can do. It never fails with `refresh` or
+   * `uncertain`: it renews nothing, and publishes nothing.
+   */
+  metrics?(credentials: Json, id: string): Promise<PostMetrics | null>;
 
   /** Deletes the post with this ID. A post that is gone already is fine. */
   deletePost(credentials: Json, id: string): Promise<void>;

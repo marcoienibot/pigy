@@ -80,6 +80,7 @@ describeProvider("Threads, simulated", async () => {
     thread: "chain",
     // Until the adapter publishes images.
     noImages: true,
+    counts: ["likes", "reposts", "replies", "quotes", "views"],
     credentials,
     refusedCredentials: { ...credentials, accessToken: unknownToken },
     // Threads has no way for an app to give an access back.
@@ -101,9 +102,14 @@ describeProvider("Threads, simulated", async () => {
           kind,
           // With the code exchanged for a token of an hour, the adapter
           // asks for the one that lasts.
-          operation: during === "connect" ? "exchange" : "publish",
+          operation: {
+            connect: "exchange",
+            publish: "publish",
+            stats: "stats",
+          }[during] as "exchange" | "publish" | "stats",
         });
       },
+      engage: (id, more) => world.engage("threads", id, more),
       published: () => feed(world, ["threads"]).map(({ post }) => post.text),
       shown: () => shownIn(world, "threads"),
       mention: "@ada",

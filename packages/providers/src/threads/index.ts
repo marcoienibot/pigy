@@ -182,6 +182,24 @@ const listSchema = z.object({
     .optional(),
 });
 
+/**
+ * What the insights of a media object are: a value of each metric that was
+ * asked for, over the life of the post. GUESS, PLAN.md section 19: the
+ * value is the one entry of `values`, as Meta documents it for the
+ * insights of a media object, and not a `total_value`, which it has for
+ * those of an account.
+ */
+const insightsSchema = z.object({
+  data: z.array(
+    z.object({
+      name: z.string(),
+      values: z
+        .array(z.object({ value: z.number().int().nonnegative() }))
+        .min(1),
+    }),
+  ),
+});
+
 /** An error of the Graph API, and of the one address that answers otherwise. */
 const errorSchema = z.object({
   error: z
@@ -204,8 +222,11 @@ const version = "v1.0";
  * `threads_content_publish` posts. A thread is a chain of replies, and
  * Meta documents replying, and reading replies, with permissions of their
  * own: GUESS, PLAN.md section 19, that a reply to a post of the account's
- * own takes them too. `threads_delete` deletes a post. An access cannot
- * gain a permission later without the person consenting again.
+ * own takes them too. `threads_delete` deletes a post, and
+ * `threads_manage_insights` reads its stats. An access cannot gain a
+ * permission later without the person consenting again: an account that
+ * was connected before pigy asked for the stats has none until it is
+ * connected again, `metrics`.
  */
 const scopes = [
   "threads_basic",
@@ -213,7 +234,20 @@ const scopes = [
   "threads_manage_replies",
   "threads_read_replies",
   "threads_delete",
+  "threads_manage_insights",
 ];
+
+/**
+ * The stats of a post that pigy asks Threads for, by the names of its
+ * insights of a media object, and what each is for pigy.
+ */
+const insights = {
+  views: "views",
+  likes: "likes",
+  replies: "replies",
+  reposts: "reposts",
+  quotes: "quotes",
+} as const;
 
 // Far above any answer that pigy reads.
 const maxBytes = 1024 * 1024;
@@ -1029,6 +1063,39 @@ export function createThreadsProvider({
         text: media.text ?? "",
         replyToId: media.replied_to?.id ?? null,
         images: [],
+      };
+    },
+
+    async metrics(credentials, id) {
+      const { accessToken: token } = parseCredentials(credentials);
+      if (!idSchema.safeParse(id).success) return null;
+      const options: Call = {
+        token,
+        params: { metric: Object.values(insights).join(",") },
+      };
+      const answer = await request(`/${version}/${id}/insights`, options);
+      if (gone(answer)) return null;
+      // The code 10 is a permission that the token lacks: here the one to
+      // read stats, which an account that was connected before pigy
+      // asked for it does not have. Nothing but a new connection gives
+      // it, and the post itself is fine.
+      if (errorSchema.safeParse(answer.json).data?.error?.code === 10) {
+        throw new ProviderError(
+          "fail",
+          "Threads lets pigy read the stats of this account once it is connected again.",
+          { status: answer.status },
+        );
+      }
+      if (!succeeded(answer)) throw failure(answer, options);
+      const { data } = understood(insightsSchema, answer.json, "Threads");
+      const insight = (name: string) =>
+        data.find((metric) => metric.name === name)?.values[0]?.value ?? null;
+      return {
+        views: insight(insights.views),
+        likes: insight(insights.likes),
+        replies: insight(insights.replies),
+        reposts: insight(insights.reposts),
+        quotes: insight(insights.quotes),
       };
     },
 

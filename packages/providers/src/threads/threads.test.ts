@@ -3,7 +3,12 @@ import {
   createThreadsSimulator,
   slowProcessingMs,
 } from "@pigy/simulators/threads";
-import { answerConsent, createWorld, feed } from "@pigy/simulators/world";
+import {
+  answerConsent,
+  createWorld,
+  feed,
+  type SimToken,
+} from "@pigy/simulators/world";
 import { describe, expect, it } from "vitest";
 import { ProviderError } from "../errors.ts";
 import type { PublishProgress } from "../provider.ts";
@@ -165,7 +170,7 @@ describe("connecting", () => {
       client_id: app.appId,
       redirect_uri: redirectUri,
       scope:
-        "threads_basic,threads_content_publish,threads_manage_replies,threads_read_replies,threads_delete",
+        "threads_basic,threads_content_publish,threads_manage_replies,threads_read_replies,threads_delete,threads_manage_insights",
       response_type: "code",
       state,
     });
@@ -1086,5 +1091,78 @@ describe("reading and deleting", () => {
         .kind,
     ).toBe("fail");
     expect(test.requests).toHaveLength(before);
+  });
+});
+
+describe("stats", () => {
+  it("reads the insights of a post: its views, likes, replies, reposts and quotes", async () => {
+    const test = setup();
+    const { credentials } = await connect(test);
+    const { parts } = await publishAll(test, credentials, ["Counted"]);
+    const id = parts[0]?.id ?? "";
+    test.world.engage("threads", id, { views: 120, likes: 7, reposts: 1 });
+
+    expect(await test.provider.metrics?.(credentials, id)).toEqual({
+      views: 120,
+      likes: 7,
+      replies: 0,
+      reposts: 1,
+      quotes: 0,
+    });
+    expect(asked(test.requests.at(-1) as Request)).toBe(
+      `GET /v1.0/${id}/insights`,
+    );
+  });
+
+  it("says why there are none for an account that was connected before pigy asked for them", async () => {
+    const test = setup();
+    const { credentials } = await connect(test);
+    const { parts } = await publishAll(test, credentials, ["Counted"]);
+    // A token as Threads gave one out to pigy before it asked for the
+    // permission to read insights: with the five permissions of before.
+    const older = test.world.issueToken<
+      SimToken & { kind: "long"; createdAt: number }
+    >({
+      network: "threads",
+      accountId: test.ada.id,
+      clientId: test.app.appId,
+      scopes: [
+        "threads_basic",
+        "threads_content_publish",
+        "threads_manage_replies",
+        "threads_read_replies",
+        "threads_delete",
+      ],
+      kind: "long",
+      createdAt: test.world.now().getTime(),
+      expiresAt: test.world.now().getTime() + 60 * day,
+    });
+
+    const error = await failure(async () =>
+      test.provider.metrics?.({ accessToken: older.token }, parts[0]?.id ?? ""),
+    );
+
+    // Not a channel to connect again for posting: the post is fine, and
+    // so is the access, for what it reaches.
+    expect(error.kind).toBe("fail");
+    expect(error.message).toBe(
+      "Threads lets pigy read the stats of this account once it is connected again.",
+    );
+  });
+
+  it("says that a post is gone that Threads no longer has, and asks for a new connection for a token that it refuses", async () => {
+    const test = setup();
+    const { credentials } = await connect(test);
+    const { parts } = await publishAll(test, credentials, ["Counted"]);
+    const id = parts[0]?.id ?? "";
+
+    await test.provider.deletePost(credentials, id);
+    expect(await test.provider.metrics?.(credentials, id)).toBeNull();
+
+    test.world.revokeToken("threads", credentials.accessToken);
+    const error = await failure(async () =>
+      test.provider.metrics?.(credentials, id),
+    );
+    expect(error.kind).toBe("reconnect");
   });
 });

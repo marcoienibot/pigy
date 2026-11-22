@@ -152,6 +152,8 @@ describeProvider("Bluesky, simulated", async () => {
     redirectUri,
     identifier: handle,
     thread: "chain",
+    counts: ["likes", "reposts", "replies", "quotes"],
+    publicStats: true,
     credentials,
     refusedCredentials: {
       ...credentials,
@@ -174,7 +176,8 @@ describeProvider("Bluesky, simulated", async () => {
       arm: (kind, during = "publish") =>
         during === "connect"
           ? armDuringConnect(kind)
-          : simulator.arm({ kind, operation: "publish" }),
+          : simulator.arm({ kind, operation: during }),
+      engage: (id, more) => world.engage("bluesky", id, more),
       published: () => feed(world, ["bluesky"]).map(({ post }) => post.text),
       shown: () => shownIn(world, "bluesky"),
       mention: `@${handle}`,

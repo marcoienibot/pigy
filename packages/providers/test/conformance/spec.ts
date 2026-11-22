@@ -12,12 +12,18 @@ import {
   validateContent,
 } from "@pigy/core";
 import { pngFile } from "@pigy/core/test-images";
-import { entitiesOf, feed, type SimWorld } from "@pigy/simulators/world";
+import {
+  entitiesOf,
+  feed,
+  type SimEngagement,
+  type SimWorld,
+} from "@pigy/simulators/world";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   type CredentialSource,
   type Json,
   type MediaSource,
+  type PostMetrics,
   type Provider,
   ProviderError,
   type PublishProgress,
@@ -48,7 +54,8 @@ export type Simulation = {
   /**
    * Arms a fault for the next request that publishes or, with "connect",
    * for the next request that completes a connection once the network has
-   * taken the code of the callback.
+   * taken the code of the callback, or, with "stats", for the next request
+   * that reads the stats of a post.
    */
   arm(
     kind:
@@ -57,8 +64,13 @@ export type Simulation = {
       | "lost-response"
       | "token-revoked"
       | "token-expired",
-    during?: "publish" | "connect",
+    during?: "publish" | "connect" | "stats",
   ): void;
+  /**
+   * Has people do more with the post `id` of the network, as if they had
+   * liked it, shared it and so on.
+   */
+  engage(id: string, more: Partial<SimEngagement>): void;
   /** The texts of the posts in the world, oldest first. */
   published(): string[];
   /**
@@ -125,6 +137,17 @@ export type Harness = {
    * the refresh returned from then on: `accessOf`.
    */
   credentials: Json;
+  /**
+   * The counts of what people did with a post that the network has, which
+   * `Provider.metrics` reads, and which are null for the others. None
+   * where the provider has no `metrics`, as LinkedIn's.
+   */
+  counts: readonly (keyof PostMetrics)[];
+  /**
+   * True where the stats of a post are public, so that `metrics` reads
+   * them whatever the credentials, as on Bluesky.
+   */
+  publicStats?: boolean;
   /** Credentials of the right form that the network refuses. */
   refusedCredentials: Json;
   /**
@@ -1367,6 +1390,163 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
         }
         // Deleting is repeated when its answer was lost.
         await provider.deletePost(credentials, id);
+      });
+    });
+
+    describe("stats", () => {
+      /**
+       * What `metrics` reads of the post `id`. A real network can be a
+       * moment behind what it has just published, and says so with
+       * `retry`: a live run asks again some times.
+       */
+      async function metricsOf(
+        harness: Harness,
+        id: string,
+        credentials = harness.credentials,
+      ) {
+        const read = harness.provider.metrics;
+        if (!read) throw new Error("The provider has no stats");
+        for (let attempt = 1; ; attempt++) {
+          try {
+            return await read(credentials, id);
+          } catch (error) {
+            if (
+              harness.simulation ||
+              attempt === 5 ||
+              !(error instanceof ProviderError) ||
+              error.kind !== "retry"
+            ) {
+              throw error;
+            }
+            await harness.sleep(5);
+          }
+        }
+      }
+
+      it("has no stats where the network gives none, and reads what people did with a post where it does", async () => {
+        const harness = await setup();
+        const { provider, simulation } = harness;
+        if (harness.counts.length === 0) {
+          // A caller then knows that there are none, without asking.
+          expect(provider.metrics).toBeUndefined();
+          return;
+        }
+        const { progress } = await publishParts(harness, [
+          `${harness.tag} A post to count`,
+        ]);
+        const id = progress.parts[0]?.id ?? "";
+        simulation?.engage(id, { likes: 3, reposts: 2, quotes: 1, views: 50 });
+
+        const counted = await metricsOf(harness, id);
+
+        if (!counted) throw new Error("The post that was published is gone");
+        for (const name of harness.counts) {
+          if (simulation) {
+            expect(counted[name]).toBe(
+              { likes: 3, reposts: 2, replies: 0, quotes: 1, views: 50 }[name],
+            );
+          } else {
+            expect(counted[name]).toBeGreaterThanOrEqual(0);
+          }
+        }
+        // What the network does not count is no count of 0.
+        if (simulation) {
+          for (const [name, count] of Object.entries(counted)) {
+            if (!harness.counts.includes(name as keyof PostMetrics)) {
+              expect(count, name).toBeNull();
+            }
+          }
+        }
+      });
+
+      it("reads a thread by its first part, which is not added up with the rest", async ({
+        skip,
+      }) => {
+        const harness = await setup();
+        const { simulation } = harness;
+        if (harness.counts.length === 0) return skip("No stats to read");
+        if (harness.thread === "joined") {
+          return skip("A joined thread is one post");
+        }
+        if (!simulation) return skip("Nobody likes a post of a live run");
+        const { progress } = await publishParts(harness, [
+          `${harness.tag} A thread to count`,
+          `${harness.tag} Its second part`,
+        ]);
+        const [first, second] = progress.parts.map(({ id }) => id);
+        simulation.engage(first ?? "", { likes: 2 });
+        simulation.engage(second ?? "", { likes: 5 });
+
+        const counted = await metricsOf(harness, first ?? "");
+
+        expect(counted?.likes).toBe(2);
+        // The second part is a reply of the account itself, which the
+        // networks count among the replies of the first: so does pigy,
+        // and says so where it shows them.
+        expect(counted?.replies).toBe(1);
+      });
+
+      it("says that a post is gone that the network no longer has", async ({
+        skip,
+      }) => {
+        const harness = await setup();
+        const { provider, credentials } = harness;
+        if (harness.counts.length === 0) return skip("No stats to read");
+        const { progress } = await publishParts(harness, [
+          `${harness.tag} A post to count and delete`,
+        ]);
+        const id = progress.parts[0]?.id ?? "";
+
+        await provider.deletePost(credentials, id);
+
+        expect(await metricsOf(harness, id)).toBeNull();
+      });
+
+      it("asks to try again later when the network limits the requests", async ({
+        skip,
+      }) => {
+        const harness = await setup();
+        const { simulation } = harness;
+        if (harness.counts.length === 0) return skip("No stats to read");
+        if (!simulation) return skip("Arming a fault takes a simulation");
+        const { progress } = await publishParts(harness, [
+          `${harness.tag} A post to count`,
+        ]);
+        simulation.arm("rate-limit", "stats");
+
+        const error = await failure(() =>
+          metricsOf(harness, progress.parts[0]?.id ?? ""),
+        );
+
+        expect(error.kind).toBe("retry");
+        // About the network, and not about the one post: a caller asks
+        // it about no other post meanwhile.
+        expect(error.notShown).toBe(false);
+      });
+
+      it("asks for a new connection when the network refuses the credentials, unless the stats are public", async ({
+        skip,
+      }) => {
+        const harness = await setup();
+        if (harness.counts.length === 0) return skip("No stats to read");
+        const { progress } = await publishParts(harness, [
+          `${harness.tag} A post to count`,
+        ]);
+        const id = progress.parts[0]?.id ?? "";
+
+        if (harness.publicStats) {
+          expect(
+            await metricsOf(harness, id, harness.refusedCredentials),
+          ).not.toBeNull();
+          return;
+        }
+        const error = await failure(() =>
+          metricsOf(harness, id, harness.refusedCredentials),
+        );
+        expect(error.kind).toBe("reconnect");
+        for (const secret of harness.secrets) {
+          expect(error.message).not.toContain(secret);
+        }
       });
     });
 

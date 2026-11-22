@@ -215,6 +215,18 @@ const listedStatusSchema = statusSchema.extend({
   quote: z.unknown().optional(),
 });
 
+/**
+ * entities/Status, for what people did with it. `quotes_count` is there
+ * from Mastodon 4.5 on, which has quotes: GUESS, PLAN.md section 19, that
+ * it is left out by an instance from before and not null.
+ */
+const countedStatusSchema = z.object({
+  favourites_count: z.number().int().nonnegative(),
+  reblogs_count: z.number().int().nonnegative(),
+  replies_count: z.number().int().nonnegative(),
+  quotes_count: z.number().int().nonnegative().optional(),
+});
+
 /** entities/StatusSource. */
 const sourceSchema = z.object({ text: z.string() });
 
@@ -1190,6 +1202,34 @@ export function createMastodonProvider({
         images: (status.media_attachments ?? []).map(({ description }) => ({
           alt: description ?? "",
         })),
+      };
+    },
+
+    async metrics(credentials, id) {
+      const { domain, accessToken } = parseCredentials(credentials);
+      let status: z.infer<typeof countedStatusSchema>;
+      try {
+        // The status itself has its counts. The token goes with it: a
+        // status that only followers see is not shown to anybody else.
+        status = understood(
+          countedStatusSchema,
+          await call(domain, `/api/v1/statuses/${encodeURIComponent(id)}`, {
+            token: accessToken,
+          }),
+          domain,
+        );
+      } catch (error) {
+        // What Mastodon answers for a status that was deleted.
+        if (error instanceof ProviderError && error.status === 404) return null;
+        throw error;
+      }
+      return {
+        likes: status.favourites_count,
+        reposts: status.reblogs_count,
+        replies: status.replies_count,
+        quotes: status.quotes_count ?? null,
+        // Mastodon does not count who saw a status.
+        views: null,
       };
     },
 

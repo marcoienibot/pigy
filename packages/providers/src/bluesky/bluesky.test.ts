@@ -1837,3 +1837,66 @@ describe("publishing images", () => {
     expect(feed(test.world)).toEqual([]);
   });
 });
+
+describe("stats", () => {
+  it("reads the counts of a post from the public app view, without a token", async () => {
+    const test = await setup();
+    const { access } = await connected(test);
+    const steps = await publishAll(test, access.credentials, ["Counted"]);
+    const id = steps.at(-1)?.parts[0]?.id ?? "";
+    test.world.engage("bluesky", id, { likes: 6, reposts: 2, quotes: 1 });
+    const before = test.requests.length;
+
+    expect(await test.provider.metrics?.(access.credentials, id)).toEqual({
+      likes: 6,
+      reposts: 2,
+      replies: 0,
+      quotes: 1,
+      // Bluesky does not count who saw a post.
+      views: null,
+    });
+    // One request, to the app view, which needs no proof and no token:
+    // nothing that could be refused or renewed.
+    expect(test.requests.slice(before)).toEqual([
+      `GET https://public.api.bsky.app/xrpc/app.bsky.feed.getPosts?uris=${encodeURIComponent(id)}`,
+    ]);
+  });
+
+  it("says that a post is gone only when its PDS no longer has it, and asks to be tried again when the app view has yet to show it", async () => {
+    const test = await setup();
+    const { access } = await connected(test);
+    const steps = await publishAll(test, access.credentials, ["Counted"]);
+    const id = steps.at(-1)?.parts[0]?.id ?? "";
+    // An app view that has not seen the post yet: it learns of one a
+    // moment after the PDS has written it.
+    test.intercept(async (request, simulator) =>
+      request.url.includes("app.bsky.feed.getPosts")
+        ? Response.json({ posts: [] })
+        : simulator(request),
+    );
+
+    const behind = await failure(
+      async () => await test.provider.metrics?.(access.credentials, id),
+    );
+    expect(behind.kind).toBe("retry");
+    // About this post alone: the app view answered.
+    expect(behind.notShown).toBe(true);
+
+    await test.provider.deletePost(access.credentials, id);
+    expect(await test.provider.metrics?.(access.credentials, id)).toBeNull();
+  });
+
+  it("reads no stats of a post of another account", async () => {
+    const test = await setup();
+    const { access } = await connected(test);
+    const before = test.requests.length;
+
+    expect(
+      await test.provider.metrics?.(
+        access.credentials,
+        "at://did:plc:bbbbbbbbbbbbbbbbbbbbbbbb/app.bsky.feed.post/3m2abcdefgh22",
+      ),
+    ).toBeNull();
+    expect(test.requests.length).toBe(before);
+  });
+});

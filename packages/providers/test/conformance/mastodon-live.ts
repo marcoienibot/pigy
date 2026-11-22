@@ -42,6 +42,8 @@ export function mastodonLiveHarness(options: {
     redirectUri: "https://pigy.invalid/connect/mastodon/callback",
     identifier: credentials.domain,
     thread: "chain",
+    // And quotes, from Mastodon 4.5 on: the run does not know the version.
+    counts: ["likes", "reposts", "replies"],
     credentials,
     refusedCredentials: { ...credentials, accessToken: unknownToken },
     revokes: true,

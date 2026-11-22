@@ -56,6 +56,14 @@ export class ProviderError extends Error {
    * `fail`.
    */
   readonly declined: boolean;
+  /**
+   * True with `retry` when the network does not show the one post that it
+   * was asked about, yet or any more, and is fine otherwise: that post is
+   * to wait, and the network can be asked about others meanwhile. A
+   * `retry` without it is about the network: busy, down or out of reach.
+   * Only `metrics` fails this way.
+   */
+  readonly notShown: boolean;
 
   constructor(
     readonly kind: ProviderErrorKind,
@@ -65,6 +73,7 @@ export class ProviderError extends Error {
       status?: number | undefined;
       code?: string | undefined;
       declined?: boolean;
+      notShown?: boolean;
       cause?: unknown;
     } = {},
   ) {
@@ -74,6 +83,7 @@ export class ProviderError extends Error {
     this.status = options.status;
     this.code = options.code;
     this.declined = options.declined ?? false;
+    this.notShown = options.notShown ?? false;
   }
 }
 

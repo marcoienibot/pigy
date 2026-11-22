@@ -77,6 +77,7 @@ describeProvider("Mastodon, simulated", async () => {
     redirectUri,
     identifier: domain,
     thread: "chain",
+    counts: ["likes", "reposts", "replies", "quotes"],
     credentials,
     refusedCredentials: { ...credentials, accessToken: unknownToken },
     revokes: true,
@@ -95,9 +96,13 @@ describeProvider("Mastodon, simulated", async () => {
           kind,
           // With the code exchanged for a token, the adapter asks whose
           // token it is.
-          operation: during === "connect" ? "account" : "publish",
+          // The counts of a status are in the status.
+          operation: { connect: "account", publish: "publish", stats: "read" }[
+            during
+          ] as "account" | "publish" | "read",
         });
       },
+      engage: (id, more) => world.engage("mastodon", id, more),
       published: () => feed(world, ["mastodon"]).map(({ post }) => post.text),
       shown: () => shownIn(world, "mastodon"),
       mention: "@ada",

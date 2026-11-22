@@ -42,6 +42,7 @@ export function linkedInLiveHarness(options: {
     thread: "joined",
     // Until the adapter publishes images.
     noImages: true,
+    counts: [],
     credentials,
     refusedCredentials: { ...credentials, accessToken: unknownToken },
     revokes: true,

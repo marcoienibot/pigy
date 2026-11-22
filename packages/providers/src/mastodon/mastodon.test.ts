@@ -1582,6 +1582,60 @@ describe("reading a post", () => {
   });
 });
 
+describe("stats", () => {
+  it("reads the counts of a status, with its token, which a status for followers alone takes", async () => {
+    const sim = setup();
+    const { credentials } = await connect(sim);
+    const { parts } = await publishAll(sim, credentials, hello);
+    const id = parts[0]?.id ?? "";
+    sim.world.engage("mastodon", id, { likes: 4, reposts: 1, quotes: 2 });
+
+    expect(await sim.provider.metrics?.(credentials, id)).toEqual({
+      likes: 4,
+      reposts: 1,
+      replies: 0,
+      quotes: 2,
+      // Mastodon does not count who saw a status.
+      views: null,
+    });
+    expect(sim.requests.at(-1)?.headers.get("Authorization")).toBe(
+      `Bearer ${credentials.accessToken}`,
+    );
+  });
+
+  it("has no count of quotes on an instance from before 4.5", async () => {
+    const sim = setup({ version: "4.4.0" });
+    const { credentials } = await connect(sim);
+    const { parts } = await publishAll(sim, credentials, hello);
+
+    const counted = await sim.provider.metrics?.(
+      credentials,
+      parts[0]?.id ?? "",
+    );
+
+    // Null, which says that the instance has none, and not 0.
+    expect(counted?.quotes).toBeNull();
+    expect(counted?.likes).toBe(0);
+  });
+
+  it("asks to be tried again when the instance names a time for that", async () => {
+    const sim = setup();
+    const { credentials } = await connect(sim);
+    const { parts } = await publishAll(sim, credentials, hello);
+    sim.simulator.arm({ kind: "rate-limit", operation: "read" });
+
+    const error = await failure(
+      () =>
+        sim.provider.metrics?.(credentials, parts[0]?.id ?? "") ??
+        Promise.resolve(),
+    );
+
+    expect(error.kind).toBe("retry");
+    // Where Mastodon's span of five minutes ends.
+    expect(error.retryAt).toEqual(new Date("2026-11-15T10:05:00Z"));
+  });
+});
+
 describe("what an answer means", () => {
   /**
    * Publishes against an instance that answers the request to post with

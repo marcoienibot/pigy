@@ -273,8 +273,8 @@ export function countCharacters(limits: Limits, text: string): number {
   }
 }
 
-// What a message calls a network.
-const networkNames: { readonly [Name in Limits["network"]]: string } = {
+/** What each network is called, for people. */
+export const networkNames: { readonly [Name in Limits["network"]]: string } = {
   bluesky: "Bluesky",
   linkedin: "LinkedIn",
   mastodon: "Mastodon",

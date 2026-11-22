@@ -86,6 +86,8 @@ describeProvider("LinkedIn, simulated", async () => {
     thread: "joined",
     // Until the adapter publishes images.
     noImages: true,
+    // LinkedIn gives pigy no stats of the posts of a member.
+    counts: [],
     credentials,
     refusedCredentials: { ...credentials, accessToken: unknownToken },
     revokes: true,
@@ -107,6 +109,7 @@ describeProvider("LinkedIn, simulated", async () => {
           operation: during === "connect" ? "account" : "publish",
         });
       },
+      engage: (id, more) => world.engage("linkedin", id, more),
       published: () => feed(world, ["linkedin"]).map(({ post }) => post.text),
       shown: () => shownIn(world, "linkedin"),
       mention: "@ada",

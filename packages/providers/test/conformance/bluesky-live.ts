@@ -81,6 +81,8 @@ function blueskyLiveHarness(options: LiveOptions): Harness {
     thread: "chain",
     // Until the adapter publishes images.
     noImages: true,
+    counts: ["likes", "reposts", "replies", "quotes"],
+    publicStats: true,
     credentials,
     refusedCredentials: {
       ...credentials,
