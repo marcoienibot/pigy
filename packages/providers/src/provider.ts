@@ -234,9 +234,19 @@ export type PublishRequest = {
    * the ID of an uploaded image is no secret. A step that uploads may be
    * run again like every step, and then uploads again, where the network
    * keeps an image that is in no post for a while and drops it: nobody
-   * sees it, and no post is made by it. A provider that says
-   * `repeatsSafely` is false is not run again for an upload either: its
-   * caller sees to that for every step.
+   * sees it, and no post is made by it. So a provider whose other steps
+   * cannot be run again safely says of a step that uploads that it can,
+   * `stepRepeatsSafely`.
+   *
+   * A network that takes the bytes of an image at an address that it
+   * hands out for them, as LinkedIn does, makes an upload two requests:
+   * the one that asks for the address and the one that sends the bytes
+   * there. They are one step, the one exception to a step making one
+   * request that changes something: the address is a secret for as long
+   * as it takes bytes, so it cannot be in the progress for a step after.
+   * A step that is cut off between the two, and is run again, asks for
+   * another address, and leaves an image at the network that has no
+   * bytes and is in no post.
    */
   media?: MediaSource;
   /**
@@ -357,6 +367,27 @@ export type Provider = {
    * sees to that: `publishStep` says how.
    */
   readonly repeatsSafely: boolean;
+
+  /**
+   * For a provider that says `repeatsSafely` is false: whether the step
+   * that `request` asks for can be run again without publishing twice
+   * all the same. True for a step that asks the network to publish
+   * nothing, such as one that uploads an image: run again, it uploads
+   * again, and the image that the run before it uploaded is in no post.
+   * False for a step that may ask the network to publish. Left out where
+   * no step can be run again safely.
+   *
+   * The caller asks before every step, and keeps only a step for which
+   * it says false from being run a second time: `publishStep`, rule 3.
+   * So a step that is cut off while it uploads, or whose upload ends
+   * without an answer, is run again, and the delivery does not end as
+   * one that nobody knows the outcome of for it. The answer goes by what
+   * the step goes by, the content and the progress, and is the same for
+   * the same request every time it is asked.
+   */
+  stepRepeatsSafely?(
+    request: Pick<PublishRequest, "content" | "progress">,
+  ): boolean;
 
   /**
    * Starts connecting an account: works out where to send the person. The
@@ -502,7 +533,10 @@ export type Provider = {
    *    step, it notes that it is about to, where the note outlasts the
    *    step, and a step that it finds such a note for is not run. The
    *    delivery ends as it does for `uncertain`. When a person asks for
-   *    another try, that is a new attempt, with notes of its own.
+   *    another try, that is a new attempt, with notes of its own. A step
+   *    that publishes nothing, which the provider says with
+   *    `stepRepeatsSafely`, needs no note, and is run again as a step of
+   *    a provider that repeats safely is.
    *
    * Three things no provider can see to, so the caller does:
    *

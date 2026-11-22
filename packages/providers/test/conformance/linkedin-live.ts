@@ -40,8 +40,6 @@ export function linkedInLiveHarness(options: {
     redirectUri: "https://pigy.invalid/connect/linkedin/callback",
     identifier: undefined,
     thread: "joined",
-    // Until the adapter publishes images.
-    noImages: true,
     counts: [],
     credentials,
     refusedCredentials: { ...credentials, accessToken: unknownToken },

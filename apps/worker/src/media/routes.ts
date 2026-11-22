@@ -30,7 +30,7 @@ import {
 } from "../workspace/workspaces.ts";
 import { forgetUpload, takeIn } from "./intake.ts";
 import { mediaKeys } from "./keys.ts";
-import { mediaLinkPath, mediaLinksWith } from "./links.ts";
+import { linkedImage, mediaLinkPath, mediaLinksWith } from "./links.ts";
 import { imagesTransformer } from "./transform.ts";
 
 /**
@@ -367,8 +367,7 @@ export function mediaRoutes(dependencies: AppDependencies): Hono<AppEnv> {
       c.env,
       isLocal(url.origin) ? developmentCredentialKeys : undefined,
     );
-    const key = await links?.check(url, now());
-    const file = key === undefined ? null : await c.env.MEDIA.get(key);
+    const file = await linkedImage(c.env.MEDIA, links, url, now());
     if (!file) {
       throw new HTTPException(404, { message: "There is nothing here" });
     }

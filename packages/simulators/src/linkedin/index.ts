@@ -7,6 +7,12 @@ import {
 } from "../world/index.ts";
 import { createPost, deletePost, userinfo } from "./api.ts";
 import { apiError, html } from "./http.ts";
+import {
+  initializeUpload,
+  readImage,
+  uploadBytes,
+  uploadPath,
+} from "./images.ts";
 import { accessToken, authorize, introspect, revoke } from "./oauth.ts";
 import {
   createState,
@@ -15,6 +21,7 @@ import {
   type LinkedInToken,
 } from "./state.ts";
 
+export { slowProcessingMs } from "./images.ts";
 export type { LinkedInClient, LinkedInMember } from "./state.ts";
 
 /**
@@ -22,7 +29,8 @@ export type { LinkedInClient, LinkedInMember } from "./state.ts";
  * member, written from LinkedIn's documentation at
  * https://learn.microsoft.com/en-us/linkedin: "Authorization Code Flow
  * (3-legged OAuth)", "Sign In with LinkedIn using OpenID Connect", "Posts
- * API", "Little Text Format", "API Rate Limiting" and "Error Handling". It
+ * API", "Images API", "MultiImage API", "Little Text Format", "API Rate
+ * Limiting" and "Error Handling". It
  * was written without access to those pages, from what its author knew of
  * them: what had to be assumed is marked GUESS, for a run against the real
  * LinkedIn to confirm.
@@ -38,8 +46,9 @@ export type { LinkedInClient, LinkedInMember } from "./state.ts";
  * - It accepts only the secrets that a simulation made, which say what
  *   they are: the secret of an application too.
  *
- * Not simulated: organizations and their pages, media, articles, polls,
- * comments, mentions and hashtags, reading a post, which takes a
+ * Not simulated: organizations and their pages, videos, documents, polls,
+ * the picture of an article, comments, mentions of members, reading a
+ * post, which takes a
  * permission that LinkedIn gives few applications, refresh tokens, which
  * it gives few as well, the ID token of OpenID Connect, and the limits
  * that LinkedIn keeps per application.
@@ -51,15 +60,19 @@ export const linkedInFaultKinds = [
   "server-error",
   "lost-response",
   "token-revoked",
+  "slow-processing",
 ] as const satisfies readonly FaultKind[];
 
 /**
  * The requests that a fault can strike: exchanging a code for a token,
- * asking whose token it is, posting, deleting a post, and giving a token
- * back.
+ * asking whose token it is, posting, uploading an image, which is making
+ * it and putting its bytes there, asking how an image stands, deleting a
+ * post, and giving a token back.
  */
 export const linkedInOperations = [
   "publish",
+  "upload",
+  "image",
   "account",
   "token",
   "delete",
@@ -143,6 +156,20 @@ type Route = {
   run(member: LinkedInMember): Response | Promise<Response>;
 };
 
+/**
+ * The URN that a part of an address names, or undefined if it is not
+ * written as LinkedIn documents for every URN in one: with its colons
+ * encoded.
+ */
+function urnIn(encoded: string): string | undefined {
+  if (encoded.includes(":")) return undefined;
+  try {
+    return decodeURIComponent(encoded);
+  } catch {
+    return undefined;
+  }
+}
+
 export function createLinkedInSimulator(world: SimWorld): LinkedInSimulator {
   const state = createState(world);
 
@@ -178,17 +205,41 @@ export function createLinkedInSimulator(world: SimWorld): LinkedInSimulator {
         run: (member) => createPost(state, request, member),
       };
     }
+    if (path === "/rest/images" && method === "POST") {
+      const action = new URL(request.url).searchParams.get("action");
+      if (action !== "initializeUpload") {
+        return apiError(
+          400,
+          `The simulated LinkedIn has no action "${action ?? ""}" on images`,
+        );
+      }
+      return {
+        operation: "upload",
+        scopes: ["w_member_social"],
+        versioned: true,
+        run: (member) => initializeUpload(state, request, member),
+      };
+    }
+    const image = /^\/rest\/images\/([^/]+)$/.exec(path)?.[1];
+    if (image !== undefined && method === "GET") {
+      const id = urnIn(image);
+      if (!id || !/^urn:li:image:[A-Za-z0-9_-]+$/.test(id)) {
+        return apiError(
+          400,
+          "The ID of an image in an address is its URN, URL-encoded",
+        );
+      }
+      return {
+        operation: "image",
+        scopes: ["w_member_social"],
+        versioned: true,
+        run: (member) => readImage(state, id, member),
+      };
+    }
     const encoded = /^\/rest\/posts\/([^/]+)$/.exec(path)?.[1];
     if (encoded === undefined) return null;
-    // An ID in an address is written with its colons encoded, as LinkedIn
-    // documents for every URN in one.
-    let id: string;
-    try {
-      id = decodeURIComponent(encoded);
-    } catch {
-      id = "";
-    }
-    if (encoded.includes(":") || !/^urn:li:(share|ugcPost):\d+$/.test(id)) {
+    const id = urnIn(encoded) ?? "";
+    if (!/^urn:li:(share|ugcPost):\d+$/.test(id)) {
       return apiError(
         400,
         "The ID of a post in an address is its URN, URL-encoded",
@@ -301,7 +352,7 @@ export function createLinkedInSimulator(world: SimWorld): LinkedInSimulator {
   async function withFaults(
     operation: Operation,
     request: Request,
-    answer: () => Response | Promise<Response>,
+    answer: (slow: boolean) => Response | Promise<Response>,
   ): Promise<Response> {
     const bearer = /^Bearer (.+)$/i.exec(
       request.headers.get("Authorization") ?? "",
@@ -311,8 +362,10 @@ export function createLinkedInSimulator(world: SimWorld): LinkedInSimulator {
       operation,
       linkedInFaultKinds.filter(
         (kind) =>
-          kind !== "token-revoked" ||
-          (bearer !== undefined && isSimulatedSecret(bearer)),
+          (kind !== "token-revoked" ||
+            (bearer !== undefined && isSimulatedSecret(bearer))) &&
+          // Only the bytes of an image are worked on.
+          (kind !== "slow-processing" || isUpload(request)),
       ),
     );
     if (fault === "server-error") {
@@ -323,7 +376,7 @@ export function createLinkedInSimulator(world: SimWorld): LinkedInSimulator {
     if (fault === "token-revoked" && bearer !== undefined) {
       world.revokeToken("linkedin", bearer);
     }
-    const response = await answer();
+    const response = await answer(fault === "slow-processing");
     if (fault === "lost-response") {
       // What `fetch` does when the connection breaks. The request was
       // carried out all the same.
@@ -336,6 +389,11 @@ export function createLinkedInSimulator(world: SimWorld): LinkedInSimulator {
 
   const owns = (host: string) =>
     host === linkedInAuthorizationHost || host === linkedInApiHost;
+
+  /** Whether `request` puts the bytes of an image where they go. */
+  const isUpload = (request: Request) =>
+    request.method === "PUT" &&
+    new URL(request.url).pathname.startsWith(uploadPath);
 
   return {
     async fetch(input, init) {
@@ -366,6 +424,16 @@ export function createLinkedInSimulator(world: SimWorld): LinkedInSimulator {
         }
         if (path === "/oauth/v2/introspectToken" && method === "POST") {
           return introspect(state, request);
+        }
+        if (path.startsWith(uploadPath) && method === "PUT") {
+          return withFaults("upload", request, (slow) =>
+            api(request, {
+              operation: "upload",
+              scopes: ["w_member_social"],
+              versioned: false,
+              run: (member) => uploadBytes(state, request, member, slow),
+            }),
+          );
         }
         return html(404, "<!doctype html><title>Page not found</title>");
       }

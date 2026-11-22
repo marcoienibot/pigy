@@ -33,6 +33,7 @@ import {
   useKeyDown,
   withMod,
 } from "@/lib/keyboard";
+import { selectPartImages } from "@/lib/media";
 import { connectableNetworks, networkInfo } from "@/lib/networks";
 import { undoMs } from "@/lib/notices";
 import {
@@ -108,9 +109,10 @@ export function PublishPanel({
     }
     // The text that was written for the account goes with the choice:
     // read before it does.
-    const own = ownTextsOf(selectOwnTexts(tablesNow()), draft.id).get(
-      channel.id,
-    );
+    const before = tablesNow();
+    const own = ownTextsOf(selectOwnTexts(before), draft.id).get(channel.id);
+    // And its images, which come back with it.
+    const images = selectPartImages(before);
     mutate("target.remove", { postId: draft.id, channelId: channel.id });
     if (!own) return;
     // One press must not cost a text that somebody wrote. The notice is
@@ -149,7 +151,7 @@ export function PublishPanel({
           });
           // All of the text, also where it has grown longer than one
           // step carries.
-          restoreOwnText(mutate, draft.id, channel.id, own);
+          restoreOwnText(mutate, draft.id, channel.id, own, images);
           // The notice leaves the page with the press, and the keyboard
           // would be left on the page, where its keys are shortcuts: it
           // goes back to the choice that was taken back, if the draft is

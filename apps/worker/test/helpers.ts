@@ -41,7 +41,8 @@ type Secrets =
   | "LINKEDIN_CLIENT_SECRET"
   | "THREADS_APP_ID"
   | "THREADS_APP_SECRET"
-  | "VAPID_PRIVATE_KEY";
+  | "VAPID_PRIVATE_KEY"
+  | "APP_URL";
 
 /**
  * A key for `CREDENTIAL_KEYS`, as a deployment has one: 32 bytes in
@@ -193,7 +194,18 @@ export function setup(
     name: "pigy",
     redirectUris: [`${origin}/connect/linkedin/callback`],
   });
-  const threads = createThreadsSimulator(world);
+  const threads = createThreadsSimulator(world, {
+    // What Threads fetches an image from: the app of the tests, at the
+    // address that it is reached at, as Threads fetches it from the
+    // internet. Nothing else is on the web of this world.
+    web: async (input) => {
+      const url = new URL(urlOf(input));
+      if (url.origin !== origin) {
+        throw new TypeError(`The web of the tests has no ${url.origin}`);
+      }
+      return app.request(url.href, undefined, bindings, executionContext());
+    },
+  });
   // The same for Threads: the app that whoever runs this pigy has made at
   // Meta.
   const threadsApp = threads.addApp({
@@ -289,6 +301,9 @@ export function setup(
     LINKEDIN_CLIENT_SECRET: linkedinClient.clientSecret,
     THREADS_APP_ID: threadsApp.appId,
     THREADS_APP_SECRET: threadsApp.appSecret,
+    // Where this pigy is reached at from the internet: what Threads is
+    // handed a link to an image at.
+    APP_URL: origin,
     ...options.env,
   };
   const bindings: Bindings = {

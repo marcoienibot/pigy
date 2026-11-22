@@ -95,11 +95,15 @@ describeProvider("Mastodon, simulated", async () => {
         simulator.arm({
           kind,
           // With the code exchanged for a token, the adapter asks whose
-          // token it is.
-          // The counts of a status are in the status.
-          operation: { connect: "account", publish: "publish", stats: "read" }[
-            during
-          ] as "account" | "publish" | "read",
+          // token it is. An upload is a request that publishes to the
+          // simulated Mastodon, and the first of a part with images. The
+          // counts of a status are in the status.
+          operation: {
+            connect: "account",
+            publish: "publish",
+            upload: "publish",
+            stats: "read",
+          }[during] as "account" | "publish" | "read",
         });
       },
       engage: (id, more) => world.engage("mastodon", id, more),

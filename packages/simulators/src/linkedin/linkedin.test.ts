@@ -1,3 +1,4 @@
+import { gifFile, jpegFile, pngFile } from "@pigy/core/test-images";
 import { describe, expect, it } from "vitest";
 import {
   answerConsent,
@@ -7,7 +8,11 @@ import {
   isSimulatedSecret,
   simulationNotice,
 } from "../world/index.ts";
-import { createLinkedInSimulator, linkedInVersions } from "./index.ts";
+import {
+  createLinkedInSimulator,
+  linkedInVersions,
+  slowProcessingMs,
+} from "./index.ts";
 
 const www = "https://www.linkedin.com";
 const api = "https://api.linkedin.com";
@@ -629,8 +634,13 @@ describe("posting", () => {
     ["a draft", { lifecycleState: "DRAFT" }, 422],
     ["a field that it does not know", { colour: "blue" }, 422],
     [
-      "media, which is not simulated",
-      { content: { media: { id: "urn:li:image:1" } } },
+      "an image that was never uploaded",
+      { content: { media: { id: "urn:li:image:C4D22AQabc" } } },
+      422,
+    ],
+    [
+      "a poll, which is not simulated",
+      { content: { poll: { question: "Yes?" } } },
       400,
     ],
     ["an organization as the author", { author: "urn:li:organization:1" }, 400],
@@ -720,6 +730,274 @@ describe("posting", () => {
     expect(
       (await publish(sim, token, postOf(sim.ada.id, "A new day"))).status,
     ).toBe(201);
+  });
+});
+
+describe("images", () => {
+  /** Asks LinkedIn for a new image of `owner`, as a member with `token`. */
+  async function initialize(sim: Sim, token: string, owner = sim.ada.id) {
+    const response = await sim.simulator.fetch(
+      `${api}/rest/images?action=initializeUpload`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          "LinkedIn-Version": version,
+          "X-Restli-Protocol-Version": "2.0.0",
+        },
+        body: JSON.stringify({
+          initializeUploadRequest: { owner: `urn:li:person:${owner}` },
+        }),
+      },
+    );
+    return {
+      response,
+      ...((response.status === 200
+        ? ((await response.json()) as { value: unknown }).value
+        : {}) as { uploadUrl: string; image: string }),
+    };
+  }
+
+  /** Puts `bytes` at `uploadUrl`, with `token` if there is one. */
+  const put = (
+    sim: Sim,
+    uploadUrl: string,
+    bytes: Uint8Array,
+    token?: string,
+  ) =>
+    sim.simulator.fetch(uploadUrl, {
+      method: "PUT",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: bytes as Uint8Array<ArrayBuffer>,
+    });
+
+  /** How LinkedIn says that the image `id` stands. */
+  async function statusOf(sim: Sim, token: string, id: string) {
+    const response = await sim.simulator.fetch(
+      `${api}/rest/images/${encodeURIComponent(id)}`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "LinkedIn-Version": version,
+          "X-Restli-Protocol-Version": "2.0.0",
+        },
+      },
+    );
+    return response.status === 200
+      ? ((await response.json()) as { status: string }).status
+      : response.status;
+  }
+
+  /** An image of the member of `token`, uploaded and ready. */
+  async function uploaded(sim: Sim, token: string, bytes: Uint8Array) {
+    const { uploadUrl, image } = await initialize(sim, token);
+    expect((await put(sim, uploadUrl, bytes, token)).status).toBe(201);
+    return image;
+  }
+
+  it("makes an image, takes its bytes once at the address that it named, with the token of its member, and says how it stands", async () => {
+    const sim = setup();
+    const token = await tokenFor(sim);
+    const { response, uploadUrl, image } = await initialize(sim, token);
+    expect(response.status).toBe(200);
+    expect(image).toMatch(/^urn:li:image:[A-Za-z0-9_-]+$/);
+    // Under the host where members sign in, with a token of its own.
+    expect(new URL(uploadUrl).host).toBe("www.linkedin.com");
+    expect(await statusOf(sim, token, image)).toBe("WAITING_UPLOAD");
+
+    const bytes = await pngFile(300, 200);
+    // Without the token of a member, and with the token of another.
+    expect((await put(sim, uploadUrl, bytes)).status).toBe(401);
+    expect(
+      (await put(sim, uploadUrl, bytes, await tokenFor(sim, sim.grace))).status,
+    ).toBe(403);
+    // At an address with another token of the upload.
+    const forged = new URL(uploadUrl);
+    forged.searchParams.set("ut", "pigy-sim-forged");
+    expect((await put(sim, forged.href, bytes, token)).status).toBe(404);
+    expect(await statusOf(sim, token, image)).toBe("WAITING_UPLOAD");
+
+    expect((await put(sim, uploadUrl, bytes, token)).status).toBe(201);
+    expect(await statusOf(sim, token, image)).toBe("AVAILABLE");
+    // Once.
+    expect((await put(sim, uploadUrl, bytes, token)).status).toBe(400);
+    // An image is its member's: another is not told of it.
+    expect(await statusOf(sim, await tokenFor(sim, sim.grace), image)).toBe(
+      403,
+    );
+  });
+
+  it("makes no image for somebody else", async () => {
+    const sim = setup();
+    const { response } = await initialize(
+      sim,
+      await tokenFor(sim),
+      sim.grace.id,
+    );
+    expect(response.status).toBe(403);
+  });
+
+  it("posts one image with its description, several as a multiImage, and images without a text", async () => {
+    const sim = setup();
+    const token = await tokenFor(sim);
+    const one = await uploaded(sim, token, await pngFile(300, 200));
+    const two = await uploaded(sim, token, jpegFile(640, 480));
+    const three = await uploaded(sim, token, gifFile(120, 90));
+
+    const single = await publish(sim, token, {
+      ...postOf(sim.ada.id, "One image"),
+      content: { media: { id: one, altText: "A harbour" } },
+    });
+    expect(single.status).toBe(201);
+    const several = await publish(sim, token, {
+      ...postOf(sim.ada.id, ""),
+      content: {
+        multiImage: {
+          images: [{ id: two, altText: "Boats" }, { id: three }],
+        },
+      },
+    });
+    expect(several.status).toBe(201);
+
+    expect(
+      feed(sim.world).map(({ post }) => [
+        post.text,
+        post.images?.map(({ type, width, height, alt }) => [
+          type,
+          width,
+          height,
+          alt,
+        ]),
+      ]),
+    ).toEqual([
+      ["One image", [["image/png", 300, 200, "A harbour"]]],
+      [
+        "",
+        [
+          ["image/jpeg", 640, 480, "Boats"],
+          ["image/gif", 120, 90, ""],
+        ],
+      ],
+    ]);
+    // The bytes are kept in the world, as they were sent.
+    const [first] = feed(sim.world);
+    const blob = first?.post.images?.[0]?.blob ?? "";
+    expect(sim.world.blobs.get(blob)?.length).toBe(
+      (await pngFile(300, 200)).length,
+    );
+  });
+
+  it("refuses a multiImage of one image and one of 21, an image that is not ready, an image of another member and a description that is too long", async () => {
+    const sim = setup();
+    const token = await tokenFor(sim);
+    const ready = await uploaded(sim, token, await pngFile(40, 40));
+    const { image: empty } = await initialize(sim, token);
+    const graces = await tokenFor(sim, sim.grace);
+    const { uploadUrl, image: hers } = await initialize(
+      sim,
+      graces,
+      sim.grace.id,
+    );
+    await put(sim, uploadUrl, await pngFile(40, 40), graces);
+    const refused = async (content: unknown) =>
+      (
+        await publish(sim, token, {
+          ...postOf(sim.ada.id, "Refused"),
+          content,
+        })
+      ).status;
+
+    expect(await refused({ multiImage: { images: [{ id: ready }] } })).toBe(
+      422,
+    );
+    expect(
+      await refused({
+        multiImage: {
+          images: Array.from({ length: 21 }, () => ({ id: ready })),
+        },
+      }),
+    ).toBe(422);
+    expect(await refused({ media: { id: empty } })).toBe(422);
+    expect(await refused({ media: { id: hers } })).toBe(422);
+    expect(
+      await refused({ media: { id: ready, altText: "a".repeat(4087) } }),
+    ).toBe(422);
+    // Images and an article: a post has one content.
+    expect(
+      await refused({
+        media: { id: ready },
+        article: { source: "https://example.test/", title: "A page" },
+      }),
+    ).toBe(422);
+    expect(texts(sim)).toEqual([]);
+    // 4086 characters are taken.
+    expect(
+      await refused({ media: { id: ready, altText: "a".repeat(4086) } }),
+    ).toBe(201);
+  });
+
+  it("works on an image for half a minute when a fault makes it slow, and takes no post with it until it is done", async () => {
+    const sim = setup();
+    const token = await tokenFor(sim);
+    sim.simulator.arm({ kind: "slow-processing", operation: "upload" });
+    const { uploadUrl, image } = await initialize(sim, token);
+    // Making the image is no work on bytes: the fault waits for the bytes.
+    expect(await statusOf(sim, token, image)).toBe("WAITING_UPLOAD");
+    await put(sim, uploadUrl, await pngFile(40, 40), token);
+    expect(await statusOf(sim, token, image)).toBe("PROCESSING");
+    const post = () =>
+      publish(sim, token, {
+        ...postOf(sim.ada.id, "Slow"),
+        content: { media: { id: image } },
+      });
+    expect((await post()).status).toBe(422);
+
+    sim.world.advance(slowProcessingMs);
+    expect(await statusOf(sim, token, image)).toBe("AVAILABLE");
+    expect((await post()).status).toBe(201);
+  });
+
+  it("takes in no file that is not a JPG, a PNG or a GIF, nor one with too many pixels, and refuses one with too many bytes", async () => {
+    const sim = setup();
+    const token = await tokenFor(sim);
+    const failed = async (bytes: Uint8Array) => {
+      const { uploadUrl, image } = await initialize(sim, token);
+      expect((await put(sim, uploadUrl, bytes, token)).status).toBe(201);
+      return statusOf(sim, token, image);
+    };
+    expect(await failed(new TextEncoder().encode("<svg></svg>"))).toBe(
+      "PROCESSING_FAILED",
+    );
+    // A header that claims more than 36,152,320 pixels.
+    expect(await failed(jpegFile(8000, 4600))).toBe("PROCESSING_FAILED");
+    expect(await failed(jpegFile(8000, 4519))).toBe("AVAILABLE");
+
+    const { uploadUrl } = await initialize(sim, token);
+    expect(
+      (await put(sim, uploadUrl, new Uint8Array(8 * 1024 * 1024 + 1), token))
+        .status,
+    ).toBe(413);
+  });
+
+  it("takes the same words with other images for another post, and refuses the same post again as a repetition", async () => {
+    const sim = setup();
+    const token = await tokenFor(sim);
+    const one = await uploaded(sim, token, await pngFile(40, 40));
+    const two = await uploaded(sim, token, await pngFile(50, 50));
+    const withImage = (id: string) =>
+      publish(sim, token, {
+        ...postOf(sim.ada.id, "Same words"),
+        content: { media: { id } },
+      });
+    const first = await withImage(one);
+    expect(first.status).toBe(201);
+    expect((await withImage(two)).status).toBe(201);
+    const again = await withImage(one);
+    expect(again.status).toBe(422);
+    expect(await again.json()).toMatchObject({
+      message: `Content is a duplicate of ${first.headers.get("x-restli-id")}`,
+    });
   });
 });
 

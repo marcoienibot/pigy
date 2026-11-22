@@ -75,8 +75,9 @@ export class WorkspaceDO extends workspaceObject({
 
 export class SimWorldDO extends simWorldObject({
   now,
-  // A test that wants the development key deploys it as a secret.
+  // A test that wants the development keys deploys them as secrets.
   developmentBlueskyClientKeys: undefined,
+  developmentCredentialKeys: undefined,
 }) {
   constructor(ctx: DurableObjectState, env: Bindings) {
     // With the secrets of the test, as the workflow below: the world of a

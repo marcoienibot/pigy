@@ -66,6 +66,7 @@ export class WorkspaceDO extends workspaceObject({
 export class SimWorldDO extends simWorldObject({
   now,
   developmentBlueskyClientKeys: dependencies.developmentBlueskyClientKeys,
+  developmentCredentialKeys: dependencies.developmentCredentialKeys,
 }) {}
 
 /**

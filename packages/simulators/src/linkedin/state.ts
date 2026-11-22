@@ -1,5 +1,6 @@
 import type {
   SimAccount,
+  SimImageType,
   SimPost,
   SimToken,
   SimWorld,
@@ -43,6 +44,44 @@ export type LinkedInPost = SimPost & {
   visibility: string;
 };
 
+/**
+ * An image of the Images API: what `initializeUpload` makes, which the
+ * bytes are put into at the address that it hands out, and which a post
+ * then names by its URN.
+ */
+export type LinkedInImage = {
+  /** Its URN, `urn:li:image:…`. */
+  id: string;
+  /** The member whose image it is, who alone can post it. */
+  ownerId: string;
+  /**
+   * What lets the bytes in: the last part of the address that the upload
+   * goes to. Good once.
+   */
+  uploadToken: string;
+  /** In milliseconds since the epoch. */
+  createdAt: number;
+  /**
+   * The bytes, once they have arrived, with what LinkedIn found in them,
+   * or why it could not take them.
+   */
+  file:
+    | {
+        blob: string;
+        type: SimImageType;
+        width: number;
+        height: number;
+        size: number;
+      }
+    | { failed: string }
+    | null;
+  /**
+   * Until when LinkedIn works on the bytes after they arrived, in
+   * milliseconds since the epoch.
+   */
+  readyAt: number;
+};
+
 /** What a member consented to, until it is exchanged for a token. */
 export type Code = {
   clientId: string;
@@ -60,6 +99,8 @@ export type State = {
   clients: Table<LinkedInClient>;
   codes: Table<Code>;
   posts: Table<LinkedInPost>;
+  /** The images of the Images API, by their URN. */
+  images: Table<LinkedInImage>;
   /** The posts that were deleted, by their ID. */
   deleted: Table<true>;
   /** How often something was done on the day it is counted for. */
@@ -73,6 +114,7 @@ export function createState(world: SimWorld): State {
     clients: world.table("linkedin", "client"),
     codes: world.table("linkedin", "code"),
     posts: world.posts("linkedin"),
+    images: world.table("linkedin", "image"),
     deleted: world.table("linkedin", "deleted"),
     counters: world.table("linkedin", "counter"),
   };

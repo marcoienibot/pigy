@@ -4,12 +4,14 @@ import {
   connectionOf,
   connectSimulated,
   connectSimulatedLinkedIn,
+  connectSimulatedThreads,
   draftRow,
   editor,
   expectSync,
   feedOf,
   grace,
   graceOnLinkedIn,
+  graceOnThreads,
   localData,
   openScreen,
   overflowOf,
@@ -149,12 +151,12 @@ test("what an account would refuse of the images is said next to it, and the dra
 }) => {
   await openScreen(page, "Channels");
   await connectSimulated(page, grace);
-  await connectSimulatedLinkedIn(page, graceOnLinkedIn);
+  await connectSimulatedThreads(page, graceOnThreads);
   await openScreen(page, "Drafts");
   await page.getByRole("button", { name: "New draft" }).click();
   await editor(page).fill("With an image");
   await channelChoice(page, grace).click();
-  await channelChoice(page, graceOnLinkedIn).click();
+  await channelChoice(page, graceOnThreads).click();
   const publish = publishPanel(page).getByRole("button", {
     name: "Publish now",
   });
@@ -162,16 +164,18 @@ test("what an account would refuse of the images is said next to it, and the dra
 
   await choose(page, [file("boats.png", png(320, 240))]);
   await uploaded(page, 1);
-  // pigy publishes no images to LinkedIn yet: said next to that account,
-  // and of no other.
-  await expect(publishPanel(page)).toContainText(
-    "pigy does not publish images to LinkedIn yet.",
+  // A description that Mastodon takes and Threads does not: said next to
+  // that account, and of no other.
+  await description(image(page, 1)).fill(
+    "A long look at the harbour. ".repeat(40),
   );
+  await expect(publishPanel(page)).toContainText("Threads takes 1000.");
+  await expect(publishPanel(page)).not.toContainText("Mastodon takes");
   await expect(publish).toBeDisabled();
   expect(await overflowOf(page)).toBe(0);
 
-  // Left out, the draft can go to the account that takes it.
-  await channelChoice(page, graceOnLinkedIn).click();
+  // Within what Threads takes, the draft can go to both.
+  await description(image(page, 1)).fill("Boats at dusk");
   await expect(publish).toBeEnabled();
 });
 
@@ -283,6 +287,87 @@ test("signing out while an image is on its way asks first, and counts the image"
   await dialog.getByRole("button", { name: "Sign out and delete" }).click();
   await expect(page).toHaveURL("/sign-in");
   expect(await localData(page)).toEqual({ copies: [], session: null });
+});
+
+test("a thread with images goes out to a simulated LinkedIn account as one post with the images of every part, which the editor says before", async ({
+  ownPage: page,
+}) => {
+  await openScreen(page, "Channels");
+  await connectSimulatedLinkedIn(page, graceOnLinkedIn);
+  await openScreen(page, "Drafts");
+  await page.getByRole("button", { name: "New draft" }).click();
+  const text = "The harbour, in two parts";
+  await editor(page).fill(text);
+  await choose(page, [file("boats.png", png(320, 240))]);
+  await uploaded(page, 1);
+  await description(image(page, 1)).fill("Boats at dusk");
+  await page.getByRole("button", { name: "Add a part" }).click();
+  await partField(page, 2).fill("And the gulls");
+  await choose(page, [file("gulls.png", png(240, 320))], "part 2");
+  await uploaded(page, 1, "part 2");
+  await description(image(page, 1, "part 2")).fill("Gulls on a post");
+  await channelChoice(page, graceOnLinkedIn).click();
+  // What becomes of the images of a thread there, said under each part.
+  await expect(
+    page.getByText(
+      "LinkedIn gets the parts as one post, with these images and those of the other parts together.",
+    ),
+  ).toHaveCount(2);
+  await publishPanel(page).getByRole("button", { name: "Publish now" }).click();
+  await expect(editor(page)).toHaveCount(0);
+
+  await openScreen(page, "Simulator");
+  const published = feedOf(page, graceOnLinkedIn)
+    .getByRole("article")
+    .filter({ hasText: text });
+  await expect(published).toHaveCount(1);
+  await expect(
+    published.getByRole("img", { name: "Boats at dusk" }),
+  ).toBeVisible();
+  await expect(
+    published.getByRole("img", { name: "Gulls on a post" }),
+  ).toBeVisible();
+  expect(await overflowOf(page)).toBe(0);
+});
+
+test("a post with two images goes out to a simulated Threads account, which fetched them from pigy, as a carousel", async ({
+  ownPage: page,
+}) => {
+  await openScreen(page, "Channels");
+  await connectSimulatedThreads(page, graceOnThreads);
+  await openScreen(page, "Drafts");
+  await page.getByRole("button", { name: "New draft" }).click();
+  const text = "Two pictures of the harbour";
+  await editor(page).fill(text);
+  await choose(page, [
+    file("boats.png", png(320, 240)),
+    file("gulls.png", png(240, 320)),
+  ]);
+  await uploaded(page, 2);
+  await description(image(page, 1)).fill("Boats at dusk");
+  await description(image(page, 2)).fill("Gulls on a post");
+  await channelChoice(page, graceOnThreads).click();
+  await publishPanel(page).getByRole("button", { name: "Publish now" }).click();
+  await expect(editor(page)).toHaveCount(0);
+
+  await openScreen(page, "Sent");
+  await expect(sentPost(page, text)).toContainText("Sent");
+
+  await openScreen(page, "Simulator");
+  const published = feedOf(page, graceOnThreads)
+    .getByRole("article")
+    .filter({ hasText: text });
+  const shown = published.getByRole("img", { name: "Gulls on a post" });
+  await expect(shown).toBeVisible();
+  await expect(
+    published.getByRole("img", { name: "Boats at dusk" }),
+  ).toBeVisible();
+  // What Threads fetched at pigy's link was the image.
+  expect(
+    await shown.evaluate(
+      (element) => (element as HTMLImageElement).naturalWidth,
+    ),
+  ).toBe(240);
 });
 
 test("an upload that loses its connection waits, says so, and goes on with what is missing, also after the page was loaded again", async ({

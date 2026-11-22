@@ -442,6 +442,18 @@ export const workspaceRecord = sqliteTable("workspace", {
    * that its rows hold: the migration that adds the column sets it.
    */
   time: integer("time").notNull().default(0),
+  /**
+   * When the bucket is to be looked through for bytes of the workspace
+   * that no row names, in milliseconds since the epoch, or null when
+   * nothing asks for that: a day after the alarm last let go of bytes,
+   * whose deletion may have failed. Section 10 of PLAN.md.
+   */
+  mediaSweepAt: integer("media_sweep_at"),
+  /**
+   * The name in the bucket after which a sweep that stopped at its limit
+   * goes on, or null to begin from the first.
+   */
+  mediaSweepAfter: text("media_sweep_after"),
 });
 
 /** Which rows each of the latest changes wrote or deleted. */

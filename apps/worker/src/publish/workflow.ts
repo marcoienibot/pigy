@@ -30,7 +30,7 @@ import { fetchLinkCard } from "@pigy/providers/card";
 import { openCredentials, sealCredentials } from "../channels/credentials.ts";
 import type { AppDependencies, Bindings } from "../env.ts";
 import { type LogContext, log } from "../log.ts";
-import { mediaLinksWith } from "../media/links.ts";
+import { mediaLinksWith, sandboxMediaOrigin } from "../media/links.ts";
 import { imagesTransformer } from "../media/transform.ts";
 import { ImageUnavailable, imagesFor, mediaSource } from "../media/variants.ts";
 import { blueskyKeysWithoutRequest } from "../network/bluesky-client.ts";
@@ -158,14 +158,6 @@ const cardStep = {
 /** What a delivery says whose images could not be made ready for it. */
 const mediaFailedMessage =
   "pigy could not make the images of this post ready to send.";
-
-/**
- * The address that the links to the images of a sandbox are made with.
- * No host answers at it, and nothing asks it yet: no simulated network
- * fetches an image so far. The simulated Threads will, from the world of
- * its sandbox and never from the internet: PLAN.md section 10.
- */
-export const sandboxMediaOrigin = "https://pigy.invalid";
 
 /**
  * How old the limits of a channel may be before a delivery asks the
@@ -699,6 +691,13 @@ export async function deliver(
    * the delivery is so old that the workspace no longer vouches for its
    * notes: `stepNoteLifetimeMs` of the store. Nothing was posted then, and
    * the person who looks finds that.
+   *
+   * A step that the adapter says can be run again all the same, because
+   * it posts nothing, `stepRepeatsSafely` of the contract, is not noted:
+   * it is run again like a step of an adapter that repeats safely. That
+   * is an upload of an image to LinkedIn, which leaves an image in no
+   * post when it is run twice, and which would otherwise end a delivery
+   * as `uncertain` with nothing posted whenever its answer was lost.
    */
   const sendingOnce = (provider: Provider): Provider =>
     provider.repeatsSafely
@@ -706,6 +705,9 @@ export async function deliver(
       : {
           ...provider,
           async publishStep(request) {
+            if (provider.stepRepeatsSafely?.(request)) {
+              return provider.publishStep(request);
+            }
             const { name, mark } = running;
             const begun = await asked(async () => {
               // A call that fails may have noted the step all the same,

@@ -372,8 +372,22 @@ it("says how each simulated network can be made to fail", async () => {
       },
       {
         network: "linkedin",
-        kinds: ["rate-limit", "server-error", "lost-response", "token-revoked"],
-        operations: ["publish", "account", "token", "delete", "revoke"],
+        kinds: [
+          "rate-limit",
+          "server-error",
+          "lost-response",
+          "token-revoked",
+          "slow-processing",
+        ],
+        operations: [
+          "publish",
+          "upload",
+          "image",
+          "account",
+          "token",
+          "delete",
+          "revoke",
+        ],
         armed: [],
       },
       {

@@ -155,12 +155,19 @@ export function contentImage({ id, alt, media }: PartImage): ContentImage {
  * images, none of which keeps the post from going out.
  *
  * `limits` are those of the accounts that get the text, and `hasLink`
- * says whether the text of the part has a link.
+ * says whether the text of the part has a link. `post` is about the
+ * whole text, for a network that makes one post of the parts, as
+ * LinkedIn does: how many parts it has, and whether such a network
+ * shows the card of a link of it, which may be in another part.
  */
 export function imageNotes(
   images: readonly PartImage[],
   limits: readonly Limits[],
   hasLink: boolean,
+  post: { parts: number; joinedCard: boolean } = {
+    parts: 1,
+    joinedCard: false,
+  },
 ): string[] {
   if (images.length === 0) return [];
   const notes: string[] = [];
@@ -178,11 +185,24 @@ export function imageNotes(
       .map((network) => networkInfo[network].label)
       .join(" and ");
   // A network that shows the card of a link only if it is sent one is
-  // sent the images in its place: a post has one or the other.
+  // sent the images in its place: a post has one or the other. Where the
+  // parts are one post, the link may be in another part.
+  const joined = limits
+    .map(({ network }) => network)
+    .filter((network) => networkInfo[network].thread === "joined");
   const noCard = limits
     .map(({ network }) => network)
-    .filter((network) => network === "bluesky" || network === "linkedin");
-  if (hasLink && noCard.length > 0) {
+    .filter(
+      (network) =>
+        (network === "bluesky" && hasLink) ||
+        (network === "linkedin" && (hasLink || post.joinedCard)),
+    );
+  if (post.parts > 1 && joined.length > 0) {
+    notes.push(
+      `${names(joined)} ${new Set(joined).size === 1 ? "gets" : "get"} the parts as one post, with these images and those of the other parts together.`,
+    );
+  }
+  if (noCard.length > 0) {
     notes.push(
       `${names(noCard)} ${new Set(noCard).size === 1 ? "shows" : "show"} the images and no card for the link: a post has one or the other there.`,
     );

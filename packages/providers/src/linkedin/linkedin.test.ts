@@ -1,5 +1,9 @@
-import type { Fetch } from "@pigy/core";
-import { createLinkedInSimulator } from "@pigy/simulators/linkedin";
+import type { ContentImage, Fetch, PostContent } from "@pigy/core";
+import { pngFile } from "@pigy/core/test-images";
+import {
+  createLinkedInSimulator,
+  slowProcessingMs,
+} from "@pigy/simulators/linkedin";
 import {
   answerConsent,
   createWorld,
@@ -9,6 +13,7 @@ import {
 import { describe, expect, it } from "vitest";
 import { cardOf } from "../card.ts";
 import { ProviderError } from "../errors.ts";
+import type { MediaSource, PublishProgress } from "../provider.ts";
 import {
   createLinkedInProvider,
   type LinkedInCredentials,
@@ -593,6 +598,308 @@ describe("publishing", () => {
     expect(failed).toMatchObject({ kind: "fail", status: 422 });
     expect(failed.message).toContain("3001 characters");
     expect(failed.message).not.toContain(credentials.accessToken);
+  });
+});
+
+describe("images", () => {
+  /** An image of `width` by `height` as a content names it, with its bytes. */
+  async function imageOf(id: string, alt: string, width = 300, height = 200) {
+    const bytes = await pngFile(width, height);
+    const image: ContentImage = {
+      id,
+      type: "image/png",
+      size: bytes.length,
+      width,
+      height,
+      alt,
+    };
+    return { image, bytes };
+  }
+
+  /** Where the steps read the bytes of `images` from. */
+  const sourceOf = (
+    images: { image: ContentImage; bytes: Uint8Array }[],
+  ): MediaSource => ({
+    read: async (id) => {
+      const found = images.find(({ image }) => image.id === id);
+      if (!found) throw new Error(`No image ${id}`);
+      return found.bytes;
+    },
+    link: async () => {
+      throw new Error("LinkedIn fetches nothing");
+    },
+  });
+
+  /**
+   * Runs the steps of a post until it is done, moving the clock of the
+   * world as far as a step asks to wait, and returns the progress after
+   * each step.
+   */
+  async function stepsOf(
+    test: Setup,
+    credentials: LinkedInCredentials,
+    content: PostContent,
+    media: MediaSource,
+    from: PublishProgress | null = null,
+  ) {
+    const steps: PublishProgress[] = [];
+    let progress = from;
+    while (!progress?.done) {
+      expect(steps.length).toBeLessThan(30);
+      progress = await test.provider.publishStep({
+        credentials,
+        content,
+        key: "target-1",
+        progress,
+        media,
+      });
+      steps.push(JSON.parse(JSON.stringify(progress)) as PublishProgress);
+      test.world.advance(progress.waitSeconds * 1000);
+    }
+    return steps;
+  }
+
+  /** Whether `request` asks LinkedIn for a new image. */
+  const initializes = (request: Request) =>
+    request.method === "POST" && request.url.includes("/rest/images");
+
+  it("uploads each image in a step of its own that can be run again, and posts them in one that cannot", async () => {
+    const test = setup();
+    const { credentials } = await connect(test);
+    const images = [
+      await imageOf("one", "A harbour"),
+      await imageOf("two", "", 200, 300),
+    ];
+    const content: PostContent = {
+      parts: [
+        { text: "First", media: [images[0]?.image as ContentImage] },
+        { text: "Second", media: [images[1]?.image as ContentImage] },
+      ],
+    };
+    const steps = await stepsOf(test, credentials, content, sourceOf(images));
+
+    // Two uploads and the post: the uploads publish nothing.
+    expect(steps.map(({ parts }) => parts.length)).toEqual([0, 0, 2]);
+    expect(
+      [null, ...steps.slice(0, -1)].map((progress) =>
+        test.provider.stepRepeatsSafely?.({ content, progress }),
+      ),
+    ).toEqual([true, true, false]);
+    // A post without images is one step, which posts.
+    expect(
+      test.provider.stepRepeatsSafely?.({
+        content: { parts: [{ text: "Text" }] },
+        progress: null,
+      }),
+    ).toBe(false);
+    // The URN of each image is noted before the post that names it, and
+    // nothing of where its bytes went: that address takes bytes.
+    const uploadAddresses = test.requests
+      .filter(({ method }) => method === "PUT")
+      .map(({ url }) => url);
+    expect(uploadAddresses).toHaveLength(2);
+    expect(steps[1]?.state).toEqual({
+      images: [expect.stringMatching(/^urn:li:image:/), expect.any(String)],
+      waits: 0,
+    });
+    for (const address of uploadAddresses) {
+      expect(JSON.stringify(steps)).not.toContain(new URL(address).search);
+    }
+    // One post, with the images of both parts, in their order.
+    expect(
+      feed(test.world, ["linkedin"]).map(({ post }) => [
+        post.text,
+        post.images?.map(({ alt, width }) => [alt, width]),
+      ]),
+    ).toEqual([
+      [
+        "First\n\nSecond",
+        [
+          ["A harbour", 300],
+          ["", 200],
+        ],
+      ],
+    ]);
+  });
+
+  it("uploads an image again whose answer was lost, and posts it once: a lost upload ends nothing", async () => {
+    const test = setup();
+    const { credentials } = await connect(test);
+    const images = [await imageOf("one", "Lost once")];
+    const content: PostContent = {
+      parts: [
+        { text: "With an image", media: [images[0]?.image as ContentImage] },
+      ],
+    };
+    test.simulator.arm({ kind: "lost-response", operation: "upload" });
+    const lost = await failure(() =>
+      test.provider.publishStep({
+        credentials,
+        content,
+        key: "target-1",
+        progress: null,
+        media: sourceOf(images),
+      }),
+    );
+    // To try again, which the caller does: the step posted nothing.
+    expect(lost.kind).toBe("retry");
+    expect(test.provider.stepRepeatsSafely?.({ content, progress: null })).toBe(
+      true,
+    );
+    await stepsOf(test, credentials, content, sourceOf(images));
+    expect(test.requests.filter(initializes)).toHaveLength(2);
+    expect(published(test)).toEqual(["With an image"]);
+    expect(feed(test.world)[0]?.post.images).toHaveLength(1);
+  });
+
+  it("waits for an image that LinkedIn is still working on, and posts it when it is done", async () => {
+    const test = setup();
+    const { credentials } = await connect(test);
+    const images = [await imageOf("one", "Slow")];
+    const content: PostContent = {
+      parts: [{ text: "Slow", media: [images[0]?.image as ContentImage] }],
+    };
+    test.simulator.arm({ kind: "slow-processing", operation: "upload" });
+    const steps = await stepsOf(test, credentials, content, sourceOf(images));
+    const waits = steps.filter(({ waitSeconds }) => waitSeconds > 0);
+    // Half a minute, in waits of five seconds, and then the post.
+    expect(waits).toHaveLength(slowProcessingMs / 5000);
+    expect(test.requests.filter(posts)).toHaveLength(1);
+    expect(published(test)).toEqual(["Slow"]);
+  });
+
+  it("asks to be tried again when LinkedIn works on an image for longer than a minute", async () => {
+    const test = setup();
+    const { credentials } = await connect(test);
+    const images = [await imageOf("one", "Very slow")];
+    const content: PostContent = {
+      parts: [{ text: "Very slow", media: [images[0]?.image as ContentImage] }],
+    };
+    test.hooks.intercept = (request) =>
+      request.method === "GET" && request.url.includes("/rest/images/")
+        ? Response.json({ status: "PROCESSING" })
+        : undefined;
+    const error = await failure(() =>
+      stepsOf(test, credentials, content, sourceOf(images)),
+    );
+    expect(error.kind).toBe("retry");
+    expect(test.requests.filter(posts)).toHaveLength(0);
+  });
+
+  it("uploads the images again that LinkedIn no longer has, and posts nothing with them", async () => {
+    const test = setup();
+    const { credentials } = await connect(test);
+    const images = [await imageOf("one", "Dropped")];
+    const content: PostContent = {
+      parts: [{ text: "Dropped", media: [images[0]?.image as ContentImage] }],
+    };
+    const [uploaded] = await (async () => {
+      const progress = await test.provider.publishStep({
+        credentials,
+        content,
+        key: "target-1",
+        progress: null,
+        media: sourceOf(images),
+      });
+      return [progress];
+    })();
+    // LinkedIn has dropped the image since, as it may one that is in no
+    // post for long.
+    let dropped = true;
+    test.hooks.intercept = (request) => {
+      if (dropped && request.method === "GET") {
+        dropped = false;
+        return Response.json(
+          { message: "Not found", status: 404 },
+          { status: 404 },
+        );
+      }
+      return undefined;
+    };
+    const anew = await test.provider.publishStep({
+      credentials,
+      content,
+      key: "target-1",
+      progress: uploaded ?? null,
+      media: sourceOf(images),
+    });
+    expect(anew).toMatchObject({ parts: [], state: { images: [] } });
+    expect(test.requests.filter(posts)).toHaveLength(0);
+    await stepsOf(test, credentials, content, sourceOf(images), anew);
+    expect(test.requests.filter(initializes)).toHaveLength(2);
+    expect(published(test)).toEqual(["Dropped"]);
+  });
+
+  it("fails a post whose image LinkedIn could not take", async () => {
+    const test = setup();
+    const { credentials } = await connect(test);
+    const images = [await imageOf("one", "Unreadable")];
+    const content: PostContent = {
+      parts: [
+        { text: "Unreadable", media: [images[0]?.image as ContentImage] },
+      ],
+    };
+    test.hooks.intercept = (request) =>
+      request.method === "GET" && request.url.includes("/rest/images/")
+        ? Response.json({ status: "PROCESSING_FAILED" })
+        : undefined;
+    const error = await failure(() =>
+      stepsOf(test, credentials, content, sourceOf(images)),
+    );
+    expect(error).toMatchObject({
+      kind: "fail",
+      message: "LinkedIn could not take the image of the post.",
+    });
+    expect(test.requests.filter(posts)).toHaveLength(0);
+  });
+
+  it("sends the bytes and the token to no host but LinkedIn's", async () => {
+    const test = setup();
+    const { credentials } = await connect(test);
+    const images = [await imageOf("one", "Elsewhere")];
+    const content: PostContent = {
+      parts: [{ text: "Elsewhere", media: [images[0]?.image as ContentImage] }],
+    };
+    test.hooks.intercept = async (request) => {
+      if (!initializes(request)) return undefined;
+      const answer = await test.simulator.fetch(request);
+      const { value } = (await answer.json()) as {
+        value: { uploadUrl: string; image: string };
+      };
+      return Response.json({
+        value: { ...value, uploadUrl: "https://uploads.example/image" },
+      });
+    };
+    const error = await failure(() =>
+      stepsOf(test, credentials, content, sourceOf(images)),
+    );
+    expect(error.kind).toBe("fail");
+    expect(test.requests.map(({ url }) => new URL(url).host)).not.toContain(
+      "uploads.example",
+    );
+  });
+
+  it("posts the images of a part with a link, and no preview of the link", async () => {
+    const test = setup();
+    const { credentials } = await connect(test);
+    const images = [await imageOf("one", "In place of the card")];
+    const content: PostContent = {
+      parts: [
+        {
+          text: "Read https://example.test/",
+          card: {
+            url: "https://example.test/",
+            title: "The page",
+            description: "",
+          },
+          media: [images[0]?.image as ContentImage],
+        },
+      ],
+    };
+    await stepsOf(test, credentials, content, sourceOf(images));
+    const [{ post } = { post: undefined }] = feed(test.world, ["linkedin"]);
+    expect(post?.card ?? null).toBeNull();
+    expect(post?.images).toHaveLength(1);
   });
 });
 

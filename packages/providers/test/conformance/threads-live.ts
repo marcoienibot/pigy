@@ -32,7 +32,8 @@ export function threadsLiveHarness(options: {
     redirectUri: "https://pigy.invalid/connect/threads/callback",
     identifier: undefined,
     thread: "chain",
-    // Until the adapter publishes images.
+    // Threads fetches an image from an address, and a live run has none
+    // that Threads could reach: a pigy that is deployed serves them.
     noImages: true,
     counts: ["likes", "reposts", "replies", "quotes", "views"],
     credentials,

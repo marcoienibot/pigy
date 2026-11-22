@@ -24,10 +24,20 @@ import {
 import { clock } from "./clock.ts";
 import { adminEmail, setup, signedIn, urlOf } from "./helpers.ts";
 import {
+  attach,
+  endedWithImages,
+  gpsText,
+  holds,
+  photo,
+  upload,
+} from "./media.ts";
+import {
   ended,
+  eventsOf,
   publishedOf,
   publishTo,
   started,
+  storedProgress,
   targetOf,
   waitsOf,
   writeDraft,
@@ -73,15 +83,36 @@ async function withChannel(
   const posted = async () => {
     if (where === "live") {
       return feed(test.network.world, ["threads"]).map(
-        ({ post: { id, text, replyToId } }) => ({ id, text, replyToId }),
+        ({ post: { id, text, replyToId, images = [] } }) => ({
+          id,
+          text,
+          replyToId,
+          images: images.map(({ alt, width, height }) => ({
+            alt,
+            width,
+            height,
+          })),
+        }),
       );
     }
-    const flat = (
-      posts: SandboxPost[],
-      replyToId: string | null,
-    ): { id: string; text: string; replyToId: string | null }[] =>
-      posts.flatMap(({ id, text, replies }) => [
-        { id, text, replyToId },
+    type Flat = {
+      id: string;
+      text: string;
+      replyToId: string | null;
+      images: { alt: string; width: number; height: number }[];
+    };
+    const flat = (posts: SandboxPost[], replyToId: string | null): Flat[] =>
+      posts.flatMap(({ id, text, replies, images = [] }) => [
+        {
+          id,
+          text,
+          replyToId,
+          images: images.map(({ alt, width, height }) => ({
+            alt,
+            width,
+            height,
+          })),
+        },
         ...flat(replies, id),
       ]);
     return flat(
@@ -470,6 +501,147 @@ describe("publishing to Threads", () => {
       expect(context.asked(publishRequest)).toBe(2);
     },
   );
+
+  it.each(["sandbox", "live"] as const)(
+    "publishes a thread with images in a %s workspace: a part with one, which Threads fetches at a link, and a part with a carousel",
+    async (where) => {
+      const context = await withChannel(where);
+      const { client, workspace, browser } = context;
+      const draft = await writeDraft(client, workspace, "A harbour", "");
+      const [first = "", second = ""] = draft.partIds;
+      for (const [partId, alt, width, height] of [
+        [first, "Boats at dusk", 320, 240],
+        [second, "", 240, 320],
+        [second, "A gull", 400, 300],
+      ] as const) {
+        const media = await upload(
+          browser,
+          client,
+          workspace,
+          await photo(width, height),
+        );
+        await attach(client, partId, media.id, alt);
+      }
+      const [targetId = ""] = await publishTo(
+        client,
+        draft.postId,
+        context.channel,
+      );
+
+      expect(await endedWithImages(client, draft.postId)).toMatchObject({
+        status: "sent",
+      });
+      expect(targetOf(client, targetId)).toMatchObject({
+        status: "sent",
+        attempt: 1,
+      });
+      const posts = await context.posted();
+      expect(posts).toMatchObject([
+        {
+          text: "A harbour",
+          replyToId: null,
+          images: [{ alt: "Boats at dusk", width: 320, height: 240 }],
+        },
+        {
+          // The second part is only its images, as a reply.
+          text: "",
+          replyToId: posts[0]?.id,
+          images: [
+            { alt: "", width: 240, height: 320 },
+            { alt: "A gull", width: 400, height: 300 },
+          ],
+        },
+      ]);
+      // The links that Threads fetched are in nothing that pigy keeps:
+      // the progress of the delivery, and what the steps of its run
+      // returned, which the platform keeps.
+      for (const { progress } of await storedProgress(workspace)) {
+        expect(progress ?? "").not.toContain("signature=");
+      }
+      expect(JSON.stringify(await eventsOf(workspace, targetId))).not.toContain(
+        "signature=",
+      );
+      if (where === "live") {
+        // A container for the image, one for each item and one for the
+        // carousel: what Threads fetched, it fetched from pigy, which
+        // served the image without what the camera wrote.
+        expect(context.asked(containerRequest)).toBe(4);
+        for (const { post } of feed(context.test.network.world, ["threads"])) {
+          for (const { blob } of post.images ?? []) {
+            const bytes = context.test.network.world.blobs.get(blob);
+            expect(bytes && holds(bytes, gpsText)).toBe(false);
+          }
+        }
+      } else {
+        expect(context.asked(containerRequest)).toBe(0);
+      }
+    },
+  );
+
+  it("waits for a container of an image that Threads takes long to prepare, and publishes it when it is ready", async () => {
+    // As for a container of text below: the test moves the clock when
+    // Threads is asked about the container for the third time.
+    let looks = 0;
+    const context = await withChannel("live", {
+      interceptNetwork: (network) => (input, init) => {
+        const { pathname, searchParams } = new URL(urlOf(input));
+        if (
+          /^\/v1\.0\/\d+$/.test(pathname) &&
+          searchParams.get("fields")?.startsWith("status") &&
+          ++looks === 3
+        ) {
+          clock.time = new Date(clock.time.getTime() + slowProcessingMs);
+        }
+        return network(input, init);
+      },
+    });
+    const { client, workspace, browser } = context;
+    const draft = await writeDraft(client, workspace, "Slowly, with an image");
+    const media = await upload(browser, client, workspace, await photo());
+    await attach(client, draft.partIds[0] ?? "", media.id, "Slow");
+    await arm(context, "live", "slow-processing", "container");
+    const [targetId = ""] = await publishTo(
+      client,
+      draft.postId,
+      context.channel,
+    );
+
+    await endedWithImages(client, draft.postId);
+    expect(targetOf(client, targetId)).toMatchObject({
+      status: "sent",
+      attempt: 1,
+    });
+    expect(await waitsOf(workspace, targetId)).toEqual({
+      "wait-3": 10,
+      "wait-4": 10,
+    });
+    expect(context.asked(containerRequest)).toBe(1);
+    expect(context.asked(publishRequest)).toBe(1);
+    expect((await context.posted()).map(({ images }) => images)).toEqual([
+      [{ alt: "Slow", width: 320, height: 240 }],
+    ]);
+  });
+
+  it("does not hand Threads an image in a live workspace of a pigy that does not know its own address, and says so", async () => {
+    const context = await withChannel("live", { env: { APP_URL: undefined } });
+    const { client, workspace, browser } = context;
+    const draft = await writeDraft(client, workspace, "Nowhere to fetch");
+    const media = await upload(browser, client, workspace, await photo());
+    await attach(client, draft.partIds[0] ?? "", media.id);
+    const [targetId = ""] = await publishTo(
+      client,
+      draft.postId,
+      context.channel,
+    );
+
+    await endedWithImages(client, draft.postId);
+    expect(targetOf(client, targetId)).toMatchObject({
+      status: "error",
+      error: expect.stringContaining("APP_URL"),
+    });
+    expect(context.asked(containerRequest)).toBe(0);
+    expect(await context.posted()).toEqual([]);
+  });
 
   it("waits for a container that Threads takes long to prepare, and publishes it when it is ready", async () => {
     // The clock of a test stands still, so a container that is slow stays

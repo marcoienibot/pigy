@@ -75,6 +75,7 @@ Do them in this order: the first three are what it takes to sign in.
 | `VAPID_PRIVATE_KEY` | The output of the same `openssl` command, by itself, without `1:` |
 | `LINKEDIN_CLIENT_ID`, `LINKEDIN_CLIENT_SECRET` | The application of step 4.2 |
 | `THREADS_APP_ID`, `THREADS_APP_SECRET` | The app of step 4.3 |
+| `APP_URL` | `https://<host>`, the address that pigy is reached at, without a path. It is no secret, and can be a variable instead. Threads fetches the images of a post from pigy at a link that is made with it, so without it no post with an image goes to a real Threads account. Nothing else needs it |
 
 The command for a key of Bluesky and for the VAPID key, run once for each:
 
@@ -135,7 +136,7 @@ In this order. Each is something that only a deployed pigy can show.
 1. Sign in with Google, on a desktop and on a phone. Sign out. Sign in with an address that is not invited, and see the invite-only page.
 2. The sandbox: connect a simulated account of each network on the Channels screen, publish a post, and find it on the Simulator screen.
 3. Switch to live. Connect one real account per network: Mastodon and Bluesky need nothing more, LinkedIn and Threads need steps 4.2 and 4.3. Bluesky cannot be tried before this point at all: it reads pigy's client metadata from `https://<host>/connect/bluesky/client-metadata.json`.
-4. Publish a post to each, and a thread. Find them on the networks, and on the Sent screen. Attach a photo from a phone to a post for Mastodon and Bluesky, describe it, and find it there with its description and standing up as it was taken.
+4. Publish a post to each, and a thread. Find them on the networks, and on the Sent screen. Attach a photo from a phone to a post for each network, describe it, and find it there with its description and standing up as it was taken. Two photos for Threads make a carousel, which Threads fetched from pigy itself, and a thread with a photo in each part is one post on LinkedIn with both.
 5. Schedule a post for a few minutes ahead, close the app, and see it go out.
 6. Install pigy on a phone: from the menu of Chrome on Android, and with "Add to Home Screen" in Safari on iOS. Open it without a connection.
 7. Turn "Notifications on this device" on in Settings, on the phone. In the sandbox, arm a failure on Simulator → Failures and publish: the phone shows a notification, and pressing it leads to the post.
@@ -150,6 +151,7 @@ pigy has not met a real Cloudflare, a real network or a real phone. `PLAN.md` se
 - "To confirm when the relevant phase starts": the Workflows service on a deployed Worker, and how a deploy spreads.
 - The lists that begin "Open since phase 9" (push messages and phones), "Open since phase 3a" (Mastodon), "3c" (Bluesky), "3d" (LinkedIn) and "3e" (Threads), and "Scheduling (phase 5)".
 - "Launch (phase 11a)": what this guide and the headers assume.
+- "Images (phase 7)": what the bucket and the Images binding do on the platform, and what each network does with an image.
 
 The live conformance run of each network confirms most of what its list has: `AGENTS.md`, "Run the conformance suite against a real network". It posts to a real account, so it takes an account that is there for the purpose.
 
@@ -193,7 +195,7 @@ What is known, and what to check. pigy has no backup of its own.
 
 ## 11. A custom domain
 
-`PLAN.md` section 20 has what moving to another address means. pigy takes its address from the request, so nothing in the code or the secrets changes, but `APP_URL` where you have set it, which nothing needs before Threads publishes images. In order:
+`PLAN.md` section 20 has what moving to another address means. pigy takes its address from the request, so nothing in the code or the secrets changes, but `APP_URL`, which Threads fetches the images of a post at: set it to the new address once the domain answers. In order:
 
 1. Add the domain to the Worker: Workers & Pages → pigy → Settings → Domains & Routes → Custom domain.
 2. Add `https://<new host>/api/auth/google/callback` to the Google client, `https://<new host>/connect/linkedin/callback` to the LinkedIn application and `https://<new host>/connect/threads/callback` to the Threads app, and keep the old ones until nobody uses the old address.

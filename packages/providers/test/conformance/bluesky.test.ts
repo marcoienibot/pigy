@@ -176,7 +176,12 @@ describeProvider("Bluesky, simulated", async () => {
       arm: (kind, during = "publish") =>
         during === "connect"
           ? armDuringConnect(kind)
-          : simulator.arm({ kind, operation: during }),
+          : simulator.arm({
+              kind,
+              // An upload is a request that publishes to the simulated
+              // PDS, and the first of a part with images.
+              operation: during === "upload" ? "publish" : during,
+            }),
       engage: (id, more) => world.engage("bluesky", id, more),
       published: () => feed(world, ["bluesky"]).map(({ post }) => post.text),
       shown: () => shownIn(world, "bluesky"),

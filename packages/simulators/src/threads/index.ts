@@ -62,11 +62,16 @@ export type { ThreadsApp, ThreadsPost, ThreadsUser } from "./state.ts";
  * - It accepts only the secrets that a simulation made, which say what
  *   they are: the secret of an app too.
  *
- * Not simulated: media, carousels, links with a preview of the app's
- * choosing, quotes, polls, topics, publishing in one step, the list of an
- * account's replies, the insights of an account, mentions, webhooks, an
- * app in development
- * that only its testers can use, and the limits that Meta keeps per app.
+ * Images are: a container of an image, which Threads fetches itself from
+ * the address that it is given, and a carousel of such containers. A
+ * simulator makes no requests, so it is given what it fetches with: the
+ * web of its world, `ThreadsSimulatorOptions`.
+ *
+ * Not simulated: videos, links with a preview of the app's choosing,
+ * quotes, polls, topics, publishing in one step, the list of an account's
+ * replies, the insights of an account, mentions, webhooks, an app in
+ * development that only its testers can use, and the limits that Meta
+ * keeps per app.
  */
 
 /** The faults that Threads can suffer from. */
@@ -174,7 +179,21 @@ type Route = {
   ): Response | Promise<Response>;
 };
 
-export function createThreadsSimulator(world: SimWorld): ThreadsSimulator {
+export type ThreadsSimulatorOptions = {
+  /**
+   * What Threads fetches the image of a container with, from the address
+   * that it was given: whatever the world reaches of the web. In a
+   * sandbox that is pigy's own link to the image, which the world reads
+   * inside the Worker and never from the internet. Without it, no image
+   * can be fetched, and every container of one fails.
+   */
+  web?: Fetch;
+};
+
+export function createThreadsSimulator(
+  world: SimWorld,
+  { web }: ThreadsSimulatorOptions = {},
+): ThreadsSimulator {
   const state = createState(world);
 
   const unsupported = (method: string) =>
@@ -225,7 +244,7 @@ export function createThreadsSimulator(world: SimWorld): ThreadsSimulator {
         operation: "container",
         scopes: ["threads_basic", "threads_content_publish"],
         run: own((caller, params, slow) =>
-          createContainer(state, caller, params, slow),
+          createContainer(state, caller, params, slow, web),
         ),
       };
     }

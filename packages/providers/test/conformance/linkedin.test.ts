@@ -84,8 +84,6 @@ describeProvider("LinkedIn, simulated", async () => {
     redirectUri,
     identifier: undefined,
     thread: "joined",
-    // Until the adapter publishes images.
-    noImages: true,
     // LinkedIn gives pigy no stats of the posts of a member.
     counts: [],
     credentials,
@@ -106,7 +104,12 @@ describeProvider("LinkedIn, simulated", async () => {
           kind,
           // With the code exchanged for a token, the adapter asks whose
           // token it is.
-          operation: during === "connect" ? "account" : "publish",
+          operation:
+            during === "connect"
+              ? "account"
+              : during === "upload"
+                ? "upload"
+                : "publish",
         });
       },
       engage: (id, more) => world.engage("linkedin", id, more),

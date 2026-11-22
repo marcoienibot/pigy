@@ -1,4 +1,5 @@
-import type { Fetch } from "@pigy/core";
+import type { ContentImage, Fetch, PostContent } from "@pigy/core";
+import { pngFile } from "@pigy/core/test-images";
 import {
   createThreadsSimulator,
   slowProcessingMs,
@@ -11,7 +12,7 @@ import {
 } from "@pigy/simulators/world";
 import { describe, expect, it } from "vitest";
 import { ProviderError } from "../errors.ts";
-import type { PublishProgress } from "../provider.ts";
+import type { MediaSource, PublishProgress } from "../provider.ts";
 import { createThreadsProvider, type ThreadsCredentials } from "./index.ts";
 
 /**
@@ -1061,6 +1062,295 @@ describe("publishing", () => {
     );
     expect(failed.kind).toBe("fail");
     expect(test.requests.filter(contains)).toEqual([]);
+  });
+});
+
+describe("images", () => {
+  /**
+   * The adapter against a simulated Threads whose web serves the images
+   * of a test at links that the source hands out, as pigy serves its
+   * signed links, until `revoked` says otherwise. Every link that the
+   * source handed out, and every address that Threads fetched, is noted.
+   */
+  async function withImages(...alts: string[]) {
+    const world = createWorld({ now: () => new Date("2026-11-15T10:00:00Z") });
+    const links: string[] = [];
+    const fetched: string[] = [];
+    const served = new Map<string, Uint8Array>();
+    const hooks: { intercept?: Intercept; unreachable?: boolean } = {};
+    const simulator = createThreadsSimulator(world, {
+      web: async (input) => {
+        const url = input instanceof Request ? input.url : String(input);
+        fetched.push(url);
+        const bytes = served.get(url);
+        if (hooks.unreachable || !bytes) {
+          return new Response("Nothing here", { status: 404 });
+        }
+        return new Response(bytes as Uint8Array<ArrayBuffer>);
+      },
+    });
+    const app = simulator.addApp({ name: "pigy", redirectUris: [redirectUri] });
+    const ada = simulator.addUser({ username: "ada", name: "Ada Lovelace" });
+    const requests: Request[] = [];
+    const fetch: Fetch = async (input, init) => {
+      const request = new Request(input, init);
+      requests.push(request.clone());
+      return (await hooks.intercept?.(request)) ?? simulator.fetch(request);
+    };
+    const provider = createThreadsProvider({
+      fetch,
+      now: world.now,
+      appId: app.appId,
+      appSecret: app.appSecret,
+    });
+    const test = {
+      world,
+      simulator,
+      app,
+      ada,
+      grace: ada,
+      requests,
+      hooks,
+      provider,
+    };
+    const { credentials } = await connect(test);
+    const images: ContentImage[] = [];
+    const bytesOf = new Map<string, Uint8Array>();
+    for (const [index, alt] of alts.entries()) {
+      const bytes = await pngFile(400 + index, 300);
+      const image: ContentImage = {
+        id: `image-${index + 1}`,
+        type: "image/png",
+        size: bytes.length,
+        width: 400 + index,
+        height: 300,
+        alt,
+      };
+      images.push(image);
+      bytesOf.set(image.id, bytes);
+    }
+    const media: MediaSource = {
+      read: async () => {
+        throw new Error("Threads takes no bytes");
+      },
+      link: async (id) => {
+        const link = `https://pigy.example/api/media-links/${id}?signature=${crypto.randomUUID()}`;
+        links.push(link);
+        served.set(link, bytesOf.get(id) ?? new Uint8Array());
+        return link;
+      },
+    };
+    /** One step of a post of `text` with the images, from `progress`. */
+    const imageStep = (progress: PublishProgress | null, text = "Images") =>
+      provider.publishStep({
+        credentials,
+        content: { parts: [{ text, media: images }] } satisfies PostContent,
+        key: "target-1",
+        progress,
+        media,
+      });
+    /** Runs steps until the post is done, waiting as each asks. */
+    const all = async (from: PublishProgress | null = null) => {
+      const steps: PublishProgress[] = [];
+      let progress = from;
+      while (!progress?.done) {
+        expect(steps.length).toBeLessThan(40);
+        if (progress) world.advance(progress.waitSeconds * 1000);
+        progress = await imageStep(progress);
+        steps.push(JSON.parse(JSON.stringify(progress)) as PublishProgress);
+      }
+      return steps;
+    };
+    return { ...test, credentials, links, fetched, images, imageStep, all };
+  }
+
+  it("hands Threads a link to an image that it makes in the step that hands it over, and keeps it nowhere", async () => {
+    const test = await withImages("A harbour");
+    const steps = await test.all();
+
+    // A container of the image, which Threads fetched from the one link,
+    // and its publishing.
+    expect(test.requests.filter(contains)).toHaveLength(1);
+    expect(test.links).toHaveLength(1);
+    expect(test.fetched).toEqual(test.links);
+    for (const link of test.links) {
+      expect(JSON.stringify(steps)).not.toContain(link);
+    }
+    expect(JSON.stringify(steps)).not.toContain("signature=");
+    const [{ post } = { post: undefined }] = feed(test.world, ["threads"]);
+    expect(post?.images).toMatchObject([
+      { alt: "A harbour", width: 400, height: 300 },
+    ]);
+  });
+
+  it("makes a carousel of a part with several images: an item in a step each, then the carousel of them", async () => {
+    const test = await withImages("One", "", "Three");
+    const steps = await test.all();
+
+    // Three items, the carousel and its publishing.
+    expect(steps.map(({ parts }) => parts.length)).toEqual([0, 0, 0, 0, 1]);
+    expect(steps[2]?.state).toMatchObject({
+      container: null,
+      items: [expect.any(String), expect.any(String), expect.any(String)],
+    });
+    expect(test.links).toHaveLength(3);
+    expect(
+      feed(test.world, ["threads"]).map(({ post }) => [
+        post.text,
+        post.images?.map(({ alt, width }) => [alt, width]),
+      ]),
+    ).toEqual([
+      [
+        "Images",
+        [
+          ["One", 400],
+          ["", 401],
+          ["Three", 402],
+        ],
+      ],
+    ]);
+    // Read back as what it is.
+    const [part] = steps.at(-1)?.parts ?? [];
+    const read = await test.provider.readPost?.(
+      test.credentials,
+      part?.id ?? "",
+    );
+    expect(read?.images).toEqual([
+      { alt: "One" },
+      { alt: "" },
+      { alt: "Three" },
+    ]);
+  });
+
+  it("waits for the items of a carousel that Threads is still preparing, and makes the carousel when they are ready", async () => {
+    const test = await withImages("One", "Two");
+    let progress = await test.imageStep(null);
+    // Threads takes its time with the second.
+    test.simulator.arm({ kind: "slow-processing", operation: "container" });
+    progress = await test.imageStep(progress);
+    progress = await test.imageStep(progress);
+    expect(progress).toMatchObject({
+      waitSeconds: 10,
+      state: { container: null },
+    });
+    expect(test.requests.filter(contains)).toHaveLength(2);
+
+    test.world.advance(slowProcessingMs);
+    progress = await test.imageStep(progress);
+    expect(progress.state).toMatchObject({ container: expect.any(String) });
+    await test.all(progress);
+    expect(feed(test.world, ["threads"])[0]?.post.images).toHaveLength(2);
+  });
+
+  it("makes the items of a carousel anew when Threads no longer knows one, and publishes nothing with them", async () => {
+    const test = await withImages("One", "Two");
+    let progress = await test.imageStep(null);
+    progress = await test.imageStep(progress);
+    const [first = ""] =
+      (progress.state as { items?: string[] } | null)?.items ?? [];
+    // Expired: an item is a container, which lasts a day.
+    test.world.advance(day);
+    progress = await test.imageStep(progress);
+    expect(progress).toMatchObject({ parts: [], state: { items: [] } });
+    expect(test.requests.filter(publishes)).toHaveLength(0);
+
+    await test.all(progress);
+    expect(test.links).toHaveLength(4);
+    const [{ post } = { post: undefined }] = feed(test.world, ["threads"]);
+    expect(post?.images).toHaveLength(2);
+    expect(first).not.toBe("");
+  });
+
+  it("fails with what Threads says of an image that it could not fetch, without the link", async () => {
+    const test = await withImages("Unreachable");
+    test.hooks.unreachable = true;
+    const error = await failure(() => test.all());
+    expect(error.kind).toBe("fail");
+    expect(error.message).toContain("Threads could not prepare the post");
+    for (const link of test.links) {
+      expect(error.message).not.toContain(link);
+    }
+    expect(feed(test.world, ["threads"])).toEqual([]);
+  });
+
+  it("says no address in a message of Threads, which can repeat the link of an image", async () => {
+    const test = await withImages("Repeated");
+    test.hooks.intercept = (request) =>
+      request.method === "GET" &&
+      /\/v1\.0\/\d+$/.test(new URL(request.url).pathname)
+        ? Response.json({
+            status: "ERROR",
+            error_message: `Could not fetch ${test.links.at(-1)} in time`,
+          })
+        : undefined;
+    const error = await failure(() => test.all());
+    expect(error.message).toBe(
+      "Threads could not prepare the post: Could not fetch an address in time",
+    );
+  });
+
+  it("fails a part with images without a source of them, and asks nothing", async () => {
+    const test = setup();
+    const { credentials } = await connect(test);
+    const error = await failure(() =>
+      test.provider.publishStep({
+        credentials,
+        content: {
+          parts: [
+            {
+              text: "No source",
+              media: [
+                {
+                  id: "image-1",
+                  type: "image/png",
+                  size: 10,
+                  width: 10,
+                  height: 10,
+                  alt: "",
+                },
+              ],
+            },
+          ],
+        },
+        key: "target-1",
+        progress: null,
+      }),
+    );
+    expect(error.kind).toBe("fail");
+    expect(test.requests.filter(contains)).toHaveLength(0);
+  });
+
+  it("takes no post of the same words with other images, or none, for a part whose answer was lost", async () => {
+    const test = await withImages("Mine");
+    // The container is made and published, and the answer of the latter
+    // is lost.
+    let progress = await test.imageStep(null);
+    test.simulator.arm({ kind: "lost-response", operation: "publish" });
+    await expect(test.imageStep(progress)).rejects.toMatchObject({
+      kind: "retry",
+    });
+    // Meanwhile the person posts the same words twice by hand: as text,
+    // and with a photo that says something else.
+    test.simulator.addPost(test.ada.id, { text: "Images" });
+    test.simulator.addPost(test.ada.id, {
+      text: "Images",
+      media: "IMAGE",
+      images: [
+        {
+          blob: "none",
+          type: "image/png",
+          width: 1,
+          height: 1,
+          size: 1,
+          alt: "Another",
+        },
+      ],
+    });
+    const own = feed(test.world, ["threads"])[0]?.post.id;
+    progress = await test.imageStep(progress);
+    expect(progress.parts.map(({ id }) => id)).toEqual([own]);
+    // Asked to publish once: the step that was run again found its post.
+    expect(test.requests.filter(publishes)).toHaveLength(1);
   });
 });
 
