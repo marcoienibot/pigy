@@ -79,6 +79,8 @@ function blueskyLiveHarness(options: LiveOptions): Harness {
     redirectUri: new URL("/connect/bluesky/callback", clientId).href,
     identifier: handle,
     thread: "chain",
+    // Until the adapter publishes images.
+    noImages: true,
     credentials,
     refusedCredentials: {
       ...credentials,

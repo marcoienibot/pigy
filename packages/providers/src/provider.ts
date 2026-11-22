@@ -172,6 +172,39 @@ export const publishProgressSchema = z.strictObject({
 
 export type PublishProgress = z.infer<typeof publishProgressSchema>;
 
+/**
+ * Where a step has the images of a post from. The content names each
+ * image, `id` of an image of a part, and says what it is: its type, its
+ * size and its dimensions, which are those of the bytes that this hands
+ * out. The caller has made every image fit the network before a step is
+ * run, so a provider sends what it reads and makes nothing of it.
+ *
+ * Both ways out are for the image as it is published, and for nothing
+ * else of the caller's: a name that is no image of the content is
+ * refused.
+ */
+export type MediaSource = {
+  /**
+   * The bytes of the image `id`, whole. They are as many as the network
+   * takes of one image at most, so they are held one image at a time.
+   * It fails with a `ProviderError` of the kind `fail` for an image that
+   * the caller no longer has, and with what is no `ProviderError` when
+   * the caller's own storage fails.
+   */
+  read(id: string): Promise<Uint8Array>;
+  /**
+   * An address at which the network can fetch the image `id` itself,
+   * without anything else: for a network that takes no bytes and asks for
+   * an address, as Threads does. It is good for a short time only, and it
+   * is a secret for that time: whoever has it gets the image. So it is
+   * made when a step is about to hand it to the network, and it is put
+   * nowhere else: not into the progress, not into the message of an
+   * error. A provider names it among the secrets of its request, for
+   * `quotable`.
+   */
+  link(id: string): Promise<string>;
+};
+
 /** One step of publishing. */
 export type PublishRequest = {
   credentials: Json;
@@ -188,6 +221,24 @@ export type PublishRequest = {
    * the run before it published for its own.
    */
   content: PostContent;
+  /**
+   * Where the images of `content` are read from. Left out by a caller
+   * that publishes no images: a step that needs one and has no source
+   * fails.
+   *
+   * An image is something that a step sends, so it is part of what a
+   * step looks for: a post is the delivery's own only if it has the
+   * images of its part. An upload is a request that changes something,
+   * so it is a step of its own, one image to a step, and what it made at
+   * the network is in the progress before the step that uses it runs:
+   * the ID of an uploaded image is no secret. A step that uploads may be
+   * run again like every step, and then uploads again, where the network
+   * keeps an image that is in no post for a while and drops it: nobody
+   * sees it, and no post is made by it. A provider that says
+   * `repeatsSafely` is false is not run again for an upload either: its
+   * caller sees to that for every step.
+   */
+  media?: MediaSource;
   /**
    * What names this delivery, the same for every step and every attempt:
    * the ID of the target. Networks that can recognize a repeated request
@@ -227,6 +278,11 @@ export type RemotePost = {
   text: string;
   /** The ID of the post that this one replies to, or null. */
   replyToId: string | null;
+  /**
+   * The images of the post, in the order they are shown in, each with
+   * what the network keeps as its description: empty where it keeps none.
+   */
+  images: { alt: string }[];
 };
 
 export type Provider = {

@@ -1072,6 +1072,7 @@ describe("reading and deleting", () => {
       url: second?.url,
       text: "Two",
       replyToId: first?.id,
+      images: [],
     });
     await test.provider.deletePost(credentials, second?.id ?? "");
     expect(

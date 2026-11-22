@@ -5,6 +5,7 @@ import type {
   SimWorld,
   Table,
 } from "../world/index.ts";
+import type { MediaAttachment } from "./media.ts";
 
 /** A Mastodon server in a simulated world. */
 export type Instance = {
@@ -93,6 +94,8 @@ export type State = {
   apps: Table<App>;
   codes: Table<Code>;
   statuses: Table<Status>;
+  /** The files that were uploaded, in a status or not. */
+  media: Table<MediaAttachment>;
   idempotency: Table<IdempotencyRecord>;
   /** How often something was done in the span of time it is counted for. */
   counters: Table<{ span: number; count: number }>;
@@ -111,6 +114,7 @@ export function createState(world: SimWorld): State {
     apps: world.table("mastodon", "app"),
     codes: world.table("mastodon", "code"),
     statuses: world.posts("mastodon"),
+    media: world.table("mastodon", "media"),
     idempotency: world.table("mastodon", "idempotency"),
     counters: world.table("mastodon", "counter"),
     nextId: () =>

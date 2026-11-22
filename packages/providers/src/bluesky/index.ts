@@ -1523,6 +1523,7 @@ export function createBlueskyProvider({
         url: postUrl(did, record.rkey),
         text: post.text,
         replyToId: post.reply?.parent.uri ?? null,
+        images: [],
       };
     },
 

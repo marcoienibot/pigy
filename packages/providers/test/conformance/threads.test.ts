@@ -78,6 +78,8 @@ describeProvider("Threads, simulated", async () => {
     redirectUri,
     identifier: undefined,
     thread: "chain",
+    // Until the adapter publishes images.
+    noImages: true,
     credentials,
     refusedCredentials: { ...credentials, accessToken: unknownToken },
     // Threads has no way for an app to give an access back.

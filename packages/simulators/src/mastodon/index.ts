@@ -11,6 +11,7 @@ import {
   verifyCredentials,
 } from "./api.ts";
 import { apiError, html, json } from "./http.ts";
+import { showMedia, uploadMedia } from "./media.ts";
 import {
   authorize,
   createApp,
@@ -132,6 +133,8 @@ const perToken: Throttle = { limit: 300, seconds: 5 * 60 };
 const deletions: Throttle = { limit: 30, seconds: 30 * 60 };
 // From app/lib/rate_limiter.rb: statuses posted per account.
 const posted: Throttle = { limit: 300, seconds: 3 * 60 * 60 };
+// api/rate-limits: media uploaded per account.
+const uploads: Throttle = { limit: 30, seconds: 30 * 60 };
 
 type Count = {
   limit: number;
@@ -260,6 +263,35 @@ export function createMastodonSimulator(world: SimWorld): MastodonSimulator {
             : apiError(401, "The access token is invalid"),
       };
     }
+    if (path === "/api/v2/media" && method === "POST") {
+      return {
+        // Part of posting: what goes wrong with posting goes wrong here.
+        operation: "publish",
+        access: { who: "account", scopes: ["write", "write:media"] },
+        throttles: [uploads],
+        run: (caller) =>
+          caller?.account
+            ? uploadMedia(state, instance, request, {
+                ...caller,
+                account: caller.account,
+              })
+            : apiError(401, "The access token is invalid"),
+      };
+    }
+    const mediaId = /^\/api\/v1\/media\/([0-9]+)$/.exec(path)?.[1];
+    if (mediaId && method === "GET") {
+      return {
+        operation: "read",
+        access: { who: "account", scopes: ["write", "write:media"] },
+        run: (caller) =>
+          caller?.account
+            ? showMedia(state, instance, mediaId, {
+                ...caller,
+                account: caller.account,
+              })
+            : apiError(401, "The access token is invalid"),
+      };
+    }
     const authorId = /^\/api\/v1\/accounts\/([0-9]+)\/statuses$/.exec(
       path,
     )?.[1];
@@ -365,7 +397,11 @@ export function createMastodonSimulator(world: SimWorld): MastodonSimulator {
     // this is stricter about.
     for (const throttle of route.throttles ?? []) {
       const counted = count(
-        `${route.operation}/${caller?.account?.id}`,
+        // Each limit counts by itself: posting and uploading are both
+        // part of publishing, and have a limit each.
+        throttle === uploads
+          ? `upload/${caller?.account?.id}`
+          : `${route.operation}/${caller?.account?.id}`,
         throttle,
       );
       if (counted.exceeded) return tooManyRequests(counted);

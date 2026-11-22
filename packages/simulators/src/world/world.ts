@@ -1,5 +1,6 @@
 import { type Clock, type Network, networks } from "@pigy/core";
 import { createFaults, type Faults } from "./faults.ts";
+import { createBlobs, type SimBlobs, type SimImageType } from "./images.ts";
 import { isSimulatedSecret, simulatedSecret } from "./secrets.ts";
 import {
   memoryStorage,
@@ -72,6 +73,11 @@ export type SimPost = {
   entities?: SimEntity[];
   /** The card of a link that the network shows with the post, if any. */
   card?: SimCard | null;
+  /**
+   * The images of the post, in the order they are shown in. Left out for
+   * a post without any.
+   */
+  images?: SimImage[];
 };
 
 /** A link, a mention or a hashtag in the text of a simulated post. */
@@ -85,6 +91,22 @@ export type SimEntity = {
    * the ID of the account that is mentioned, the tag.
    */
   target: string;
+};
+
+/**
+ * An image of a simulated post, as the network keeps it: what it found in
+ * the bytes, what the image is said to show, and the name of the bytes in
+ * `blobs` of the world.
+ */
+export type SimImage = {
+  blob: string;
+  type: SimImageType;
+  width: number;
+  height: number;
+  /** In bytes. */
+  size: number;
+  /** What it shows, as whoever posted it said. Empty if they said nothing. */
+  alt: string;
 };
 
 /** What a simulated network shows of the page that a link leads to. */
@@ -141,6 +163,9 @@ export type SimWorld = {
 
   /** A table of the simulator of `network`, for what is the network's own. */
   table<Row>(network: Network, name: string): Table<Row>;
+
+  /** The bytes of the images that were published in the world. */
+  blobs: SimBlobs;
 };
 
 export type SimWorldOptions = {
@@ -218,6 +243,7 @@ export function createWorld({
     },
 
     table: (network, name) => table(storage, `${network}/${name}`),
+    blobs: createBlobs(storage, () => world.nextNumber()),
   };
   return world;
 }

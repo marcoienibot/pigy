@@ -1028,6 +1028,7 @@ export function createThreadsProvider({
         url: httpsUrl(media.permalink),
         text: media.text ?? "",
         replyToId: media.replied_to?.id ?? null,
+        images: [],
       };
     },
 

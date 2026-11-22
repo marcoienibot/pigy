@@ -1,7 +1,9 @@
 import {
   type Clock,
   comparableMastodonText,
+  defaultMediaLimits,
   type Fetch,
+  imageTypes,
   type Limits,
 } from "@pigy/core";
 import { z } from "zod";
@@ -123,7 +125,21 @@ const instanceSchema = z.object({
     statuses: z.object({
       max_characters: z.number().int().positive(),
       characters_reserved_per_url: z.number().int().nonnegative(),
+      max_media_attachments: z.number().int().positive().optional(),
     }),
+    // What the instance takes of media. A server that says nothing of
+    // it, or says it another way, is posted to with what Mastodon ships
+    // with: `defaultMediaLimits` of @pigy/core.
+    media_attachments: z
+      .object({
+        supported_mime_types: z.array(z.string()),
+        image_size_limit: z.number().int().positive(),
+        image_matrix_limit: z.number().int().positive(),
+        // From 4.4 on.
+        description_limit: z.number().int().positive().optional(),
+      })
+      .optional()
+      .catch(undefined),
   }),
 });
 
@@ -166,6 +182,14 @@ const ownAccountSchema = accountSchema.extend({
   source: z.object({ privacy: z.string().min(1) }),
 });
 
+/** entities/MediaAttachment, as far as pigy reads it. */
+const mediaSchema = z.object({
+  id: z.string().min(1),
+  /** Null while the instance works on the file. */
+  url: z.string().nullish(),
+  description: z.string().nullish(),
+});
+
 /** entities/Status. */
 const statusSchema = z.object({
   id: z.string().min(1),
@@ -173,6 +197,7 @@ const statusSchema = z.object({
   uri: z.unknown(),
   content: z.string(),
   in_reply_to_id: z.string().nullish(),
+  media_attachments: z.array(mediaSchema).optional(),
 });
 
 /**
@@ -184,7 +209,7 @@ const listedStatusSchema = statusSchema.extend({
   visibility: z.string(),
   /** Empty where there is no content warning. */
   spoiler_text: z.string(),
-  media_attachments: z.array(z.unknown()),
+  media_attachments: z.array(mediaSchema),
   // Null or left out where there is none. Mastodon has quotes from 4.5 on.
   poll: z.unknown().optional(),
   quote: z.unknown().optional(),
@@ -219,6 +244,19 @@ const notesSchema = z.strictObject({
    * is saved without it.
    */
   ownDomains: z.array(z.string().min(1)),
+  /**
+   * The images that were uploaded for the part that is next, by the
+   * instance's IDs of them, in the order of the part: recorded image by
+   * image, before the status that names them is posted. Left out by a
+   * part without images, and by notes from before pigy posted any.
+   */
+  media: z
+    .strictObject({
+      /** Which part they are for, counted from 0. */
+      part: z.number().int().nonnegative(),
+      ids: z.array(z.string().min(1)),
+    })
+    .optional(),
 });
 
 type Notes = z.infer<typeof notesSchema>;
@@ -227,13 +265,16 @@ type Notes = z.infer<typeof notesSchema>;
 const listLength = 40;
 
 // What pigy asks an account for, besides seeing who it is. `write:media`
-// is for the media that pigy does not post yet: a registration cannot gain
-// a scope later, so asking now spares everybody a second connection.
+// is for the images of a post.
 const postingScopes = ["read:statuses", "write:statuses", "write:media"];
 
 // What Mastodon says, in English whatever the language of the instance,
 // when a token lacks the scope for a request.
 const outsideScopes = "This action is outside the authorized scopes";
+
+// How long a step waits for an instance that still works on a file,
+// before it asks again, in seconds.
+const mediaWaitSeconds = 2;
 
 // Far above any answer that pigy reads. The largest is the description of
 // an instance, with its rules in many languages.
@@ -247,6 +288,8 @@ type Call = {
   json?: unknown;
   /** A body, as a form. OAuth takes its parameters this way. */
   form?: Record<string, string>;
+  /** A body in several parts, one of them a file: an upload. */
+  upload?: FormData;
   headers?: Record<string, string>;
   /** What the request carries that must not show up in a message. */
   secrets?: readonly string[];
@@ -292,7 +335,7 @@ export function createMastodonProvider({
   function request(
     domain: string,
     path: string,
-    { method = "GET", token, json, form, headers }: Call,
+    { method = "GET", token, json, form, upload, headers }: Call,
   ): Promise<HttpAnswer> {
     return send(
       fetch,
@@ -309,6 +352,9 @@ export function createMastodonProvider({
         },
         ...(json !== undefined && { body: JSON.stringify(json) }),
         ...(form && { body: new URLSearchParams(form).toString() }),
+        // Without a type of its own: the runtime writes it, with the
+        // boundary between the parts.
+        ...(upload && { body: upload }),
       },
       { timeoutMs, maxBytes },
     );
@@ -378,6 +424,30 @@ export function createMastodonProvider({
       throw failure(domain, answer, options);
     }
     return answer.json;
+  }
+
+  /**
+   * The image of a part as the instance has it, or null if it has none
+   * under this ID: methods/media, "Get media attachment". An image that
+   * is in no status is deleted after a while, and one that is in a status
+   * is not found here either.
+   */
+  async function readMedia(
+    { domain, accessToken }: MastodonCredentials,
+    id: string,
+  ): Promise<{ ready: boolean } | null> {
+    const answer = await request(
+      domain,
+      `/api/v1/media/${encodeURIComponent(id)}`,
+      { token: accessToken },
+    );
+    if (answer.status === 404) return null;
+    // 206 while the instance works on the file.
+    if (answer.status !== 200 && answer.status !== 206) {
+      throw failure(domain, answer, { token: accessToken });
+    }
+    const media = understood(mediaSchema, answer.json, domain);
+    return { ready: answer.status === 200 && typeof media.url === "string" };
   }
 
   async function readInstance(domain: string, token?: string) {
@@ -548,9 +618,12 @@ export function createMastodonProvider({
    * - It is seen by whom the notes say, which is what every part is posted
    *   with. A status for the account alone is not the post that everybody
    *   was to see.
-   * - It has nothing besides its text: no media, no poll, no quote and no
-   *   content warning, because a step posts none of them. Once pigy posts
-   *   media, a status has to have the media of its part instead.
+   * - It has nothing besides its text and its images: no poll, no quote
+   *   and no content warning, because a step posts none of them. And it
+   *   has the images of its part, which are the very files that the steps
+   *   before uploaded: the instance gave each an ID, the notes have them,
+   *   and a file is in one status. A status with other images, or with
+   *   none where the part has some, is not the part.
    * - Its text is the text of the part. That takes the source of the
    *   status: its HTML is not the text, a mention has no domain there. The
    *   source is not the text that was sent either. Mastodon writes every
@@ -595,6 +668,8 @@ export function createMastodonProvider({
     { accountId, after, visibility, ownDomains }: Notes,
     replyTo: string | null,
     text: string,
+    /** The IDs of the images that the part was uploaded as, in order. */
+    mediaIds: readonly string[],
   ) {
     const wanted = comparableMastodonText(text, ownDomains);
     // `min_id` lists the statuses that follow one, where `since_id` would
@@ -620,7 +695,8 @@ export function createMastodonProvider({
         (status.in_reply_to_id ?? null) !== replyTo ||
         status.visibility !== visibility ||
         status.spoiler_text !== "" ||
-        status.media_attachments.length > 0 ||
+        status.media_attachments.length !== mediaIds.length ||
+        status.media_attachments.some(({ id }, at) => id !== mediaIds[at]) ||
         (status.poll ?? null) !== null ||
         (status.quote ?? null) !== null
       ) {
@@ -844,16 +920,36 @@ export function createMastodonProvider({
 
     async limits(credentials): Promise<Limits> {
       const { domain, accessToken } = parseCredentials(credentials);
-      const { statuses } = (await readInstance(domain, accessToken))
-        .configuration;
+      const { statuses, media_attachments: media } = (
+        await readInstance(domain, accessToken)
+      ).configuration;
+      const types = imageTypes.filter((type) =>
+        media?.supported_mime_types.includes(type),
+      );
+      const shipped = defaultMediaLimits.mastodon;
       return {
         network: "mastodon",
         maxCharacters: statuses.max_characters,
         charactersPerUrl: statuses.characters_reserved_per_url,
+        // Only where the instance says what it takes, and takes a JPEG,
+        // which is what pigy makes of an image that it does not take.
+        ...(media &&
+          types.includes("image/jpeg") && {
+            media: {
+              maxImages: statuses.max_media_attachments ?? shipped.maxImages,
+              maxImageBytes: media.image_size_limit,
+              maxImagePixels: media.image_matrix_limit,
+              imageTypes: types,
+              // A GIF that moves is a video there, which moves.
+              animated: types.includes("image/gif"),
+              maxAltLength: media.description_limit ?? shipped.maxAltLength,
+              maxAspectRatio: null,
+            },
+          }),
       };
     },
 
-    async publishStep({ credentials, content, key, progress }) {
+    async publishStep({ credentials, content, key, progress, media }) {
       const access = parseCredentials(credentials);
       const { domain, accessToken } = access;
       const recorded =
@@ -874,7 +970,8 @@ export function createMastodonProvider({
         parts: published,
         done: published.length >= content.parts.length,
         waitSeconds: 0,
-        state: noted,
+        // As it is stored: without what is left out.
+        state: noted && (JSON.parse(JSON.stringify(noted)) as Json),
       });
 
       const index = parts.length;
@@ -919,9 +1016,78 @@ export function createMastodonProvider({
       // the step notes how far it has looked, and the next one goes on
       // from there. The step that gets to the end without finding the part
       // posts it, as a reply to the one before.
-      const looked = await findPosted(access, notes, replyTo, part.text);
+      //
+      // A part with images takes steps before that: one for each image,
+      // which uploads it and notes the ID that the instance gave it.
+      // Nothing is looked for until all of them are noted. The status of
+      // the part names those IDs, so no run can have posted it before
+      // the notes had them all, and a status is the part's only if it
+      // has exactly those files. A step that uploads and is run again
+      // uploads a second file, which is in no status and which the
+      // instance deletes by itself after a day: nobody sees it.
+      const images = part.media ?? [];
+      const uploaded = notes.media?.part === index ? notes.media.ids : [];
+      const next = images[uploaded.length];
+      if (next) {
+        if (!media) {
+          throw new ProviderError(
+            "fail",
+            "pigy cannot read the images of this post.",
+          );
+        }
+        const form = new FormData();
+        form.set(
+          "file",
+          new Blob([(await media.read(next.id)) as Uint8Array<ArrayBuffer>], {
+            type: next.type,
+          }),
+          `image.${next.type.slice("image/".length)}`,
+        );
+        if (next.alt !== "") form.set("description", next.alt);
+        // 200 for a file that the instance has done with, 202 for one
+        // that it works on still. Either way it has an ID.
+        const file = understood(
+          mediaSchema,
+          await call(domain, "/api/v2/media", {
+            method: "POST",
+            token: accessToken,
+            upload: form,
+          }),
+          domain,
+        );
+        return stepped(parts, {
+          ...notes,
+          media: { part: index, ids: [...uploaded, file.id] },
+        });
+      }
+      const looked = await findPosted(
+        access,
+        notes,
+        replyTo,
+        part.text,
+        uploaded,
+      );
       if (looked && "lookedUpTo" in looked) {
         return stepped(parts, { ...notes, after: looked.lookedUpTo });
+      }
+      if (!looked?.status && uploaded.length > 0) {
+        // The files have to be there still, and the instance done with
+        // them: a status that names one that is not is refused. One that
+        // is gone, because the delivery is taken up a day after it was
+        // uploaded, is uploaded again, and so are the others of the part:
+        // the notes begin anew.
+        let ready = true;
+        for (const id of uploaded) {
+          const file = await readMedia(access, id);
+          if (!file) {
+            const { media: _, ...rest } = notes;
+            return stepped(parts, rest);
+          }
+          ready &&= file.ready;
+        }
+        if (!ready) {
+          return { ...stepped(parts, notes), waitSeconds: mediaWaitSeconds };
+        }
       }
       const status =
         looked?.status ??
@@ -945,6 +1111,7 @@ export function createMastodonProvider({
               status: part.text,
               ...(replyTo !== null && { in_reply_to_id: replyTo }),
               visibility: notes.visibility,
+              ...(uploaded.length > 0 && { media_ids: uploaded }),
             },
           }),
           domain,
@@ -954,8 +1121,9 @@ export function createMastodonProvider({
           ...parts,
           { id: status.id, url: httpsUrl(status.url) ?? httpsUrl(status.uri) },
         ],
-        // The part after this one is newer than this one.
-        { ...notes, after: status.id },
+        // The part after this one is newer than this one, and has
+        // images of its own.
+        (({ media: _, ...rest }) => ({ ...rest, after: status.id }))(notes),
       );
     },
 
@@ -979,6 +1147,9 @@ export function createMastodonProvider({
         url: httpsUrl(status.url) ?? httpsUrl(status.uri),
         text: htmlToText(status.content),
         replyToId: status.in_reply_to_id ?? null,
+        images: (status.media_attachments ?? []).map(({ description }) => ({
+          alt: description ?? "",
+        })),
       };
     },
 

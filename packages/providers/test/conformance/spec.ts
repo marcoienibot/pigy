@@ -1,19 +1,23 @@
 import {
+  type ContentImage,
   cardMaker,
   countCharacters,
   detectEntities,
   type Limits,
   type LinkCard,
   limitsSchema,
+  mediaLimitsOf,
   type Network,
   type PostContent,
   validateContent,
 } from "@pigy/core";
+import { pngFile } from "@pigy/core/test-images";
 import { entitiesOf, feed, type SimWorld } from "@pigy/simulators/world";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   type CredentialSource,
   type Json,
+  type MediaSource,
   type Provider,
   ProviderError,
   type PublishProgress,
@@ -85,6 +89,8 @@ export type Shown = {
   entities: [kind: string, written: string][];
   /** The address and the title of the card, or null without one. */
   card: { url: string; title: string } | null;
+  /** Its images, in order: what each is said to show, and how large it is. */
+  images: { alt: string; width: number; height: number }[];
 };
 
 /** What `network` of the simulated `world` shows, for `Simulation.shown`. */
@@ -93,6 +99,11 @@ export function shownIn(world: SimWorld, network: Network): Shown[] {
     text: post.text,
     entities: entitiesOf(post).map(([kind, written]) => [kind, written]),
     card: post.card ? { url: post.card.url, title: post.card.title } : null,
+    images: (post.images ?? []).map(({ alt, width, height }) => ({
+      alt,
+      width,
+      height,
+    })),
   }));
 }
 
@@ -136,6 +147,18 @@ export type Harness = {
   sleep(seconds: number): Promise<void>;
   /** Undefined in a live run. */
   simulation: Simulation | undefined;
+  /**
+   * Where the provider reads the images of a test from, which are
+   * `images`, by the names that the content has for them. Left out where
+   * the bytes are all that a provider asks for: the tests then hand them
+   * out themselves. A network that fetches an image from an address, as
+   * Threads does, needs somebody to serve it: a simulation says how, and
+   * a live run that cannot leaves the tests of images out, with
+   * `noImages`.
+   */
+  mediaOf?(images: ReadonlyMap<string, Uint8Array>): MediaSource;
+  /** True for a run that cannot publish an image: see `mediaOf`. */
+  noImages?: boolean;
   /**
    * Hears of every refresh that a test makes, with what it returned. A
    * live run renews the credentials that it is given, and a network that
@@ -192,6 +215,9 @@ async function failure(action: () => Promise<unknown>): Promise<ProviderError> {
   }
   throw new Error("Expected a ProviderError, and nothing failed");
 }
+
+/** An image of a test: as a content names it, and its bytes. */
+type TestImage = { image: ContentImage; bytes: Uint8Array };
 
 /** Fails unless `whole` holds every one of `parts`, in their order. */
 function expectInOrder(whole: string, parts: string[]) {
@@ -259,6 +285,8 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
         key?: string;
         /** The card that comes with each part, by its place. */
         cards?: (LinkCard | undefined)[];
+        /** The images of each part, by its place: see `imagesOf`. */
+        images?: (TestImage[] | undefined)[];
       } = {},
     ) {
       const { provider } = harness;
@@ -287,18 +315,86 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
       const content: PostContent = {
         parts: texts.map((text, index) => {
           const card = options.cards?.[index];
-          return { text, ...(card && { card }) };
+          const images = options.images?.[index];
+          return {
+            text,
+            ...(card && { card }),
+            ...(images && { media: images.map(({ image }) => image) }),
+          };
         }),
       };
       const key = options.key ?? `${harness.tag}-${++keys}`;
+      const bytes = new Map(
+        (options.images ?? []).flatMap((images) =>
+          (images ?? []).map(({ image, bytes }): [string, Uint8Array] => [
+            image.id,
+            bytes,
+          ]),
+        ),
+      );
+      const media: MediaSource = harness.mediaOf?.(bytes) ?? {
+        read: async (id) => {
+          const found = bytes.get(id);
+          if (!found) throw new Error(`The test has no image ${id}`);
+          return found;
+        },
+        link: async () => {
+          throw new Error("This run serves no images at an address");
+        },
+      };
       const progress = await publish(
         provider,
-        { ...accessOf(harness), content, key },
+        {
+          ...accessOf(harness),
+          content,
+          key,
+          ...(options.images && { media }),
+        },
         runner,
         options.from ?? null,
       );
       return { progress, key, content };
     }
+
+    let imageCount = 0;
+
+    /**
+     * Images for a part: a PNG for each of `alts`, which a decoder draws,
+     * each of another size, so that one is told from the other where a
+     * network shows them. Each comes as the content names it and with its
+     * bytes.
+     */
+    async function imagesOf(...alts: string[]): Promise<TestImage[]> {
+      return Promise.all(
+        alts.map(async (alt) => {
+          const number = ++imageCount;
+          // Wide enough for a network that takes no small picture.
+          const [width, height] = [400 + number * 8, 320 + number * 4];
+          const bytes = await pngFile(width, height, {
+            color: [40 * number, 90, 200 - 30 * number],
+          });
+          return {
+            bytes,
+            image: {
+              id: `image-${number}`,
+              type: "image/png" as const,
+              size: bytes.length,
+              width,
+              height,
+              alt,
+            },
+          };
+        }),
+      );
+    }
+
+    /** What a network is to show of `images`. */
+    const shownOf = (images: TestImage[]) =>
+      images.map(({ image: { alt, width, height } }) => ({
+        alt,
+        width,
+        height,
+      }));
 
     /**
      * A runner for a workflow that does not give up: it runs a step again
@@ -1029,6 +1125,225 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
         // found nothing of its own, and did not take the older post for it.
         expect(progress.parts[0]?.id).not.toBe(older.progress.parts[0]?.id);
         expect(simulation.published()).toEqual([text, text]);
+      });
+    });
+
+    describe("publishing images", () => {
+      it("publishes a part with its images, in their order, each with what it shows", async ({
+        skip,
+      }) => {
+        const harness = await setup();
+        if (harness.noImages) return skip("This run publishes no images");
+        const text = `${harness.tag} A post with two images`;
+        const images = await imagesOf(
+          "A harbour at dusk, with two boats",
+          // Nothing is said of the second: it goes out all the same.
+          "",
+        );
+        let steps = 0;
+        const { progress } = await publishParts(harness, [text], {
+          images: [images],
+          runner: {
+            sleep: (_name, seconds) => harness.sleep(seconds),
+            run: async (_name, step) => {
+              const next = recorded(await step());
+              // What a step made at the network for an image is in the
+              // progress, which is stored where a secret must not be:
+              // no token, and no address at which an image is fetched.
+              for (const secret of harness.secrets) {
+                expect(JSON.stringify(next)).not.toContain(secret);
+              }
+              expect(JSON.stringify(next)).not.toContain("signature=");
+              expect(++steps).toBeLessThan(50);
+              return next;
+            },
+          },
+        });
+        expect(progress.done).toBe(true);
+        expect(progress.parts).toHaveLength(1);
+        if (harness.simulation) {
+          expect(harness.simulation.shown()).toMatchObject([
+            { text, images: shownOf(images) },
+          ]);
+        }
+        const [part] = progress.parts;
+        const { readPost } = harness.provider;
+        if (part && readPost) {
+          const post = await withAccess(harness, (credentials) =>
+            readPost(credentials, part.id),
+          );
+          expect(post?.images).toEqual(
+            images.map(({ image }) => ({ alt: image.alt })),
+          );
+        }
+      });
+
+      it("publishes a part that is an image and no text", async ({ skip }) => {
+        const harness = await setup();
+        if (harness.noImages) return skip("This run publishes no images");
+        const images = await imagesOf(`${harness.tag} An image by itself`);
+        const limits = await withAccess(harness, (credentials) =>
+          harness.provider.limits(credentials),
+        );
+        const content = { parts: [{ text: "", media: [images[0]?.image] }] };
+        expect(validateContent(limits, content as PostContent)).toEqual([]);
+        const { progress } = await publishParts(harness, [""], {
+          images: [images],
+        });
+        expect(progress.done).toBe(true);
+        if (harness.simulation) {
+          expect(harness.simulation.shown()).toMatchObject([
+            { text: "", images: shownOf(images) },
+          ]);
+        }
+      });
+
+      it("publishes as many images in a part as the network takes, and is told of one more before", async ({
+        skip,
+      }) => {
+        const harness = await setup();
+        if (harness.noImages) return skip("This run publishes no images");
+        const limits = await withAccess(harness, (credentials) =>
+          harness.provider.limits(credentials),
+        );
+        // pigy has four in a part at most, whatever a network would take.
+        const most = Math.min(4, mediaLimitsOf(limits).maxImages);
+        const images = await imagesOf(
+          ...Array.from({ length: most }, (_, index) => `Image ${index + 1}`),
+        );
+        const text = `${harness.tag} As many images as fit`;
+        const { progress } = await publishParts(harness, [text], {
+          images: [images],
+        });
+        expect(progress.done).toBe(true);
+        if (harness.simulation) {
+          expect(harness.simulation.shown()).toMatchObject([
+            { text, images: shownOf(images) },
+          ]);
+        }
+        // What the network would refuse is said by `validateContent`,
+        // which goes by the limits that the provider read.
+        const tooMany = Array.from(
+          { length: mediaLimitsOf(limits).maxImages + 1 },
+          () => images[0]?.image,
+        );
+        expect(
+          validateContent(limits, {
+            parts: [{ text, media: tooMany }],
+          } as PostContent).map(({ code }) => code),
+        ).toEqual(["too_many_images"]);
+      });
+
+      it("publishes a thread whose later part has images", async ({ skip }) => {
+        const harness = await setup();
+        if (harness.noImages) return skip("This run publishes no images");
+        const texts = ["first", "second", "third"].map(
+          (part) => `${harness.tag} The ${part} part of a thread with images`,
+        );
+        const second = await imagesOf("The image of the second part");
+        const third = await imagesOf("One of the third", "Two of the third");
+        const { progress } = await publishParts(harness, texts, {
+          images: [undefined, second, third],
+        });
+        expect(progress.done).toBe(true);
+        expect(progress.parts).toHaveLength(texts.length);
+        if (!harness.simulation) return;
+        const shown = harness.simulation.shown();
+        if (harness.thread === "chain") {
+          // Each part has its own images, and no other part's.
+          expect(shown).toMatchObject([
+            { text: texts[0], images: [] },
+            { text: texts[1], images: shownOf(second) },
+            { text: texts[2], images: shownOf(third) },
+          ]);
+        } else {
+          // One post, with the images of every part in the order of
+          // the parts.
+          expect(shown).toHaveLength(1);
+          expect(shown[0]?.images).toEqual(shownOf([...second, ...third]));
+        }
+      });
+
+      it("publishes a post with images once when every step is run twice", async ({
+        skip,
+      }) => {
+        const harness = await setup();
+        if (harness.noImages) return skip("This run publishes no images");
+        if (!harness.provider.repeatsSafely) {
+          return skip("The steps of this provider are never run twice");
+        }
+        const texts = ["first", "second"].map(
+          (part) => `${harness.tag} The ${part} part, with an image, twice`,
+        );
+        const images = [
+          await imagesOf("Of the first part", "Also of the first"),
+          await imagesOf("Of the second part"),
+        ];
+        const { progress } = await publishParts(harness, texts, {
+          images,
+          runner: {
+            sleep: (_name, seconds) => harness.sleep(seconds),
+            // Every step twice, the uploads too: a second upload may
+            // leave a file at the network that is in no post, and
+            // nothing else.
+            run: async (_name, step) => {
+              const first = await step();
+              const second = await step();
+              expect(second.parts).toEqual(first.parts);
+              return second;
+            },
+          },
+        });
+        expect(progress.done).toBe(true);
+        if (!harness.simulation) return;
+        const shown = harness.simulation.shown();
+        if (harness.thread === "chain") {
+          expect(shown).toMatchObject([
+            { text: texts[0], images: shownOf(images[0] ?? []) },
+            { text: texts[1], images: shownOf(images[1] ?? []) },
+          ]);
+          expect(shown).toHaveLength(2);
+        } else {
+          expect(shown).toHaveLength(1);
+          expect(shown[0]?.images).toEqual(shownOf(images.flat()));
+        }
+      });
+
+      it("does not take a post without the images of its part for the part", async ({
+        skip,
+      }) => {
+        const harness = await setup();
+        if (harness.noImages) return skip("This run publishes no images");
+        if (!harness.simulation || !harness.provider.repeatsSafely) {
+          return skip("Takes a provider that looks for what it has sent");
+        }
+        // The same text is posted without an image while the delivery
+        // is under way, after its first step: by the person, by hand. A
+        // step that went by the text alone would take that post for its
+        // part, and publish no image.
+        const text = `${harness.tag} The same words, with an image this time`;
+        const images = await imagesOf("What the other post does not have");
+        let steps = 0;
+        const { progress } = await publishParts(harness, [text], {
+          images: [images],
+          runner: {
+            sleep: (_name, seconds) => harness.sleep(seconds),
+            run: async (_name, step) => {
+              const next = await step();
+              if (++steps === 1) {
+                // The first step publishes nothing, by the contract.
+                expect(next.parts).toEqual([]);
+                await publishParts(harness, [text]);
+              }
+              return next;
+            },
+          },
+        });
+        expect(progress.done).toBe(true);
+        expect(harness.simulation.shown()).toMatchObject([
+          { text, images: [] },
+          { text, images: shownOf(images) },
+        ]);
       });
     });
 

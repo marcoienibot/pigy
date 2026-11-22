@@ -1,6 +1,12 @@
 import { webPageAt } from "../web/index.ts";
 import { apiError, bodyParams, json, text } from "./http.ts";
 import {
+  attachable,
+  mediaJson,
+  mediaLimits,
+  supportedImageTypes,
+} from "./media.ts";
+import {
   type App,
   atLeast,
   type Instance,
@@ -48,7 +54,6 @@ const visibilities: readonly string[] = [
 // What pigy could send and the simulated Mastodon does not have yet. It is
 // refused rather than ignored, so that nothing seems to work that does not.
 const notSimulated = [
-  "media_ids",
   "poll",
   "scheduled_at",
   "quoted_status_id",
@@ -94,13 +99,17 @@ export function showInstance(state: State, instance: Instance): Response {
       accounts: { max_featured_tags: 10, max_pinned_statuses: 5 },
       statuses: {
         max_characters: instance.maxCharacters,
-        max_media_attachments: 4,
+        max_media_attachments: mediaLimits.maxAttachments,
         characters_reserved_per_url: instance.charactersReservedPerUrl,
       },
       media_attachments: {
-        supported_mime_types: ["image/jpeg", "image/png", "video/mp4"],
-        image_size_limit: 16_777_216,
-        image_matrix_limit: 33_177_600,
+        supported_mime_types: [...supportedImageTypes, "video/mp4"],
+        // From 4.4 on.
+        ...(atLeast(instance.version, 4, 4) && {
+          description_limit: mediaLimits.descriptionLimit,
+        }),
+        image_size_limit: mediaLimits.imageSizeLimit,
+        image_matrix_limit: mediaLimits.imageMatrixLimit,
         video_size_limit: 103_809_024,
         video_frame_rate_limit: 120,
         video_matrix_limit: 8_294_400,
@@ -213,7 +222,16 @@ function statusJson(state: State, status: Status, source = false) {
     reblog: null,
     application: app ? { name: app.name, website: app.website } : null,
     account: account ? accountJson(state, account) : null,
-    media_attachments: [],
+    media_attachments: state.media
+      .all()
+      .filter(({ statusId }) => statusId === status.id)
+      // In the order that the status named them in.
+      .sort(
+        (a, b) =>
+          (status.images ?? []).findIndex(({ blob }) => blob === a.blob) -
+          (status.images ?? []).findIndex(({ blob }) => blob === b.blob),
+      )
+      .map(mediaJson),
     mentions: found.mentions,
     // A tag is kept in lower case, whatever way it was written.
     tags: [...new Set(found.tags.map((name) => name.toLowerCase()))].map(
@@ -376,8 +394,14 @@ export async function createStatus(
   // is limited.
   const asked = text(params, "visibility") ?? account.privacy ?? "public";
   const visibility = asked === "public" && account.limited ? "unlisted" : asked;
+  // The files are looked up before the text is judged: a status with a
+  // file needs no text.
+  const attached = attachable(state, instance, account, params.media_ids);
+  if (attached instanceof Response) return attached;
   const errors: string[] = [];
-  if (body.trim() === "") errors.push("Text can't be blank");
+  if (body.trim() === "" && attached.length === 0) {
+    errors.push("Text can't be blank");
+  }
   if (
     countableLength(body, instance.charactersReservedPerUrl) >
     instance.maxCharacters
@@ -397,7 +421,9 @@ export async function createStatus(
   const firstLink = found.entities.find(({ kind }) => kind === "link");
   // The web of a simulated world is the simulated web: a link that leads
   // anywhere else has no page that could be read.
-  const firstPage = firstLink && webPageAt(firstLink.target);
+  // From the code: a status with a file has no card.
+  const firstPage =
+    attached.length === 0 && firstLink && webPageAt(firstLink.target);
   const id = state.nextId();
   const status: Status = {
     network: "mastodon",
@@ -422,8 +448,23 @@ export async function createStatus(
           description: firstPage.ogDescription ?? firstPage.description ?? "",
         }
       : null,
+    ...(attached.length > 0 && {
+      images: attached.map(
+        ({ blob, type, width, height, size, description }) => ({
+          blob,
+          type,
+          width,
+          height,
+          size,
+          alt: description,
+        }),
+      ),
+    }),
   };
   state.statuses.put(id, status);
+  for (const media of attached) {
+    state.media.put(media.id, { ...media, statusId: id });
+  }
   if (key) {
     state.idempotency.put(keyId, {
       statusId: id,
@@ -551,6 +592,10 @@ export function deleteStatus(
   // The answer is the status as it was, with its text for a new draft.
   const answer = json(200, statusJson(state, status, true));
   state.statuses.delete(id);
+  // Its files go with it.
+  for (const media of state.media.all()) {
+    if (media.statusId === id) state.media.delete(media.id);
+  }
   // From the code: the replies stay, and no longer say what they reply to.
   for (const reply of state.statuses.all()) {
     if (reply.replyToId === id) {

@@ -1,4 +1,5 @@
 import type { Fetch, PostContent } from "@pigy/core";
+import { gifFile, pngFile } from "@pigy/core/test-images";
 import {
   createMastodonSimulator,
   type Instance,
@@ -8,7 +9,7 @@ import { describe, expect, it } from "vitest";
 import { memoryAppStore } from "../../test/mastodon-apps.ts";
 import { ProviderError } from "../errors.ts";
 import type { PublishProgress } from "../provider.ts";
-import { publish } from "../publish.ts";
+import { type PublishRunner, publish } from "../publish.ts";
 import {
   createMastodonProvider,
   type MastodonCredentials,
@@ -104,7 +105,12 @@ function publishAll(
   { provider }: Setup,
   credentials: MastodonCredentials,
   content: PostContent,
-  { key = "target-1", from = null as PublishProgress | null } = {},
+  {
+    key = "target-1",
+    from = null as PublishProgress | null,
+    files = new Map<string, Uint8Array>(),
+    run = ((_name, step) => step()) as PublishRunner["run"],
+  } = {},
 ) {
   return publish(
     provider,
@@ -115,8 +121,18 @@ function publishAll(
       },
       content,
       key,
+      media: {
+        read: async (id) => {
+          const file = files.get(id);
+          if (!file) throw new Error(`The test has no image ${id}`);
+          return file;
+        },
+        link: async () => {
+          throw new Error("Mastodon takes bytes");
+        },
+      },
     },
-    { run: (_name, step) => step(), sleep: async () => {} },
+    { run, sleep: async () => {} },
     from,
   );
 }
@@ -613,7 +629,207 @@ describe("limits", () => {
       network: "mastodon",
       maxCharacters: 5000,
       charactersPerUrl: 30,
+      // What the simulated instance says of media, as Mastodon ships.
+      media: {
+        maxImages: 4,
+        maxImageBytes: 16_777_216,
+        maxImagePixels: 33_177_600,
+        imageTypes: ["image/jpeg", "image/png", "image/webp", "image/gif"],
+        animated: true,
+        maxAltLength: 1500,
+        maxAspectRatio: null,
+      },
     });
+  });
+
+  it("say nothing of media for an instance that says nothing of it, or that takes no JPEG", async () => {
+    const sim = setup();
+    const { credentials } = await connect(sim);
+    type Configuration = {
+      statuses: { max_media_attachments?: number };
+      media_attachments?: {
+        supported_mime_types: string[];
+        description_limit?: number;
+      };
+    };
+    const without = async (change: (configuration: Configuration) => void) => {
+      sim.hooks.intercept = async (request) => {
+        if (!request.url.endsWith("/api/v2/instance")) return undefined;
+        const instance = (await (
+          await sim.simulator.fetch(request)
+        ).json()) as {
+          configuration: Configuration;
+        };
+        change(instance.configuration);
+        return Response.json(instance);
+      };
+      return sim.provider.limits(credentials);
+    };
+    expect(
+      await without((configuration) => {
+        delete configuration.media_attachments;
+      }),
+    ).not.toHaveProperty("media");
+    expect(
+      await without((configuration) => {
+        if (!configuration.media_attachments) throw new Error("No media");
+        configuration.media_attachments.supported_mime_types = ["image/png"];
+      }),
+    ).not.toHaveProperty("media");
+    // An older instance has no limit for a description: Mastodon's own.
+    expect(
+      await without((configuration) => {
+        delete configuration.media_attachments?.description_limit;
+        configuration.statuses.max_media_attachments = 2;
+      }),
+    ).toMatchObject({ media: { maxAltLength: 1500, maxImages: 2 } });
+  });
+});
+
+describe("publishing images", () => {
+  const image = (id: string, type: "image/png" | "image/gif", alt = "") => ({
+    id,
+    type,
+    size: 100,
+    width: 9,
+    height: 7,
+    alt,
+  });
+
+  it("uploads each image in a step of its own and notes its ID before the status is posted", async () => {
+    const sim = setup();
+    const { credentials } = await connect(sim);
+    const files = new Map([
+      ["one", await pngFile(9, 7)],
+      ["two", await pngFile(9, 7)],
+    ]);
+    const steps: PublishProgress[] = [];
+    await publishAll(
+      sim,
+      credentials,
+      {
+        parts: [
+          {
+            text: "With images",
+            media: [
+              image("one", "image/png", "First"),
+              image("two", "image/png"),
+            ],
+          },
+        ],
+      },
+      {
+        files,
+        run: async (_name, step) => {
+          const progress = await step();
+          steps.push(progress);
+          return progress;
+        },
+      },
+    );
+    const noted = steps.map(
+      ({ state }) =>
+        (state as { media?: { ids: string[] } } | null)?.media?.ids.length ?? 0,
+    );
+    // The notes, an image, another image, the status: one request that
+    // changes something in each.
+    expect(noted).toEqual([0, 1, 2, 0]);
+    expect(steps.map(({ parts }) => parts.length)).toEqual([0, 0, 0, 1]);
+    const uploads = sim.paths().filter((path) => path === "POST /api/v2/media");
+    expect(uploads).toHaveLength(2);
+    expect(feed(sim.world)[0]?.post.images).toMatchObject([
+      { alt: "First" },
+      { alt: "" },
+    ]);
+  });
+
+  it("waits for an instance that still works on a file, and posts when it is done", async () => {
+    const sim = setup();
+    const { credentials } = await connect(sim);
+    const waits: number[] = [];
+    await publishAll(
+      sim,
+      credentials,
+      { parts: [{ text: "A GIF", media: [image("gif", "image/gif")] }] },
+      {
+        files: new Map([["gif", gifFile(9, 7, { frames: 2 })]]),
+        run: async (_name, step) => {
+          const progress = await step();
+          waits.push(progress.waitSeconds);
+          return progress;
+        },
+      },
+    );
+    // The simulated instance answers 202 for a GIF, and is done with it
+    // by the second time it is asked: one step waits.
+    expect(waits.filter((seconds) => seconds > 0)).toHaveLength(1);
+    expect(feed(sim.world).map(({ post }) => post.images?.length)).toEqual([1]);
+    // It never asked the instance to post what was not ready.
+    expect(
+      sim.paths().filter((path) => path === "POST /api/v1/statuses"),
+    ).toHaveLength(1);
+  });
+
+  it("uploads again what the instance has dropped, when a delivery is taken up a day later", async () => {
+    const sim = setup();
+    const { credentials } = await connect(sim);
+    const content = {
+      parts: [{ text: "Late", media: [image("one", "image/png", "Kept")] }],
+    };
+    const files = new Map([["one", await pngFile(9, 7)]]);
+    // The delivery stops after the upload: the status is refused once.
+    sim.hooks.intercept = (request) =>
+      posts(request)
+        ? Response.json({ error: "Try later" }, { status: 422 })
+        : undefined;
+    let recorded: PublishProgress | null = null;
+    await failure(() =>
+      publishAll(sim, credentials, content, {
+        files,
+        run: async (_name, step) => {
+          recorded = await step();
+          return recorded;
+        },
+      }),
+    );
+    expect(recorded).toMatchObject({
+      state: { media: { ids: [expect.any(String)] } },
+    });
+
+    // A day on, the instance has deleted the file that was in no status.
+    sim.world.advance(24 * 60 * 60 * 1000);
+    delete sim.hooks.intercept;
+    const progress = await publishAll(sim, credentials, content, {
+      files,
+      from: recorded,
+    });
+    expect(progress.done).toBe(true);
+    expect(feed(sim.world).map(({ post }) => post.images)).toMatchObject([
+      [{ alt: "Kept" }],
+    ]);
+    expect(
+      sim.paths().filter((path) => path === "POST /api/v2/media"),
+    ).toHaveLength(2);
+  });
+
+  it("fails without a way to read the images", async () => {
+    const sim = setup();
+    const { credentials } = await connect(sim);
+    const first = await sim.provider.publishStep({
+      credentials,
+      content: { parts: [{ text: "x", media: [image("one", "image/png")] }] },
+      key: "k",
+      progress: null,
+    });
+    const error = await failure(() =>
+      sim.provider.publishStep({
+        credentials,
+        content: { parts: [{ text: "x", media: [image("one", "image/png")] }] },
+        key: "k",
+        progress: first,
+      }),
+    );
+    expect(error.kind).toBe("fail");
   });
 });
 
@@ -1261,6 +1477,7 @@ describe("reading a post", () => {
       url: parts[0]?.url,
       text,
       replyToId: null,
+      images: [],
     });
   });
 

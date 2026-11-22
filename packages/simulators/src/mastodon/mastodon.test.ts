@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { gifFile, jpegFile, pngFile } from "@pigy/core/test-images";
 import { describe, expect, it } from "vitest";
 import {
   answerConsent,
@@ -14,7 +15,7 @@ import { createMastodonSimulator, type Instance } from "./index.ts";
 const domain = "mastodon.example";
 const origin = `https://${domain}`;
 const redirectUri = "https://app.example/connect/mastodon/callback";
-const scopes = "profile read:statuses write:statuses";
+const scopes = "profile read:statuses write:statuses write:media";
 
 // A verifier and the challenge made from it, with the S256 method.
 const verifier = "a".repeat(43);
@@ -1522,5 +1523,260 @@ describe("the world", () => {
     expect(() => simulator.addAccount("nowhere.example", "ada")).toThrow(
       "no instance",
     );
+  });
+});
+
+describe("media", () => {
+  type MediaJson = {
+    id: string;
+    type: string;
+    url: string | null;
+    description: string | null;
+    meta: { original: { width: number; height: number } };
+    error?: string;
+  };
+
+  /** Uploads `file` as Ada, with what the form says besides. */
+  async function upload(
+    sim: Sim,
+    token: string,
+    file: Uint8Array | null,
+    fields: Record<string, string> = {},
+  ) {
+    const form = new FormData();
+    if (file) {
+      // Named a JPEG whatever it is: the instance goes by the bytes.
+      form.set(
+        "file",
+        new Blob([file as Uint8Array<ArrayBuffer>], { type: "image/jpeg" }),
+        "image.jpg",
+      );
+    }
+    for (const [name, value] of Object.entries(fields)) form.set(name, value);
+    const response = await sim.simulator.fetch(`${origin}/api/v2/media`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: form,
+    });
+    return { response, media: (await response.clone().json()) as MediaJson };
+  }
+
+  it("takes an image, says what it is by its bytes, and keeps its description", async () => {
+    const sim = setup();
+    const { token } = await connect(sim);
+    const { response, media } = await upload(
+      sim,
+      token,
+      await pngFile(40, 30),
+      {
+        description: "A harbour at dusk",
+      },
+    );
+    expect(response.status).toBe(200);
+    expect(media).toMatchObject({
+      type: "image",
+      description: "A harbour at dusk",
+      meta: { original: { width: 40, height: 30 } },
+    });
+    expect(media.url).toMatch(/^https:\/\/mastodon\.example\//);
+    // In no status yet: nothing is published.
+    expect(feed(sim.world)).toEqual([]);
+  });
+
+  it.each([
+    ["no file", null, "File can't be blank"],
+    [
+      "a file that is no image",
+      new TextEncoder().encode("<script>alert(1)</script>"),
+      "content type is invalid",
+    ],
+    [
+      "an image with more pixels than it takes",
+      jpegFile(8000, 6000),
+      "images are not supported",
+    ],
+  ] as const)("refuses %s", async (_, file, why) => {
+    const sim = setup();
+    const { token } = await connect(sim);
+    const { response, media } = await upload(sim, token, file);
+    expect(response.status).toBe(422);
+    expect(media.error).toContain(why);
+  });
+
+  it("refuses a description that is longer than 1500 characters, counted as characters", async () => {
+    const sim = setup();
+    const { token } = await connect(sim);
+    const file = await pngFile(4, 4);
+    const taken = await upload(sim, token, file, {
+      description: "😀".repeat(1500),
+    });
+    expect(taken.response.status).toBe(200);
+    const refused = await upload(sim, token, file, {
+      description: "a".repeat(1501),
+    });
+    expect(refused.response.status).toBe(422);
+    expect(refused.media.error).toContain("Description is too long");
+  });
+
+  it("asks for the scope to upload", async () => {
+    const sim = setup();
+    const { token } = await connect(
+      sim,
+      "profile read:statuses write:statuses",
+    );
+    const { response } = await upload(sim, token, await pngFile(4, 4));
+    expect(response.status).toBe(403);
+  });
+
+  it("posts a status with its images, in the order that the status names them, and a status that is only an image", async () => {
+    const sim = setup();
+    const { token } = await connect(sim);
+    const first = await upload(sim, token, await pngFile(40, 30), {
+      description: "First",
+    });
+    const second = await upload(sim, token, jpegFile(50, 20));
+    const { response, status } = await publish(sim, token, {
+      status: "",
+      media_ids: [second.media.id, first.media.id],
+    });
+    expect(response.status).toBe(200);
+    expect(
+      (status as unknown as { media_attachments: MediaJson[] })
+        .media_attachments,
+    ).toMatchObject([
+      { id: second.media.id, description: null },
+      { id: first.media.id, description: "First" },
+    ]);
+    expect(feed(sim.world).map(({ post }) => post.images)).toEqual([
+      [
+        expect.objectContaining({
+          alt: "",
+          width: 50,
+          height: 20,
+          type: "image/jpeg",
+        }),
+        expect.objectContaining({
+          alt: "First",
+          width: 40,
+          height: 30,
+          type: "image/png",
+        }),
+      ],
+    ]);
+    // The bytes are the world's to show.
+    const [shown] = feed(sim.world)[0]?.post.images ?? [];
+    expect(sim.world.blobs.get(shown?.blob ?? "")).toEqual(jpegFile(50, 20));
+  });
+
+  it("refuses a status with more than four images, with an image of somebody else's, and with one that is in a status already", async () => {
+    const sim = setup();
+    const { token } = await connect(sim);
+    const file = await pngFile(4, 4);
+    const ids: string[] = [];
+    for (let image = 0; image < 5; image++) {
+      ids.push((await upload(sim, token, file)).media.id);
+    }
+    const five = await publish(sim, token, { status: "Five", media_ids: ids });
+    expect(five.response.status).toBe(422);
+    expect(five.status.error).toContain("Cannot attach more than 4 files");
+
+    const four = await publish(sim, token, {
+      status: "Four",
+      media_ids: ids.slice(0, 4),
+    });
+    expect(four.response.status).toBe(200);
+    // A file is in one status.
+    const again = await publish(sim, token, {
+      status: "Again",
+      media_ids: ids.slice(0, 1),
+    });
+    expect(again.response.status).toBe(422);
+
+    const grace = sim.simulator.addAccount(domain, "grace");
+    const hers = await connect(sim, scopes, grace.id);
+    const stolen = await publish(sim, hers.token, {
+      status: "Not mine",
+      media_ids: [ids[4]],
+    });
+    expect(stolen.response.status).toBe(422);
+    expect(feed(sim.world).map(({ post }) => post.text)).toEqual(["Four"]);
+  });
+
+  it("works on a GIF after it has answered, and takes no status with it until it is done", async () => {
+    const sim = setup();
+    const { token } = await connect(sim);
+    const { response, media } = await upload(sim, token, gifFile(9, 7));
+    expect(response.status).toBe(202);
+    expect(media).toMatchObject({ type: "gifv", url: null });
+
+    const early = await publish(sim, token, {
+      status: "Too early",
+      media_ids: [media.id],
+    });
+    expect(early.response.status).toBe(422);
+    expect(early.status.error).toContain("have not finished processing");
+
+    const path = `/api/v1/media/${media.id}`;
+    const working = await api(sim, "GET", path, token);
+    expect(working.status).toBe(206);
+    const done = await api(sim, "GET", path, token);
+    expect(done.status).toBe(200);
+    expect(((await done.json()) as MediaJson).url).not.toBeNull();
+    const { response: posted } = await publish(sim, token, {
+      status: "Now",
+      media_ids: [media.id],
+    });
+    expect(posted.status).toBe(200);
+    // In a status, it is no longer asked about by itself.
+    expect((await api(sim, "GET", path, token)).status).toBe(404);
+  });
+
+  it("drops an image that is in no status after a day", async () => {
+    const sim = setup();
+    const { token } = await connect(sim);
+    const { media } = await upload(sim, token, await pngFile(4, 4));
+    sim.world.advance(24 * 60 * 60 * 1000 - 1000);
+    expect(
+      (await api(sim, "GET", `/api/v1/media/${media.id}`, token)).status,
+    ).toBe(200);
+    sim.world.advance(1000);
+    expect(
+      (await api(sim, "GET", `/api/v1/media/${media.id}`, token)).status,
+    ).toBe(404);
+    const { response } = await publish(sim, token, {
+      status: "Too late",
+      media_ids: [media.id],
+    });
+    expect(response.status).toBe(422);
+  });
+
+  it("deletes the images of a status with the status", async () => {
+    const sim = setup();
+    const { token } = await connect(sim);
+    const { media } = await upload(sim, token, await pngFile(4, 4));
+    const { status } = await publish(sim, token, {
+      status: "With an image",
+      media_ids: [media.id],
+    });
+    await api(sim, "DELETE", `/api/v1/statuses/${status.id}`, token);
+    // The file is not there for a second status.
+    const { response } = await publish(sim, token, {
+      status: "Once more",
+      media_ids: [media.id],
+    });
+    expect(response.status).toBe(422);
+  });
+
+  it("limits how many files an account uploads in half an hour", async () => {
+    const sim = setup();
+    const { token } = await connect(sim);
+    const file = await pngFile(4, 4);
+    for (let sent = 0; sent < 30; sent++) {
+      expect((await upload(sim, token, file)).response.status).toBe(200);
+    }
+    expect((await upload(sim, token, file)).response.status).toBe(429);
+    // Posting has a limit of its own, which uploading does not use up.
+    const { response } = await publish(sim, token, { status: "Hello" });
+    expect(response.status).toBe(200);
   });
 });

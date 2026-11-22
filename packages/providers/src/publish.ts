@@ -1,6 +1,11 @@
 import type { PostContent } from "@pigy/core";
 import { ProviderError } from "./errors.ts";
-import type { Json, Provider, PublishProgress } from "./provider.ts";
+import type {
+  Json,
+  MediaSource,
+  Provider,
+  PublishProgress,
+} from "./provider.ts";
 
 /** Where a caller has the credentials of an account from. */
 export type CredentialSource = {
@@ -33,6 +38,8 @@ export type CredentialSource = {
 /** What a post is published with. */
 export type PublishJob = CredentialSource & {
   content: PostContent;
+  /** See `PublishRequest.media`. */
+  media?: MediaSource;
   /** See `PublishRequest.key`. */
   key: string;
   /** See `PublishRequest.mayHaveSentBefore`. */
@@ -129,6 +136,7 @@ export async function publish(
       content: job.content,
       key: job.key,
       progress,
+      ...(job.media && { media: job.media }),
       ...(job.mayHaveSentBefore !== undefined && {
         mayHaveSentBefore: job.mayHaveSentBefore,
       }),

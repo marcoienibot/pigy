@@ -84,6 +84,8 @@ describeProvider("LinkedIn, simulated", async () => {
     redirectUri,
     identifier: undefined,
     thread: "joined",
+    // Until the adapter publishes images.
+    noImages: true,
     credentials,
     refusedCredentials: { ...credentials, accessToken: unknownToken },
     revokes: true,

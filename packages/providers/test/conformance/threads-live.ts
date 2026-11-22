@@ -32,6 +32,8 @@ export function threadsLiveHarness(options: {
     redirectUri: "https://pigy.invalid/connect/threads/callback",
     identifier: undefined,
     thread: "chain",
+    // Until the adapter publishes images.
+    noImages: true,
     credentials,
     refusedCredentials: { ...credentials, accessToken: unknownToken },
     revokes: false,
