@@ -1,5 +1,5 @@
 import type { Fetch } from "@pigy/core";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProviderError } from "./errors.ts";
 import { httpsUrl, retryAfter, send, sendFollowing } from "./http.ts";
 
@@ -188,6 +188,56 @@ describe("send", () => {
       ),
     );
     expect(error.kind).toBe("retry");
+  });
+});
+
+describe("the time that a request is given", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // A timer that runs on keeps whatever made the request in memory until
+  // it is up: the object of a workspace, for half a minute after every
+  // access that it renews.
+  it("leaves no timer behind when the request is over, however it ended", async () => {
+    vi.useFakeTimers();
+    const answered: Fetch = async () => Response.json({});
+    const unreachable: Fetch = async () => {
+      throw new TypeError("fetch failed");
+    };
+    const broken: Fetch = async () => {
+      throw new Error("A bug");
+    };
+
+    await send(answered, "mastodon.example", url, {}, limits);
+    expect(vi.getTimerCount()).toBe(0);
+
+    await failure(() => send(unreachable, "mastodon.example", url, {}, limits));
+    expect(vi.getTimerCount()).toBe(0);
+
+    await expect(
+      send(broken, "mastodon.example", url, {}, limits),
+    ).rejects.toThrow("A bug");
+    expect(vi.getTimerCount()).toBe(0);
+
+    await sendFollowing(answered, url, {}, limits, 1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("is a timer while the request is under way: what the test above counts", async () => {
+    vi.useFakeTimers();
+    let during = -1;
+    await send(
+      async () => {
+        during = vi.getTimerCount();
+        return Response.json({});
+      },
+      "mastodon.example",
+      url,
+      {},
+      limits,
+    );
+    expect(during).toBe(1);
   });
 });
 

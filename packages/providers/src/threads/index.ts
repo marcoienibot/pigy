@@ -749,8 +749,7 @@ export function createThreadsProvider({
         );
       }
       const container = state.container;
-      const which =
-        content.parts.length > 1 ? `part ${index + 1}` : "the post";
+      const which = content.parts.length > 1 ? `part ${index + 1}` : "the post";
 
       /**
        * The part as a run before this one published it, if it is among
