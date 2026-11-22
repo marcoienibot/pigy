@@ -1,4 +1,8 @@
-import { pushSubscriptionRequestSchema } from "@pigy/core";
+import {
+  fromBase64Url,
+  pushSubscriptionRequestSchema,
+  toBase64Url,
+} from "@pigy/core";
 
 /**
  * The notifications of this device: whether the browser can show them,
@@ -94,18 +98,11 @@ export type PushServer = {
   remove(endpoint: string): Promise<void>;
 };
 
-function toBase64Url(bytes: ArrayBuffer): string {
-  return btoa(String.fromCharCode(...new Uint8Array(bytes)))
-    .replaceAll("+", "-")
-    .replaceAll("/", "_")
-    .replaceAll("=", "");
-}
-
-function fromBase64Url(text: string): Uint8Array<ArrayBuffer> {
-  return Uint8Array.from(
-    atob(text.replaceAll("-", "+").replaceAll("_", "/")),
-    (char) => char.charCodeAt(0),
-  );
+/** The key `key` of the server as the bytes that a browser subscribes with. */
+function keyBytes(key: string): Uint8Array<ArrayBuffer> {
+  const bytes = fromBase64Url(key);
+  if (!bytes) throw new Error("The key of the server is not in base64url");
+  return bytes;
 }
 
 /** Whether `subscription` was made with the public key `key`. */
@@ -195,7 +192,7 @@ export async function turnOnPush(
   }
   const subscription = await manager.subscribe({
     userVisibleOnly: true,
-    applicationServerKey: fromBase64Url(key),
+    applicationServerKey: keyBytes(key),
   });
   await save(server, subscription);
   memory.write(
@@ -251,7 +248,7 @@ export async function renewPush(
     now ??
     (await manager.subscribe({
       userVisibleOnly: true,
-      applicationServerKey: fromBase64Url(key),
+      applicationServerKey: keyBytes(key),
     }));
   await save(server, subscription);
   memory.write({ session: turnedOn.session, endpoint: subscription.endpoint });

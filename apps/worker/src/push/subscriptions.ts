@@ -1,9 +1,10 @@
+import { fromBase64Url } from "@pigy/core";
 import { publicUrl } from "@pigy/providers";
 import { and, desc, eq, gt, inArray, ne } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { pushSubscriptions, sessions } from "../db/schema.ts";
 import { loggable } from "../errors.ts";
-import { fromBase64Url, type PushTarget } from "./web-push.ts";
+import type { PushTarget } from "./web-push.ts";
 
 /**
  * The devices that get push messages, in the table `push_subscription` of

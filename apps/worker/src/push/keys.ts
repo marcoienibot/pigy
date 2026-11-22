@@ -1,6 +1,7 @@
+import { fromBase64Url, toBase64Url } from "@pigy/core";
 import { isLocal } from "../auth/config.ts";
 import type { Bindings } from "../env.ts";
-import { toBase64Url, type VapidKey } from "./web-push.ts";
+import type { VapidKey } from "./web-push.ts";
 
 /**
  * The key that pigy signs with as a sender of push messages, RFC 8292: the
@@ -66,11 +67,8 @@ export async function parseVapidKey(configured: string): Promise<VapidKey> {
     );
   }
   const { kty, crv, x, y, d } = jwk instanceof ArrayBuffer ? {} : jwk;
-  const point = [x, y].map((coordinate) =>
-    Uint8Array.from(
-      atob((coordinate ?? "").replaceAll("-", "+").replaceAll("_", "/")),
-      (char) => char.charCodeAt(0),
-    ),
+  const point = [x, y].map(
+    (coordinate) => fromBase64Url(coordinate ?? "") ?? new Uint8Array(),
   );
   if (
     kty !== "EC" ||

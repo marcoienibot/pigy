@@ -1,4 +1,4 @@
-import type { Clock, Fetch } from "@pigy/core";
+import { type Clock, type Fetch, fromBase64Url, toBase64Url } from "@pigy/core";
 
 /**
  * Web Push from the Worker: a message to one browser, through the push
@@ -89,28 +89,6 @@ const answerWithinMs = 10_000;
 const encoder = new TextEncoder();
 
 type Bytes = Uint8Array<ArrayBuffer>;
-
-export function toBase64Url(bytes: ArrayBuffer | Uint8Array): string {
-  let binary = "";
-  for (const byte of new Uint8Array(bytes)) binary += String.fromCharCode(byte);
-  return btoa(binary)
-    .replaceAll("+", "-")
-    .replaceAll("/", "_")
-    .replaceAll("=", "");
-}
-
-/** The bytes that `text` stands for, or undefined if it is not base64url. */
-export function fromBase64Url(text: string): Bytes | undefined {
-  if (!/^[A-Za-z0-9_-]*$/.test(text)) return undefined;
-  try {
-    return Uint8Array.from(
-      atob(text.replaceAll("-", "+").replaceAll("_", "/")),
-      (char) => char.charCodeAt(0),
-    );
-  } catch {
-    return undefined;
-  }
-}
 
 const bytesOf = (text: string): Bytes => new Uint8Array(encoder.encode(text));
 

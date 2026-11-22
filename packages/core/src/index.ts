@@ -1,4 +1,5 @@
 export * from "./access.ts";
+export * from "./base64url.ts";
 export * from "./connect.ts";
 export * from "./dependencies.ts";
 export * from "./email.ts";
