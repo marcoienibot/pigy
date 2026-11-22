@@ -145,6 +145,23 @@ describe("a page of a simulated network", () => {
   });
 });
 
+describe("the page that describes the public API", () => {
+  it("may show its own style sheet, and nothing else", async () => {
+    const response = await setup().browser().fetch("/api/v1/docs");
+
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    const sheet = /<style>([\s\S]*?)<\/style>/.exec(html)?.[1];
+    if (!sheet) throw new Error("The page has no style sheet");
+    // The policy of a page, which the route does not have to say: the
+    // page is plain HTML, and a browser lays it out with its styles.
+    expect(response.headers.get("Content-Security-Policy")).toBe(
+      `default-src 'none'; style-src ${await hashOf(sheet)}; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
+    );
+    expectCommonHeaders(response);
+  });
+});
+
 describe("the policy of a page", () => {
   const page = (head: string, body: string) =>
     `<!doctype html><html><head>${head}</head><body>${body}</body></html>`;
