@@ -7,6 +7,8 @@ export * from "./email.ts";
 export * from "./error.ts";
 export * from "./health.ts";
 export * from "./id.ts";
+export * from "./media/image.ts";
+export * from "./media/upload.ts";
 export * from "./network/bluesky.ts";
 export * from "./network/content.ts";
 export * from "./network/entities.ts";

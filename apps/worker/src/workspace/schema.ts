@@ -1,7 +1,9 @@
 import {
   channelStatuses,
   environments,
+  imageTypes,
   type Limits,
+  mediaStatuses,
   networks,
   notificationKinds,
   type PushMessage,
@@ -284,6 +286,75 @@ export const settings = sqliteTable("settings", {
   timeZone: text("time_zone"),
   queuePaused: integer("queue_paused", { mode: "boolean" }).notNull(),
 });
+
+export const media = sqliteTable(
+  "media",
+  {
+    id: text("id").primaryKey(),
+    kind: text("kind", { enum: ["image"] }).notNull(),
+    status: text("status", { enum: mediaStatuses }).notNull(),
+    name: text("name").notNull(),
+    type: text("type", { enum: imageTypes }).notNull(),
+    size: integer("size").notNull(),
+    width: integer("width").notNull(),
+    height: integer("height").notNull(),
+    animated: integer("animated", { mode: "boolean" }).notNull(),
+    createdAt: integer("created_at").notNull(),
+    error: text("error"),
+    originalGoneAt: integer("original_gone_at"),
+
+    // The columns below are not synced. Where the bytes are in the bucket
+    // is no column: `mediaKey` of src/media/keys.ts makes it of the IDs
+    // of the workspace and of the image.
+
+    /**
+     * The upload in several parts that the bytes arrive through, as the
+     * bucket names it, while the image is `uploading` and its upload has
+     * begun. Null before, and afterwards.
+     */
+    uploadId: text("upload_id"),
+    /**
+     * The parts of that upload that the bucket has, each with its number
+     * and with what the bucket said of it, which finishing the upload
+     * takes. Null with `uploadId`.
+     */
+    uploadParts: text("upload_parts", { mode: "json" }).$type<
+      { partNumber: number; etag: string }[]
+    >(),
+    /**
+     * Since when the image has been in no part, or null while it is in
+     * one. The store keeps it with every change of what is in a part, and
+     * the alarm of the object deletes an image that has been in none for
+     * `unattachedMs`.
+     */
+    unattachedSince: integer("unattached_since"),
+  },
+  (table) => [
+    // The mutator that makes a row counts the ones that are on their way.
+    index("media_status_idx").on(table.status),
+  ],
+);
+
+export const partMedia = sqliteTable(
+  "part_media",
+  {
+    id: text("id").primaryKey(),
+    // Not "on delete cascade", as everywhere: the mutators delete these
+    // rows before the part.
+    partId: text("part_id")
+      .notNull()
+      .references(() => postParts.id),
+    mediaId: text("media_id")
+      .notNull()
+      .references(() => media.id),
+    position: integer("position").notNull(),
+    alt: text("alt").notNull(),
+  },
+  (table) => [
+    index("part_media_part_id_idx").on(table.partId),
+    index("part_media_media_id_idx").on(table.mediaId),
+  ],
+);
 
 // The tables below never leave the object.
 

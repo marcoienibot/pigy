@@ -1,13 +1,13 @@
 # pigy sync protocol
 
-How a client keeps a copy of a workspace and changes it. Protocol version 2, schema version 9.
+How a client keeps a copy of a workspace and changes it. Protocol version 2, schema version 10.
 
 This document is the contract between the server and any client: the browser store of the app, or anything else. It is meant to be enough to write a client from. The message schemas, the row schemas, the mutators, the limits and the versions are code in `packages/core/src/sync`, and a client should use them rather than copy them. The server is `apps/worker/src/workspace`. `apps/worker/test/sync-client.ts` is a small client written from this document, which the tests of the server use. The client of the app is `packages/core/src/sync/client`, and what it takes from a browser is in `apps/web/src/sync`.
 
 ## 1. Model
 
 - A **workspace** is one user's data in one environment. Everybody has two, `live` and `sandbox`. `GET /api/workspaces` lists them, as `{ "workspaces": [{ "id": "…", "environment": "live" }, { "id": "…", "environment": "sandbox" }] }`, and creates them the first time.
-- The **synced tables** of a workspace are the part of it that clients hold a copy of: `post`, `post_part`, `channel`, `post_target`, `target_part_result`, `notification`, `schedule_slot` and `settings` so far. `packages/core/src/sync/tables.ts` describes their rows. A row has an `id`, a UUID version 7 in lowercase, that is unique in its table.
+- The **synced tables** of a workspace are the part of it that clients hold a copy of: `post`, `post_part`, `channel`, `post_target`, `target_part_result`, `notification`, `schedule_slot`, `settings`, `media` and `part_media` so far. `packages/core/src/sync/tables.ts` describes their rows. A row has an `id`, a UUID version 7 in lowercase, that is unique in its table.
 - A client never writes rows. It sends **mutations**: the name of a mutator and its arguments, such as `post.create`. The server runs the mutator, and what it does to the rows is what counts. A client may run the same mutator, from `packages/core/src/sync/mutators.ts`, on its own copy first, to show the change before the server has answered.
 - The server applies mutations one at a time, in the order they arrive. Each mutation that changes something is one change and gets a **sequence number**: the changes of a workspace are numbered 1, 2, 3 and so on. A **cursor** is a sequence number, and a client whose cursor is N has exactly the rows that the server had after change N. Cursor 0 is the empty workspace.
 - A **client** is one local copy: its rows, its cursor, the mutations it has made that the server has not confirmed, and the ID of the last one that the server has confirmed. It has a **client ID**, a UUID version 7 that it makes up once, and it numbers its mutations 1, 2, 3 and so on. The server remembers the last mutation it has processed for each client ID, which is what makes it safe to send a mutation twice. A client keeps its copy and its client ID for one workspace: another workspace is another copy with another ID.
@@ -38,7 +38,7 @@ Every message is one text frame with one JSON object, which has a `type`. A fiel
 **`hello`** is the first message on every socket, and is sent once.
 
 ```json
-{ "type": "hello", "protocolVersion": 2, "schemaVersion": 9, "clientId": "0192…", "cursor": 42, "lastMutationId": 7 }
+{ "type": "hello", "protocolVersion": 2, "schemaVersion": 10, "clientId": "0192…", "cursor": 42, "lastMutationId": 7 }
 ```
 
 `cursor` is the `to` of the last patch that the client has applied, or `null` if it has applied no patch. `lastMutationId` is the `lastMutationId` of the last patch that the client has applied, or 0 if it has applied no patch. It says that the client knows what became of its mutations up to that one, and the server forgets what it kept to tell the client: see section 4.
@@ -95,7 +95,7 @@ Steps 1 to 4 belong in one transaction of the local store: the rows, the cursor,
 **`error`** says what the client did wrong. The server then closes the socket with the code 4400.
 
 ```json
-{ "type": "error", "code": "version_mismatch", "message": "…", "protocolVersion": 2, "schemaVersion": 9 }
+{ "type": "error", "code": "version_mismatch", "message": "…", "protocolVersion": 2, "schemaVersion": 10 }
 ```
 
 `protocolVersion` and `schemaVersion` are what the server speaks. The codes:
@@ -150,6 +150,11 @@ The mutators, their arguments and what they refuse are in `packages/core/src/syn
 | `target.retry` | `id` | Asks for a delivery that failed to be tried again. Rejected with `not_found` if the target or its channel is gone, with `not_failed` unless the target is in `error` or `uncertain` |
 | `notification.read` | `notifications`: 1 to 100 of `{ id, createdAt }` | Marks notifications of the inbox as read. Each is named as the device saw it, with its `createdAt`. One that is gone, read already, or has another `createdAt` by now is left as it is |
 | `notification.dismiss` | `id`, `createdAt` | Takes a notification out of the inbox, named as the device saw it. Does nothing if it is gone or has another `createdAt` by now |
+| `media.create` | `id`, `name`, `type`, `size`, `width`, `height`, `animated` | Makes the row of an image that the client is about to upload, as `uploading`, with what the client read in the file: one of `image/jpeg`, `image/png`, `image/webp` and `image/gif`, 20 MiB at most, 64 million pixels at most. Rejected with `already_exists` if the ID is taken, with `too_many_uploads` if the workspace has 40 images that are `uploading`. "Images" below |
+| `media.attach` | `id`, `partId`, `mediaId`, `alt` | Puts an image into a part of a draft, after the images that the part has, with its description. Rejected with `not_found` if the part or the image is gone, or the server has let go of the image, with `not_a_draft` if the post is past being a draft, with `already_exists` if the ID is taken, with `too_many_media` if the part has four images |
+| `media.setAlt` | `id`, `alt` | Replaces the description of an image of a part, 5000 characters at most. Rejected with `not_found` if the image is no longer in the part, with `not_a_draft` if its post is past being a draft |
+| `media.detach` | `id` | Takes an image out of a part. Does nothing if it is not in it. Rejected with `not_a_draft` if its post is past being a draft |
+| `media.move` | `id`, `afterId` | Moves an image within its part, to after the image `afterId`, or to the beginning for null. Does nothing if that image is not in the part. Rejected with `not_found` if the image is no longer in the part, with `not_a_draft` if its post is past being a draft |
 
 Whoever creates a row makes up its ID, so a client can create rows while it is offline. `uuidv7` in `packages/core` makes one.
 
@@ -168,6 +173,10 @@ Some mutators are the server's own. A client that sends one has it rejected with
 | `target.end` | Ends a delivery as `sent`, `error` or `uncertain`. It names the connection whose access the network refused, if it refused one, by the `connectedAt` of the channel, and marks the channel as `needs_reconnect` if that is the connection which the channel still has |
 | `channel.warnOfExpiry` | Adds the notification that the access of a channel ends within a week. Does nothing for an access that does not end within a week, has ended, or is of a channel that needs connecting again |
 | `notification.prune` | Removes the notifications that it names: the server runs it for those that are older than 30 days |
+| `media.ready` | Says that the server has an image and what it found in its bytes: the row is `ready`, with the type, the size and the dimensions that the server read. Only for a row that is `uploading` |
+| `media.fail` | Says that the server has no image for a row and will have none, with the reason in `error`: the row is `failed`. Only for a row that is `uploading` |
+| `media.expire` | Marks images whose bytes the server has let go of, with the time as `originalGoneAt` |
+| `media.delete` | Removes the rows of images that are in no part, when the server has deleted what it kept of them |
 
 They are the server's because a channel stands for something that only the server has: the credentials of the account. A channel that a client made up would have none, and one that a client dropped would leave them behind, still good at the network. So an account is connected and disconnected over HTTP, through the routes that `packages/core/src/connect.ts` describes, and a client learns of the outcome as it learns of every change.
 
@@ -180,6 +189,17 @@ A post has a text of its own, which is one or more rows of `post_part` whose `ta
 - **An account can get another text than the post's.** The rows of `post_part` whose `targetId` names a target are the text that this target gets in place of the post's own: a thread of its own, with its own number of parts, numbered from 0 by itself. A target that no part names gets the post's text. `target.customize` writes such a text as a whole, which a client fills with the post's text as it is, for the person to change. It comes in one mutation so that an account never has half a text, and so that of two devices that begin one for the same account, the first wins as a whole. Because one mutation has to fit one message, it carries at most 40,000 characters. A client that brings back a longer text, which an account can have once its text has grown part by part, sends the first parts with `target.customize` and each part after them with `part.add`, after the part before it and with `mustFollow`: `ownTextMutations` in `packages/core` makes these. The steps are not one, and still no account gets a text of two halves. If the account has a text by the time they arrive, because another device gave it one or the person did so since, the `target.customize` does nothing, and each `part.add` names a part that this text does not have: it is rejected, and nothing of the text that was brought back is put behind the other one. A client that offers to bring a text back does not do so for an account that has a text on its copy. No mutation is longer than a message may be if its arguments are what its mutator takes, also when JSON writes every character as six, and a client makes no other: a mutation that does not fit would never leave its outbox, and nothing behind it would. From then on the parts of that text are edited with the mutators of every part: `part.setText`, `part.remove` and `part.move` by the ID of the part, and `part.add` with the `channelId` of the account. `target.followPost` removes the text. So do `target.remove`, the disconnect of the channel while the post is a draft, and `post.delete`. A device that was in the middle of such a text when another took it away has its mutations rejected with `not_found`: `part.add` because the account has no text any more, or no target, and `part.setText` and `part.move` because their part is gone. Nothing of it reaches the post's own text.
 - **An account is named by its channel.** `target.customize`, `target.followPost` and `part.add` name the post and the channel, like `target.remove`, and not the target: of two devices that chose the channel, one has made up an ID for the target that the server never took.
 - **What a delivery publishes** is the text of its target: the parts that name it, or the post's own. The rows of `target_part_result` name those parts in `partId`. None of it changes once the post is published: every mutator above is rejected with `not_a_draft` then, so an attempt that is tried again goes on with the text that the first one began with.
+
+### Images
+
+An image is a row of `media`, and it is in a part of a post by a row of `part_media`, which has its description, `alt`, and its place among the images of the part: they are shown in ascending order of `position`, then of `id`.
+
+- **The row comes before the bytes.** A client makes the row with `media.create`, with what it read in the file, and puts it into a part with `media.attach`, both without a connection if it has none. The row is `uploading` until the server has the bytes and has read them. The bytes are not part of the protocol: a client uploads them over HTTP, through the routes that `packages/core/src/media/upload.ts` describes, to the row that the server has by then.
+- **Only the server says what an image is.** It reads the bytes, never the name of the file or what the client said, and writes what it found into the row with `media.ready`: the type, the dimensions, and the size of the copy that it keeps, which is the picture without what a camera wrote next to it. A file that it does not take, and an upload that was not finished within a week, make the row `failed`, with the reason. A client shows what the row says, and does not run these mutators on its copy.
+- **A post with an image that is not `ready` is not published.** `post.publish` is not rejected for it: the post is sent, and the delivery to each account fails with the reason, like one whose text is too long. A client checks before, with `validateContent`.
+- **An image outlives the part that it was in, for a day.** Taking an image out of a part, removing the part, and deleting the post remove rows of `part_media` and no row of `media`: an Undo puts the image into a part again with `media.attach`, under a new ID. The server removes the row of an image that has been in no part for a day, with the bytes.
+- **The text of one account has images of its own.** The parts that are written for a target are parts, and have their rows of `part_media`. A client that begins such a text with `target.customize` fills it with the images of the post's text too, with a `media.attach` for each. An image can be in any number of parts.
+- **The server lets go of the bytes** of an image 30 days after the last post that it is in was sent to every account, and keeps a small picture of it: `originalGoneAt` of the row says when. `PLAN.md` section 10 has it.
 
 ### Channels
 

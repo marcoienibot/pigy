@@ -186,5 +186,7 @@ export function shown(store: SyncStore) {
     notification: table("notification"),
     schedule_slot: table("schedule_slot"),
     settings: table("settings"),
+    media: table("media"),
+    part_media: table("part_media"),
   };
 }

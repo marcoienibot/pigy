@@ -39,6 +39,16 @@
       "migrations_dir": "migrations"
     }
   ],
+  "r2_buckets": [
+    // The images of the workspaces: the originals, the smaller variants
+    // that are made of them for a network, and the thumbnails. Private:
+    // the bucket has no public address, and every byte of it is served by
+    // the Worker. The bucket has to exist before the first deploy:
+    // `wrangler r2 bucket create pigy-media`.
+    { "binding": "MEDIA", "bucket_name": "pigy-media" }
+  ],
+  // Cloudflare Images, which makes the variants and the thumbnails.
+  "images": { "binding": "IMAGES" },
   "durable_objects": {
     "bindings": [
       // One object per workspace, named after the ID of the workspace.

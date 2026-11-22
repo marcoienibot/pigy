@@ -28,6 +28,8 @@ function withoutSecrets({
   PUBLISH,
   API_RATE_LIMITER,
   ASSETS,
+  MEDIA,
+  IMAGES,
 }: Bindings): Bindings {
   return {
     DB,
@@ -37,6 +39,8 @@ function withoutSecrets({
     PUBLISH,
     API_RATE_LIMITER,
     ASSETS,
+    MEDIA,
+    IMAGES,
   };
 }
 

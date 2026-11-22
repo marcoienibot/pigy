@@ -299,6 +299,8 @@ export function setup(
     PUBLISH: env.PUBLISH,
     API_RATE_LIMITER: options.rateLimiter ?? env.API_RATE_LIMITER,
     ASSETS: assets,
+    MEDIA: env.MEDIA,
+    IMAGES: env.IMAGES,
   };
   // The publishing workflow is not built here: the runtime constructs it.
   // It reads what this app was built and deployed with from `deployment`.
@@ -401,6 +403,8 @@ export class Browser {
       method?: string;
       json?: unknown;
       form?: Record<string, string>;
+      /** Bytes, as the chunk of an upload is sent. */
+      body?: Uint8Array;
       headers?: Record<string, string | null>;
     } = {},
   ): Promise<Response> {
@@ -419,6 +423,10 @@ export class Browser {
     if (init.json !== undefined) {
       headers.set("Content-Type", "application/json");
     }
+    if (init.body) {
+      headers.set("Content-Type", "application/octet-stream");
+      headers.set("Content-Length", String(init.body.length));
+    }
     for (const [name, value] of Object.entries(init.headers ?? {})) {
       if (value === null) headers.delete(name);
       else headers.set(name, value);
@@ -430,6 +438,7 @@ export class Browser {
         headers,
         ...(init.json !== undefined && { body: JSON.stringify(init.json) }),
         ...(init.form && { body: new URLSearchParams(init.form) }),
+        ...(init.body && { body: init.body as Uint8Array<ArrayBuffer> }),
       }),
     );
 

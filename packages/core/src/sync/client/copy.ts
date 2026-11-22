@@ -246,6 +246,8 @@ const supersedes: {
   ) => boolean;
 } = {
   "part.setText": (earlier, later) => earlier.id === later.id,
+  // The description of an image is typed like a text.
+  "media.setAlt": (earlier, later) => earlier.id === later.id,
 };
 
 /**

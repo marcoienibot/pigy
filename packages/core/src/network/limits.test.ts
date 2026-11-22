@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  defaultMediaLimits,
   type Limits,
   limitsSchema,
   maxContentLength,
   validateContent,
+  variantFor,
+  variantName,
 } from "./limits.ts";
 
 const limits: Limits = {
@@ -217,5 +220,230 @@ describe("Threads", () => {
         parts: [{ text: "a".repeat(20) }, { text: "b".repeat(20) }],
       }),
     ).toEqual([]);
+  });
+});
+
+describe("validateContent with images", () => {
+  const image = {
+    id: "image-1",
+    type: "image/jpeg",
+    size: 500_000,
+    width: 1600,
+    height: 1200,
+    alt: "A harbour",
+  } as const;
+  const bluesky = limitsSchema.parse({
+    network: "bluesky",
+    maxCharacters: 300,
+    maxBytes: 3000,
+  });
+  const threads = limitsSchema.parse({
+    network: "threads",
+    maxCharacters: 500,
+  });
+  const linkedin = limitsSchema.parse({
+    network: "linkedin",
+    maxCharacters: 3000,
+  });
+  const codes = (found: ReturnType<typeof validateContent>) =>
+    found.map(({ code }) => code);
+
+  it("takes a part that is only an image, and none that is nothing", () => {
+    expect(
+      validateContent(limits, { parts: [{ text: "", media: [image] }] }),
+    ).toEqual([]);
+    expect(
+      codes(validateContent(limits, { parts: [{ text: " ", media: [] }] })),
+    ).toEqual(["empty"]);
+  });
+
+  it("counts the images of a part against what the network takes in a post", () => {
+    const five = Array.from({ length: 5 }, () => image);
+    expect(
+      validateContent(bluesky, { parts: [{ text: "a", media: five }] }),
+    ).toEqual([
+      {
+        part: 0,
+        code: "too_many_images",
+        images: 5,
+        maxImages: 4,
+        message: "The post has 5 images. Bluesky takes 4 at most.",
+      },
+    ]);
+    // Four in each of two parts are two posts of four.
+    const four = five.slice(1);
+    expect(
+      validateContent(bluesky, {
+        parts: [
+          { text: "a", media: four },
+          { text: "b", media: four },
+        ],
+      }),
+    ).toEqual([]);
+  });
+
+  it("goes by what an instance says where its limits say it", () => {
+    const strict = limitsSchema.parse({
+      ...limits,
+      media: {
+        maxImages: 1,
+        maxImageBytes: 1000,
+        maxImagePixels: null,
+        imageTypes: ["image/jpeg"],
+        animated: false,
+        maxAltLength: 5,
+        maxAspectRatio: null,
+      },
+    });
+    expect(
+      codes(
+        validateContent(strict, {
+          parts: [{ text: "a", media: [image, image] }],
+        }),
+      ),
+      // The description of each, "A harbour", is nine characters.
+    ).toEqual(["too_many_images", "alt_too_long", "alt_too_long"]);
+  });
+
+  it("counts the images of all parts together where a thread is one post", () => {
+    const parts = Array.from({ length: 6 }, () => ({
+      text: "a",
+      media: [image, image, image, image],
+    }));
+    expect(validateContent(linkedin, { parts })).toEqual([
+      {
+        part: null,
+        code: "too_many_images",
+        images: 24,
+        maxImages: 20,
+        message:
+          "The parts have 24 images together. LinkedIn takes them as one post, with 20 images at most.",
+      },
+    ]);
+  });
+
+  it("counts a description in characters, and names the image", () => {
+    // 1001 emoji are 2002 UTF-16 code units and 1001 characters.
+    const alt = "😀".repeat(1001);
+    expect(
+      validateContent(threads, {
+        parts: [{ text: "a", media: [image, { ...image, alt }] }],
+      }),
+    ).toEqual([
+      {
+        part: 0,
+        code: "alt_too_long",
+        image: 1,
+        characters: 1001,
+        maxCharacters: 1000,
+        message:
+          "Image 2 of the post has a description of 1001 characters. Threads takes 1000.",
+      },
+    ]);
+    expect(
+      validateContent(threads, {
+        parts: [{ text: "a", media: [{ ...image, alt: "😀".repeat(1000) }] }],
+      }),
+    ).toEqual([]);
+  });
+
+  it("refuses a shape that a network refuses, whichever way it is long", () => {
+    for (const [width, height] of [
+      [3001, 300],
+      [300, 3001],
+    ] as const) {
+      expect(
+        codes(
+          validateContent(threads, {
+            parts: [{ text: "a", media: [{ ...image, width, height }] }],
+          }),
+        ),
+      ).toEqual(["image_shape"]);
+    }
+    // Ten to one is taken, and Bluesky has no such limit.
+    const panorama = { ...image, width: 3000, height: 300 };
+    expect(
+      validateContent(threads, { parts: [{ text: "a", media: [panorama] }] }),
+    ).toEqual([]);
+    expect(
+      validateContent(bluesky, {
+        parts: [{ text: "a", media: [{ ...panorama, width: 30_000 }] }],
+      }),
+    ).toEqual([]);
+  });
+
+  it.each([
+    ["uploading", "is still being uploaded"],
+    ["failed", "was not uploaded"],
+    ["gone", "is no longer kept"],
+  ] as const)("does not publish an image that is %s", (missing, words) => {
+    const [issue, ...more] = validateContent(limits, {
+      parts: [{ text: "a" }, { text: "b", media: [{ ...image, missing }] }],
+    });
+    expect(more).toEqual([]);
+    expect(issue).toMatchObject({ part: 1, code: "image_missing", missing });
+    expect(issue?.message).toContain(`The image of part 2 ${words}`);
+  });
+});
+
+describe("variantFor", () => {
+  const photo = {
+    type: "image/jpeg",
+    size: 900_000,
+    width: 2000,
+    height: 1500,
+  } as const;
+  const { bluesky, threads, mastodon, linkedin } = defaultMediaLimits;
+
+  it("leaves an image alone that the network takes as it is", () => {
+    for (const taken of [bluesky, threads, mastodon, linkedin]) {
+      expect(variantFor(taken, photo)).toBeNull();
+    }
+    // Exactly at the limit.
+    expect(variantFor(bluesky, { ...photo, size: 1_000_000 })).toBeNull();
+  });
+
+  it("makes a smaller one of an image with more bytes or pixels than the network takes", () => {
+    expect(variantFor(bluesky, { ...photo, size: 1_000_001 })).toEqual({
+      type: "image/jpeg",
+      maxBytes: 1_000_000,
+      maxPixels: null,
+    });
+    expect(
+      variantFor(mastodon, { ...photo, width: 8000, height: 6000 }),
+    ).toEqual({
+      type: "image/jpeg",
+      maxBytes: 16 * 1024 * 1024,
+      maxPixels: 33_177_600,
+    });
+  });
+
+  it("keeps a drawing a PNG and makes a JPEG of a type that the network has not", () => {
+    const drawing = { ...photo, type: "image/png", size: 3_000_000 } as const;
+    expect(variantFor(bluesky, drawing)?.type).toBe("image/png");
+    const webp = { ...photo, type: "image/webp" } as const;
+    expect(variantFor(bluesky, webp)).toBeNull();
+    expect(variantFor(threads, webp)?.type).toBe("image/jpeg");
+    expect(variantFor(linkedin, webp)?.type).toBe("image/jpeg");
+  });
+
+  it("makes a still picture of one that moves where nothing moves", () => {
+    const gif = { ...photo, type: "image/gif", animated: true } as const;
+    expect(variantFor(mastodon, gif)).toBeNull();
+    expect(variantFor(linkedin, gif)).toBeNull();
+    expect(variantFor(bluesky, gif)?.type).toBe("image/png");
+    expect(variantFor(threads, gif)?.type).toBe("image/png");
+  });
+
+  it("names a variant by what it is made within", () => {
+    const small = variantFor(bluesky, { ...photo, size: 2_000_000 });
+    const png = variantFor(bluesky, {
+      ...photo,
+      type: "image/png",
+      size: 2_000_000,
+    });
+    if (!small || !png) throw new Error("No variant");
+    expect(variantName(small)).toBe("jpeg-1000000-0");
+    expect(variantName(png)).not.toBe(variantName(small));
   });
 });

@@ -29,5 +29,11 @@ export const linkedInPartSeparator = "\n\n";
  * order, each as it is written, with an empty line between them.
  */
 export function joinLinkedInParts(content: PostContent): string {
-  return content.parts.map(({ text }) => text).join(linkedInPartSeparator);
+  return (
+    content.parts
+      .map(({ text }) => text)
+      // A part that is only its images has no line of its own in the post.
+      .filter((text, _, texts) => texts.length === 1 || text.trim() !== "")
+      .join(linkedInPartSeparator)
+  );
 }

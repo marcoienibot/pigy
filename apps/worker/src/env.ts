@@ -61,6 +61,16 @@ type Secrets = {
    * nothing is sent. The inbox of the app works all the same.
    */
   VAPID_PRIVATE_KEY?: string;
+  /**
+   * The address that this pigy is reached at from the internet, such as
+   * "https://pigy.example.workers.dev", without a path. It is no secret,
+   * and declared here because it is set per deployment and can be
+   * missing. Work that no request stands behind makes addresses with it:
+   * the link at which Threads fetches an image of a post, see
+   * src/media/links.ts. Without it no post with an image goes to a real
+   * Threads account. A sandbox needs none.
+   */
+  APP_URL?: string;
 };
 
 export type Bindings = Omit<Env, keyof Secrets> & Secrets;

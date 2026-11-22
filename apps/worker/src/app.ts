@@ -10,6 +10,7 @@ import { authRoutes } from "./auth/routes.ts";
 import { channelRoutes, connectCallbackRoutes } from "./channels/routes.ts";
 import type { AppDependencies, AppEnv } from "./env.ts";
 import { handleError, handleNotFound } from "./errors.ts";
+import { mediaRoutes } from "./media/routes.ts";
 import { blueskyClientRoutes } from "./network/bluesky-client.ts";
 import { previewRoutes } from "./preview/routes.ts";
 import { pushRoutes } from "./push/routes.ts";
@@ -50,6 +51,7 @@ export function createApp(dependencies: AppDependencies): Hono<AppEnv> {
   app.route("/api", workspaceRoutes(dependencies));
   app.route("/api", channelRoutes(dependencies));
   app.route("/api", previewRoutes(dependencies));
+  app.route("/api", mediaRoutes(dependencies));
   app.route("/api", apiKeyRoutes(dependencies));
   // The public API, which takes a key and never the session.
   app.route(apiBasePath, apiRoutes(dependencies));

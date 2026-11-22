@@ -19,7 +19,8 @@ import {
 } from "@pigy/core";
 import { drizzle } from "drizzle-orm/d1";
 import type { Bindings } from "../env.ts";
-import { type LogKind, log } from "../log.ts";
+import { type LogKind, log, loggable } from "../log.ts";
+import { deleteUnder, mediaKeys } from "../media/keys.ts";
 import {
   deliveryInstanceId,
   lostTrackMessage,
@@ -41,12 +42,15 @@ import {
   type Delivery,
   type DeliveryRun,
   type DisconnectChannelOutcome,
+  type DueMedia,
+  type MediaUpload,
   type MutationOutcome,
   type Patch,
   type RenewedChannelAccess,
   type StartedDelivery,
   type StepBegun,
   type StoredChannelAccess,
+  type UploadOutcome,
   type WorkspaceIdentity,
   WorkspaceStore,
   workspaceIdentitySchema,
@@ -486,6 +490,86 @@ export function workspaceObject(
     }
 
     /**
+     * How far the upload of an image has come, with how many bytes of
+     * images the workspace holds, or null if there is no such image.
+     * Returns nothing if `workspace` is not the one that the object
+     * holds.
+     */
+    mediaUpload(
+      workspace: WorkspaceIdentity,
+      mediaId: string,
+    ): { upload: MediaUpload; held: number } | null | undefined {
+      if (!this.#store.bind(workspaceIdentitySchema.parse(workspace))) {
+        return undefined;
+      }
+      const upload = this.#store.mediaUpload(mediaId);
+      return upload ? { upload, held: this.#store.mediaBytes } : null;
+    }
+
+    /**
+     * Notes the upload in the bucket that the bytes of an image arrive
+     * through, unless the image has one: `beginUpload` of the store.
+     * Returns how far the upload that counts has come, null if there is
+     * no such image, and nothing if `workspace` is not the one that the
+     * object holds.
+     */
+    beginUpload(
+      workspace: WorkspaceIdentity,
+      mediaId: string,
+      uploadId: string,
+    ): MediaUpload | null | undefined {
+      if (!this.#store.bind(workspaceIdentitySchema.parse(workspace))) {
+        return undefined;
+      }
+      return this.#store.beginUpload(mediaId, uploadId) ?? null;
+    }
+
+    /**
+     * Notes a part of an upload that the bucket has: `uploadedPart` of
+     * the store. Returns how far the upload has come, null if it is not
+     * the upload of the image any more, and nothing if `workspace` is not
+     * the one that the object holds.
+     */
+    uploadedPart(
+      workspace: WorkspaceIdentity,
+      mediaId: string,
+      uploadId: string,
+      part: { partNumber: number; etag: string },
+    ): MediaUpload | null | undefined {
+      if (!this.#store.bind(workspaceIdentitySchema.parse(workspace))) {
+        return undefined;
+      }
+      return this.#store.uploadedPart(mediaId, uploadId, part) ?? null;
+    }
+
+    /**
+     * Ends the upload of an image with what the Worker found in its
+     * bytes, or with why it has none. The clients that are connected see
+     * the image as `ready` or `failed`. With a `key` it is carried out
+     * once. Returns nothing if `workspace` is not the one that the object
+     * holds.
+     */
+    finishUpload(
+      workspace: WorkspaceIdentity,
+      mediaId: string,
+      outcome: UploadOutcome,
+      key?: string,
+    ): MutationOutcome | undefined {
+      if (!this.#store.bind(workspaceIdentitySchema.parse(workspace))) {
+        return undefined;
+      }
+      const from = this.#store.seq;
+      const ended = this.#store.finishUpload(
+        mediaId,
+        outcome,
+        now().getTime(),
+        callKeySchema.optional().parse(key),
+      );
+      this.#publish(from);
+      return ended;
+    }
+
+    /**
      * Stores the credentials that a refresh returned, sealed, in place of
      * `expected`, the ones that it started from, and returns whether it
      * did: not if the channel holds others by now. Returns nothing if
@@ -606,6 +690,13 @@ export function workspaceObject(
             "The inbox of a workspace was not kept",
           ],
           [
+            // After the deliveries, and bounded: so many images in a
+            // look, each a request or two to the bucket.
+            () => this.#keepMedia(),
+            "media",
+            "The images of a workspace were not looked after",
+          ],
+          [
             // Last: this waits for the push services, and leaves as soon
             // as a delivery asks to begin.
             async () => {
@@ -679,6 +770,98 @@ export function workspaceObject(
     }
 
     /**
+     * What the images take by the clock, `mediaDue` of the store, for
+     * `mediaPerPass` images of each kind at most:
+     *
+     * - An upload that was not finished within `uploadLifetimeMs` is
+     *   given up: the bucket is told to drop its parts, and the row says
+     *   `failed`.
+     * - An image that has been in no part for `unattachedMs` is deleted,
+     *   with everything that the bucket has of it, and then its row.
+     * - An image whose posts were all sent `originalLifetimeMs` ago
+     *   loses its bytes and what was made of them for the networks, and
+     *   keeps its small picture: PLAN.md section 10.
+     *
+     * The row first and the bucket after. Each of the mutators looks at
+     * the image as it is when it runs, and leaves one alone that is
+     * something else by then: an upload that was finished meanwhile, an
+     * image that an Undo has put into a part again. Only what the row
+     * then says is gone is deleted. If the bucket fails after that, bytes
+     * are left that no row names: the log says which, and nothing serves
+     * them. Each image is tried by itself, so one that fails does not
+     * keep the others.
+     */
+    async #keepMedia(): Promise<void> {
+      const { id: workspaceId } = this.#store.identity;
+      const bucket = this.env.MEDIA;
+      const due = this.#store.mediaDue(now().getTime());
+      const each = async (
+        images: DueMedia[],
+        look: (
+          image: DueMedia,
+          keys: ReturnType<typeof mediaKeys>,
+        ) => Promise<void>,
+      ) => {
+        for (const image of images) {
+          const from = this.#store.seq;
+          try {
+            await look(image, mediaKeys(workspaceId, image.id));
+          } catch (error) {
+            console.error(
+              `The image ${image.id} of the workspace ${workspaceId} was not looked after`,
+              loggable(error),
+            );
+          } finally {
+            this.#publish(from);
+          }
+        }
+      };
+      /** Has the bucket drop the parts of an upload that is not finished. */
+      const abort = async ({ uploadId }: DueMedia, key: string) => {
+        if (uploadId === null) return;
+        try {
+          await bucket.resumeMultipartUpload(key, uploadId).abort();
+        } catch {
+          // Finished or dropped already: nothing of it is left then.
+        }
+      };
+      await each(due.abandoned, async (image, keys) => {
+        const failed = this.#store.mediaChanged(
+          {
+            name: "media.fail",
+            args: {
+              id: image.id,
+              error:
+                "The upload was not finished within a week. Attach the image again.",
+            },
+          },
+          now().getTime(),
+        );
+        if (!failed) return;
+        await abort(image, keys.upload);
+        await deleteUnder(bucket, keys.prefix);
+      });
+      await each(due.unattached, async (image, keys) => {
+        this.#store.mediaChanged(
+          { name: "media.delete", args: { ids: [image.id] } },
+          now().getTime(),
+        );
+        // In a part again by now: it stays, with its bytes.
+        if (this.#store.mediaUpload(image.id)) return;
+        await abort(image, keys.upload);
+        await deleteUnder(bucket, keys.prefix);
+      });
+      await each(due.outlived, async (image, keys) => {
+        this.#store.mediaChanged(
+          { name: "media.expire", args: { ids: [image.id] } },
+          now().getTime(),
+        );
+        await bucket.delete(keys.original);
+        await deleteUnder(bucket, keys.variants);
+      });
+    }
+
+    /**
      * Takes up the scheduled posts whose time has come, and deletes the
      * ones that were put aside long enough ago.
      */
@@ -742,6 +925,12 @@ export function workspaceObject(
      *   an access that ends or to remove what is old: at that time, and
      *   in `deliveryWatchMs` at the earliest, which is when it is tried
      *   again if it did not work.
+     * - An image is due for something, `mediaDue` of the store: an
+     *   upload to give up, an image that is in no part to delete, bytes
+     *   to let go of. At that time, and in `deliveryWatchMs` at the
+     *   earliest, which is when the rest is taken where a look has done
+     *   as many as it does, and when it is tried again if it did not
+     *   work.
      *
      * `after` says who asks: a change, or the alarm when it has looked.
      */
@@ -801,6 +990,10 @@ export function workspaceObject(
       const inbox = this.#store.nextInboxAt;
       if (inbox !== null) {
         waits.push(Math.max(deliveryWatchMs, inbox - time));
+      }
+      const images = this.#store.nextMediaAt;
+      if (images !== null) {
+        waits.push(Math.max(deliveryWatchMs, images - time));
       }
       // The runtime sets no alarm for a time that is centuries away, and
       // a post can be scheduled for one. The alarm comes back before

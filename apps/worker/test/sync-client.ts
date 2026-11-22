@@ -116,6 +116,8 @@ export class SyncClient {
     notification: new Map(),
     schedule_slot: new Map(),
     settings: new Map(),
+    media: new Map(),
+    part_media: new Map(),
   };
   private socket: WebSocket | undefined;
   /** Messages that no test has looked at yet. */
@@ -314,6 +316,8 @@ export class SyncClient {
       notification: this.table("notification"),
       schedule_slot: this.table("schedule_slot"),
       settings: this.table("settings"),
+      media: this.table("media"),
+      part_media: this.table("part_media"),
     };
   }
 }

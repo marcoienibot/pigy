@@ -247,3 +247,18 @@ export const apiKeys = sqliteTable(
   },
   (table) => [index("api_key_workspace_id_idx").on(table.workspaceId)],
 );
+
+/**
+ * How many requests of an upload each person has made in the minute that
+ * is running: `uploadRequestsPerMinute` of @pigy/core is the limit. One
+ * row per person, written over when the next minute begins, as
+ * `preview_use` is.
+ */
+export const uploadUses = sqliteTable("upload_use", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  /** The minute that is counted, as its beginning. */
+  windowStart: integer("window_start").notNull(),
+  count: integer("count").notNull(),
+});

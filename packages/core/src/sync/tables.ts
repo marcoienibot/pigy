@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { idSchema } from "../id.ts";
+import { imageTypes, maxImageBytes } from "../media/image.ts";
 import { limitsSchema } from "../network/limits.ts";
 import { networkSchema } from "../network/network.ts";
 
@@ -496,6 +497,105 @@ export const defaultSettings: z.infer<typeof settingsRowSchema> = {
 /** The time zone of a workspace that has set none. */
 export const defaultTimeZone = "UTC";
 
+/** How far an image has come on its way to the server. */
+export const mediaStatuses = [
+  /**
+   * The row is there and the bytes are not, or not all of them, or the
+   * server has not read them yet. What the row says of the image is what
+   * the device that made it found in the file.
+   */
+  "uploading",
+  /**
+   * The server has the image and has read it: what the row says of it is
+   * what the server found.
+   */
+  "ready",
+  /** The server did not take the file, or never got it. `error` says why. */
+  "failed",
+] as const;
+
+export const mediaStatusSchema = z.enum(mediaStatuses);
+
+export type MediaStatus = z.infer<typeof mediaStatusSchema>;
+
+/** The most images of one part. No network takes more in a post of its own. */
+export const maxImagesPerPart = 4;
+
+/**
+ * The longest description of an image, in UTF-16 code units. It is above
+ * what any network takes, whose limits `validateContent` checks, and keeps
+ * a row small.
+ */
+export const maxAltLength = 5000;
+
+/** The longest values that a media row holds. */
+export const mediaLimits = {
+  nameLength: 255,
+  errorLength: 300,
+} as const;
+
+/**
+ * The most images of a workspace that are on their way to the server at a
+ * time. A device makes the row before it sends the first byte, also
+ * without a connection, so this is what keeps a workspace from being
+ * filled with rows that nothing stands behind.
+ */
+export const maxUploading = 40;
+
+/**
+ * An image of the workspace. The row says what the image is, for
+ * display and for the checks before a post goes out. The bytes are the
+ * server's: a row is nothing without them, and only the server says that
+ * they are there.
+ *
+ * A device makes the row, as `uploading`, with what it read in the file,
+ * and uploads the file then. The server reads the bytes itself and says
+ * what it found: the row is `ready` with that, or `failed`.
+ */
+export const mediaRowSchema = z.strictObject({
+  id: idSchema,
+  kind: z.literal("image"),
+  status: mediaStatusSchema,
+  /** The name of the file on the device that it came from, for display. */
+  name: z.string().max(mediaLimits.nameLength),
+  type: z.enum(imageTypes),
+  /**
+   * How many bytes: of the file while the row is `uploading`, and of the
+   * copy that the server keeps from then on, which has the picture and
+   * not what a camera wrote next to it.
+   */
+  size: z.number().int().positive().max(maxImageBytes),
+  /** In pixels, as the picture is shown. */
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  /** Whether the picture moves: a GIF with several frames, for one. */
+  animated: z.boolean(),
+  createdAt: timeSchema,
+  /** Why the server has no image for the row. Null unless `failed`. */
+  error: z.string().min(1).max(mediaLimits.errorLength).nullable(),
+  /**
+   * When the server let go of the image itself, some time after the last
+   * post that it is in was sent everywhere: section 10 of PLAN.md. A
+   * small picture of it is kept. Null while the image is there.
+   */
+  originalGoneAt: timeSchema.nullable(),
+});
+
+/**
+ * An image in a part of a post. The images of a part are shown in
+ * ascending order of `position`, then of `id`, as its parts are read. An
+ * image can be in several parts: in the text of a post and in the one
+ * that an account gets in its place.
+ */
+export const partMediaRowSchema = z.strictObject({
+  id: idSchema,
+  partId: idSchema,
+  mediaId: idSchema,
+  position: z.number().int().nonnegative(),
+  /** What the picture shows, for whoever cannot see it. */
+  alt: z.string().max(maxAltLength),
+});
+
 /** The schema of a row of every synced table, by the name of the table. */
 export const rowSchemas = {
   post: postRowSchema,
@@ -506,6 +606,8 @@ export const rowSchemas = {
   notification: notificationRowSchema,
   schedule_slot: scheduleSlotRowSchema,
   settings: settingsRowSchema,
+  media: mediaRowSchema,
+  part_media: partMediaRowSchema,
 } as const;
 
 export type TableName = keyof typeof rowSchemas;

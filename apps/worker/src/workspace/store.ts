@@ -1,14 +1,19 @@
 import {
   applyMutation,
   type Change,
+  type ContentImage,
   environmentSchema,
   expiryNoticeMs,
+  type ImageFacts,
+  inReadingOrder,
   type Limits,
   type Mutation,
   MutationRejected,
   type MutationSource,
   type MutatorArgs,
+  mediaLimits,
   type Network,
+  originalLifetimeMs,
   type PostContent,
   type PushMessage,
   partsFor,
@@ -19,6 +24,8 @@ import {
   type Transaction,
   tableNames,
   trashMs,
+  unattachedMs,
+  uploadLifetimeMs,
 } from "@pigy/core";
 import {
   and,
@@ -46,6 +53,7 @@ import {
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import { z } from "zod";
 import { type LogContext, log } from "../log.ts";
+import { contentImageId } from "../media/keys.ts";
 import {
   type ApiAnswer,
   type ApiBench,
@@ -63,7 +71,10 @@ import {
   clientMutations,
   type KeyedOutcome,
   keyedCalls,
+  media,
   notifications,
+  partMedia,
+  postParts,
   posts,
   postTargets,
   pushOutbox,
@@ -283,6 +294,29 @@ export type Delivery = {
    */
   mayHaveSent: boolean;
 };
+
+/**
+ * How far the upload of an image has come, as the workspace has it: what
+ * its row says, and what the bucket has of it.
+ */
+export type MediaUpload = {
+  status: Row<"media">["status"];
+  /** How many bytes the device said the file has. */
+  size: number;
+  /** The upload in several parts as the bucket names it, once it has begun. */
+  uploadId: string | null;
+  /** The parts that the bucket has. */
+  parts: { partNumber: number; etag: string }[];
+};
+
+/** How an upload ended: what the server read in the bytes, or why it has none. */
+export type UploadOutcome = { facts: ImageFacts } | { error: string };
+
+/** An image whose time for something has come: see `mediaDue`. */
+export type DueMedia = { id: string; uploadId: string | null };
+
+/** The most images that one look of the alarm deals with, of each kind. */
+export const mediaPerPass = 50;
 
 /** The credentials of a channel after a refresh, sealed, with their times. */
 export type RenewedChannelAccess = ChannelAccess & {
@@ -1184,11 +1218,326 @@ export class WorkspaceStore {
         parts: partsFor(
           findRows(this.db, "post_part", "postId", target.postId),
           targetId,
-        ).map(({ text }) => ({ text })),
+        ).map(({ id, text }) => {
+          const images = this.imagesOf(id);
+          // Left out for a part without any, so that a post without
+          // images is what it was before pigy had them.
+          return images.length > 0 ? { text, media: images } : { text };
+        }),
       },
       progress: target.progress ?? null,
       mayHaveSent: target.mayHaveSent,
     };
+  }
+
+  /**
+   * The images of the part `partId` as a delivery publishes them, in the
+   * order they are shown in: each as the workspace keeps it, with what
+   * says so if it cannot be published as things are. `validateContent`
+   * goes by that, and a delivery makes a smaller image where its network
+   * needs one.
+   */
+  private imagesOf(partId: string): ContentImage[] {
+    return inReadingOrder(
+      findRows(this.db, "part_media", "partId", partId),
+    ).map(({ mediaId, alt }) => {
+      const image = readRow(this.db, "media", mediaId);
+      const missing =
+        !image || image.originalGoneAt !== null
+          ? "gone"
+          : image.status === "ready"
+            ? undefined
+            : image.status;
+      return {
+        id: contentImageId(mediaId, "original"),
+        // Of a row that is gone nothing is known: it is never
+        // published, and these only have to be an image's.
+        type: image?.type ?? "image/jpeg",
+        size: image?.size ?? 1,
+        width: image?.width ?? 1,
+        height: image?.height ?? 1,
+        ...(image?.animated && { animated: true }),
+        alt,
+        ...(missing && { missing }),
+      };
+    });
+  }
+
+  /** How far the upload of the image `mediaId` has come, if there is one. */
+  mediaUpload(mediaId: string): MediaUpload | undefined {
+    const row = this.db
+      .select({
+        status: media.status,
+        size: media.size,
+        uploadId: media.uploadId,
+        parts: media.uploadParts,
+      })
+      .from(media)
+      .where(eq(media.id, mediaId))
+      .get();
+    return row && { ...row, parts: row.parts ?? [] };
+  }
+
+  /**
+   * How many bytes of images the workspace holds: of those that the
+   * server has, and of those that are on their way, as their rows say.
+   */
+  get mediaBytes(): number {
+    const held = this.db
+      .select({ bytes: sql<number>`coalesce(sum(${media.size}), 0)` })
+      .from(media)
+      .where(and(ne(media.status, "failed"), isNull(media.originalGoneAt)))
+      .get();
+    return held?.bytes ?? 0;
+  }
+
+  /**
+   * Notes that the upload of the image `mediaId` has begun in the bucket,
+   * as `uploadId`, unless one has begun before: an image has one upload.
+   * Returns how far the upload has come, with the upload that counts, or
+   * undefined if there is no such image.
+   */
+  beginUpload(mediaId: string, uploadId: string): MediaUpload | undefined {
+    return this.storage.transactionSync(() => {
+      this.db
+        .update(media)
+        .set({ uploadId, uploadParts: [] })
+        .where(
+          and(
+            eq(media.id, mediaId),
+            eq(media.status, "uploading"),
+            isNull(media.uploadId),
+          ),
+        )
+        .run();
+      return this.mediaUpload(mediaId);
+    });
+  }
+
+  /**
+   * Notes that the bucket has a part of the upload `uploadId` of the
+   * image `mediaId`, in the place of what it had under the same number.
+   * Returns how far the upload has come, or undefined if the image is
+   * gone or `uploadId` is not its upload any more.
+   */
+  uploadedPart(
+    mediaId: string,
+    uploadId: string,
+    part: { partNumber: number; etag: string },
+  ): MediaUpload | undefined {
+    return this.storage.transactionSync(() => {
+      const upload = this.mediaUpload(mediaId);
+      if (upload?.status !== "uploading" || upload.uploadId !== uploadId) {
+        return undefined;
+      }
+      const parts = [
+        ...upload.parts.filter(
+          ({ partNumber }) => partNumber !== part.partNumber,
+        ),
+        part,
+      ].sort((a, b) => a.partNumber - b.partNumber);
+      this.db
+        .update(media)
+        .set({ uploadParts: parts })
+        .where(eq(media.id, mediaId))
+        .run();
+      return { ...upload, parts };
+    });
+  }
+
+  /**
+   * Ends the upload of the image `mediaId`: through the mutator
+   * `media.ready` or `media.fail`, which clients hear of, and by
+   * forgetting the upload in the bucket, which is over. Both in one
+   * transaction, and once for a `key`: see `once`.
+   */
+  finishUpload(
+    mediaId: string,
+    outcome: UploadOutcome,
+    now: number,
+    key?: string,
+  ): MutationOutcome {
+    return this.once(key, now, () => {
+      const [refusal] = this.run(
+        [
+          "facts" in outcome
+            ? {
+                name: "media.ready",
+                args: {
+                  id: mediaId,
+                  ...outcome.facts,
+                } satisfies MutatorArgs<"media.ready">,
+              }
+            : {
+                name: "media.fail",
+                args: {
+                  id: mediaId,
+                  error: outcome.error.slice(0, mediaLimits.errorLength),
+                } satisfies MutatorArgs<"media.fail">,
+              },
+        ],
+        now,
+        "server",
+      );
+      if (refusal) return { ok: false, ...refusal };
+      this.db
+        .update(media)
+        .set({ uploadId: null, uploadParts: null })
+        .where(eq(media.id, mediaId))
+        .run();
+      return { ok: true };
+    });
+  }
+
+  /**
+   * Keeps `unattachedSince` of the images: the time `time` for one that
+   * is in no part and has none yet, and null for one that is in a part.
+   * After every mutation that changed what is in a part, in its
+   * transaction.
+   */
+  private noteAttachments(time: number): void {
+    // Written out: in an UPDATE, Drizzle names a column without its
+    // table, and both tables have an `id`.
+    const attached = sql`(select 1 from part_media where part_media.media_id = media.id)`;
+    this.db
+      .update(media)
+      .set({ unattachedSince: time })
+      .where(sql`unattached_since is null and not exists ${attached}`)
+      .run();
+    this.db
+      .update(media)
+      .set({ unattachedSince: null })
+      .where(sql`unattached_since is not null and exists ${attached}`)
+      .run();
+  }
+
+  // An image that is in a part of a post which has not gone everywhere, or
+  // has not long enough ago: its bytes are still needed.
+  private stillNeeded(now: number) {
+    return sql`(
+      select 1 from part_media
+      join post_part on post_part.id = part_media.part_id
+      join post on post.id = post_part.post_id
+      where part_media.media_id = media.id
+        and (post.status != 'sent' or post.updated_at > ${now - originalLifetimeMs})
+    )`;
+  }
+
+  /**
+   * The images whose time for something has come by `now`,
+   * `mediaPerPass` of each at most:
+   *
+   * - `abandoned`: on their way for longer than `uploadLifetimeMs`. The
+   *   upload is given up, and the row says so.
+   * - `unattached`: in no part for longer than `unattachedMs`. The image
+   *   is deleted, with its row.
+   * - `outlived`: in posts that were all sent everywhere, the last of
+   *   them `originalLifetimeMs` ago or longer. The server lets go of the
+   *   bytes and keeps the small picture.
+   */
+  mediaDue(now: number): {
+    abandoned: DueMedia[];
+    unattached: DueMedia[];
+    outlived: DueMedia[];
+  } {
+    const columns = { id: media.id, uploadId: media.uploadId };
+    return {
+      abandoned: this.db
+        .select(columns)
+        .from(media)
+        .where(
+          and(
+            eq(media.status, "uploading"),
+            lte(media.createdAt, now - uploadLifetimeMs),
+          ),
+        )
+        .limit(mediaPerPass)
+        .all(),
+      unattached: this.db
+        .select(columns)
+        .from(media)
+        .where(lte(media.unattachedSince, now - unattachedMs))
+        .limit(mediaPerPass)
+        .all(),
+      outlived: this.db
+        .select(columns)
+        .from(media)
+        .where(
+          and(
+            eq(media.status, "ready"),
+            isNull(media.originalGoneAt),
+            isNull(media.unattachedSince),
+            sql`not exists ${this.stillNeeded(now)}`,
+          ),
+        )
+        .limit(mediaPerPass)
+        .all(),
+    };
+  }
+
+  /**
+   * When the next image is due for something, in milliseconds since the
+   * epoch, or null if none is in sight: see `mediaDue`.
+   */
+  get nextMediaAt(): number | null {
+    const uploading = this.db
+      .select({ at: min(media.createdAt) })
+      .from(media)
+      .where(eq(media.status, "uploading"))
+      .get();
+    const unattached = this.db
+      .select({ at: min(media.unattachedSince) })
+      .from(media)
+      .get();
+    // Of the images whose posts have all gone everywhere, the one whose
+    // last post went first.
+    const sent = this.db
+      .select({ last: sql<number>`max(${posts.updatedAt})`.as("last") })
+      .from(media)
+      .innerJoin(partMedia, eq(partMedia.mediaId, media.id))
+      .innerJoin(postParts, eq(postParts.id, partMedia.partId))
+      .innerJoin(posts, eq(posts.id, postParts.postId))
+      .where(and(eq(media.status, "ready"), isNull(media.originalGoneAt)))
+      .groupBy(media.id)
+      .having(sql`sum(${posts.status} != 'sent') = 0`)
+      .orderBy(sql`last`)
+      .limit(1)
+      .get();
+    const times = [
+      ...(uploading?.at == null ? [] : [uploading.at + uploadLifetimeMs]),
+      ...(unattached?.at == null ? [] : [unattached.at + unattachedMs]),
+      ...(sent?.last == null ? [] : [sent.last + originalLifetimeMs]),
+    ];
+    return times.length > 0 ? Math.min(...times) : null;
+  }
+
+  /**
+   * Runs a mutator of the server's own that is about images, for the
+   * alarm of the object, and returns whether it did what it says: not
+   * for an upload that has ended otherwise by now.
+   */
+  mediaChanged(
+    mutation:
+      | { name: "media.fail"; args: MutatorArgs<"media.fail"> }
+      | { name: "media.expire"; args: MutatorArgs<"media.expire"> }
+      | { name: "media.delete"; args: MutatorArgs<"media.delete"> },
+    now: number,
+  ): boolean {
+    return this.storage.transactionSync(() => {
+      const [refusal] = this.run([mutation], now, "server");
+      if (refusal) {
+        if (refusal.code === "not_current") return false;
+        throw new Error(`${mutation.name} was refused: ${refusal.message}`);
+      }
+      if (mutation.name === "media.fail") {
+        this.db
+          .update(media)
+          .set({ uploadId: null, uploadParts: null })
+          .where(eq(media.id, mutation.args.id))
+          .run();
+      }
+      return true;
+    });
   }
 
   /**
@@ -1594,6 +1943,14 @@ export class WorkspaceStore {
         return error.refusal;
       }
       this.queuePushes(tx, time);
+      // What is in a part has changed, or an image is new or gone.
+      if (
+        [...tx.changed.values()].some(
+          ({ table }) => table === "part_media" || table === "media",
+        )
+      ) {
+        this.noteAttachments(time);
+      }
       if (tx.changed.size > 0) {
         seq += 1;
         // One statement per row: a statement takes at most 100 values.

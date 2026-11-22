@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { type ImageType, imageTypes } from "../media/image.ts";
 import { countBlueskyCharacters, utf8Length } from "./bluesky.ts";
 import type { PostContent } from "./content.ts";
 import { countLinkedInCharacters, joinLinkedInParts } from "./linkedin.ts";
@@ -16,6 +17,34 @@ import { countThreadsCharacters } from "./threads.ts";
  */
 
 /**
+ * What an account takes of images. Where an image of a post is more than
+ * `maxImageBytes` or `maxImagePixels`, or of a type that is not among
+ * `imageTypes`, pigy makes a smaller one for the network, `variantFor`,
+ * so none of the three keeps a post from going out. The others do.
+ */
+export const mediaLimitsSchema = z.strictObject({
+  /** The most images in one post. */
+  maxImages: z.number().int().positive(),
+  /** The most bytes of one image. */
+  maxImageBytes: z.number().int().positive(),
+  /** The most pixels of one image, width times height, or null for no limit. */
+  maxImagePixels: z.number().int().positive().nullable(),
+  /** The types that the network takes as they are. JPEG is always one. */
+  imageTypes: z.array(z.enum(imageTypes)).min(1),
+  /** Whether a picture that moves stays one there. */
+  animated: z.boolean(),
+  /** The longest description of an image, in characters. */
+  maxAltLength: z.number().int().positive(),
+  /**
+   * How much longer one side of an image may be than the other: 10 for
+   * ten to one. Null for no limit.
+   */
+  maxAspectRatio: z.number().positive().nullable(),
+});
+
+export type MediaLimits = z.infer<typeof mediaLimitsSchema>;
+
+/**
  * The limits of an account on Mastodon. They are those of its instance and
  * are read from it, never assumed: instances choose their own.
  */
@@ -25,6 +54,11 @@ export const mastodonLimitsSchema = z.strictObject({
   maxCharacters: z.number().int().positive(),
   /** What every link counts as, however long it is. */
   charactersPerUrl: z.number().int().nonnegative(),
+  /**
+   * What the instance takes of images. Left out by limits that were read
+   * before pigy asked: `mediaLimitsOf` has what stands in then.
+   */
+  media: mediaLimitsSchema.optional(),
 });
 
 /**
@@ -42,6 +76,7 @@ export const blueskyLimitsSchema = z.strictObject({
    * within `maxCharacters` and over this.
    */
   maxBytes: z.number().int().positive(),
+  media: mediaLimitsSchema.optional(),
 });
 
 /**
@@ -56,6 +91,7 @@ export const linkedInLimitsSchema = z.strictObject({
    * thread is one post there, so its parts have to fit together.
    */
   maxCharacters: z.number().int().positive(),
+  media: mediaLimitsSchema.optional(),
 });
 
 /**
@@ -70,6 +106,7 @@ export const threadsLimitsSchema = z.strictObject({
    * emoji as the bytes that it takes.
    */
   maxCharacters: z.number().int().positive(),
+  media: mediaLimitsSchema.optional(),
 });
 
 export const limitsSchema = z.discriminatedUnion("network", [
@@ -80,6 +117,136 @@ export const limitsSchema = z.discriminatedUnion("network", [
 ]);
 
 export type Limits = z.infer<typeof limitsSchema>;
+
+const megabyte = 1024 * 1024;
+
+/**
+ * What each network takes of images where the limits of an account do not
+ * say: on Bluesky, LinkedIn and Threads, where it is the same for every
+ * account, and on a Mastodon instance that was asked before pigy read
+ * what it says of media.
+ *
+ * - Mastodon: the defaults of the software. An instance says its own in
+ *   `configuration.media_attachments` and `configuration.statuses`.
+ * - Bluesky: the lexicon `app.bsky.embed.images` has four images of a
+ *   million bytes each. It has no limit for the description: GUESS, the
+ *   2000 that Bluesky's own app stops at. A GIF is a still picture in an
+ *   image embed: GUESS.
+ * - LinkedIn: GUESS, all of it. The Images API documents JPG, PNG and GIF
+ *   and 36,152,320 pixels, a description of 4086 characters, and 2 to 20
+ *   images in a post of several. The bytes it takes are not documented:
+ *   8 MB is what its upload took in practice.
+ * - Threads: the documentation of its API has JPEG and PNG, 8 MB, a
+ *   shape of ten to one at most, 20 items in a carousel and a
+ *   description of 1000 characters.
+ */
+export const defaultMediaLimits: {
+  readonly [Name in Limits["network"]]: MediaLimits;
+} = {
+  mastodon: {
+    maxImages: 4,
+    maxImageBytes: 16 * megabyte,
+    maxImagePixels: 33_177_600,
+    imageTypes: ["image/jpeg", "image/png", "image/gif", "image/webp"],
+    animated: true,
+    maxAltLength: 1500,
+    maxAspectRatio: null,
+  },
+  bluesky: {
+    maxImages: 4,
+    maxImageBytes: 1_000_000,
+    maxImagePixels: null,
+    imageTypes: ["image/jpeg", "image/png", "image/webp"],
+    animated: false,
+    maxAltLength: 2000,
+    maxAspectRatio: null,
+  },
+  linkedin: {
+    maxImages: 20,
+    maxImageBytes: 8 * megabyte,
+    maxImagePixels: 36_152_320,
+    imageTypes: ["image/jpeg", "image/png", "image/gif"],
+    animated: true,
+    maxAltLength: 4086,
+    maxAspectRatio: null,
+  },
+  threads: {
+    maxImages: 20,
+    maxImageBytes: 8 * megabyte,
+    maxImagePixels: null,
+    imageTypes: ["image/jpeg", "image/png"],
+    animated: false,
+    maxAltLength: 1000,
+    maxAspectRatio: 10,
+  },
+};
+
+/** What the account of `limits` takes of images. */
+export function mediaLimitsOf(limits: Limits): MediaLimits {
+  return limits.media ?? defaultMediaLimits[limits.network];
+}
+
+/**
+ * The image that is made of another for a network: the type to make it
+ * in, and what it has to stay within.
+ */
+export type Variant = {
+  type: ImageType;
+  maxBytes: number;
+  /** Null for no limit. */
+  maxPixels: number | null;
+};
+
+/**
+ * What has to be made of `image` for an account with `limits`, or null if
+ * the network takes the image as it is. A picture that moves and has to
+ * be made anew is a still one afterwards, and so is one that goes to a
+ * network on which nothing moves.
+ */
+export function variantFor(
+  limits: MediaLimits,
+  image: {
+    type: ImageType;
+    size: number;
+    width: number;
+    height: number;
+    animated?: boolean | undefined;
+  },
+): Variant | null {
+  const taken = limits.imageTypes.includes(image.type);
+  const still = !image.animated || limits.animated;
+  if (
+    taken &&
+    still &&
+    image.size <= limits.maxImageBytes &&
+    (limits.maxImagePixels === null ||
+      image.width * image.height <= limits.maxImagePixels)
+  ) {
+    return null;
+  }
+  // A drawing stays a PNG where that is taken, with its sharp edges and
+  // what it lets shine through. Everything else becomes a JPEG, which
+  // every network takes: a photo, and whatever the network has no type
+  // for. A GIF that is made anew is one picture: a PNG, as it was drawn.
+  const type: ImageType =
+    (image.type === "image/png" || image.type === "image/gif") &&
+    limits.imageTypes.includes("image/png")
+      ? "image/png"
+      : "image/jpeg";
+  return {
+    type,
+    maxBytes: limits.maxImageBytes,
+    maxPixels: limits.maxImagePixels,
+  };
+}
+
+/** A name for a variant: the same for the same variant, and for no other. */
+export function variantName({ type, maxBytes, maxPixels }: Variant): string {
+  return `${type.slice("image/".length)}-${maxBytes}-${maxPixels ?? 0}`;
+}
+
+/** The length of a description of an image as the networks count it. */
+export const countAltCharacters = (alt: string) => [...alt].length;
 
 /** The length of `text` as the network of `limits` counts it. */
 export function countCharacters(limits: Limits, text: string): number {
@@ -143,7 +310,33 @@ export type ContentIssue = {
    * `maxContentLength`, whatever the network would take.
    */
   | { code: "too_much_text"; length: number; maxLength: number }
+  /** More images than the network takes in one post. */
+  | { code: "too_many_images"; images: number; maxImages: number }
+  /** The description of the image `image` of the part, from 0, is too long. */
+  | {
+      code: "alt_too_long";
+      image: number;
+      characters: number;
+      maxCharacters: number;
+    }
+  /** The image `image` of the part is of a shape that the network refuses. */
+  | { code: "image_shape"; image: number }
+  /**
+   * The image `image` of the part cannot be published as things are: see
+   * `missing` of an image of a content.
+   */
+  | {
+      code: "image_missing";
+      image: number;
+      missing: "uploading" | "failed" | "gone";
+    }
 );
+
+const missingMessages = {
+  uploading: "is still being uploaded",
+  failed: "was not uploaded. Remove it, or attach it again",
+  gone: "is no longer kept: pigy lets go of an image some time after its post was sent",
+} as const;
 
 /**
  * What is wrong with `content` for an account with `limits`: nothing, if
@@ -158,11 +351,82 @@ export function validateContent(
   const issues: ContentIssue[] = [];
   // Whether a part is over the limit by itself, which is said of the part.
   let fits = true;
-  content.parts.forEach(({ text }, part) => {
+  const media = mediaLimitsOf(limits);
+  const network = networkNames[limits.network];
+  // LinkedIn makes one post of a thread, with the images of every part.
+  const together = limits.network === "linkedin";
+  const images = content.parts.reduce(
+    (count, part) => count + (part.media?.length ?? 0),
+    0,
+  );
+  if (together && images > media.maxImages) {
+    issues.push({
+      part: null,
+      code: "too_many_images",
+      images,
+      maxImages: media.maxImages,
+      message: `The parts have ${images} images together. ${network} takes them as one post, with ${media.maxImages} images at most.`,
+    });
+  }
+  content.parts.forEach(({ text, media: attached = [] }, part) => {
     const subject =
       content.parts.length === 1 ? "The post" : `Part ${part + 1}`;
+    if (!together && attached.length > media.maxImages) {
+      issues.push({
+        part,
+        code: "too_many_images",
+        images: attached.length,
+        maxImages: media.maxImages,
+        message: `${subject} has ${attached.length} images. ${network} takes ${media.maxImages} at most.`,
+      });
+    }
+    attached.forEach((image, index) => {
+      const which =
+        attached.length === 1
+          ? `The image of ${subject === "The post" ? "the post" : subject.toLowerCase()}`
+          : `Image ${index + 1} of ${subject === "The post" ? "the post" : subject.toLowerCase()}`;
+      if (image.missing) {
+        issues.push({
+          part,
+          code: "image_missing",
+          image: index,
+          missing: image.missing,
+          message: `${which} ${missingMessages[image.missing]}.`,
+        });
+        return;
+      }
+      const characters = countAltCharacters(image.alt);
+      if (characters > media.maxAltLength) {
+        issues.push({
+          part,
+          code: "alt_too_long",
+          image: index,
+          characters,
+          maxCharacters: media.maxAltLength,
+          message: `${which} has a description of ${characters} characters. ${network} takes ${media.maxAltLength}.`,
+        });
+      }
+      const ratio =
+        Math.max(image.width, image.height) /
+        Math.min(image.width, image.height);
+      if (media.maxAspectRatio !== null && ratio > media.maxAspectRatio) {
+        issues.push({
+          part,
+          code: "image_shape",
+          image: index,
+          message: `${which} is too long for its width, or too wide for its height: ${network} takes ${media.maxAspectRatio} to 1 at most.`,
+        });
+      }
+    });
     if (text.trim() === "") {
-      issues.push({ part, code: "empty", message: `${subject} has no text.` });
+      // A part with an image needs no text, on any of the networks.
+      if (attached.length === 0) {
+        issues.push({
+          part,
+          code: "empty",
+          message: `${subject} has no text.`,
+        });
+      }
       return;
     }
     const characters = countCharacters(limits, text);

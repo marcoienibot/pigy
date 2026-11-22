@@ -4,7 +4,9 @@ import type { DrizzleSqliteDODatabase } from "drizzle-orm/durable-sqlite";
 import type { SQLiteColumn, SQLiteTable } from "drizzle-orm/sqlite-core";
 import {
   channels,
+  media,
   notifications,
+  partMedia,
   postParts,
   posts,
   postTargets,
@@ -115,6 +117,33 @@ const synced = {
       id: settings.id,
       timeZone: settings.timeZone,
       queuePaused: settings.queuePaused,
+    },
+  },
+  media: {
+    table: media,
+    columns: {
+      id: media.id,
+      kind: media.kind,
+      status: media.status,
+      name: media.name,
+      type: media.type,
+      size: media.size,
+      width: media.width,
+      height: media.height,
+      animated: media.animated,
+      createdAt: media.createdAt,
+      error: media.error,
+      originalGoneAt: media.originalGoneAt,
+    },
+  },
+  part_media: {
+    table: partMedia,
+    columns: {
+      id: partMedia.id,
+      partId: partMedia.partId,
+      mediaId: partMedia.mediaId,
+      position: partMedia.position,
+      alt: partMedia.alt,
     },
   },
 } satisfies {

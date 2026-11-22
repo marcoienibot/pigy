@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { idSchema } from "../id.ts";
+import { imageTypes, maxImageBytes, maxImagePixels } from "../media/image.ts";
 import { limitsSchema } from "../network/limits.ts";
 import { canonicalTimeZone, slotTimes } from "../schedule/zone.ts";
 import {
@@ -9,12 +10,16 @@ import {
   expiryNoticeMs,
   inReadingOrder,
   lateMs,
+  maxAltLength,
+  maxImagesPerPart,
   maxOwnTextLength,
   maxParts,
   maxPartTextLength,
   maxScheduled,
   maxSlots,
   maxTimeZoneLength,
+  maxUploading,
+  mediaLimits,
   notificationRowSchema,
   partsFor,
   type Row,
@@ -71,6 +76,10 @@ export const rejectionCodeSchema = z.enum([
   "last_part",
   /** The text has as many parts as a text can have. */
   "too_many_parts",
+  /** The part has as many images as a part can have. */
+  "too_many_media",
+  /** The workspace has as many images on their way to the server as it can. */
+  "too_many_uploads",
   /** The post has no channel to go to. */
   "no_channels",
   /** The post is on its way to its channels, and stays until it has ended. */
@@ -206,15 +215,77 @@ function inOrder(
   });
 }
 
+/**
+ * The images of the part `partId`, in the order they are shown in. The
+ * rows say that an image is in the part: the images themselves stay.
+ */
+function mediaOf(tx: Transaction, partId: string): Row<"part_media">[] {
+  return inReadingOrder(tx.find("part_media", "partId", partId));
+}
+
+/**
+ * Removes the part `id` with what says which images it has. The images
+ * themselves stay, for an Undo that puts them into a part again: the
+ * server deletes an image that has been in no part for a day.
+ */
+function deletePart(tx: Transaction, id: string): void {
+  for (const attached of tx.find("part_media", "partId", id)) {
+    tx.delete("part_media", attached.id);
+  }
+  tx.delete("post_part", id);
+}
+
 /** Removes the text that was written for `targetId`, if there is one. */
 function dropOwnText(
   tx: Transaction,
   { id, postId }: Row<"post_target">,
 ): boolean {
   const written = textOf(tx, postId, id);
-  for (const part of written) tx.delete("post_part", part.id);
+  for (const part of written) deletePart(tx, part.id);
   return written.length > 0;
 }
+
+/** The part with this ID, of a draft: only a draft is edited. */
+function partOfDraft(
+  tx: Transaction,
+  id: string,
+): { part: Row<"post_part">; post: Row<"post"> } {
+  const part = tx.get("post_part", id);
+  const post = part && tx.get("post", part.postId);
+  if (!part || !post) throw new MutationRejected("not_found", partGone);
+  if (post.status !== "draft") {
+    throw new MutationRejected("not_a_draft", "Only a draft can be edited");
+  }
+  return { part, post };
+}
+
+/**
+ * The image of a part that a mutation is about, with its part and its
+ * draft, or undefined if the image is no longer in the part.
+ */
+function attachedToDraft(tx: Transaction, id: string) {
+  const attached = tx.get("part_media", id);
+  if (!attached) return undefined;
+  return { attached, ...partOfDraft(tx, attached.partId) };
+}
+
+/** The media that the server reports on, which has to be there. */
+function existingMedia(tx: Transaction, id: string): Row<"media"> {
+  const media = tx.get("media", id);
+  if (!media) {
+    throw new MutationRejected("not_found", "This image no longer exists");
+  }
+  return media;
+}
+
+/** What the server found in the bytes of an image. */
+const imageFactsSchema = z.strictObject({
+  type: z.enum(imageTypes),
+  size: z.number().int().positive().max(maxImageBytes),
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  animated: z.boolean(),
+});
 
 /**
  * Gives a post the status that follows from its targets, when one of them
@@ -452,7 +523,7 @@ function deletePost(tx: Transaction, id: string): void {
     }
   }
   for (const part of tx.find("post_part", "postId", id)) {
-    tx.delete("post_part", part.id);
+    deletePart(tx, part.id);
   }
   for (const target of targets) tx.delete("post_target", target.id);
   // What the inbox says of the post, which is under the ID of the post.
@@ -819,7 +890,7 @@ export const mutators = {
         "The only part of a text cannot be removed",
       );
     }
-    tx.delete("post_part", id);
+    deletePart(tx, id);
     inOrder(
       tx,
       parts.filter((other) => other.id !== id),
@@ -887,6 +958,238 @@ export const mutators = {
       }
       deletePost(tx, id);
     },
+  ),
+
+  /**
+   * Makes the row of an image that the device is about to upload, with
+   * what the device read in the file. The server takes none of it for
+   * true: it reads the bytes when they are there, and says what it found
+   * with `media.ready`.
+   *
+   * The row comes first, so that an image can be put into a draft without
+   * a connection: the draft then waits for the upload.
+   */
+  "media.create": mutator(
+    z.strictObject({
+      id: idSchema,
+      name: z.string().max(mediaLimits.nameLength),
+      type: z.enum(imageTypes),
+      size: z.number().int().positive().max(maxImageBytes),
+      width: z.number().int().positive(),
+      height: z.number().int().positive(),
+      animated: z.boolean(),
+    }),
+    (tx, media) => {
+      if (tx.get("media", media.id)) {
+        throw new MutationRejected(
+          "already_exists",
+          "This image exists already",
+        );
+      }
+      if (media.width * media.height > maxImagePixels) {
+        throw new MutationRejected(
+          "invalid_arguments",
+          "The image has more pixels than pigy takes",
+        );
+      }
+      if (tx.find("media", "status", "uploading").length >= maxUploading) {
+        throw new MutationRejected(
+          "too_many_uploads",
+          `At most ${maxUploading} images can be on their way at a time. Wait for the uploads to finish`,
+        );
+      }
+      tx.put("media", {
+        ...media,
+        kind: "image",
+        status: "uploading",
+        createdAt: tx.now,
+        error: null,
+        originalGoneAt: null,
+      });
+    },
+  ),
+
+  /**
+   * Puts an image into a part of a draft, after the images that the part
+   * has. An image can be put into several parts, which is how the text
+   * of an account begins with the images of the post's, and how an Undo
+   * brings the images of a part back.
+   */
+  "media.attach": mutator(
+    z.strictObject({
+      id: idSchema,
+      partId: idSchema,
+      mediaId: idSchema,
+      alt: z.string().max(maxAltLength),
+    }),
+    (tx, { id, partId, mediaId, alt }) => {
+      const { part, post } = partOfDraft(tx, partId);
+      const media = tx.get("media", mediaId);
+      if (!media || media.originalGoneAt !== null) {
+        throw new MutationRejected("not_found", "This image no longer exists");
+      }
+      if (tx.get("part_media", id)) {
+        throw new MutationRejected(
+          "already_exists",
+          "This image is in the part already",
+        );
+      }
+      const attached = mediaOf(tx, part.id);
+      if (attached.length >= maxImagesPerPart) {
+        throw new MutationRejected(
+          "too_many_media",
+          `A part has at most ${maxImagesPerPart} images`,
+        );
+      }
+      tx.put("part_media", {
+        id,
+        partId,
+        mediaId,
+        // After the last, whose number is the highest: they need not be
+        // without gaps.
+        position: (attached.at(-1)?.position ?? -1) + 1,
+        alt,
+      });
+      tx.put("post", { ...post, updatedAt: tx.now });
+    },
+  ),
+
+  /** Says what an image of a part of a draft shows. */
+  "media.setAlt": mutator(
+    z.strictObject({ id: idSchema, alt: z.string().max(maxAltLength) }),
+    (tx, { id, alt }) => {
+      const found = attachedToDraft(tx, id);
+      if (!found) {
+        throw new MutationRejected(
+          "not_found",
+          "This image is no longer in its part",
+        );
+      }
+      tx.put("part_media", { ...found.attached, alt });
+      tx.put("post", { ...found.post, updatedAt: tx.now });
+    },
+  ),
+
+  /**
+   * Takes an image out of a part of a draft. Does nothing if it is not
+   * in the part: two devices can take the same image out. The image
+   * itself stays for a day, for an Undo.
+   */
+  "media.detach": mutator(z.strictObject({ id: idSchema }), (tx, { id }) => {
+    const found = attachedToDraft(tx, id);
+    if (!found) return;
+    tx.delete("part_media", id);
+    tx.put("post", { ...found.post, updatedAt: tx.now });
+  }),
+
+  /**
+   * Moves an image within its part: to after the image `afterId`, or to
+   * the beginning for null. If the image to go after is not in the part
+   * any more, this one stays where it is, as a part does in `part.move`.
+   */
+  "media.move": mutator(
+    z.strictObject({ id: idSchema, afterId: idSchema.nullable() }),
+    (tx, { id, afterId }) => {
+      const found = attachedToDraft(tx, id);
+      if (!found) {
+        throw new MutationRejected(
+          "not_found",
+          "This image is no longer in its part",
+        );
+      }
+      const all = mediaOf(tx, found.part.id);
+      const others = all.filter((other) => other.id !== id);
+      const after = others.findIndex((other) => other.id === afterId);
+      if (afterId !== null && after < 0) return;
+      const moved = all.find((other) => other.id === id);
+      if (!moved) return;
+      others.splice(afterId === null ? 0 : after + 1, 0, moved);
+      if (others.every((other, index) => other === all[index])) return;
+      others.forEach((other, position) => {
+        if (other.position !== position) {
+          tx.put("part_media", { ...other, position });
+        }
+      });
+      tx.put("post", { ...found.post, updatedAt: tx.now });
+    },
+  ),
+
+  /**
+   * The server has the image and has read it: the row says what it found
+   * from here on. Only for an image that is on its way.
+   */
+  "media.ready": mutator(
+    imageFactsSchema.extend({ id: idSchema }),
+    (tx, { id, ...facts }) => {
+      const media = existingMedia(tx, id);
+      if (media.status !== "uploading") {
+        throw new MutationRejected(
+          "not_current",
+          "This image is not being uploaded",
+        );
+      }
+      tx.put("media", { ...media, ...facts, status: "ready" });
+    },
+    { serverOnly: true },
+  ),
+
+  /**
+   * The server has no image for the row and will have none: it did not
+   * take the file, or the upload was given up. Only for an image that is
+   * on its way.
+   */
+  "media.fail": mutator(
+    z.strictObject({
+      id: idSchema,
+      error: z.string().min(1).max(mediaLimits.errorLength),
+    }),
+    (tx, { id, error }) => {
+      const media = existingMedia(tx, id);
+      if (media.status !== "uploading") {
+        throw new MutationRejected(
+          "not_current",
+          "This image is not being uploaded",
+        );
+      }
+      tx.put("media", { ...media, status: "failed", error });
+    },
+    { serverOnly: true },
+  ),
+
+  /**
+   * The server has let go of these images themselves and keeps a small
+   * picture of each: section 10 of PLAN.md. One that is gone, or was let
+   * go of before, is passed over.
+   */
+  "media.expire": mutator(
+    z.strictObject({ ids: z.array(idSchema).min(1).max(100) }),
+    (tx, { ids }) => {
+      for (const id of ids) {
+        const media = tx.get("media", id);
+        if (media && media.originalGoneAt === null) {
+          tx.put("media", { ...media, originalGoneAt: tx.now });
+        }
+      }
+    },
+    { serverOnly: true },
+  ),
+
+  /**
+   * Removes the rows of images that are in no part: the server has
+   * deleted what it kept of them. One that is in a part again by now, by
+   * an Undo that came late, stays, and is no error: the mutation is the
+   * server's own, and it looks again.
+   */
+  "media.delete": mutator(
+    z.strictObject({ ids: z.array(idSchema).min(1).max(100) }),
+    (tx, { ids }) => {
+      for (const id of ids) {
+        if (tx.find("part_media", "mediaId", id).length === 0) {
+          tx.delete("media", id);
+        }
+      }
+    },
+    { serverOnly: true },
   ),
 
   /**

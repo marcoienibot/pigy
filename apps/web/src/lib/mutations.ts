@@ -30,6 +30,11 @@ const refused: Record<MutatorName, string> = {
   "target.retry": "A post was not sent again",
   "notification.read": "A notification was not marked as read",
   "notification.dismiss": "A notification was not dismissed",
+  "media.create": "An image was not added",
+  "media.attach": "An image was not added to a draft",
+  "media.setAlt": "The description of an image was not saved",
+  "media.detach": "An image was not removed from a draft",
+  "media.move": "An image was not moved",
   // Only the server runs the ones below, so no copy holds one that the app
   // made. They are named all the same: the list is of every mutator.
   "channel.connect": "An account was not connected",
@@ -43,6 +48,10 @@ const refused: Record<MutatorName, string> = {
   "target.end": "The outcome of a post was not recorded",
   "channel.warnOfExpiry": "A reminder was not added",
   "notification.prune": "Old notifications were not removed",
+  "media.ready": "An uploaded image was not recorded",
+  "media.fail": "A failed upload was not recorded",
+  "media.expire": "An old image was not let go of",
+  "media.delete": "An unused image was not removed",
 };
 
 /** What to call a refused change that was made by the mutator `name`. */

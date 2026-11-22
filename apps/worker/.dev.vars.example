@@ -77,3 +77,9 @@ ADMIN_EMAILS=admin@example.com
 # Replacing it turns the notifications of every device off: each has to
 # turn them on again.
 #VAPID_PRIVATE_KEY=
+# The address that this pigy is reached at from the internet, without a
+# path. Threads fetches the images of a post from pigy, at a link that pigy
+# makes with this address: without this line no post with an image goes to
+# a real Threads account. Which a pigy at localhost cannot do anyway:
+# Threads cannot reach it. The sandbox needs none.
+#APP_URL=

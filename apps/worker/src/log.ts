@@ -33,6 +33,8 @@ export type LogKind =
   /** The scheduled posts of a workspace. */
   | "schedule"
   | "push"
+  /** Images: their uploads, and what a workspace does with their bytes. */
+  | "media"
   /** The sync protocol: a mutation, a message, a patch. */
   | "sync"
   /** The alarm of a workspace, which could not be set. */

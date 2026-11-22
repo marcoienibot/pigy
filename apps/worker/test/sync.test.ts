@@ -97,6 +97,8 @@ it("answers the first hello of a client with a snapshot", async () => {
     notification: [],
     schedule_slot: [],
     settings: [],
+    media: [],
+    part_media: [],
   });
 });
 

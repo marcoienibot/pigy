@@ -16,10 +16,12 @@ import type {
   Delivery,
   DeliveryRun,
   DisconnectChannelOutcome,
+  MediaUpload,
   MutationOutcome,
   RenewedChannelAccess,
   StepBegun,
   StoredChannelAccess,
+  UploadOutcome,
   WorkspaceIdentity,
 } from "./store.ts";
 
@@ -352,6 +354,81 @@ export async function callWorkspaceApi(
     .api(workspace, call, repeat);
   if (!answer) throw foreign(workspace);
   return answer;
+}
+
+/**
+ * How far the upload of the image `mediaId` of `workspace` has come, and
+ * how many bytes of images the workspace holds, or null if the workspace
+ * has no such image.
+ */
+export async function mediaUploadOf(
+  namespace: Bindings["WORKSPACE"],
+  workspace: WorkspaceIdentity,
+  mediaId: string,
+): Promise<{ upload: MediaUpload; held: number } | null> {
+  const upload = await namespace
+    .getByName(workspace.id)
+    .mediaUpload(workspace, mediaId);
+  if (upload === undefined) throw foreign(workspace);
+  return upload;
+}
+
+/**
+ * Tells `workspace` under which name the bucket takes the parts of the
+ * image `mediaId`. An image has one upload: the answer has the one that
+ * counts, which is another if one had begun before. Null if the
+ * workspace has no such image.
+ */
+export async function beginUpload(
+  namespace: Bindings["WORKSPACE"],
+  workspace: WorkspaceIdentity,
+  mediaId: string,
+  uploadId: string,
+): Promise<MediaUpload | null> {
+  const upload = await namespace
+    .getByName(workspace.id)
+    .beginUpload(workspace, mediaId, uploadId);
+  if (upload === undefined) throw foreign(workspace);
+  return upload;
+}
+
+/**
+ * Tells `workspace` that the bucket has a part of the upload `uploadId`
+ * of the image `mediaId`. Null if that is not the upload of the image any
+ * more.
+ */
+export async function uploadedPart(
+  namespace: Bindings["WORKSPACE"],
+  workspace: WorkspaceIdentity,
+  mediaId: string,
+  uploadId: string,
+  part: { partNumber: number; etag: string },
+): Promise<MediaUpload | null> {
+  const upload = await namespace
+    .getByName(workspace.id)
+    .uploadedPart(workspace, mediaId, uploadId, part);
+  if (upload === undefined) throw foreign(workspace);
+  return upload;
+}
+
+/**
+ * Ends the upload of the image `mediaId` of `workspace`: with what the
+ * Worker read in its bytes, which makes the image `ready`, or with why
+ * it has none, which makes it `failed`. With a `key` it is carried out
+ * once, as for `mutateWorkspace`.
+ */
+export async function finishUpload(
+  namespace: Bindings["WORKSPACE"],
+  workspace: WorkspaceIdentity,
+  mediaId: string,
+  outcome: UploadOutcome,
+  key?: string,
+): Promise<MutationOutcome> {
+  const ended = await namespace
+    .getByName(workspace.id)
+    .finishUpload(workspace, mediaId, outcome, key);
+  if (!ended) throw foreign(workspace);
+  return ended;
 }
 
 function foreign(workspace: WorkspaceIdentity): Error {
