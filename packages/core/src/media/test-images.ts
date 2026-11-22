@@ -248,7 +248,8 @@ export function gifFile(
   );
 }
 
-const webpChunk = (type: string, data: Uint8Array | number[]) =>
+/** A chunk of a WebP, with the byte that pads one of an odd length. */
+export const webpChunk = (type: string, data: Uint8Array | number[]) =>
   joined(text(type), u32le(data.length), data, data.length % 2 ? [0] : []);
 
 const riff = (...chunks: Uint8Array[]) => {
@@ -267,6 +268,10 @@ export const simpleWebpFile = (width: number, height: number) =>
     ]),
   );
 
+/** The chunk of a lossless picture of this size. */
+const losslessChunk = (width: number, height: number) =>
+  webpChunk("VP8L", [0x2f, ...u32le((width - 1) | ((height - 1) << 14)), 7]);
+
 /** A lossless WebP of this size. */
 export const losslessWebpFile = (width: number, height: number) =>
   riff(
@@ -277,18 +282,52 @@ export const losslessWebpFile = (width: number, height: number) =>
     ]),
   );
 
+const u24le = (value: number) => u32le(value).slice(0, 3);
+
 /**
  * A WebP of this size in the extended layout, with Exif and XMP, or
  * without and saying so with `clean`: what pigy keeps of the first.
+ *
+ * One that is `animated` has `frames` frames, each of the size `frame`,
+ * which is no larger than the lossless layout writes by default, and
+ * more in the chunk of its animation than its fields unless it is
+ * `clean`. `picture` is the size that the picture in it says, the
+ * frame's or the file's by default, and `inFrame` a chunk that each
+ * frame has after its picture.
  */
 export function webpFile(
   width: number,
   height: number,
-  { clean = false, animated = false, after = new Uint8Array(0) } = {},
+  {
+    clean = false,
+    animated = false,
+    after = new Uint8Array(0),
+    frames = 1,
+    frame = [Math.min(width, 16_384), Math.min(height, 16_384)] as [
+      number,
+      number,
+    ],
+    picture = undefined as [number, number] | undefined,
+    inFrame = new Uint8Array(0) as Uint8Array,
+  } = {},
 ): Uint8Array {
-  const u24le = (value: number) => u32le(value).slice(0, 3);
   // The flags: Exif, XMP, an animation.
   const flags = (clean ? 0 : 0x0c) | (animated ? 0x02 : 0);
+  const [pictureWidth, pictureHeight] =
+    picture ?? (animated ? frame : [width, height]);
+  const anmf = () =>
+    webpChunk(
+      "ANMF",
+      joined(
+        // Its place, its size, how long it is shown, and its flags.
+        [0, 0, 0, 0, 0, 0],
+        u24le(frame[0] - 1),
+        u24le(frame[1] - 1),
+        [100, 0, 0, 0],
+        losslessChunk(pictureWidth, pictureHeight),
+        inFrame,
+      ),
+    );
   const file = riff(
     webpChunk("VP8X", [
       flags,
@@ -298,7 +337,16 @@ export function webpFile(
       ...u24le(width - 1),
       ...u24le(height - 1),
     ]),
-    webpChunk("VP8L", [0x2f, ...u32le((width - 1) | ((height - 1) << 14)), 7]),
+    ...(animated
+      ? [
+          // The colour behind the frames, and how often they repeat.
+          webpChunk("ANIM", [
+            ...[255, 255, 255, 255, 0, 0],
+            ...(clean ? [] : text("AT HOME")),
+          ]),
+          ...Array.from({ length: frames }, anmf),
+        ]
+      : [losslessChunk(pictureWidth, pictureHeight)]),
     ...(clean
       ? []
       : [

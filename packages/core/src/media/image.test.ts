@@ -8,6 +8,7 @@ import {
 } from "./image.ts";
 import {
   cleanJpegFile,
+  exifPayload,
   gifFile,
   inPieces,
   jfif,
@@ -19,6 +20,7 @@ import {
   jpegScanHeader,
   jpegSegment,
   jpegStart,
+  jpegTable,
   losslessWebpFile,
   pngChunk,
   pngFile,
@@ -26,6 +28,7 @@ import {
   pngSignature,
   pngText,
   simpleWebpFile,
+  webpChunk,
   webpFile,
 } from "./test-images.ts";
 
@@ -329,6 +332,267 @@ test("a WebP whose header chunk is longer than its fields is refused", async () 
     [0],
   );
   expect(await refusal(file)).toBe("damaged");
+});
+
+test("a JPEG keeps of its segments only the ones that a decoder draws with, and of those only their fields", async () => {
+  const thumbnailed = jpegSegment(
+    0xe0,
+    // JFIF with a thumbnail of one pixel: the picture before it was cut.
+    bytes("JFIF\0", [1, 2, 0, 0, 1, 0, 1, 1, 1], "RGB"),
+  );
+  const file = joined(
+    jpegStart,
+    thumbnailed,
+    // A thumbnail of the extension of JFIF: a whole JPEG, with a place.
+    jpegSegment(0xe0, joined(text("JFXX\0"), [0x10], jpegFile(4, 4))),
+    // Adobe's colour transform, with more than its fields behind it.
+    jpegSegment(0xee, bytes("Adobe", [0, 100, 0, 0, 0, 0, 1], "SECRET-GPS")),
+    // An APP14 that is not Adobe's, and markers that name nothing that
+    // a decoder reads.
+    jpegSegment(0xee, text("SECRET-GPS 51.5N")),
+    jpegSegment(0xf0, text("<html><script>alert(1)</script>")),
+    jpegSegment(0x80, text("<html>")),
+    jpegSegment(0xe2, text("FPXR\0<html>")),
+    jpegTable,
+    jpegSegment(0xdd, [0, 4]),
+    jpegFrame(8, 8),
+    // The number of lines, which only a frame of no height needs.
+    jpegSegment(0xdc, [0, 8]),
+    jpegScanHeader,
+    jpegScanData,
+    jpegEnd,
+  );
+  const { copy } = await copyOf(file);
+  expect(copy).toEqual(
+    joined(
+      jpegStart,
+      // Without its thumbnail, and saying that it has none.
+      jpegSegment(0xe0, bytes("JFIF\0", [1, 2, 0, 0, 1, 0, 1, 0, 0])),
+      jpegSegment(0xee, bytes("Adobe", [0, 100, 0, 0, 0, 0, 1])),
+      jpegTable,
+      jpegSegment(0xdd, [0, 4]),
+      jpegFrame(8, 8),
+      jpegScanHeader,
+      jpegScanData,
+      jpegEnd,
+    ),
+  );
+});
+
+test("a JPEG goes by its first Exif segment, as decoders do, and its copy has that one alone", async () => {
+  const file = joined(
+    jpegStart,
+    jpegSegment(0xe1, exifPayload(6)),
+    jpegSegment(0xe1, exifPayload(3)),
+    jpegFrame(40, 30),
+    jpegScanHeader,
+    jpegScanData,
+    jpegEnd,
+  );
+  const { facts, copy } = await copyOf(file);
+  // On its side, as the first says. Before, the facts went by the last
+  // and the copy had both, which a decoder reads the other way.
+  expect(facts).toMatchObject({ width: 30, height: 40 });
+  expect(copy).toEqual(
+    joined(
+      jpegStart,
+      cleanJpegFile(40, 30, 6).subarray(2 + jfif.length, 2 + jfif.length + 36),
+      jpegFrame(40, 30),
+      jpegScanHeader,
+      jpegScanData,
+      jpegEnd,
+    ),
+  );
+});
+
+test("a GIF keeps of its extensions only what is drawn: no text, and nothing behind the fields of a control or of how often it repeats", async () => {
+  const blocks = (...data: number[][]) =>
+    joined(...data.map((block) => [block.length, ...block]), [0]);
+  const file = joined(
+    text("GIF89a"),
+    [1, 0, 1, 0, 0x80, 0, 0],
+    [0, 0, 0, 255, 255, 255],
+    // How often it repeats, and a block of words behind it.
+    [0x21, 0xff],
+    blocks([...text("NETSCAPE2.0")], [1, 0, 0], [...text("AT HOME")]),
+    // An application whose name has not eleven letters.
+    [0x21, 0xff],
+    blocks([...text("XMP")], [...text("AT HOME")]),
+    // Text that is drawn, which no browser draws.
+    [0x21, 0x01],
+    blocks([0, 0, 0, 0, 1, 0, 1, 0, 8, 8, 0, 0], [...text("HOME ADDRESS")]),
+    // The control of a frame, and words behind it.
+    [0x21, 0xf9],
+    blocks([0, 10, 0, 0], [...text("AT HOME")]),
+    [0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0],
+    [2],
+    blocks([0x4c, 0x01]),
+    [0x3b],
+  );
+  const { facts, copy } = await copyOf(file);
+  expect(facts).toMatchObject({ width: 1, height: 1, animated: false });
+  expect(new TextDecoder("latin1").decode(copy)).not.toMatch(/HOME|XMP/);
+  expect(copy).toEqual(
+    joined(
+      text("GIF89a"),
+      [1, 0, 1, 0, 0x80, 0, 0],
+      [0, 0, 0, 255, 255, 255],
+      [0x21, 0xff],
+      blocks([...text("NETSCAPE2.0")], [1, 0, 0]),
+      [0x21, 0xf9],
+      blocks([0, 10, 0, 0]),
+      [0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0],
+      [2],
+      blocks([0x4c, 0x01]),
+      [0x3b],
+    ),
+  );
+});
+
+test.each([
+  [
+    // The screen of one pixel, and a frame of 65535 by 65535 in it.
+    "a GIF frame larger than its screen",
+    joined(
+      text("GIF89a"),
+      [1, 0, 1, 0, 0, 0, 0],
+      [0x2c, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0],
+      [2, 2, 0x4c, 0x01, 0],
+      [0x3b],
+    ),
+  ],
+  [
+    "a GIF frame beside its screen",
+    joined(
+      text("GIF89a"),
+      [8, 0, 8, 0, 0, 0, 0],
+      [0x2c, 7, 0, 0, 0, 2, 0, 1, 0, 0],
+      [2, 2, 0x4c, 0x01, 0],
+      [0x3b],
+    ),
+  ],
+  [
+    "an APNG frame larger than its picture",
+    joined(
+      pngSignature,
+      pngHeader(1, 1),
+      pngChunk("acTL", [0, 0, 0, 1, 0, 0, 0, 0]),
+      pngChunk("fcTL", [
+        ...[0, 0, 0, 0],
+        ...[0, 0, 0xff, 0xff],
+        ...[0, 0, 0xff, 0xff],
+        ...[0, 0, 0, 0, 0, 0, 0, 0],
+        ...[0, 1, 0, 10, 0, 0],
+      ]),
+      pngChunk("IDAT", [0x78, 0x9c, 0x03, 0, 0, 0, 0, 1]),
+      pngChunk("IEND", []),
+    ),
+  ],
+  [
+    "a still WebP whose picture is larger than its header says",
+    webpFile(1, 1, { clean: true, picture: [16_000, 16_000] }),
+  ],
+  [
+    "a WebP frame larger than its picture",
+    webpFile(4, 4, { clean: true, animated: true, frame: [8, 8] }),
+  ],
+  [
+    "a WebP frame whose picture is larger than the frame",
+    webpFile(4, 4, {
+      clean: true,
+      animated: true,
+      frame: [2, 2],
+      picture: [16_000, 16_000],
+    }),
+  ],
+  [
+    "a WebP frame with a chunk that is not its picture",
+    webpFile(4, 4, {
+      clean: true,
+      animated: true,
+      inFrame: webpChunk("XXXX", text("SECRET!!")),
+    }),
+  ],
+  [
+    "a WebP that moves and has no frame",
+    webpFile(4, 4, { clean: true, animated: true, frames: 0 }),
+  ],
+])(
+  "%s is refused: what decodes it would be another picture than the one that pigy read",
+  async (_, file) => {
+    expect(await refusal(file)).toBe("damaged");
+  },
+);
+
+test("a WebP that moves keeps its frames, and of the chunk of its animation only the fields", async () => {
+  const { facts, copy } = await copyOf(
+    webpFile(12, 5, { animated: true, frames: 2, after: script }),
+  );
+  expect(facts).toMatchObject({
+    type: "image/webp",
+    width: 12,
+    height: 5,
+    animated: true,
+  });
+  expect(copy).toEqual(
+    webpFile(12, 5, { animated: true, frames: 2, clean: true }),
+  );
+});
+
+test("the copy is handed out in pieces of 64 KiB, however many segments the file has", async () => {
+  // Twenty thousand tables of one byte each, which before were written
+  // one by one: each a write to the bucket while an upload is completed.
+  const tables = Array.from({ length: 20_000 }, () => jpegSegment(0xc4, [0]));
+  const file = joined(
+    jpegStart,
+    jfif,
+    ...tables,
+    jpegFrame(8, 8),
+    jpegScanHeader,
+    jpegScanData,
+    jpegEnd,
+  );
+  const facts = await scanImage(inPieces(file));
+  const pieces: number[] = [];
+  await cleanImage(inPieces(file, 7), facts, (piece) => {
+    pieces.push(piece.length);
+  });
+  expect(pieces).toEqual([65_536, facts.size - 65_536]);
+});
+
+test("a file of more parts than an image has is refused, at once", async () => {
+  // 20 MiB of segments of four bytes, each a segment that is passed over:
+  // five million of them, which took the walk seconds to go through.
+  const segment = [0xff, 0xe0, 0x00, 0x02];
+  const count = Math.floor((maxImageBytes - 1024) / segment.length);
+  const file = new Uint8Array(2 + count * segment.length);
+  file.set(jpegStart);
+  for (let at = 2; at < file.length; at += segment.length) {
+    file.set(segment, at);
+  }
+  const started = performance.now();
+  expect(await refusal(file)).toBe("damaged");
+  expect(performance.now() - started).toBeLessThan(1000);
+});
+
+test("data in blocks of one byte is no part of its own: a GIF of them is taken, and soon", async () => {
+  // Encoders write blocks of 255 bytes, and nothing says that they must.
+  // Four million blocks of one byte, read as fast as the bytes are.
+  const count = 4_000_000;
+  const data = new Uint8Array(count * 2);
+  for (let at = 0; at < data.length; at += 2) data.set([1, 0], at);
+  const file = joined(
+    text("GIF89a"),
+    [1, 0, 1, 0, 0, 0, 0],
+    [0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0],
+    [2],
+    data,
+    [0, 0x3b],
+  );
+  const started = performance.now();
+  const { facts } = await copyOf(file, 64 * 1024);
+  expect(facts).toMatchObject({ width: 1, height: 1, size: file.length });
+  expect(performance.now() - started).toBeLessThan(2000);
 });
 
 test("a copy is refused for a file that is not the one that was scanned", async () => {
