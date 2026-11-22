@@ -43,7 +43,7 @@ import {
   ownTextsOf,
   selectOwnTexts,
 } from "@/lib/publish";
-import { claimTimeZone, selectSchedule, whenDue } from "@/lib/queue";
+import { claimTimeZone, selectSchedule, whenInNotice } from "@/lib/queue";
 import { cn } from "@/lib/utils";
 import { useMutate, useSynced, useSyncedNow, useSyncState } from "@/sync/react";
 
@@ -218,7 +218,9 @@ export function PublishPanel({
     claimTimeZone(mutate, tablesNow());
     mutate("post.schedule", { id: draft.id, dueAt });
     queueNotice(
-      `Scheduled for ${whenDue(dueAt, Date.now(), schedule.timeZone, undefined, true)}`,
+      // With the zone, where it is not this device's: the drafts have
+      // no line that says whose clocks the times of the workspace are on.
+      `Scheduled for ${whenInNotice(dueAt, Date.now(), schedule)}`,
       offline
         ? "The post is scheduled on this device, and on the server once pigy can reach it."
         : undefined,
@@ -237,7 +239,7 @@ export function PublishPanel({
     const where = first ? "Next in the queue" : "Added to the queue";
     if (time !== null) {
       queueNotice(
-        `${where}: ${whenDue(time, Date.now(), selectSchedule(tables).timeZone, undefined, true)}`,
+        `${where}: ${whenInNotice(time, Date.now(), selectSchedule(tables))}`,
       );
     } else if (schedule.paused) {
       queueNotice(where, "The queue is paused: nothing of it goes out.");

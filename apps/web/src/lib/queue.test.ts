@@ -23,6 +23,7 @@ import {
   weekdayName,
   weeksOf,
   whenDue,
+  whenInNotice,
   zoneNote,
 } from "./queue.ts";
 import {
@@ -493,6 +494,40 @@ it("says after an Undo where the post is, and leads there: to the drafts for one
   expect(undoNotice({ as: "sending" })?.leadsTo).toBe("sent");
   // Nowhere to lead to.
   expect(undoNotice({ as: "gone" })?.leadsTo).toBeUndefined();
+});
+
+it("names the zone of a time in a notice wherever it is not the zone of the device", () => {
+  const now = at("2026-01-05T08:00:00Z");
+  const time = at("2026-01-06T08:00:00Z");
+  const settings = (timeZone: string | null) =>
+    tablesOf({ settings: [{ id: settingsId, timeZone, queuePaused: false }] });
+  const say = (tables: ReturnType<typeof tablesOf>, device: string) =>
+    whenInNotice(time, now, selectSchedule(tables, device), device, "en-GB");
+
+  // The zone of the workspace is the device's, or will be: a time as
+  // the device has it needs no name.
+  expect(say(settings(rome), rome)).toBe("tomorrow, 09:00");
+  expect(say(tablesOf({}), "Asia/Tokyo")).toBe("tomorrow, 17:00");
+  // The workspace is elsewhere.
+  expect(say(settings(rome), "Asia/Tokyo")).toBe(
+    "tomorrow, 09:00 (Europe/Rome)",
+  );
+  expect(say(settings("America/New_York"), rome)).toBe(
+    "tomorrow, 03:00 (America/New York)",
+  );
+  // This device does not know the zone of the workspace, or the
+  // workspace has slots and no zone: the time is in UTC, by name.
+  expect(say(settings("Mars/Olympus"), rome)).toBe("tomorrow, 08:00 (UTC)");
+  expect(
+    say(
+      tablesOf({
+        schedule_slot: [{ id: id(), weekday: 1, minute: 540 }],
+      }),
+      rome,
+    ),
+  ).toBe("tomorrow, 08:00 (UTC)");
+  // Unless UTC is where the device is.
+  expect(say(settings("Mars/Olympus"), "UTC")).toBe("tomorrow, 08:00");
 });
 
 it("says when a post is due on the clocks of the zone, as somebody there would", () => {

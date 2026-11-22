@@ -307,6 +307,19 @@ test("the Queue screen and the calendar say whose clocks their times are on, whe
   await expect(
     page.getByRole("dialog", { name: "Schedule for another time" }),
   ).toContainText("In the time zone of this workspace, Asia/Tokyo.");
+  await page.keyboard.press("Escape");
+
+  // A notice names the zone too. It is read on the drafts, which have
+  // no line about the zone: "09:30" alone would be taken for a time of
+  // this device, where it is half past two in the night.
+  await openScreen(page, "Drafts");
+  await draftFor(page, "Said with its zone");
+  await publishPanel(page).getByRole("button", { name: "Schedule…" }).click();
+  await dialog.getByLabel("Date and time").fill("2031-05-07T09:30");
+  await dialog.getByRole("button", { name: "Schedule" }).click();
+  await expect(
+    notice(page, "Scheduled for Wed, 7 May 2031, 09:30 (Asia/Tokyo)"),
+  ).toBeVisible();
 });
 
 test("the word queue in the command palette leads to the Queue screen, and does not pause the queue", async ({

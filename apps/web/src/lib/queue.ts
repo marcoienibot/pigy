@@ -419,6 +419,30 @@ export function whenDue(
   return `${date}, ${clock}`;
 }
 
+/**
+ * When `time` is, for a notice: `whenDue` in the middle of a sentence,
+ * on the clocks that this device shows the times of the workspace on,
+ * with their zone named wherever that is not the zone of this device,
+ * `device`. A notice is read on any screen, also on one that says
+ * nothing about the zone, as the drafts: "tomorrow, 09:00" would be
+ * taken for a time of the device. The zone is the workspace's, or UTC
+ * where the workspace has none or this device cannot compute with it.
+ */
+export function whenInNotice(
+  time: number,
+  now: number,
+  { timeZone, zone }: Schedule,
+  device = deviceTimeZone(),
+  locale?: string,
+): string {
+  const when = whenDue(time, now, timeZone, locale, true);
+  const named =
+    zone === "unknown" || zone === "none"
+      ? !sameTimeZone(defaultTimeZone, device)
+      : zone === "set" && !sameTimeZone(timeZone, device);
+  return named ? `${when} (${zoneLabel(timeZone)})` : when;
+}
+
 /** The name of a weekday of `Date.getDay()`: "Monday", or "Mon". */
 export function weekdayName(
   weekday: number,
