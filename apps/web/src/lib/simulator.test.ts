@@ -66,6 +66,13 @@ describe("the failure panel", () => {
       expect(makesWait(kind, "linkedin")).toBe(false);
       expect(makesWait(kind, "mastodon")).toBe(true);
     }
+    // A limit of LinkedIn's is for the day: the adapter names midnight
+    // UTC, and the workflow waits for a time that is an hour away at
+    // most. So the panel promises neither a failure nor a wait, and says
+    // nothing of a post alone: the fault can be armed for connecting.
+    const limited = faultKind("rate-limit", "linkedin").description;
+    expect(limited).toContain("only when that is less than an hour away");
+    expect(limited).not.toContain("The post fails");
     // The same kind under the same name on both.
     expect(faultKind("lost-response", "linkedin").label).toBe(
       faultKind("lost-response", "mastodon").label,

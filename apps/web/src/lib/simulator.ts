@@ -42,13 +42,15 @@ const kinds: Record<string, Words> = {
 /**
  * What the same kinds do on a network where pigy can neither look for a
  * post nor ask a second time without posting twice, `cannotLook` of
- * lib/networks.ts: nothing is tried again that could post twice.
+ * lib/networks.ts: nothing is tried again that could post twice. A fault
+ * can be armed for any request, so what is said of it holds for all of
+ * them, and what it does to a post is said as that.
  */
 const kindsWithoutLooking: Record<string, Words> = {
   "rate-limit": {
     label: "Too many requests",
     description:
-      "The network says that it has been asked too often for the day. The post fails: pigy does not wait for the next day.",
+      "The network says that it has been asked too often for the day, which ends at midnight UTC. pigy waits for the next day only when that is less than an hour away, and then goes on. Otherwise what it was doing fails.",
   },
   "server-error": {
     label: "Server error",
@@ -74,7 +76,8 @@ const waitingKinds: ReadonlySet<string> = new Set([
  * Whether a fault of `kind` on `network` makes the publishing workflow
  * wait before it tries again: as long as it would for real, which is a
  * minute at least. Not on a network where pigy cannot look: there a
- * delivery ends at once.
+ * delivery ends at once, but for one that meets the limit of a day in the
+ * last hour of that day, which the description of that kind says.
  */
 export function makesWait(kind: string, network: Network): boolean {
   return waitingKinds.has(kind) && !networkInfo[network].cannotLook;
