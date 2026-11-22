@@ -240,6 +240,13 @@ export const test = pinned.extend<{
    * the admin is not: all tests share that one.
    */
   ownEmail: string;
+  /**
+   * The address of a second person who is invited for this test alone, for
+   * a test in which somebody else signs in on the device of `ownEmail`.
+   * Not the admin: a test that goes wrong there can end sessions of the
+   * admin, which every other test shares.
+   */
+  otherEmail: string;
   /** `page`, signed in as `ownEmail`, on the drafts screen. */
   ownPage: Page;
   /**
@@ -314,6 +321,13 @@ export const test = pinned.extend<{
   ownEmail: async ({ browser, baseURL }, use, testInfo) => {
     if (!baseURL) throw new Error("baseURL is not set");
     const email = uniqueEmail(testInfo, "writer");
+    await invite(browser, baseURL, email);
+    await use(email);
+  },
+
+  otherEmail: async ({ browser, baseURL }, use, testInfo) => {
+    if (!baseURL) throw new Error("baseURL is not set");
+    const email = uniqueEmail(testInfo, "other");
     await invite(browser, baseURL, email);
     await use(email);
   },

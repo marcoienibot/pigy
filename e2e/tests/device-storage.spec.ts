@@ -100,10 +100,25 @@ test("Settings say that the browser may delete the data, and ask it again when t
     "Changes that are not synced yet would be lost",
   );
 
+  // The person asks, and the browser says no again, without showing
+  // anything, as one does that decides by itself. The screen would be as
+  // it was, and the button would look broken: it says that the browser
+  // was asked, and what makes it decide otherwise.
+  const refusal = page.getByRole("main").getByRole("status");
+  await expect(refusal).toHaveCount(0);
+  await page.getByRole("button", { name: "Ask to keep it" }).click();
+  await expect(refusal).toContainText(
+    "The browser was asked and has decided not to, for now",
+  );
+  await expect(refusal).toContainText("an app that is installed");
+  expect(await browser.asked()).toBe(2);
+  await expect(page.getByRole("main")).toContainText(mayDelete);
+
   // A browser that decides by itself may decide otherwise later, as
   // Chrome does once the app is installed. The person asks again.
   await browser.relent();
   await page.getByRole("button", { name: "Ask to keep it" }).click();
   await expect(page.getByRole("main")).toContainText(promised);
-  expect(await browser.asked()).toBe(2);
+  await expect(refusal).toHaveCount(0);
+  expect(await browser.asked()).toBe(3);
 });

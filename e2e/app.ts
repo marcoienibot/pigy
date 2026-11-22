@@ -478,6 +478,73 @@ export async function holdStorage(
   };
 }
 
+/**
+ * Holds every deletion of an IndexedDB database that `page` asks for from
+ * now on, until `release()`: the browser is not asked before then, and
+ * the page waits for an answer as it would on a device that is slow. That
+ * makes the moment last in which a window has decided to delete the local
+ * copies and has not done so. `waiting()` is how many deletions the page
+ * has asked for.
+ */
+export async function holdDeletions(page: Page) {
+  type Held = { heldDeletions: { waiting: number; release(): void } };
+  await page.evaluate(() => {
+    const { deleteDatabase } = IDBFactory.prototype;
+    let release = () => {};
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const held = { waiting: 0, release };
+    IDBFactory.prototype.deleteDatabase = function (name) {
+      held.waiting += 1;
+      // What the page is handed in place of the request, and hears the
+      // outcome of the real one on.
+      const stand: Pick<IDBOpenDBRequest, "onsuccess" | "onerror"> & {
+        error: DOMException | null;
+      } = { onsuccess: null, onerror: null, error: null };
+      void released.then(() => {
+        const request = deleteDatabase.call(this, name);
+        request.onsuccess = (event) =>
+          stand.onsuccess?.call(request, event as IDBVersionChangeEvent);
+        request.onerror = (event) => {
+          stand.error = request.error;
+          stand.onerror?.call(request, event);
+        };
+      });
+      return stand as IDBOpenDBRequest;
+    };
+    Object.assign(window, { heldDeletions: held });
+  });
+  return {
+    waiting: () =>
+      page.evaluate(() => (window as unknown as Held).heldDeletions.waiting),
+    release: () =>
+      page.evaluate(() => (window as unknown as Held).heldDeletions.release()),
+  };
+}
+
+/**
+ * Opens a window in the browser of `page` that holds the Web Lock of a
+ * window with changes which it has not stored, and that answers nobody: it
+ * is a page of the test, on a file of the app, and runs no code of the
+ * app. As a window of the app does that the browser has put aside, or
+ * that is slow. It holds the lock until it is closed.
+ */
+export async function silentWindow(page: Page): Promise<Page> {
+  const silent = await page.context().newPage();
+  await silent.goto("/icon.svg");
+  await silent.evaluate(
+    () =>
+      new Promise<void>((taken) => {
+        void navigator.locks.request("pigy/unsaved", { mode: "shared" }, () => {
+          taken();
+          return new Promise(() => {});
+        });
+      }),
+  );
+  return silent;
+}
+
 /** The names of the databases with local copies, and the stored session. */
 export function localData(page: Page) {
   return page.evaluate(async () => ({
