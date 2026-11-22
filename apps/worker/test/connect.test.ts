@@ -670,9 +670,9 @@ describe("the answer of a network", () => {
         kind: "connection",
         message:
           "A connection could not be finished: mastodon.test is having trouble (HTTP 503). Connect the account again.",
-        // Where it happened, to search by. The path and not the address:
+        // Where it happened, to search by. The route and not the address:
         // the query of a callback holds its code.
-        route: "GET /connect/mastodon/callback",
+        route: "GET /connect/:network/callback",
         network: "mastodon",
         workspaceId: workspaces.live,
       },

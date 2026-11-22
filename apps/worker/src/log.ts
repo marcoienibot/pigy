@@ -40,7 +40,10 @@ export type LogKind =
 
 /** Where it happened, as far as the place knows. All of it is IDs. */
 export type LogContext = {
-  /** The method and the path of a request, without its query. */
+  /**
+   * The method of a request and the pattern of its route, `routeOf` of
+   * src/errors.ts: never its path, which can hold the address of a person.
+   */
   route?: string;
   /** The step of a workflow, or what the alarm of a workspace was at. */
   step?: string;

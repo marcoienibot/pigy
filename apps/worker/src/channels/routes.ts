@@ -24,7 +24,7 @@ import { type Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { authenticateWithCookie, requireUser } from "../auth/guards.ts";
 import type { AppDependencies, AppEnv } from "../env.ts";
-import { InvalidField, parseJsonBody } from "../errors.ts";
+import { InvalidField, parseJsonBody, routeOf } from "../errors.ts";
 import { type LogContext, log } from "../log.ts";
 import { blueskyKeysFor } from "../network/bluesky-client.ts";
 import {
@@ -440,10 +440,10 @@ export function connectCallbackRoutes(
     const network = networkSchema.safeParse(c.req.param("network")).data;
     // The workspace that the connection is for, once that is known.
     let workspaceId: string | undefined;
-    // What a line of the log says of this callback: the path names the
-    // network, and the query, which holds the code, is left out.
+    // What a line of the log says of this callback: its route and its
+    // network, and nothing of its address, whose query holds the code.
     const where = (): LogContext => ({
-      route: `GET ${c.req.path}`,
+      route: routeOf(c),
       ...(network && { network }),
       ...(workspaceId && { workspaceId }),
     });

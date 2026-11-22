@@ -1,6 +1,7 @@
 import type { ErrorName, ErrorResponse } from "@pigy/core";
 import type { Context, ErrorHandler, NotFoundHandler } from "hono";
 import { HTTPException } from "hono/http-exception";
+import { routePath } from "hono/route";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { z } from "zod";
 import { log } from "./log.ts";
@@ -36,6 +37,19 @@ export class InvalidField extends HTTPException {
   }
 }
 
+/**
+ * Where a request was when something went wrong, for a log: its method
+ * and the pattern that the handler at work was registered with, as
+ * `/api/admin/allowed-emails/:email`. Never the path of the request,
+ * which holds whatever its parameters are, the address of a person among
+ * them. A middleware has a pattern of its own, so a request that a guard
+ * failed is named as `/api/admin/*`, and one that no route answers as
+ * `*` or `/api/*`.
+ */
+export function routeOf(c: Context): string {
+  return `${c.req.method} ${routePath(c) || "(no route)"}`;
+}
+
 export const handleNotFound: NotFoundHandler = (c) =>
   c.json<ErrorResponse>(
     { error: "NotFoundError", message: defaultMessages.NotFoundError },
@@ -47,17 +61,11 @@ export const handleNotFound: NotFoundHandler = (c) =>
  * route saying what went wrong, so its status and message go to the client.
  * Anything else is a bug: it goes to the logs, never to the client. What
  * goes to the logs goes through `loggable`, which `log` sees to, and names
- * the route by its method and its path: the query of an address can hold
- * the code of a callback.
+ * the route that failed, `routeOf`.
  */
 export const handleError: ErrorHandler = (error, c) => {
   const failed = () =>
-    log.error(
-      "request",
-      "A request failed",
-      { route: `${c.req.method} ${c.req.path}` },
-      error,
-    );
+    log.error("request", "A request failed", { route: routeOf(c) }, error);
   if (error instanceof HTTPException) {
     if (error.status >= 500) failed();
     const name = errorName(error.status);

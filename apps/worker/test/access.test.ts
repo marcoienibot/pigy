@@ -8,8 +8,12 @@ import { allowedEmails, sessions } from "../src/db/schema.ts";
 import {
   adminEmail,
   type Browser,
+  breakDatabase,
+  entriesOf,
+  expectErrors,
   invite,
   locationOf,
+  logged,
   me,
   saidBy,
   setup,
@@ -262,6 +266,36 @@ it("signs somebody out everywhere when their invitation is removed", async () =>
   expect(
     locationOf(await signIn(test, phone, { email: "ada@example.com" })),
   ).toBe("/invite-only");
+});
+
+it("logs a removal that failed by its route, without the address in its path", async () => {
+  const test = setup();
+  await invite(test, "ada@example.com");
+  const admin = await signedIn(test, { email: adminEmail });
+  const errors = expectErrors();
+  const values: unknown[] = [];
+  breakDatabase((sql) => sql.startsWith('delete from "allowed_email"'), values);
+
+  const response = await admin.fetch(
+    `${path}/${encodeURIComponent("ada@example.com")}`,
+    { method: "DELETE" },
+  );
+
+  expect(response.status).toBe(500);
+  // The statement did fail, with the address among its values.
+  expect(values).toContain("ada@example.com");
+  // Whoever reads the log finds which route failed, by its pattern. Its
+  // path is the address of a person, as the app sends it and as it is
+  // written in an address bar.
+  const [entry, ...others] = entriesOf(errors);
+  expect(others).toEqual([]);
+  expect(entry).toMatchObject({
+    kind: "request",
+    route: "DELETE /api/admin/allowed-emails/:email",
+  });
+  const text = logged(errors.mock.calls);
+  expect(text).not.toContain("ada@example.com");
+  expect(text).not.toContain("ada%40example.com");
 });
 
 it("ends a session whose invitation is gone, even if the session was left behind", async () => {
