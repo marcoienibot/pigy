@@ -114,11 +114,11 @@ To switch it on, in the settings of the repository on GitHub:
 
 Check: the next push to `main` has a job "deploy" that ends green, and `curl https://<host>/api/health` answers with a new `version`.
 
-What the job does, in order: it builds with `pnpm build`, checks that what `wrangler` would deploy is that build, applies the migrations of D1, and deploys. It does not set the secrets of the Worker: those are yours, section 4. One deploy runs at a time, and a run whose commit is no longer the newest of `main` deploys nothing.
+What the job does, in order: it asks GitHub whether its commit is still the newest of `main`, builds with `pnpm build`, checks that what `wrangler` would deploy is that build, applies the migrations of D1, and deploys. It does not set the secrets of the Worker: those are yours, section 4. One deploy runs at a time, and a run whose commit is no longer the newest of `main` deploys nothing. A run that cannot get an answer from GitHub fails, and deploys nothing either: start it again with "Re-run jobs". The two secrets of the environment are handed to the two steps that call Cloudflare and to no other: the install of the dependencies, the build and the checks never see them.
 
 Three things that the job cannot see for you, from `AGENTS.md`, "Deployment":
 
-- **A change to the steps of the publishing workflow** is deployed when nothing is being sent, or it keeps the old names working for one deploy. The pull request of such a change says so. To merge it without deploying, put `[no deploy]` into the message of the merge commit, and deploy later by hand, with "Run workflow".
+- **A change to the steps of the publishing workflow** is deployed when nothing is being sent, or it keeps the old names working for one deploy. The pull request of such a change says so. To merge it without deploying, put `[no deploy]` into the message of the merge commit, and deploy later by hand, with "Run workflow", at a moment when nothing is being sent. `[no deploy]` holds only until the next push to `main`: that push deploys everything up to its own commit, the change that waited among it, whatever its message says. So nothing else is merged until the change is deployed, or the next merge is one that may go out with it, at a moment of its own choosing, and says `[no deploy]` too. Only the newest commit of a push is read for the words: a push of several commits is held by the message of its last one.
 - **A migration of D1 is applied before the code that needs it**, and stays applied if the deploy then fails. So a migration only adds what the code before it can ignore: `AGENTS.md`, "Change the database schema".
 - **A new path prefix of the Worker** takes two releases: `AGENTS.md`, "A new path of the Worker".
 
