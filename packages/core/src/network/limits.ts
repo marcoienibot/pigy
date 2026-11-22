@@ -3,6 +3,7 @@ import { countBlueskyCharacters, utf8Length } from "./bluesky.ts";
 import type { PostContent } from "./content.ts";
 import { countLinkedInCharacters, joinLinkedInParts } from "./linkedin.ts";
 import { countMastodonCharacters } from "./mastodon.ts";
+import { countThreadsCharacters } from "./threads.ts";
 
 /**
  * What an account accepts in a post. The limits are data, so that they can
@@ -57,10 +58,25 @@ export const linkedInLimitsSchema = z.strictObject({
   maxCharacters: z.number().int().positive(),
 });
 
+/**
+ * The limits of an account on Threads. They are the same for every
+ * account, `threadsMaxCharacters`, and data all the same, as those of
+ * Bluesky are.
+ */
+export const threadsLimitsSchema = z.strictObject({
+  network: z.literal("threads"),
+  /**
+   * The most characters in one post, counted the way Threads counts: an
+   * emoji as the bytes that it takes.
+   */
+  maxCharacters: z.number().int().positive(),
+});
+
 export const limitsSchema = z.discriminatedUnion("network", [
   blueskyLimitsSchema,
   linkedInLimitsSchema,
   mastodonLimitsSchema,
+  threadsLimitsSchema,
 ]);
 
 export type Limits = z.infer<typeof limitsSchema>;
@@ -74,6 +90,8 @@ export function countCharacters(limits: Limits, text: string): number {
       return countLinkedInCharacters(text);
     case "mastodon":
       return countMastodonCharacters(text, limits.charactersPerUrl);
+    case "threads":
+      return countThreadsCharacters(text);
   }
 }
 
@@ -82,6 +100,7 @@ const networkNames: { readonly [Name in Limits["network"]]: string } = {
   bluesky: "Bluesky",
   linkedin: "LinkedIn",
   mastodon: "Mastodon",
+  threads: "Threads",
 };
 
 /**

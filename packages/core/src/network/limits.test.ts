@@ -176,3 +176,46 @@ describe("LinkedIn", () => {
     ).toEqual([[1, "too_long"]]);
   });
 });
+
+describe("Threads", () => {
+  const threads: Limits = { network: "threads", maxCharacters: 20 };
+
+  it("accepts its limits", () => {
+    expect(limitsSchema.parse(threads)).toEqual(threads);
+  });
+
+  it("counts a letter as one, whatever bytes it takes, and a link as it is written", () => {
+    // 20 letters with accents are 40 bytes, and 20 characters to Threads.
+    expect(
+      validateContent(threads, { parts: [{ text: "é".repeat(20) }] }),
+    ).toEqual([]);
+    expect(
+      validateContent(threads, { parts: [{ text: "https://example.com/a" }] }),
+    ).toMatchObject([{ code: "too_long", characters: 21 }]);
+  });
+
+  it("counts an emoji as the bytes that it takes", () => {
+    // Five emoji of four bytes each are the limit.
+    expect(
+      validateContent(threads, { parts: [{ text: "😀".repeat(5) }] }),
+    ).toEqual([]);
+    expect(
+      validateContent(threads, { parts: [{ text: `${"😀".repeat(5)}a` }] }),
+    ).toMatchObject([{ code: "too_long", characters: 21 }]);
+    // An emoji made of several code points counts every one of them: two
+    // pictographs of four bytes and the joiner of three between them.
+    expect(
+      validateContent(threads, {
+        parts: [{ text: `\u{1F469}\u200D\u{1F680}${"a".repeat(10)}` }],
+      }),
+    ).toMatchObject([{ code: "too_long", characters: 21 }]);
+  });
+
+  it("checks every part of a thread by itself: a thread is a chain of posts there", () => {
+    expect(
+      validateContent(threads, {
+        parts: [{ text: "a".repeat(20) }, { text: "b".repeat(20) }],
+      }),
+    ).toEqual([]);
+  });
+});
