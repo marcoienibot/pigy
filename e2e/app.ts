@@ -167,6 +167,36 @@ export async function connectSimulatedBluesky(
   await expect(channelRows(page).filter({ hasText: handle })).toBeVisible();
 }
 
+/**
+ * An account of the simulated Threads that every sandbox starts with: the
+ * accounts in apps/worker/src/sim/object.ts, by its handle.
+ */
+export const graceOnThreads = "@grace.sandbox";
+
+/**
+ * Connects an account of the simulated Threads from the Channels screen
+ * of a sandbox, through the consent page, and ends on the Channels screen
+ * with the channel listed. Threads asks for nothing to be typed.
+ */
+export async function connectSimulatedThreads(
+  page: Page,
+  handle: string,
+): Promise<void> {
+  await page.getByRole("button", { name: "Connect account" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: "Threads" }).click();
+  await dialog.getByRole("button", { name: "Continue to Threads" }).click();
+  await page.waitForURL(
+    ({ pathname }) => pathname === "/sim/network/threads.net/oauth/authorize",
+  );
+  await page.getByRole("button", { name: handle }).click();
+  await expect(
+    channelRows(page)
+      .filter({ hasText: "Threads" })
+      .filter({ hasText: handle }),
+  ).toBeVisible();
+}
+
 /** The rows of the list of drafts. */
 export function draftRows(page: Page): Locator {
   return page.getByRole("list", { name: "Drafts" }).getByRole("link");
@@ -730,7 +760,7 @@ export function feedOf(page: Page, handle: string): Locator {
  */
 export async function armFault(
   page: Page,
-  network: "Mastodon" | "Bluesky" | "LinkedIn",
+  network: "Mastodon" | "Bluesky" | "LinkedIn" | "Threads",
   kind: string,
 ): Promise<void> {
   await openScreen(page, "Simulator");

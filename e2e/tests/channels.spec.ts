@@ -12,6 +12,7 @@ import {
   expectWorkspace,
   grace,
   graceOnLinkedIn,
+  graceOnThreads,
   openConsentPage,
   openScreen,
   overflowOf,
@@ -136,7 +137,7 @@ test("somebody new is led from the empty drafts screen to a connected simulated 
   ).toHaveCount(0);
 });
 
-test("the empty Channels screen says what a channel is, and the choice of a network lists what is coming", async ({
+test("the empty Channels screen says what a channel is, and the choice of a network offers all four", async ({
   ownPage: page,
 }) => {
   await openScreen(page, "Channels");
@@ -145,7 +146,8 @@ test("the empty Channels screen says what a channel is, and the choice of a netw
   await expect(main).toContainText(
     "A channel is an account on a network that pigy posts to for you",
   );
-  await expect(main).toContainText("Threads is coming");
+  // Every network that pigy posts to can be connected by now.
+  await expect(main).not.toContainText("coming");
   // One click to the form from here.
   await main
     .getByRole("button", { name: "Connect a simulated Mastodon account" })
@@ -153,21 +155,12 @@ test("the empty Channels screen says what a channel is, and the choice of a netw
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByLabel("Server")).toHaveValue(sandboxServer);
 
-  // Back to the choice of a network. What cannot be connected yet is
-  // listed, and is nothing to press.
+  // Back to the choice of a network: each is something to press.
   await dialog.getByRole("button", { name: "Networks" }).click();
   const networks = dialog.getByRole("list", { name: "Networks" });
-  await expect(networks.getByRole("listitem")).toHaveText([
-    "Mastodon",
-    "Bluesky",
-    "LinkedIn",
-    "ThreadsComing soon",
-  ]);
-  await expect(networks.getByRole("button")).toHaveText([
-    "Mastodon",
-    "Bluesky",
-    "LinkedIn",
-  ]);
+  const all = ["Mastodon", "Bluesky", "LinkedIn", "Threads"];
+  await expect(networks.getByRole("listitem")).toHaveText(all);
+  await expect(networks.getByRole("button")).toHaveText(all);
 
   // Closing leaves the screen as it was, with the address of the screen.
   await page.keyboard.press("Escape");
@@ -265,6 +258,55 @@ test("connects a simulated LinkedIn account through the consent page of LinkedIn
   await expect(row).toContainText(
     /Its access ends on .+: connect the account again before then\./,
   );
+});
+
+test("connects a simulated Threads account through the consent page of Threads, with nothing to type", async ({
+  ownPage: page,
+}) => {
+  await openScreen(page, "Channels");
+  await page
+    .getByRole("main")
+    .getByRole("button", { name: "Connect a simulated Threads account" })
+    .click();
+
+  // Threads has one place to sign in: the form asks for nothing, and its
+  // button has the keyboard.
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("textbox")).toHaveCount(0);
+  const proceed = dialog.getByRole("button", { name: "Continue to Threads" });
+  await expect(proceed).toBeFocused();
+  await page.keyboard.press("Enter");
+
+  // The consent page of the simulated Threads, which the app serves at
+  // the path of Threads' own. It offers the accounts of the sandbox, and
+  // says what pigy asks for.
+  await page.waitForURL(
+    ({ pathname }) => pathname === "/sim/network/threads.net/oauth/authorize",
+  );
+  await expect(page.getByText("Simulation", { exact: true })).toBeVisible();
+  await expect(page.locator('button[name="account"]')).toHaveCount(3);
+  await expect(page.getByRole("listitem")).toContainText([
+    "threads_basic",
+    "threads_content_publish",
+  ]);
+  expect(await overflowOf(page)).toBe(0);
+  await page.getByRole("button", { name: graceOnThreads }).click();
+
+  // Threads ends the address that it sends the browser back to with a
+  // fragment, which a browser carries along. The screen is the Channels
+  // screen all the same, and says how it went.
+  await expect(notice(page)).toHaveText(
+    "Grace Hopper (@grace.sandbox) is connected.",
+  );
+  await expect(page).toHaveURL(/\/channels(#_)?$/);
+  await expect(channelRows(page)).toHaveCount(1);
+  const row = channelRows(page);
+  await expect(row).toContainText("Threads · @grace.sandbox");
+  await expect(row).toContainText("Connected");
+  // The access has an end, 60 days away, which pigy puts off by itself:
+  // the row has nothing to ask of the person.
+  await expect(row).not.toContainText("Its access ends");
+  await expect(row.getByRole("button", { name: /^Reconnect/ })).toHaveCount(0);
 });
 
 test("the dialog that connects an account is one step back in the browser, and closing it leaves the history as it was", async ({

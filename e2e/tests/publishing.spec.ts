@@ -6,6 +6,7 @@ import {
   connectionOf,
   connectSimulated,
   connectSimulatedLinkedIn,
+  connectSimulatedThreads,
   deliveryTo,
   draftRow,
   editor,
@@ -14,6 +15,7 @@ import {
   feedOf,
   grace,
   graceOnLinkedIn,
+  graceOnThreads,
   openScreen,
   overflowOf,
   publishDraft,
@@ -538,4 +540,57 @@ test("a post goes out to a simulated LinkedIn account, and one whose answer is l
     .getByRole("link", { name: "See it in the simulated feed" })
     .click();
   await expect(arrived).toHaveCount(1);
+});
+
+test("a post goes out to a simulated Threads account, which makes it in two steps, and one whose access was taken back fails and asks for the account to be connected again", async ({
+  ownPage: page,
+}) => {
+  await openScreen(page, "Channels");
+  await connectSimulatedThreads(page, graceOnThreads);
+  await openScreen(page, "Drafts");
+  // An emoji counts as its bytes on Threads, which this text is far from
+  // feeling.
+  await publishDraft(page, "Hello Threads 👋 from pigy", graceOnThreads);
+
+  await openScreen(page, "Sent");
+  const sent = deliveryTo(
+    sentPost(page, "Hello Threads 👋 from pigy"),
+    graceOnThreads,
+  );
+  // The workflow takes two steps for a post there, and a machine under
+  // load is slow at each.
+  await expect(sent).toContainText("Sent", { timeout: 20_000 });
+  await sent
+    .getByRole("link", { name: "See it in the simulated feed" })
+    .click();
+  await expect(feedOf(page, graceOnThreads)).toContainText(
+    "Hello Threads 👋 from pigy",
+  );
+
+  // The panel offers what only Threads has, in words: a post that it
+  // takes long to prepare.
+  await page.getByRole("link", { name: "Failures" }).click();
+  await page.getByRole("radio", { name: "Threads" }).check();
+  await expect(
+    page.getByRole("radio", { name: "Slow to prepare", exact: true }),
+  ).toHaveAccessibleDescription(/half a minute to prepare it/);
+  // A failure that ends a delivery at once: the access is taken back
+  // when Threads is asked to publish.
+  await armFault(page, "Threads", "Access taken back");
+
+  await openScreen(page, "Drafts");
+  await publishDraft(page, "Not this one", graceOnThreads);
+  await openScreen(page, "Sent");
+  const failed = deliveryTo(sentPost(page, "Not this one"), graceOnThreads);
+  await expect(failed).toContainText("Failed", { timeout: 20_000 });
+  await expect(failed).toContainText(
+    "Threads no longer accepts the access that pigy was given to this account",
+  );
+  // The channel says what it needs, where the person is.
+  await expect(
+    failed.getByRole("link", { name: `Reconnect ${graceOnThreads}` }),
+  ).toBeVisible();
+  // And nothing was published.
+  await openScreen(page, "Simulator");
+  await expect(feedOf(page, graceOnThreads)).not.toContainText("Not this one");
 });
