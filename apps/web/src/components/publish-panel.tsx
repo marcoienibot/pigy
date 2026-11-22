@@ -99,6 +99,19 @@ export function PublishPanel({
           ) {
             return;
           }
+          const chip = chips.current?.querySelector<HTMLElement>(
+            `[data-channel="${channel.id}"]`,
+          );
+          // The account was chosen again since, and given a text anew:
+          // that text stays, and nothing of the earlier one is put into
+          // it. The server would do the same, and tell nobody.
+          if (ownTextsOf(selectOwnTexts(tables), draft.id).has(channel.id)) {
+            toast(`${channel.handle} has a text of its own again`, {
+              description: "The text that it had before was not brought back.",
+            });
+            takeFocus(chip);
+            return;
+          }
           mutate("target.add", {
             id: uuidv7(new Date()),
             postId: draft.id,
@@ -111,11 +124,7 @@ export function PublishPanel({
           // would be left on the page, where its keys are shortcuts: it
           // goes back to the choice that was taken back, if the draft is
           // still the one that is open.
-          takeFocus(
-            chips.current?.querySelector<HTMLElement>(
-              `[data-channel="${channel.id}"]`,
-            ),
-          );
+          takeFocus(chip);
         },
       },
     });

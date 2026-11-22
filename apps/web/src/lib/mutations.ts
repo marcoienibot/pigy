@@ -1,4 +1,4 @@
-import type { MutatorName } from "@pigy/core";
+import type { MutatorName, StoredRejection } from "@pigy/core";
 
 /**
  * What a change is called when the person is told that it was refused, by
@@ -36,4 +36,31 @@ export function refusedChange(name: string): string {
   return Object.hasOwn(refused, name)
     ? refused[name as MutatorName]
     : "A change was not saved";
+}
+
+const textOf = (value: unknown): string => {
+  const text = (value as { text?: unknown } | null)?.text;
+  return typeof text === "string" ? text : "";
+};
+
+/**
+ * The text that a refused change carried and that is nowhere else by
+ * now, part after part: empty if it carried none that has more in it
+ * than space. That is an edit of a part, a part that came with its text,
+ * as one that an Undo brings back does, and a text for an account, whose
+ * parts are text too. The arguments are read as what they are, the word
+ * of a copy that another version of the app may have written.
+ */
+export function lostTexts({
+  name,
+  args,
+}: Pick<StoredRejection, "name" | "args">): string[] {
+  let texts: string[] = [];
+  if (name === "part.setText" || name === "part.add") {
+    texts = [textOf(args)];
+  } else if (name === "target.customize") {
+    const parts = (args as { parts?: unknown } | null)?.parts;
+    texts = Array.isArray(parts) ? parts.map(textOf) : [];
+  }
+  return texts.some((text) => text.trim() !== "") ? texts : [];
 }

@@ -1,19 +1,8 @@
-import type { StoredRejection } from "@pigy/core";
 import { useEffect, useRef } from "react";
 import { toast } from "sonner";
 import { useNewDraft } from "@/lib/drafts";
-import { refusedChange } from "@/lib/mutations";
+import { lostTexts, refusedChange } from "@/lib/mutations";
 import { useRejections } from "@/sync/react";
-
-/**
- * The text that a refused edit would have set, if it was one with text
- * that has more in it than space.
- */
-function lostText({ name, args }: StoredRejection): string {
-  if (name !== "part.setText") return "";
-  const text = (args as { text?: unknown } | null)?.text;
-  return typeof text === "string" && text.trim() !== "" ? text : "";
-}
 
 /**
  * Tells the person of every change that the server refused: what it was
@@ -25,9 +14,11 @@ function lostText({ name, args }: StoredRejection): string {
  * they leave the screen with it, without being dismissed, and are there
  * again when it comes back.
  *
- * An edit that was refused has text in it that exists nowhere else by now,
- * for example because the draft was deleted on another device while it was
- * being written. The notice offers to keep that text as a new draft.
+ * A change that was refused can have text in it that exists nowhere else
+ * by now: an edit, for example because the draft was deleted on another
+ * device while it was being written, and a part or a text for an account
+ * that an Undo was bringing back. The notice offers to keep that text as
+ * a new draft, part by part.
  */
 export function Rejections() {
   const { rejections, dismiss } = useRejections();
@@ -40,10 +31,12 @@ export function Rejections() {
 
   useEffect(() => {
     for (const rejection of rejections) {
-      const text = lostText(rejection);
-      // Trimmed for the notice only: the draft gets the text as it was
-      // written, with its indentation and its last empty lines.
-      const quote = text.trim();
+      const texts = lostTexts(rejection);
+      const text = texts.length > 0;
+      // The first of it that says something, trimmed, for the notice
+      // only: the draft gets the text as it was written, with its
+      // indentation and its last empty lines.
+      const quote = texts.find((part) => part.trim() !== "")?.trim() ?? "";
       // With an ID, a notice that is on screen already is left as it is.
       toast.error(refusedChange(rejection.name), {
         id: rejection.key,
@@ -59,7 +52,7 @@ export function Rejections() {
           action: {
             label: "Keep as new draft",
             onClick: () => {
-              newDraft(text);
+              newDraft(texts);
               dismiss(rejection.key);
             },
           },

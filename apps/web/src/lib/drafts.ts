@@ -198,9 +198,10 @@ export function takeFocusOnOpen(id: string): boolean {
 
 /**
  * Returns the function behind "New draft": it opens a draft to write in,
- * with `text` if that is given. A draft that is there already and that
- * nobody has done anything with is used rather than making another: one
- * without text, without a text for an account, and that goes nowhere.
+ * with `text` if that is given, or with a thread of the parts `text` for
+ * several. A draft that is there already and that nobody has done
+ * anything with is used rather than making another: one without text,
+ * without a text for an account, and that goes nowhere.
  */
 export function useNewDraft() {
   const mutate = useMutate();
@@ -208,14 +209,27 @@ export function useNewDraft() {
   const navigate = useNavigate();
 
   return useCallback(
-    (text = "") => {
+    (text: string | readonly string[] = "") => {
+      const [first = "", ...more] = typeof text === "string" ? [text] : text;
       let id =
-        text === ""
+        first === "" && more.length === 0
           ? selectDrafts(read()).find((draft) => draft.untouched)?.id
           : undefined;
       if (!id) {
         id = uuidv7(new Date());
-        mutate("post.create", { id, partId: uuidv7(new Date()), text });
+        let last = uuidv7(new Date());
+        mutate("post.create", { id, partId: last, text: first });
+        for (const part of more) {
+          const partId = uuidv7(new Date());
+          mutate("part.add", {
+            id: partId,
+            postId: id,
+            channelId: null,
+            afterId: last,
+            text: part,
+          });
+          last = partId;
+        }
       }
       focusOnOpen = id;
       void navigate({ to: "/", search: { draft: id } });

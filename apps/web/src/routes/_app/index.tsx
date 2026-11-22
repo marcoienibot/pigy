@@ -591,6 +591,27 @@ type PartActions = {
 };
 
 /**
+ * The editor that is on the page, for what outlives the editor that made
+ * it: the Undo of a notice, which can be pressed when another text is
+ * shown, another draft is open, or none.
+ */
+let openEditor:
+  | {
+      draftId: string;
+      /** Shows the text of `channelId`, the post's for null, and takes the keyboard to its part `partId`. */
+      reveal(channelId: string | null, partId: string): void;
+    }
+  | undefined;
+
+/**
+ * A part for the editor of its draft to show and give the keyboard once
+ * that editor is on the page: the draft was not open when it was asked.
+ */
+let revealOnOpen:
+  | { draftId: string; channelId: string | null; partId: string }
+  | undefined;
+
+/**
  * The editor of a draft: its text, part after part, each saved as it is
  * typed, with how long it is for the accounts that get it, and under it
  * where the draft goes. Every change is a mutation, and the fields show
@@ -616,6 +637,7 @@ function Editor({
   onPublished: () => void;
 }) {
   const mutate = useMutate();
+  const navigate = Route.useNavigate();
   const tablesNow = useSyncedNow();
   const channels = useSynced(selectChannels);
   const chosen = targetsOf(useSynced(selectDraftTargets), draft.id);
@@ -665,6 +687,31 @@ function Editor({
     const [first] = parts;
     ref.current = (first && fields.current.get(first.id)) ?? null;
     if (awaited.current) focus(awaited.current.id, awaited.current.at);
+  });
+
+  /**
+   * Shows the text that the part `partId` is of, which is the one of
+   * `channelId`, or the post's for null, and takes the keyboard to the
+   * end of that part, once its field is on the page.
+   */
+  const reveal = (channelId: string | null, partId: string) => {
+    setShown(channelId);
+    focus(partId, "end");
+  };
+
+  // What outlives this editor finds the one that is on the page here.
+  useLayoutEffect(() => {
+    const handle = { draftId: draft.id, reveal };
+    openEditor = handle;
+    // A part that was brought back into this draft while it was not open.
+    if (revealOnOpen?.draftId === draft.id) {
+      const { channelId, partId } = revealOnOpen;
+      revealOnOpen = undefined;
+      reveal(channelId, partId);
+    }
+    return () => {
+      if (openEditor === handle) openEditor = undefined;
+    };
   });
 
   // The person has asked for this draft to write in it.
@@ -732,9 +779,6 @@ function Editor({
             const text = textOf(part);
             if (!text || text.length >= maxParts) return;
             const id = uuidv7(new Date());
-            // The notice leaves the page with the press: the keyboard
-            // goes to the part that is back.
-            focus(id, "end");
             mutate("part.add", {
               id,
               postId: draft.id,
@@ -742,6 +786,23 @@ function Editor({
               afterId: before?.id ?? null,
               text: part.text,
             });
+            // The notice leaves the page with the press: the keyboard
+            // goes to the part that is back, and not to the page, where
+            // its keys open and delete drafts. The notice can be
+            // pressed when the editor shows another text of the draft,
+            // or when this editor is gone, because another draft was
+            // opened or none: the part is shown first, by the editor
+            // that is on the page, or by the one that opens its draft.
+            if (openEditor?.draftId === draft.id) {
+              openEditor.reveal(channelId, id);
+            } else {
+              revealOnOpen = { draftId: draft.id, channelId, partId: id };
+              void navigate({
+                to: "/",
+                search: { draft: draft.id },
+                replace: true,
+              });
+            }
           },
         },
       });
