@@ -208,7 +208,6 @@ function threaded({ accounts, posts }: WorldContents): SandboxFeed {
   };
 }
 
-/** How the networks of the sandbox `workspace` can fail, and what is armed. */
 /**
  * The bytes of an image that was published in the world of the sandbox
  * `workspace`, by the name that the feed has for it, or null if the world
@@ -224,6 +223,7 @@ export async function worldImage(
   return bytes;
 }
 
+/** How the networks of the sandbox `workspace` can fail, and what is armed. */
 export async function worldFaults(
   namespace: Bindings["SIM_WORLD"],
   workspace: WorkspaceIdentity,

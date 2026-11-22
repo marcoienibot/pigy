@@ -80,9 +80,10 @@ export { parseHandle } from "./identity.ts";
  * keeps the nonces of DPoP in memory of its own, where an adapter takes
  * its clock as a parameter and keeps nothing between calls.
  *
- * A post goes out with its links, mentions and tags marked up and with
- * the card of its first link: richtext.ts. No media yet, and so no
- * picture on a card.
+ * A post goes out with its links, mentions and tags marked up, and with
+ * its images or else the card of its first link: richtext.ts. A card has
+ * no picture, which pigy would have to upload as a blob of its own, and
+ * does not.
  */
 
 /** The collection that posts are records of. */
@@ -90,9 +91,10 @@ const postCollection = "app.bsky.feed.post";
 
 /**
  * What pigy asks an account for: to write and delete its posts, and to
- * upload media, which it does not do yet. A session cannot gain a scope
- * later, so asking now spares everybody a second connection when pigy
- * posts media. Reading a post takes no scope: records are public.
+ * upload media, images now and video later. A session cannot gain a scope
+ * later, so asking for both spared everybody a second connection when
+ * pigy began to post images, and spares one for video. Reading a post
+ * takes no scope: records are public.
  */
 export const blueskyScope = [
   "atproto",
