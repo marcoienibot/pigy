@@ -394,6 +394,32 @@ describe("publishing", () => {
     },
   );
 
+  it.each([
+    [400, "fail", "LinkedIn refused the request (HTTP 400)."],
+    [429, "retry", "LinkedIn is limiting how often pigy may ask today."],
+  ] as const)(
+    "takes a refusal for one when LinkedIn answers with a %i and more than pigy reads: nothing was posted",
+    async (status, kind, message) => {
+      const test = setup();
+      const { credentials } = await connect(test);
+      // A refusal at a length that pigy does not read to its end, as a
+      // proxy in front of LinkedIn answers with a page.
+      test.hooks.intercept = (request) =>
+        posts(request)
+          ? new Response("x".repeat(300 * 1024), { status })
+          : undefined;
+      const failed = await failure(() => step(test, credentials, "Hello"));
+      // The status says that LinkedIn did not take the post, whatever the
+      // body would have said: nobody has to look at the account.
+      expect(failed).toMatchObject({ kind, status, message });
+      // Too often is too often for the day, as in an answer that pigy
+      // reads: the delivery is tried again and not given up.
+      expect(failed.retryAt).toEqual(
+        status === 429 ? new Date("2026-11-16T00:00:00Z") : undefined,
+      );
+    },
+  );
+
   it("cannot tell what became of the post either when LinkedIn sends the request on to another address", async () => {
     const test = setup();
     const { credentials } = await connect(test);

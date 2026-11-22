@@ -448,7 +448,8 @@ export function createLinkedInProvider({
      * does not know: a request to post that ends without a clear answer,
      * because none came or because LinkedIn failed, is `uncertain` and
      * never `retry`. Only a refusal that says that nothing was posted
-     * asks for another try.
+     * asks for another try: an answer with a status from 400 to 499,
+     * also one that is too long for pigy to read.
      *
      * One thing LinkedIn does tell: it refuses a post of the same member
      * with the same text as one that it has, for some minutes, and names
@@ -520,9 +521,27 @@ export function createLinkedInProvider({
       } catch (error) {
         // What is no failure of a network is passed on as it is.
         if (!(error instanceof ProviderError)) throw error;
-        // No answer came, or one that `send` does not hand out: too long
-        // to read, or one that sends pigy elsewhere. LinkedIn may have
-        // taken the post all the same.
+        // A refusal is one by its status, whatever comes with it: an
+        // answer from 400 to 499 that is too long for `send` to hand out
+        // says as clearly that nothing was posted as one that pigy reads.
+        // It goes the way of its status, a 429 the way of a 429. What
+        // `send` kept back with it is all that is missing: what LinkedIn
+        // said, and the time that it may have named for the next try.
+        const { status: refusal } = error;
+        if (refusal !== undefined && refusal >= 400 && refusal < 500) {
+          throw failure(
+            {
+              status: refusal,
+              headers: new Headers(),
+              json: undefined,
+              text: "",
+            },
+            call,
+          );
+        }
+        // No answer came, or one that `send` does not hand out and that
+        // is no refusal: too long to read, or one that sends pigy
+        // elsewhere. LinkedIn may have taken the post all the same.
         throw unknown(
           error.kind === "retry"
             ? "LinkedIn did not answer"
