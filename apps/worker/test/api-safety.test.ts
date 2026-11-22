@@ -596,8 +596,8 @@ it("leaves nothing of a request that failed in its middle, and carries it out wh
   expect(fresh.table("post_part")).toEqual([]);
   expect(client.table("post")).toEqual([]);
 
-  // A request that failed has not happened: its repeat is carried out,
-  // once, and the one after that is answered with it.
+  // A request that failed in the workspace has not happened: its repeat
+  // is carried out, once, and the one after that is answered with it.
   const response = await api.call("/posts", request);
   expect(response.status).toBe(201);
   const post = await response.json();

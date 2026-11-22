@@ -137,6 +137,27 @@ it("says of every route which scope it takes, and what a write can be refused wi
       name,
     ).toEqual(operation.path.match(/\{\w+\}/g) ?? []);
   }
+  // A route that names something can answer that there is none, and so
+  // can the write that makes a post and names none: its repeat is
+  // answered with the post that it made, which can be gone. The posting
+  // schedule cannot.
+  const withNotFound = Object.entries<ApiOperation>(apiOperations)
+    .filter(
+      ([, { path, method }]) =>
+        "404" in ((document.paths[path]?.[method]?.responses ?? {}) as object),
+    )
+    .map(([name]) => name);
+  expect(withNotFound.sort()).toEqual(
+    [
+      "createPost",
+      "deletePost",
+      "getChannel",
+      "getPost",
+      "getPostTarget",
+      "movePost",
+      "updatePost",
+    ].sort(),
+  );
   // What is not there yet says so.
   expect(document.paths["/media"]?.post?.responses).toHaveProperty("501");
 });

@@ -3,6 +3,7 @@ import {
   type ApiOperation,
   apiBasePath,
   apiOperations,
+  apiPostSchema,
   apiSchemaNames,
   maxApiAnswerTextLength,
   maxApiBodyBytes,
@@ -31,11 +32,11 @@ const introduction = `The API of pigy does what the app does: it writes posts, s
 
 **Errors.** Every answer that is not a success is \`{ "error": name, "message": text }\`. The name follows from the status: \`UnauthorizedError\` for 401 and 403, \`NotFoundError\` for 404, \`LimitReachedError\` for 429, \`InvalidInputError\` for every other 4xx, \`UnexpectedError\` for 5xx. An \`InvalidInputError\` about one field of the request names it in \`field\`. A 409 says that the post is not in a state for what was asked: it has gone out, is being sent, or is not in the queue.
 
-**Repeating a request.** Send an \`Idempotency-Key\` header of your own making with a request that changes something, up to 255 characters. A request that comes again with the same key is not carried out again, for 30 days. If it was carried out, the repeat is answered with the status of the first answer and with the post, or the posting schedule, as it is when the repeat comes, not as it was: a post that was \`sending\` may be \`sent\` by then, and one that was deleted since is a 404. If it was refused, the repeat is answered with the same refusal. Either way the answer has the header \`Idempotent-Replayed: true\`. A key is the API key's own: two API keys that send the same \`Idempotency-Key\` make two requests. The same key with another request is refused with a 422. A request that failed with a 5xx has not happened, and is carried out when it is repeated. Without the header every request is carried out.
+**Repeating a request.** Send an \`Idempotency-Key\` header of your own making with a request that changes something, up to 255 characters. A request that comes again with the same key is not carried out again, for 30 days. If it was carried out, the repeat is answered with the status of the first answer and with the post, or the posting schedule, as it is when the repeat comes, not as it was: a post that was \`sending\` may be \`sent\` by then, and one that was deleted since is a 404. If it was refused, the repeat is answered with the same refusal. Either way the answer has the header \`Idempotent-Replayed: true\`. A key is the API key's own: two API keys that send the same \`Idempotency-Key\` make two requests. The same key with another request is refused with a 422. A request that failed with a 5xx may or may not have been carried out: the answer can be lost after the change was made. Repeat it with the same \`Idempotency-Key\`: it is carried out if it was not, and answered as a repeat if it was. Without the header every request is carried out, so a request that is repeated after a 5xx can be carried out twice.
 
 **For servers and scripts.** The API sends no CORS headers and answers no preflight, so a page in a browser cannot call it from another site: a key is a secret, and a page has no place to keep one. Call it from a server or a command line.
 
-**Limits.** A key may make ${apiRateLimit.limit} requests a minute. Beyond that the answer is a 429 with \`Retry-After\`. A body is at most ${maxApiBodyBytes / 1024} KiB. An answer carries at most ${maxApiAnswerTextLength} characters of the texts of posts: a page of posts ends before the post that would take it past that, and one post leaves out the texts that its channels have of their own once there is no room for more, which \`targets\` says.
+**Limits.** A key may make ${apiRateLimit.limit} requests a minute. Beyond that the answer is a 429 with \`Retry-After\`. A body is at most ${maxApiBodyBytes / 1024} KiB. An answer carries at most ${maxApiAnswerTextLength} characters of the texts of posts: a page of posts ends before the post that would take it past that, and one post leaves out the texts that its channels have of their own once there is no room for more. An entry of \`targets\` whose text was left out says so with \`textOmitted\`, and \`GET /posts/{id}/targets/{channelId}\` has it in full.
 
 **Times** are ISO 8601, in UTC in every answer, and in the year 9999 at the latest.
 
@@ -178,9 +179,21 @@ function operationOf(name: string, operation: ApiOperation): JsonObject {
       ...(operation.scope && {
         "403": error(`The key lacks the scope ${operation.scope}`),
       }),
-      ...(pathParameters.length > 0 && {
-        "404": error("There is no such thing in the workspace of the key"),
-      }),
+      // A route that names something can find that it is not there. So
+      // can the repeat of a write that names nothing and is answered
+      // with a post, as `POST /posts`: the repeat is answered with the
+      // post that the first request made, which can have been deleted
+      // since.
+      ...(pathParameters.length > 0
+        ? {
+            "404": error("There is no such thing in the workspace of the key"),
+          }
+        : writes &&
+          operation.response === apiPostSchema && {
+            "404": error(
+              "Only for a repeat, with `Idempotent-Replayed: true`: the post that the request made the first time has been deleted since",
+            ),
+          }),
       ...(writes && {
         "409": error("The post is not in a state for this"),
       }),
