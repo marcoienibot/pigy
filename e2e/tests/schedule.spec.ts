@@ -8,6 +8,9 @@ import {
   expectSync,
   feedOf,
   grace,
+  inboxItem,
+  inboxLink,
+  openInbox,
   openScreen,
   overflowOf,
   publishDraft,
@@ -752,4 +755,120 @@ test("the calendar shows what is scheduled and what went out on their days, a mo
     .click();
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Sent");
   await expect(sentPost(page, "Out today")).toBeVisible();
+});
+
+test("the word inbox in the command palette leads to the Inbox screen", async ({
+  ownPage: page,
+}) => {
+  const palette = page.getByRole("dialog", { name: "Commands" });
+  await page.keyboard.press("ControlOrMeta+k");
+  await palette.getByRole("combobox").fill("inbox");
+  // The screen whose name was typed in full is the first of what is
+  // listed, which Enter takes.
+  await expect(palette.getByRole("option").first()).toHaveText("Inbox");
+  await page.keyboard.press("Enter");
+
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Inbox");
+});
+
+test("what was shared to pigy and saved as a draft is queued from its editor like any draft, and the next draft is a new one", async ({
+  ownPage: page,
+  isMobile,
+}) => {
+  await openScreen(page, "Channels");
+  await connectSimulated(page, grace);
+
+  // As Android opens pigy for what another app shares.
+  await page.goto(
+    `/share?${new URLSearchParams({ text: "Shared from elsewhere" })}`,
+  );
+  await page.getByRole("button", { name: "Save as draft" }).click();
+  await expect(editor(page)).toHaveValue("Shared from elsewhere");
+
+  // The draft that the share made has what every draft has: accounts to
+  // choose, and the ways to say when it goes out.
+  await channelChoice(page, grace).click();
+  await expect(
+    publishPanel(page).getByRole("button", { name: "Schedule…" }),
+  ).toBeEnabled();
+  await publishPanel(page)
+    .getByRole("button", { name: "Add to queue" })
+    .click();
+  // Queued, it is a draft no more: the editor closes, and the list of
+  // the drafts is empty.
+  await expect(editor(page)).toHaveCount(0);
+  await expect(draftRow(page, "Shared from elsewhere")).toHaveCount(0);
+
+  // "New draft" makes a draft of its own, and does not open the post
+  // that left the drafts.
+  await page.getByRole("button", { name: "New draft" }).click();
+  await expect(editor(page)).toHaveValue("");
+  await editor(page).fill("Written here");
+  await backToList(page, isMobile);
+  await expect(draftRow(page, "Written here")).toBeVisible();
+
+  await openScreen(page, "Queue");
+  // The server took all of it: nothing was refused.
+  await expectSync(page, "Synced");
+  expect(await queueTitles(page)).toEqual(["Shared from elsewhere"]);
+});
+
+test("a scheduled post that missed its time is told of in the inbox, which leads to the queue, and no more once it is sent", async ({
+  ownPage: page,
+}) => {
+  const { sandbox } = await workspacesOf(page);
+  const channel = await connectInSandbox(page, sandbox, grace);
+  // Scheduled for two hours ago, as a client of the sync protocol: a
+  // device does that which was without a connection that long. The
+  // server holds such a post, and no test can move its clock to get one
+  // that it finds late by itself.
+  const late = await publishNow(
+    page,
+    sandbox,
+    channel,
+    "Too late for the morning",
+    -2 * 60 * 60 * 1000,
+  );
+  expect(late.post).toMatchObject({ status: "scheduled" });
+  expect(late.post.heldAt).not.toBeNull();
+
+  // On the Queue screen the way to the inbox counts it, next to the
+  // button that pauses the queue: no page is wider than its window, on a
+  // phone least of all, also when the button has its longer words.
+  await page.goto("/queue");
+  await expect(inboxLink(page)).toHaveAccessibleName(/^Inbox,? 1 unread$/);
+  expect(await overflowOf(page)).toBe(0);
+  await page.getByRole("button", { name: "Pause queue" }).click();
+  await expect(
+    page.getByRole("button", { name: "Resume queue" }),
+  ).toBeVisible();
+  expect(await overflowOf(page)).toBe(0);
+
+  await openInbox(page);
+  const item = inboxItem(page, "A scheduled post missed its time");
+  await expect(item).toHaveAttribute("data-unread", "true");
+  await expect(item).toContainText("Too late for the morning");
+  expect(await overflowOf(page)).toBe(0);
+
+  // To where it is decided: the Queue screen, which marks the post.
+  await item.getByRole("link").click();
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Queue");
+  const row = queueRow(page, "Too late for the morning");
+  await expect(row).toContainText("Missed");
+  // Going there was reading it.
+  await expect(inboxLink(page)).toHaveAccessibleName("Inbox");
+
+  // Sent after all, the post has nothing left to decide: the inbox says
+  // nothing of it, also once the server has had its say.
+  await row.getByRole("button", { name: "Send now" }).click();
+  await expect(queueRows(page)).toHaveCount(0);
+  await expectSync(page, "Synced");
+  await openInbox(page);
+  await expect(
+    page.getByRole("heading", { name: "Nothing needs your attention" }),
+  ).toBeVisible();
+  await page.goto("/sent");
+  await expect(sentPost(page, "Too late for the morning")).toContainText(
+    "Sent",
+  );
 });

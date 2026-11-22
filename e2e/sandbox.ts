@@ -132,7 +132,7 @@ export function postsOf(
 
 /** What a client of the sync protocol holds of a published post. */
 export type Published = {
-  post: { id: string; status: string };
+  post: { id: string; status: string; heldAt: number | null };
   targets: { id: string; status: string; error: string | null }[];
   results: { targetId: string; remoteId: string; url: string | null }[];
 };
@@ -155,7 +155,9 @@ export function publishNow(
   /**
    * Schedules the post for this many milliseconds from now, by the clock
    * of the page, in place of publishing it at once: the server then
-   * publishes it by itself when the time has come.
+   * publishes it by itself when the time has come. A time that is more
+   * than an hour past is one that the server holds the post for, as for
+   * a device that was without a connection that long.
    */
   dueIn?: number,
 ): Promise<Published> {
@@ -233,7 +235,10 @@ export function publishNow(
           const post = rows.post?.get(postId) as Published["post"] | undefined;
           if (!post || post.status === "sending") return;
           // A scheduled post waits for its time, which the server keeps.
-          if (post.status === "scheduled") return;
+          // Not one that the server holds, because its time was long
+          // past when it heard of it: that one waits for a person, and
+          // is handed back as it is.
+          if (post.status === "scheduled" && post.heldAt === null) return;
           const ofPost = <Row>(table: string, own: (row: Row) => boolean) =>
             [...(rows[table]?.values() ?? [])].filter((row) =>
               own(row as unknown as Row),
