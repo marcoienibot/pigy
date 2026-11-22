@@ -158,12 +158,18 @@ test("makes a key that is shown once, which a script creates a draft with, and r
 test("keeps the keys of the two workspaces apart, and a new key off the screen of the other", async ({
   ownPage: page,
 }) => {
+  // Two keys, each used by a script, in two workspaces: close to the
+  // time that a test has.
+  test.slow();
   await openKeys(page);
   const sandboxKey = await makeKey(page, "Sandbox script");
 
   // The key that was just made is still on screen with its secret when
   // the person changes workspaces.
-  await expect(page.locator("body")).toContainText(sandboxKey.slice(-64));
+  const shown = page
+    .getByRole("region", { name: "Your new key" })
+    .getByRole("textbox", { name: "The new key" });
+  await expect(shown).toHaveValue(sandboxKey);
   await switchTo(page, "Live");
   await expectWorkspace(page, "Live");
   // It goes with the screen, which is made anew for the other workspace.
@@ -173,10 +179,13 @@ test("keeps the keys of the two workspaces apart, and a new key off the screen o
   await expect(
     page.getByText("The live workspace has no API keys."),
   ).toBeVisible();
-  await expect(page.locator("body")).not.toContainText(sandboxKey.slice(-64));
+  // The key was the value of a field, which is no text of the page: the
+  // field has to be gone, and the region that it was in.
+  await expect(shown).toHaveCount(0);
   await expect(page.getByRole("region", { name: "Your new key" })).toHaveCount(
     0,
   );
+  await expect(page.locator("body")).not.toContainText(sandboxKey.slice(-64));
   await expect(page.getByText("posts to your real accounts")).toBeVisible();
 
   const liveKey = await makeKey(page, "Live script");
