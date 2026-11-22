@@ -203,14 +203,46 @@ export function serverJustSilent(): boolean {
 }
 
 /**
+ * The Web Lock under which a window takes a session on, and under which it
+ * deletes what the device holds of one: see `alone`. Deleting is several
+ * steps, which wait for the browser, and a session that is taken on in
+ * their middle would have its copies deleted with the changes that it has
+ * stored in them by then.
+ *
+ * The name is a contract between the versions of the app, and must not
+ * change: the window that signs somebody in and the window that cleans up
+ * can run different versions, and under two names they would not wait for
+ * each other. A window of a version before this one takes no lock at all.
+ */
+const sessionLock = "pigy/session";
+
+/**
+ * Runs `work` while no other window of this browser takes a session on or
+ * deletes what is left of one: one after the other, under `sessionLock`.
+ * Whoever deletes looks at what the device holds once it has the lock, and
+ * not before. Where there are no Web Locks, nothing keeps the windows
+ * apart, and that look is all there is.
+ */
+function alone<T>(work: () => Promise<T>): Promise<T> {
+  if (!("locks" in navigator)) return work();
+  return navigator.locks.request(sessionLock, work);
+}
+
+/**
  * Makes `session` the one that this device knows of. Whoever signs in gets
  * a device without anybody else's data. If a session of their own ended
  * here with changes that were not synced, the changes are theirs again,
  * and are sent now.
+ *
+ * Not while another window deletes what a session has left, see `alone`:
+ * the copies that it deletes would be those of this session a moment
+ * later.
  */
 async function adopt(session: Session): Promise<void> {
-  await deleteCopies(session.me.user.id);
-  write(session, { ended: false, key: crypto.randomUUID() });
+  await alone(async () => {
+    await deleteCopies(session.me.user.id);
+    write(session, { ended: false, key: crypto.randomUUID() });
+  });
 }
 
 let checking: Promise<void> | undefined;
@@ -493,9 +525,10 @@ async function check(): Promise<void> {
  * since, go the next time somebody is there and nothing needs them.
  *
  * What it reads at its start can be untrue a moment later: the same
- * person signs in again in another tab. So it looks again before it
- * deletes anything, and leaves a session alone that is not the one it
- * found over.
+ * person signs in again in another tab. So it deletes under the lock that
+ * a session is taken on under, see `alone`, and looks again once it has
+ * the lock: it leaves a session alone that is not the one it found over,
+ * and no session begins while it deletes.
  */
 export async function endSession(): Promise<void> {
   const stored = read();
@@ -509,13 +542,17 @@ export async function endSession(): Promise<void> {
     if (await unsavedInOtherWindow()) return;
     if ((await countUnsynced(stored.me.user.id)) > 0) return;
   }
-  if (!unchanged()) return;
-  // Also when this device knows of nobody: a copy can be left behind by
-  // a deletion that failed.
-  await deleteCopies();
-  if (!unchanged()) return;
-  localStorage.removeItem(storageKey);
-  forgetWorkspaceChoice();
+  await alone(async () => {
+    if (!unchanged()) return;
+    // Also when this device knows of nobody: a copy can be left behind by
+    // a deletion that failed.
+    await deleteCopies();
+    // Once more, for a browser without Web Locks, where a session can
+    // have begun meanwhile: its record at least is left alone.
+    if (!unchanged()) return;
+    localStorage.removeItem(storageKey);
+    forgetWorkspaceChoice();
+  });
 }
 
 /**
@@ -595,6 +632,23 @@ window.addEventListener("storage", (event) => {
     // starting again now would lose those changes for nothing. When the
     // wait is over, the tab starts again as whoever is signed in then.
     if (same && over) return;
+    // The same person is signed in again, and this tab does not wait:
+    // their session had ended, and the tab either has no session to show,
+    // as the sign-in page, or has not acted on the end, because it slept
+    // through it and now hears of the end and of the new session at once.
+    // It starts again, which takes the first into the app and brings the
+    // second to what a new tab would be. Nothing presses: the person and
+    // the copies are the same. So it stores first what it has not stored,
+    // which the page load would lose, and the browser's question would
+    // not be asked: `startAgain` shuts the stores. That is at once for a
+    // tab that holds nothing. If the session has ended again by then,
+    // `sessionOver` has the tab, and for anything else it has left.
+    if (same) {
+      void whenSaved().then(() => {
+        if (!over) go(startAgain);
+      });
+      return;
+    }
     // Anything else is no reason to wait, also for a tab that waits
     // already: the person has signed out or has had the changes that were
     // kept deleted, which they were asked about, or somebody else has
@@ -636,11 +690,20 @@ export async function signOutAndForget(): Promise<void> {
  * that were not synced, who it was, and which workspace they chose to see.
  * For after the server has ended the session, or to discard what was kept
  * of a session that ended by itself.
+ *
+ * That is the session that the device holds when this is called. Like
+ * `endSession`, it deletes under the lock that a session is taken on
+ * under, and deletes nothing if the device holds another session by the
+ * time it has the lock: somebody has signed in meanwhile, in another tab.
  */
 export async function forgetSession(): Promise<void> {
+  const stored = read();
   closeWorkspaceSync();
-  // Tabs that have a copy open let go of it when it is deleted.
-  await deleteCopies();
-  localStorage.removeItem(storageKey);
-  forgetWorkspaceChoice();
+  await alone(async () => {
+    if (read() !== null && !(stored && still(stored))) return;
+    // Tabs that have a copy open let go of it when it is deleted.
+    await deleteCopies();
+    localStorage.removeItem(storageKey);
+    forgetWorkspaceChoice();
+  });
 }
