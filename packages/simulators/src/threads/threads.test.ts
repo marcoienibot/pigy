@@ -845,6 +845,17 @@ describe("faults", () => {
     expect(await statusOf(sim, token, next.body.id ?? "")).toBe("FINISHED");
   });
 
+  it("makes a container slow also when the fault was armed for posting, which a container is part of", async () => {
+    const sim = setup();
+    const token = await tokenFor(sim);
+    sim.simulator.arm({ kind: "slow-processing", operation: "publish" });
+    const made = await answer(await container(sim, token, "Slowly"));
+    expect(await statusOf(sim, token, made.body.id ?? "")).toBe("IN_PROGRESS");
+    // It has struck: the next container is ready at once.
+    const next = await answer(await container(sim, token, "At once"));
+    expect(await statusOf(sim, token, next.body.id ?? "")).toBe("FINISHED");
+  });
+
   it("refuses to arm what it does not have", () => {
     const sim = setup();
     expect(() =>

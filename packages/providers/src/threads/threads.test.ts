@@ -591,6 +591,51 @@ describe("publishing", () => {
     expect(published(test)).toEqual(["From before", "Late"]);
   });
 
+  it("looks for the post when Threads no longer knows the container, and makes a new one only if there is none", async () => {
+    const test = setup();
+    const { credentials } = await connect(test);
+    // What Threads says of an ID that it has nothing under.
+    const forgotten = (request: Request) =>
+      request.method === "GET" && request.url.includes("fields=status")
+        ? Response.json(
+            {
+              error: {
+                message: "Unsupported get request. Object does not exist",
+                type: "THApiException",
+                code: 100,
+                error_subcode: 33,
+              },
+            },
+            { status: 400 },
+          )
+        : undefined;
+
+    // Published, with the answer lost, and forgotten since: the post is
+    // found, and nothing is sent.
+    const made = await step(test, credentials, ["Hello"]);
+    test.simulator.arm({ kind: "lost-response", operation: "publish" });
+    await failure(() => step(test, credentials, ["Hello"], made));
+    test.hooks.intercept = forgotten;
+    test.requests.length = 0;
+    const found = await step(test, credentials, ["Hello"], made);
+    expect(found.done).toBe(true);
+    expect(test.requests.filter(contains)).toEqual([]);
+    expect(published(test)).toEqual(["Hello"]);
+
+    // Never published, and forgotten: a new container, for the next step.
+    delete test.hooks.intercept;
+    const other = await step(test, credentials, ["Another"]);
+    test.hooks.intercept = forgotten;
+    test.requests.length = 0;
+    const again = await step(test, credentials, ["Another"], other);
+    expect(again).toMatchObject({ parts: [], done: false });
+    expect(test.requests.filter(contains)).toHaveLength(1);
+    expect(test.requests.filter(publishes)).toEqual([]);
+    delete test.hooks.intercept;
+    expect((await step(test, credentials, ["Another"], again)).done).toBe(true);
+    expect(published(test)).toEqual(["Hello", "Another"]);
+  });
+
   it("fails with what Threads says of a container that it could not prepare", async () => {
     const test = setup();
     const { credentials } = await connect(test);

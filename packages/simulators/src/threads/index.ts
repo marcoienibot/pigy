@@ -295,17 +295,23 @@ export function createThreadsSimulator(world: SimWorld): ThreadsSimulator {
     bearer: string | null | undefined,
     answer: (slow: boolean) => Response | Promise<Response>,
   ): Promise<Response> {
-    const fault = world.faults.take(
-      "threads",
-      operation,
-      threadsFaultKinds.filter(
-        (kind) =>
-          (kind !== "token-revoked" ||
-            (typeof bearer === "string" && isSimulatedSecret(bearer))) &&
-          // Only a container is prepared.
-          (kind !== "slow-processing" || operation === "container"),
-      ),
-    );
+    const fault =
+      // Only a container is prepared, and preparing one is part of
+      // posting: a slow one that was armed for the request that
+      // publishes strikes the container that this request makes.
+      (operation === "container"
+        ? world.faults.take("threads", "publish", ["slow-processing"])
+        : undefined) ??
+      world.faults.take(
+        "threads",
+        operation,
+        threadsFaultKinds.filter(
+          (kind) =>
+            (kind !== "token-revoked" ||
+              (typeof bearer === "string" && isSimulatedSecret(bearer))) &&
+            (kind !== "slow-processing" || operation === "container"),
+        ),
+      );
     if (fault === "server-error") {
       return graphError(world, {
         status: 500,

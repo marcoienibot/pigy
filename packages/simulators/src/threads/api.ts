@@ -384,8 +384,8 @@ export function object(
 
 /**
  * A page of `posts`, newest first, as the Graph API pages a list: with a
- * cursor to go on from. GUESS: `since` and `until` are not simulated, and
- * refused.
+ * cursor to go on from. Paging by time, with `since` and `until`, is not
+ * simulated, and refused.
  */
 function page(
   state: State,

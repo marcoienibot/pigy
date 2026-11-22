@@ -581,6 +581,8 @@ export function createThreadsProvider({
      *    - `IN_PROGRESS`: wait, and ask again in the next step.
      *    - `EXPIRED`, which a container is a day after it was made: make
      *      a new one, which the next step publishes.
+     *    - Not there any more: look for the post as for `PUBLISHED`, and
+     *      make a new container only if the account has no such post.
      *
      * A step that is run again therefore publishes nothing twice: it asks
      * first, and publishes no container that was published. A container
@@ -667,15 +669,67 @@ export function createThreadsProvider({
         );
       }
 
-      const container = understood(
-        containerSchema,
-        await call(`/${version}/${state.container}`, {
-          token,
-          params: { fields: "status,error_message" },
-        }),
-        "Threads",
-      );
-      switch (container.status) {
+      /**
+       * The part as a run before this one published it, if it is among
+       * what the account has posted: a later part among the replies to
+       * the part before it, the first part among what the account has
+       * posted since the delivery began.
+       */
+      const find = async (): Promise<PublishedPart | undefined> => {
+        const fields = "id,text,permalink,timestamp,is_reply_owned_by_me";
+        const since = state.after;
+        const sinceTime = timeOf(since?.timestamp);
+        const candidates = before
+          ? await listed(
+              `/${version}/${before.id}/replies`,
+              token,
+              fields,
+              () => false,
+            )
+          : await listed(
+              `/${version}/me/threads`,
+              token,
+              fields,
+              // Nothing from before the delivery, whatever it reads like:
+              // the list is looked through up to the post that was the
+              // newest then, or, if that one is gone, to the first that
+              // is older.
+              (media) =>
+                since !== null &&
+                (media.id === since.id || timeOf(media.timestamp) < sinceTime),
+            );
+        // The oldest that reads like the part: the deliveries to an
+        // account run one after the other, so what a later one has posted
+        // is newer than what this container became.
+        const found = candidates?.findLast(
+          (media) =>
+            media.text?.trim() === text.trim() &&
+            (!before || media.is_reply_owned_by_me === true),
+        );
+        return found && partOf(found);
+      };
+
+      const asked: Call = {
+        token,
+        params: { fields: "status,error_message" },
+      };
+      const answer = await request(`/${version}/${state.container}`, asked);
+      // Threads no longer has the container. That says nothing of whether
+      // it was published before it went: GUESS, PLAN.md section 19, that
+      // Threads forgets a container at some time. So the step looks, as
+      // for one that says that it was published, and makes a new one only
+      // if the account has no such post.
+      const status = gone(answer)
+        ? "GONE"
+        : succeeded(answer)
+          ? understood(containerSchema, answer.json, "Threads")
+          : undefined;
+      if (status === undefined) throw failure(answer, asked);
+      if (status === "GONE") {
+        const part = await find();
+        return part ? published(part) : contain(state.after);
+      }
+      switch (status.status) {
         case "FINISHED": {
           const { id } = understood(
             createdSchema,
@@ -705,43 +759,16 @@ export function createThreadsProvider({
           return published(partOf({ id, permalink }));
         }
         case "PUBLISHED": {
-          const fields = "id,text,permalink,timestamp,is_reply_owned_by_me";
-          const since = state.after;
-          const sinceTime = timeOf(since?.timestamp);
-          const candidates = before
-            ? await listed(
-                `/${version}/${before.id}/replies`,
-                token,
-                fields,
-                () => false,
-              )
-            : await listed(
-                `/${version}/me/threads`,
-                token,
-                fields,
-                // Nothing from before the delivery, whatever it reads
-                // like: the list is looked through up to the post that
-                // was the newest then, or, if that one is gone, to the
-                // first that is older.
-                (media) =>
-                  since !== null &&
-                  (media.id === since.id ||
-                    timeOf(media.timestamp) < sinceTime),
-              );
-          // The oldest that reads like the part: the deliveries to an
-          // account run one after the other, so what a later one has
-          // posted is newer than what this container became.
-          const found = candidates?.findLast(
-            (media) =>
-              media.text?.trim() === text.trim() &&
-              (!before || media.is_reply_owned_by_me === true),
-          );
-          if (found) return published(partOf(found));
+          const part = await find();
+          if (part) return published(part);
+          // Threads has published it, so the step never publishes it
+          // again, however often it is run: the post was deleted or
+          // changed since, or Threads does not list it.
           throw new ProviderError(
             "uncertain",
             `Threads says that it has published ${
               content.parts.length > 1 ? `part ${index + 1}` : "the post"
-            }, and pigy cannot find it among the posts of the account. Look at the account before you try again.`,
+            }, and pigy cannot find it among the posts of the account: it may have been deleted or changed there. pigy does not post it a second time. To post it again, publish it anew.`,
           );
         }
         case "IN_PROGRESS": {
@@ -762,7 +789,7 @@ export function createThreadsProvider({
           // Nobody published it within its day, and nobody can now.
           return contain(state.after);
         default: {
-          const said = quotable(container.error_message ?? "", [token]);
+          const said = quotable(status.error_message ?? "", [token]);
           throw new ProviderError(
             "fail",
             `Threads could not prepare the post${said ? `: ${said}` : "."}`,
