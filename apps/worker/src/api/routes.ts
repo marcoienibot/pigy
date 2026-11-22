@@ -521,26 +521,25 @@ export function apiRoutes(dependencies: AppDependencies): Hono<ApiEnv> {
    */
   const uploadMedia = async (c: ApiContext) => {
     const at = now();
-    const declared = c.req.header("Content-Length");
-    if (declared !== undefined && Number(declared) > maxImageBytes) {
+    const header = c.req.header("Content-Length");
+    const declared =
+      header === undefined || !/^\d{1,12}$/.test(header)
+        ? undefined
+        : Number(header);
+    if (declared !== undefined && declared > maxImageBytes) {
       throw new HTTPException(413, {
         message: `The file is larger than ${maxImageBytes / 1024 / 1024} MiB.`,
       });
     }
     // A key that is refused is refused before the file is read.
-    const header = c.req.header("Idempotency-Key");
-    if (
-      header !== undefined &&
-      !idempotencyKeySchema.safeParse(header).success
-    ) {
+    const key = c.req.header("Idempotency-Key");
+    if (key !== undefined && !idempotencyKeySchema.safeParse(key).success) {
       await repeatOf(c, "");
     }
     await countedUploads(
       c,
       at,
-      (declared === undefined
-        ? maxUploadChunks
-        : uploadChunks(Number(declared))) + 2,
+      (declared === undefined ? maxUploadChunks : uploadChunks(declared)) + 2,
     );
     const body = c.req.raw.body;
     // The request is told by the digest of its file, for its repeats.
