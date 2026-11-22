@@ -7,7 +7,7 @@ This document is the contract between the server and any client: the browser sto
 ## 1. Model
 
 - A **workspace** is one user's data in one environment. Everybody has two, `live` and `sandbox`. `GET /api/workspaces` lists them, as `{ "workspaces": [{ "id": "…", "environment": "live" }, { "id": "…", "environment": "sandbox" }] }`, and creates them the first time.
-- The **synced tables** of a workspace are the part of it that clients hold a copy of: `post`, `post_part`, `channel`, `post_target` and `target_part_result` so far. `packages/core/src/sync/tables.ts` describes their rows. A row has an `id`, a UUID version 7 in lowercase, that is unique in its table.
+- The **synced tables** of a workspace are the part of it that clients hold a copy of: `post`, `post_part`, `channel`, `post_target`, `target_part_result` and `notification` so far. `packages/core/src/sync/tables.ts` describes their rows. A row has an `id`, a UUID version 7 in lowercase, that is unique in its table.
 - A client never writes rows. It sends **mutations**: the name of a mutator and its arguments, such as `post.create`. The server runs the mutator, and what it does to the rows is what counts. A client may run the same mutator, from `packages/core/src/sync/mutators.ts`, on its own copy first, to show the change before the server has answered.
 - The server applies mutations one at a time, in the order they arrive. Each mutation that changes something is one change and gets a **sequence number**: the changes of a workspace are numbered 1, 2, 3 and so on. A **cursor** is a sequence number, and a client whose cursor is N has exactly the rows that the server had after change N. Cursor 0 is the empty workspace.
 - A **client** is one local copy: its rows, its cursor, the mutations it has made that the server has not confirmed, and the ID of the last one that the server has confirmed. It has a **client ID**, a UUID version 7 that it makes up once, and it numbers its mutations 1, 2, 3 and so on. The server remembers the last mutation it has processed for each client ID, which is what makes it safe to send a mutation twice. A client keeps its copy and its client ID for one workspace: another workspace is another copy with another ID.
@@ -138,6 +138,8 @@ The mutators, their arguments and what they refuse are in `packages/core/src/syn
 | `target.followPost` | `postId`, `channelId` | Removes the text that was written for an account: it gets the post's again. Does nothing if it does so already, or if the post does not go to that channel. Rejected with `not_found` if the post is gone, with `not_a_draft` if it is past being a draft |
 | `post.publish` | `id` | Asks for a draft to be sent to its channels now. Rejected with `not_found` if the post is gone, with `not_a_draft` if it is past being a draft, with `no_channels` if it has no target |
 | `target.retry` | `id` | Asks for a delivery that failed to be tried again. Rejected with `not_found` if the target or its channel is gone, with `not_failed` unless the target is in `error` or `uncertain` |
+| `notification.read` | `ids` | Marks notifications of the inbox as read, 1 to 100 of them. One that is gone or read already is left as it is |
+| `notification.dismiss` | `id` | Takes a notification out of the inbox. Does nothing if it is gone |
 
 Whoever creates a row makes up its ID, so a client can create rows while it is offline. `uuidv7` in `packages/core` makes one.
 
@@ -153,6 +155,8 @@ Some mutators are the server's own. A client that sends one has it rejected with
 | `target.start` | Begins the delivery of a target that waited its turn: `sending`, in a new attempt |
 | `target.progress` | Adds the results of the parts that a delivery has published |
 | `target.end` | Ends a delivery as `sent`, `error` or `uncertain`. It names the connection whose access the network refused, if it refused one, by the `connectedAt` of the channel, and marks the channel as `needs_reconnect` if that is the connection which the channel still has |
+| `channel.warnOfExpiry` | Adds the notification that the access of a channel ends within a week. Does nothing for an access that does not end within a week, has ended, or is of a channel that needs connecting again |
+| `notification.prune` | Removes the notifications that it names: the server runs it for those that are older than 30 days |
 
 They are the server's because a channel stands for something that only the server has: the credentials of the account. A channel that a client made up would have none, and one that a client dropped would leave them behind, still good at the network. So an account is connected and disconnected over HTTP, through the routes that `packages/core/src/connect.ts` describes, and a client learns of the outcome as it learns of every change.
 
@@ -174,6 +178,29 @@ A row of `channel` is a connected account: its network, the network's ID of the 
 - `avatarUrl` and `profileUrl` are HTTPS addresses that a browser can open, or null. They are null for every account of a simulated network, which has no addresses.
 - `expiresAt` is null on the networks whose access does not end, such as Mastodon, and on those that do not say when it ends, such as Bluesky. On LinkedIn it is 60 days after the account was connected, and nothing renews the access: the account is connected again. On Threads it is 60 days after the access was last renewed, which the server does by itself about a week after the time before: `channel.renew` moves it each time, and a client has nothing to tell a person of an end that is far. An end that is less than two weeks away is one that the server has not been able to put off for weeks: the app says the day then, while the person can still connect the account again. It passes only where the server could not renew in all those weeks.
 - `limits` is what the account may post, as its network said at `limitsCheckedAt`: the object that `validateContent` in `packages/core` checks content against, which names its network. Each network has limits of its own form: Mastodon's are read from the instance and count a link as a fixed number of characters, Bluesky's are the same for every account and limit the bytes of a text as well as its characters. LinkedIn's are the same for every account too, and are those of a whole post: a thread is one post there, so `validateContent` also checks that its parts fit together. Threads' are the same for every account, and count an emoji as the bytes that it takes. A client that does not know the form of a network does not count for it. The server asks when the account is connected, and again before it publishes to the channel if the answer is more than a day old. Both are null for a channel whose network has not answered yet. A client that counts characters while somebody types goes by `limits`, and does not refuse what it cannot check: the server checks before it sends.
+
+### Notifications
+
+A row of `notification` is something that the person has to hear of: the inbox of the app lists them, and the server sends a push message for each to the devices that have notifications turned on. A client never adds one. It marks them as read and dismisses them, and both are for every device: the row is the same on all of them.
+
+- `kind` is `post_failed`, `channel_needs_reconnect` or `channel_expiring`. A client that does not know a kind shows the notification in general words.
+- There is at most one about a post and one about a channel, and its `id` is the ID of what it is about: of the post, with `postId` set and `channelId` null, or of the channel, the other way round.
+- `createdAt` is when what it tells of happened, or happened again. `readAt` is when the person read it, or null.
+
+When they are added, changed and removed, all of it in the change of the mutator that is named:
+
+| Mutator | What it does to the notifications |
+| --- | --- |
+| `target.end` | When the post has left `sending` with it and is in `error`: adds the notification of the post, or makes it new and unread if there is one. That is once per post, when the last of its deliveries has ended, and not once per delivery. When the post is `sent`: removes the notification of the post. When it marks the channel as `needs_reconnect`: adds the notification of the channel, as `channel_needs_reconnect`, in the place of whatever was said of the channel before |
+| `target.retry` | Removes the notification of the post: the post is on its way again |
+| `post.delete` | Removes the notification of the post |
+| `channel.connect` | Removes the notification of the channel, when the account had one: connecting again is what it asked for |
+| `channel.renew` | Removes the notification of the channel if it is `channel_expiring` |
+| `channel.disconnect` | Removes the notification of the channel. The posts that fail because of the disconnect get no notification: the person has done that themselves |
+| `channel.warnOfExpiry` | Adds the notification of the channel, as `channel_expiring`. The server runs it once for each access, a week before the access ends |
+| `notification.prune` | Removes those that are older than 30 days |
+
+So a notification is there while what it tells of is unresolved and not older than 30 days, unless the person has dismissed it. A client shows it with what the other tables say of its post or its channel, and leaves one out whose post or channel it does not have.
 
 ### Publishing
 
@@ -231,6 +258,7 @@ This is not part of the contract, but it explains its edges.
 - **What can be synced.** Each synced table has an explicit list of synced columns, in `apps/worker/src/workspace/synced.ts`, and every row in a patch is read through it. A column or a table that is not listed cannot get into a message. The credentials of a channel are such a column. The object does not hold them in the clear either: the Worker seals them before it hands them over.
 - **Whose a mutation is.** The object runs a mutator for a client, when a `mutate` arrives, or for the Worker, which calls it directly. It tells the mutator which, and a mutator of the server's own refuses a client.
 - **Deliveries.** The object begins the deliveries, one at a time per channel, and a workflow carries each out and reports to the object, with the mutators of the server's own. The object goes by its database alone: which targets wait, which are on their way, and for which it has started a workflow. An alarm starts the workflows and ends a delivery whose workflow has stopped without reporting. `PLAN.md` section 8 has the design.
+- **The inbox and the devices.** A notification is a row like any other, written by the mutators above. For every notification that a mutator makes, or makes anew, the object queues a push message in the transaction of the change, and its alarm sends the queue to the devices of the owner: `PLAN.md` section 13. The alarm also runs `channel.warnOfExpiry`, when the time of an access has come, and `notification.prune`.
 - **Calls with a key.** The Worker can name a call that changes the workspace with a key. The object carries such a call out once and keeps its outcome under the key, in the transaction of the change, so that a caller which tries again cannot make a change twice.
 - **Hibernation.** The sockets stay open while the object is not in memory. What the object knows about a socket, its client ID and when it runs out, is stored with the socket, and everything else is in the database.
 - **Who is asking.** The object does not see the client's request. The Worker makes a new one that names the workspace, after it has checked the session and the owner. The object remembers which workspace it holds from the first time it is used, and refuses to serve another.

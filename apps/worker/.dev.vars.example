@@ -66,3 +66,14 @@ ADMIN_EMAILS=admin@example.com
 # sandbox needs neither: its simulated Threads has an app of its own.
 #THREADS_APP_ID=
 #THREADS_APP_SECRET=
+# The key that pigy signs push messages with, to the devices that have
+# turned notifications on. A browser subscribes with its public half.
+# Without this line, `pnpm dev` uses a key from the repository where it is
+# reached at localhost, and has no notifications all the same: it has no
+# service worker. `pnpm preview` has one and no such key, and without this
+# line Settings say there that notifications are not set up. A private key
+# of P-256 in PKCS #8 and base64, by itself: make one with
+#   openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 | openssl pkcs8 -topk8 -nocrypt -outform DER | openssl base64 -A
+# Replacing it turns the notifications of every device off: each has to
+# turn them on again.
+#VAPID_PRIVATE_KEY=
