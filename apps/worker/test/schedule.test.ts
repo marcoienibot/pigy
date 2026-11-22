@@ -841,10 +841,13 @@ it("does not publish a post that was put aside when its time comes, and deletes 
   ]);
   expect(posts()).toEqual([]);
   // The next one is for the deletion: a day after the post was put
-  // aside, which was three minutes ago.
+  // aside, which was three minutes ago. A second of room: every mutation
+  // of a workspace has a time of its own, a millisecond after the one
+  // before, so the post was put aside some milliseconds after the clock
+  // of the test said.
   const set = (await alarmOf(workspace)) ?? 0;
   expect(set - Date.now()).toBeGreaterThan(trashMs - 4 * minute);
-  expect(set - Date.now()).toBeLessThanOrEqual(trashMs - 3 * minute);
+  expect(set - Date.now()).toBeLessThanOrEqual(trashMs - 3 * minute + 1000);
 
   // Then the alarm deletes it, with its part and its target, and a
   // client hears of it like of any change. A whole day on, and so past
