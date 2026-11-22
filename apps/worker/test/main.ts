@@ -29,7 +29,33 @@ function withoutSecrets({
   return { DB, VERSION, WORKSPACE, SIM_WORLD, PUBLISH };
 }
 
-export class WorkspaceDO extends workspaceObject({ now }) {}
+export class WorkspaceDO extends workspaceObject({
+  fetch: (input, init) => deployment.fetch(input, init),
+  now,
+  // A test that wants the development keys deploys them as secrets.
+  developmentCredentialKeys: undefined,
+  developmentBlueskyClientKeys: undefined,
+  providerOf: (...args) => (deployment.providerOf ?? providerOf)(...args),
+}) {
+  constructor(ctx: DurableObjectState, env: Bindings) {
+    // With the secrets of the test, as the workflow below: the object
+    // opens the access of a channel when it renews it. They are read
+    // when they are asked for: an object outlives a `redeploy`, as it
+    // outlives a deploy, and has the secrets of the new one then.
+    super(
+      ctx,
+      new Proxy(withoutSecrets(env), {
+        get: (bindings, name) =>
+          Reflect.get(
+            typeof name === "string" && name in deployment.secrets
+              ? deployment.secrets
+              : bindings,
+            name,
+          ),
+      }),
+    );
+  }
+}
 
 export class SimWorldDO extends simWorldObject({
   now,

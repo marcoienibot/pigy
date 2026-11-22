@@ -1,7 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import {
   type Change,
-  type Clock,
   clientMessageSchema,
   type HelloMessage,
   helloVersionsSchema,
@@ -25,6 +24,11 @@ import {
   lostTrackMessage,
   release,
 } from "../publish/delivery.ts";
+import {
+  type RenewalDependencies,
+  renewAccess,
+  renewalBrokenMs,
+} from "./renewal.ts";
 import {
   type ChannelAccess,
   type ConnectChannelCall,
@@ -75,6 +79,14 @@ export const maxRejectionsKept = 1000;
 export const deliveryWatchMs = 60 * 1000;
 
 /**
+ * The least time between two alarms that are for renewing an access, in
+ * milliseconds. Every renewal that does not work puts its channel off for
+ * longer than this. It is here so that a mistake in that cannot make the
+ * alarm of a workspace run without a pause.
+ */
+export const renewalPauseMs = 60 * 1000;
+
+/**
  * What the object keeps about a socket. It survives hibernation, and a
  * deploy: a socket can stay open while new code replaces the old. A field
  * that is added here later is therefore missing on the sockets that were
@@ -119,7 +131,8 @@ type SocketState = {
  * A function that returns the class, because the runtime constructs the
  * object and there is no other way to hand it what it is built with.
  */
-export function workspaceObject({ now }: { now: Clock }) {
+export function workspaceObject(dependencies: RenewalDependencies) {
+  const { now } = dependencies;
   return class WorkspaceObject extends DurableObject<Bindings> {
     readonly #store: WorkspaceStore;
 
@@ -235,6 +248,8 @@ export function workspaceObject({ now }: { now: Clock }) {
         },
       );
       this.#publish(from);
+      // The access of the channel may name a time to renew it at.
+      this.#wakeForRenewals();
       return outcome;
     }
 
@@ -405,15 +420,18 @@ export function workspaceObject({ now }: { now: Clock }) {
         now().getTime(),
       );
       this.#publish(from);
+      this.#wakeForRenewals();
       return renewed;
     }
 
     /**
-     * Looks after the deliveries: begins the ones whose turn has come,
-     * each as a run of the publishing workflow, and ends the ones whose
-     * workflow is over without having said so. It runs soon after anything
-     * changes that can make a delivery begin, and every `deliveryWatchMs`
-     * while one is under way.
+     * Looks after the deliveries and the accesses. It begins the
+     * deliveries whose turn has come, each as a run of the publishing
+     * workflow, and ends the ones whose workflow is over without having
+     * said so. Then it renews the access of every channel whose time for
+     * that has come. It runs soon after anything changes that can make a
+     * delivery begin, every `deliveryWatchMs` while one is under way, and
+     * when the next access is due.
      *
      * It never fails: the runtime gives up on an alarm that keeps failing,
      * and the deliveries would wait for ever. What goes wrong is logged,
@@ -421,25 +439,127 @@ export function workspaceObject({ now }: { now: Clock }) {
      */
     override async alarm(): Promise<void> {
       // Each by itself: a platform that does not say how its runs are
-      // doing must not keep the next delivery from beginning.
+      // doing must not keep the next delivery from beginning. The
+      // accesses come last: a post that waits to go out is more urgent
+      // than an access that is good for weeks. The runtime runs one alarm
+      // of an object at a time, and deliveries begin here alone, so none
+      // begins while an access is being renewed.
       for (const look of [
         () => this.#watchDeliveries(),
         () => this.#startDeliveries(),
+        () => this.#renewAccesses(),
       ]) {
         try {
           await look();
         } catch (error) {
           console.error(
-            "The deliveries of a workspace were not looked after",
+            "The deliveries and accesses of a workspace were not looked after",
             loggable(error),
           );
         }
       }
-      // Nothing is awaited between the last look at the deliveries above
-      // and this one, so nothing can have come in between.
-      if (this.#store.deliveriesNeed !== "nothing") {
-        // By the clock of the runtime, which is the one that alarms go by.
-        await this.ctx.storage.setAlarm(Date.now() + deliveryWatchMs);
+      try {
+        await this.#setNextAlarm();
+      } catch (error) {
+        console.error(
+          "The next look at a workspace was not set",
+          loggable(error),
+        );
+      }
+    }
+
+    /**
+     * When the alarm is next needed, in milliseconds from now, or null if
+     * nothing is waited for: soon while a delivery waits or is under way,
+     * and else when the next access is due.
+     */
+    #nextLookIn(): number | null {
+      // Also for a delivery that can begin: one that became ready while
+      // this alarm ran has set the alarm for itself, `#wake`, and sooner.
+      if (this.#store.deliveriesNeed !== "nothing") return deliveryWatchMs;
+      const renewal = this.#store.nextRenewalAt;
+      return renewal === null
+        ? null
+        : Math.max(renewalPauseMs, renewal - now().getTime());
+    }
+
+    /**
+     * Sets the alarm for the next look, unless one is set that comes
+     * sooner. While the accesses were being renewed, a change may have set
+     * the alarm for a delivery that waits.
+     */
+    async #setNextAlarm(): Promise<void> {
+      const wait = this.#nextLookIn();
+      if (wait === null) return;
+      // By the clock of the runtime, which is the one that alarms go by.
+      const at = Date.now() + wait;
+      const set = await this.ctx.storage.getAlarm();
+      if (set === null || set > at) await this.ctx.storage.setAlarm(at);
+    }
+
+    /**
+     * Renews the access of every channel that is due for it: see
+     * renewal.ts. Each outcome is stored before the next channel is
+     * turned to, and each leaves its channel with a later time to renew
+     * at, or with none.
+     */
+    async #renewAccesses(): Promise<void> {
+      const workspace = this.#store.identity;
+      for (const channel of this.#store.renewalsDue(now().getTime())) {
+        const { channelId, credentials } = channel;
+        const renewal = await renewAccess(
+          dependencies,
+          this.env,
+          workspace,
+          channel,
+        );
+        const from = this.#store.seq;
+        try {
+          switch (renewal.kind) {
+            case "renewed": {
+              const kept = this.#store.renewChannelAccess(
+                channelId,
+                credentials,
+                renewal.access,
+                now().getTime(),
+              );
+              // The channel was disconnected or connected again while
+              // its network was asked: it does not hold what was renewed.
+              if (!kept) await renewal.discard();
+              break;
+            }
+            case "lapsed":
+              this.#store.mutate(
+                {
+                  name: "channel.lapse",
+                  args: {
+                    id: channelId,
+                    connectedAt: channel.connectedAt,
+                  } satisfies MutatorArgs<"channel.lapse">,
+                },
+                now().getTime(),
+              );
+              break;
+            case "later":
+              this.#store.postponeRenewal(channelId, credentials, renewal.at);
+              break;
+            case "never":
+              this.#store.postponeRenewal(channelId, credentials, null);
+              break;
+          }
+        } catch (error) {
+          console.error(
+            `What came of renewing the access of the channel ${channelId} was not stored`,
+            loggable(error),
+          );
+          // Not left due, or the alarm would come straight back to it.
+          this.#store.postponeRenewal(
+            channelId,
+            credentials,
+            now().getTime() + renewalBrokenMs,
+          );
+        }
+        this.#publish(from);
       }
     }
 
@@ -812,6 +932,21 @@ export function workspaceObject({ now }: { now: Clock }) {
      * it, the alarm would run at every message of a client, a keystroke
      * included, for as long as the platform does not create workflows.
      */
+    /**
+     * Has the alarm run when the next access is due, after a change that
+     * may have named a time for one: a connection, or a refresh. Not
+     * after every change: the alarm sets itself for the access that comes
+     * after this one.
+     */
+    #wakeForRenewals(): void {
+      this.#setNextAlarm().catch((error: unknown) =>
+        console.error(
+          "The next look at a workspace was not set",
+          loggable(error),
+        ),
+      );
+    }
+
     #wake(): void {
       // The change that led here is committed. If this fails, the
       // deliveries wait for the next change or the next alarm.

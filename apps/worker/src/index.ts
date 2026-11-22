@@ -38,9 +38,13 @@ export default createApp(dependencies);
 /**
  * The Durable Object of a workspace, under the name that wrangler.jsonc binds
  * as `WORKSPACE`. The runtime constructs it, so it is built here with what
- * it takes from outside, like the app above.
+ * it takes from outside, like the app above: what the workflow below is
+ * built with too, because the object renews the access of its channels.
  */
-export class WorkspaceDO extends workspaceObject({ now }) {}
+export class WorkspaceDO extends workspaceObject({
+  ...dependencies,
+  providerOf,
+}) {}
 
 /**
  * The Durable Object of the simulated world of a sandbox workspace, bound as

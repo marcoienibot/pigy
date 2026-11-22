@@ -23,6 +23,7 @@ const refused: Record<MutatorName, string> = {
   "channel.connect": "An account was not connected",
   "channel.setLimits": "The limits of an account were not updated",
   "channel.renew": "The access to an account was not renewed",
+  "channel.lapse": "An account was not marked as needing a new connection",
   "channel.disconnect": "An account was not disconnected",
   "target.start": "A post was not sent",
   "target.progress": "A published post was not recorded",

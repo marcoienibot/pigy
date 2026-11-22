@@ -9,7 +9,8 @@ import type { WorkspaceIdentity } from "../workspace/store.ts";
  * that opens them: whoever stores what an adapter handed out seals it
  * here, and whoever is about to call an adapter opens it here, in the call
  * and for the call. That is the route that connects an account, the route
- * that disconnects one, and the steps of the publishing workflow.
+ * that disconnects one, the steps of the publishing workflow, and the
+ * object of a workspace where it renews an access by its timer.
  *
  * In the clear, credentials exist in memory only, between these functions
  * and an adapter. They are in no log, no error, no answer, no sync message

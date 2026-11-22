@@ -25,8 +25,10 @@ import {
   gt,
   gte,
   inArray,
+  isNotNull,
   lt,
   lte,
+  min,
   ne,
   notExists,
   sql,
@@ -169,6 +171,13 @@ export type StoredChannelAccess = {
    * connections of a workspace share it.
    */
   connectedAt: number;
+};
+
+/** A channel whose access is due to be renewed, with that access. */
+export type DueRenewal = StoredChannelAccess & {
+  channelId: string;
+  /** Sealed: a channel without credentials has nothing to renew. */
+  credentials: string;
 };
 
 /**
@@ -1036,6 +1045,84 @@ export class WorkspaceStore {
       if (refusal) throw new Error(`Not renewed: ${refusal.message}`);
       return true;
     });
+  }
+
+  /**
+   * The channels whose access is due to be renewed at `now`: connected,
+   * with a time for it that has come, and with no delivery under way. A
+   * delivery renews the access of its channel itself where the network
+   * asks, and two refreshes of one account must not run together, so a
+   * channel that is being sent to waits for its delivery to end.
+   */
+  renewalsDue(now: number): DueRenewal[] {
+    const busy = new Set(
+      this.db
+        .select({ channelId: postTargets.channelId })
+        .from(postTargets)
+        .where(eq(postTargets.status, "sending"))
+        .all()
+        .map(({ channelId }) => channelId),
+    );
+    return this.db
+      .select({
+        channelId: channels.id,
+        network: channels.network,
+        accountId: channels.accountId,
+        credentials: channels.credentials,
+        connectedAt: channels.connectedAt,
+      })
+      .from(channels)
+      .where(
+        and(
+          eq(channels.status, "connected"),
+          isNotNull(channels.credentials),
+          lte(channels.refreshAt, now),
+        ),
+      )
+      .all()
+      .flatMap(({ credentials, ...channel }) =>
+        credentials === null || busy.has(channel.channelId)
+          ? []
+          : [{ ...channel, credentials }],
+      );
+  }
+
+  /**
+   * When the access of a channel is next due to be renewed, in
+   * milliseconds since the epoch, or null if none ever is.
+   */
+  get nextRenewalAt(): number | null {
+    return (
+      this.db
+        .select({ at: min(channels.refreshAt) })
+        .from(channels)
+        .where(
+          and(
+            eq(channels.status, "connected"),
+            isNotNull(channels.credentials),
+          ),
+        )
+        .get()?.at ?? null
+    );
+  }
+
+  /**
+   * Puts the renewal of a channel's access off until `at`, or for good
+   * with null, if the channel still holds the credentials `expected`. A
+   * channel that holds others has a time of its own for those.
+   */
+  postponeRenewal(
+    channelId: string,
+    expected: string,
+    at: number | null,
+  ): void {
+    this.db
+      .update(channels)
+      .set({ refreshAt: at })
+      .where(
+        and(eq(channels.id, channelId), eq(channels.credentials, expected)),
+      )
+      .run();
   }
 
   /**

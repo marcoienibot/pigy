@@ -755,6 +755,25 @@ export const mutators = {
   ),
 
   /**
+   * Marks a channel as one that has to be connected again, because its
+   * network would not renew the access when the server asked for that by
+   * its timer. Only for the connection that was refused, which
+   * `connectedAt` names: the word of the network can arrive after the
+   * person has connected the account again, and must not count against
+   * that. Does nothing then, and nothing if the channel is gone.
+   */
+  "channel.lapse": mutator(
+    z.strictObject({ id: idSchema, connectedAt: z.number().int() }),
+    (tx, { id, connectedAt }) => {
+      const channel = tx.get("channel", id);
+      if (channel?.connectedAt === connectedAt) {
+        tx.put("channel", { ...channel, status: "needs_reconnect" });
+      }
+    },
+    { serverOnly: true },
+  ),
+
+  /**
    * Removes a channel, and with it the access that the server keeps for
    * it. Does nothing if the channel is gone.
    *

@@ -376,6 +376,37 @@ it("moves the end of the access of a channel when its credentials are renewed", 
   ).toBe("not_found");
 });
 
+it("marks a channel whose access was not renewed, and only the connection that was refused", () => {
+  const workspace = memoryWorkspace();
+  workspace.mutate("channel.connect", account(), 1000, "server");
+
+  // The word of the network about a connection from before this one.
+  workspace.mutate(
+    "channel.lapse",
+    { id: channelId, connectedAt: 500 },
+    2000,
+    "server",
+  );
+  expect(workspace.rows("channel")).toEqual([channel(1000)]);
+
+  workspace.mutate(
+    "channel.lapse",
+    { id: channelId, connectedAt: 1000 },
+    3000,
+    "server",
+  );
+  expect(workspace.rows("channel")).toEqual([
+    channel(1000, { status: "needs_reconnect" }),
+  ]);
+  // A channel that is gone is nothing to mark, and nothing to refuse.
+  workspace.mutate(
+    "channel.lapse",
+    { id: otherChannelId, connectedAt: 1000 },
+    4000,
+    "server",
+  );
+});
+
 it.each([
   ["another account of the network", { accountId: "2@mastodon.example" }],
   // The IDs of two networks are unrelated, also when they read the same.
@@ -450,6 +481,7 @@ it.each([
   ["channel.connect", account()],
   ["channel.setLimits", { id: channelId, limits }],
   ["channel.renew", { id: channelId, expiresAt: 5000 }],
+  ["channel.lapse", { id: channelId, connectedAt: 1000 }],
   ["channel.disconnect", { id: channelId }],
 ])("refuses %s from a client", (name, args) => {
   const workspace = memoryWorkspace();

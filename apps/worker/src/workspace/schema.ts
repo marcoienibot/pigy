@@ -94,8 +94,8 @@ export const channels = sqliteTable(
     credentials: text("credentials"),
     /**
      * When the adapter wants the credentials refreshed, where the network
-     * has that. Nothing reads it yet: the timer comes with the first
-     * network that needs one.
+     * has that, or when the object next tries after a refresh that did
+     * not work. The alarm of the object goes by it: src/workspace/renewal.ts.
      */
     refreshAt: integer("refresh_at"),
   },
