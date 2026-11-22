@@ -1,9 +1,14 @@
 import {
   type AddAllowedEmailRequest,
   type AllowedEmail,
+  type ApiKey,
   allowedEmailListResponseSchema,
+  apiKeyListResponseSchema,
   type ConnectRequest,
+  type CreateApiKeyRequest,
+  type CreateApiKeyResponse,
   connectResponseSchemaFor,
+  createApiKeyResponseSchema,
   type DisconnectResponse,
   disconnectResponseSchema,
   errorResponseSchema,
@@ -394,4 +399,39 @@ export async function fetchMentioned(
     signal,
   });
   return mentionsResponseSchema.parse(await response.json()).known;
+}
+
+const apiKeysPath = (workspaceId: string) =>
+  `/api/workspaces/${workspaceId}/api-keys`;
+
+/** The keys of the public API that a workspace has, the newest first. */
+export async function fetchApiKeys(
+  workspaceId: string,
+  signal: AbortSignal,
+): Promise<ApiKey[]> {
+  const response = await request(apiKeysPath(workspaceId), { signal });
+  return apiKeyListResponseSchema.parse(await response.json()).apiKeys;
+}
+
+/**
+ * Makes a key for a workspace. The answer has the key itself, `secret`,
+ * which no later answer has again.
+ */
+export async function createApiKey(
+  workspaceId: string,
+  key: CreateApiKeyRequest,
+): Promise<CreateApiKeyResponse> {
+  const response = await request(apiKeysPath(workspaceId), {
+    method: "POST",
+    json: key,
+  });
+  return createApiKeyResponseSchema.parse(await response.json());
+}
+
+/** Revokes a key: it calls nothing from then on. */
+export async function revokeApiKey(
+  workspaceId: string,
+  keyId: string,
+): Promise<void> {
+  await request(`${apiKeysPath(workspaceId)}/${keyId}`, { method: "DELETE" });
 }

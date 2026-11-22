@@ -34,6 +34,9 @@ function Settings() {
           <Link to="/settings/schedule" className={sectionLink}>
             Posting schedule
           </Link>
+          <Link to="/settings/api" className={sectionLink}>
+            API
+          </Link>
           {me.role === "admin" && (
             <Link to="/settings/access" className={sectionLink}>
               Access

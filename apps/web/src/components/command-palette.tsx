@@ -254,6 +254,13 @@ export function CommandPalette({ children }: { children: ReactNode }) {
                 Posting schedule
               </CommandItem>
               <CommandItem
+                keywords={["key", "token", "script", "rest"]}
+                onSelect={run(() => void navigate({ to: "/settings/api" }))}
+              >
+                <Settings aria-hidden="true" />
+                API keys
+              </CommandItem>
+              <CommandItem
                 keywords={["month", "agenda"]}
                 onSelect={run(() => void navigate({ to: "/queue/calendar" }))}
               >
