@@ -1,3 +1,5 @@
+import type { Fetch } from "@pigy/core";
+import { imageInfo, type SimImage } from "../world/index.ts";
 import { type GraphError, graphError, json } from "./http.ts";
 import {
   type Container,
@@ -16,10 +18,10 @@ import {
 import { countCharacters, findEntities, maxCharacters } from "./text.ts";
 
 /**
- * The parts of the Threads API that an app uses to post text for an
- * account, after https://developers.facebook.com/docs/threads: "Posts",
- * "Reply Management", "Retrieve Threads Media Objects", "Delete Posts",
- * "Rate Limiting" and "Troubleshooting".
+ * The parts of the Threads API that an app uses to post text and images
+ * for an account, after https://developers.facebook.com/docs/threads:
+ * "Posts", "Carousel Posts", "Reply Management", "Retrieve Threads Media
+ * Objects", "Delete Posts", "Rate Limiting" and "Troubleshooting".
  *
  * GUESS, throughout: the words, the codes and the statuses of the
  * refusals. Meta documents the form of an error and few of the errors.
@@ -67,34 +69,81 @@ export function lacking(
 const profileUrl = (user: ThreadsUser) =>
   `https://www.threads.com/@${user.username}`;
 
+/**
+ * The fields of a list as the Graph API writes it: separated by commas,
+ * where a field may name the fields of what it holds in braces, as
+ * `children{id,alt_text}` does. GUESS: that Threads expands a field so,
+ * as the Graph API of Facebook does. One level of braces is simulated.
+ */
+function splitFields(list: string): string[] {
+  const fields: string[] = [];
+  let depth = 0;
+  let from = 0;
+  for (let at = 0; at <= list.length; at++) {
+    const char = list[at];
+    if (char === "{") depth++;
+    if (char === "}") depth--;
+    if (at === list.length || (char === "," && depth === 0)) {
+      if (at > from) fields.push(list.slice(from, at));
+      from = at + 1;
+    }
+  }
+  return fields;
+}
+
 /** What a request asks for with `fields`: `id` alone, if it names none. */
 function fieldsOf(params: URLSearchParams): string[] {
-  const fields = (params.get("fields") ?? "").split(",").filter(Boolean);
+  const fields = splitFields(params.get("fields") ?? "");
   return fields.length > 0 ? fields : ["id"];
 }
 
 /**
  * An object with the `fields` that were asked for, from what it has. A
- * field that it does not have is refused, as the Graph API does.
+ * field that it does not have is refused, as the Graph API does. A field
+ * that holds a list, as the items of a carousel, gives the `id` of each
+ * unless the fields of them are named in braces.
  */
 function pick(
   state: State,
   fields: string[],
   all: Record<string, unknown>,
 ): Record<string, unknown> | Response {
-  const unknown = fields.find((field) => !(field in all));
-  if (unknown !== undefined) {
-    return invalidParameter(
-      state,
-      `(#100) Tried accessing nonexisting field (${unknown})`,
-    );
+  const picked: Record<string, unknown> = {};
+  for (const field of fields) {
+    const braces = /^([a-z_]+)\{(.*)\}$/.exec(field);
+    const name = braces?.[1] ?? field;
+    if (!(name in all) || (!braces && field.includes("{"))) {
+      return invalidParameter(
+        state,
+        `(#100) Tried accessing nonexisting field (${field})`,
+      );
+    }
+    const value = all[name];
+    // A field without a value is left out of the answer.
+    if (value === undefined) continue;
+    if (!Array.isArray(value)) {
+      if (braces) {
+        return invalidParameter(
+          state,
+          `(#100) The field ${name} holds nothing to name fields of`,
+        );
+      }
+      picked[name] = value;
+      continue;
+    }
+    const data: Record<string, unknown>[] = [];
+    for (const item of value as Record<string, unknown>[]) {
+      const inner = pick(
+        state,
+        braces ? splitFields(braces[2] ?? "") : ["id"],
+        item,
+      );
+      if (inner instanceof Response) return inner;
+      data.push(inner);
+    }
+    picked[name] = { data };
   }
-  return Object.fromEntries(
-    fields
-      .map((field) => [field, all[field]] as const)
-      // A field without a value is left out of the answer.
-      .filter(([, value]) => value !== undefined),
-  );
+  return picked;
 }
 
 /** `GET /me`: the profile of the account that the token is for. */
@@ -121,23 +170,19 @@ function statusOf(state: State, container: Container) {
   if (container.publishedAs !== null) return "PUBLISHED";
   const now = state.world.now().getTime();
   if (now - container.createdAt >= containerLifetimeMs) return "EXPIRED";
-  return now < container.readyAt ? "IN_PROGRESS" : "FINISHED";
+  if (now < container.readyAt) return "IN_PROGRESS";
+  return container.error === undefined ? "FINISHED" : "ERROR";
 }
 
-// What a container can be made with that this does not simulate: media,
-// carousels, links, quotes, polls, topics, places, and publishing in one
-// step.
+// What a container can be made with that this does not simulate: videos,
+// links, quotes, polls, topics, places, and publishing in one step.
 const notSimulated = [
-  "image_url",
   "video_url",
-  "is_carousel_item",
-  "children",
   "link_attachment",
   "quote_post_id",
   "poll_attachment",
   "topic_tag",
   "location_id",
-  "alt_text",
   "allowlisted_country_codes",
   "auto_publish_text",
   "text_entities",
@@ -150,19 +195,96 @@ const known = [
   "reply_to_id",
   "reply_control",
   "access_token",
+  "image_url",
+  "alt_text",
+  "is_carousel_item",
+  "children",
   ...notSimulated,
 ];
 
+/** The most bytes of an image that Threads fetches: documented, 8 MB. */
+export const maxImageBytes = 8 * 1024 * 1024;
+
+/** How much longer one side of an image may be: documented, ten to one. */
+const maxAspectRatio = 10;
+
+/**
+ * The longest description of an image. GUESS: Threads documents
+ * `alt_text` and not how long it may be.
+ */
+export const maxAltLength = 1000;
+
+/** How many items a carousel has: documented, 20 at most. GUESS: 2 at least. */
+export const carouselRange = { min: 2, max: 20 } as const;
+
+/**
+ * The image at `url`, as Threads fetches the `image_url` of a container:
+ * with `web`, which is whatever the world reaches of the web, or what is
+ * wrong with it. Threads documents what it takes, and not what it says
+ * of what it does not: GUESS, the words. They never repeat the address,
+ * which can be good for whoever has it.
+ */
+async function fetchedImage(
+  world: State["world"],
+  web: Fetch | undefined,
+  url: string,
+): Promise<SimImage | { error: string }> {
+  let response: Response;
+  try {
+    if (!web) throw new TypeError("This world reaches no web");
+    response = await web(url);
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error;
+    return { error: "The media could not be fetched from the URI." };
+  }
+  if (response.status !== 200) {
+    await response.body?.cancel();
+    return {
+      error: `The media could not be fetched from the URI: it answered with HTTP ${response.status}.`,
+    };
+  }
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.length > maxImageBytes) {
+    return { error: "The image is larger than 8 MB." };
+  }
+  const info = imageInfo(bytes);
+  if (!info || (info.type !== "image/jpeg" && info.type !== "image/png")) {
+    return { error: "The media type is not supported: it takes JPEG and PNG." };
+  }
+  const ratio =
+    Math.max(info.width, info.height) /
+    Math.max(1, Math.min(info.width, info.height));
+  if (ratio > maxAspectRatio) {
+    return { error: "The aspect ratio of the image is not supported." };
+  }
+  return {
+    blob: world.blobs.put(bytes),
+    type: info.type,
+    width: info.width,
+    height: info.height,
+    size: bytes.length,
+    alt: "",
+  };
+}
+
 /**
  * `POST /me/threads`: makes a container, which `threads_publish` then
- * publishes. `slow` is a fault: Threads takes its time to prepare it.
+ * publishes: of a text, of an image, which Threads fetches from the
+ * address `image_url` with `web`, or of a carousel, whose items are
+ * containers of images with `is_carousel_item` that were made before.
+ * `slow` is a fault: Threads takes its time to prepare it.
+ *
+ * GUESS: Threads fetches an image while it makes the container, and says
+ * what was wrong with it by the status `ERROR` and `error_message` of the
+ * container, and not by refusing the request.
  */
-export function createContainer(
+export async function createContainer(
   state: State,
   caller: Caller,
   params: URLSearchParams,
   slow: boolean,
-): Response {
+  web: Fetch | undefined,
+): Promise<Response> {
   const unknown = [...params.keys()].find((name) => !known.includes(name));
   if (unknown !== undefined) {
     return invalidParameter(state, `Unknown parameter: ${unknown}`);
@@ -171,19 +293,47 @@ export function createContainer(
   if (unsupported !== undefined) {
     return invalidParameter(
       state,
-      `The simulated Threads publishes text only: it has no "${unsupported}"`,
+      `The simulated Threads publishes text and images only: it has no "${unsupported}"`,
     );
   }
-  const mediaType = params.get("media_type");
-  if (mediaType === null) {
+  const mediaType = params.get("media_type")?.toUpperCase();
+  if (mediaType === undefined) {
     return invalidParameter(state, "The parameter media_type is required");
   }
-  if (mediaType.toUpperCase() !== "TEXT") {
+  if (
+    mediaType !== "TEXT" &&
+    mediaType !== "IMAGE" &&
+    mediaType !== "CAROUSEL"
+  ) {
     return invalidParameter(
       state,
-      `The simulated Threads publishes text only: it has no media_type "${mediaType}"`,
+      `The simulated Threads publishes text and images only: it has no media_type "${mediaType}"`,
     );
   }
+  // What belongs to a kind of container and no other.
+  const misplaced = (
+    [
+      ["image_url", mediaType === "IMAGE"],
+      ["alt_text", mediaType === "IMAGE"],
+      ["is_carousel_item", mediaType === "IMAGE"],
+      ["children", mediaType === "CAROUSEL"],
+    ] as const
+  ).find(([name, belongs]) => params.has(name) && !belongs)?.[0];
+  if (misplaced !== undefined) {
+    return invalidParameter(
+      state,
+      `Param ${misplaced} is not valid for media_type ${mediaType}`,
+    );
+  }
+  const carouselItem = params.get("is_carousel_item");
+  if (
+    carouselItem !== null &&
+    carouselItem !== "true" &&
+    carouselItem !== "false"
+  ) {
+    return invalidParameter(state, "Param is_carousel_item must be a boolean");
+  }
+  const isItem = carouselItem === "true";
   const replyControl = params.get("reply_control");
   if (
     replyControl !== null &&
@@ -197,7 +347,16 @@ export function createContainer(
     );
   }
   const text = params.get("text") ?? "";
-  if (text.trim() === "") {
+  // GUESS: an item of a carousel has no text of its own, and replies to
+  // nothing: the carousel does.
+  if (isItem && (params.has("text") || params.has("reply_to_id"))) {
+    return invalidParameter(
+      state,
+      "An item of a carousel takes no text and no reply_to_id: the carousel does",
+    );
+  }
+  // A post of images needs no text.
+  if (mediaType === "TEXT" && text.trim() === "") {
     return invalidParameter(state, "The parameter text is required");
   }
   const characters = countCharacters(text);
@@ -205,6 +364,13 @@ export function createContainer(
     return invalidParameter(
       state,
       `Param text must be at most ${maxCharacters} characters long.`,
+    );
+  }
+  const alt = params.get("alt_text") ?? "";
+  if ([...alt].length > maxAltLength) {
+    return invalidParameter(
+      state,
+      `Param alt_text must be at most ${maxAltLength} characters long.`,
     );
   }
   const replyToId = params.get("reply_to_id");
@@ -232,9 +398,58 @@ export function createContainer(
     }
   }
   const now = state.world.now().getTime();
+  let made: Pick<Container, "image" | "children" | "error"> = {};
+  if (mediaType === "IMAGE") {
+    const address = params.get("image_url");
+    let url: URL | undefined;
+    try {
+      url = address === null ? undefined : new URL(address);
+    } catch {
+      url = undefined;
+    }
+    if (!url || url.protocol !== "https:") {
+      return invalidParameter(
+        state,
+        "Param image_url must be an HTTPS address",
+      );
+    }
+    const image = await fetchedImage(state.world, web, url.href);
+    made =
+      "error" in image ? { error: image.error } : { image: { ...image, alt } };
+  }
+  if (mediaType === "CAROUSEL") {
+    const children = (params.get("children") ?? "").split(",").filter(Boolean);
+    if (
+      children.length < carouselRange.min ||
+      children.length > carouselRange.max
+    ) {
+      return invalidParameter(
+        state,
+        `Param children must name ${carouselRange.min} to ${carouselRange.max} containers`,
+      );
+    }
+    for (const id of children) {
+      const child = state.containers.get(id);
+      if (!child || child.userId !== caller.user.id) {
+        return noSuchObject(state, id);
+      }
+      // GUESS: an item that is not ready is refused like one that is no
+      // item.
+      if (!child.carouselItem || statusOf(state, child) !== "FINISHED") {
+        return invalidParameter(
+          state,
+          `The container ${id} is no item of a carousel that is ready`,
+        );
+      }
+    }
+    made = { children };
+  }
   const container: Container = {
     id: nextId(state.world),
     userId: caller.user.id,
+    mediaType,
+    ...(isItem && { carouselItem: true }),
+    ...made,
     text,
     replyToId,
     createdAt: now,
@@ -258,7 +473,14 @@ export function createContainer(
 export type NewPost = Pick<ThreadsPost, "text" | "replyToId"> &
   Pick<
     Partial<ThreadsPost>,
-    "media" | "quote" | "poll" | "entities" | "card" | "topicTag"
+    | "media"
+    | "images"
+    | "childIds"
+    | "quote"
+    | "poll"
+    | "entities"
+    | "card"
+    | "topicTag"
   >;
 
 /** Puts a post of `user` into the world, now. It checks nothing. */
@@ -304,6 +526,13 @@ export function publish(
   if (!container || container.userId !== user.id) {
     return noSuchObject(state, creationId);
   }
+  // GUESS: an item of a carousel is published with its carousel only.
+  if (container.carouselItem) {
+    return invalidParameter(
+      state,
+      "An item of a carousel is published with its carousel",
+    );
+  }
   const status = statusOf(state, container);
   if (status !== "FINISHED") {
     // GUESS: a container that was published is refused like one that is
@@ -330,12 +559,25 @@ export function publish(
         .all()
         .find((known) => known.username.toLowerCase() === username)?.id,
   );
+  // The images of the post: its own, or those of the items of its
+  // carousel, in their order.
+  const items = (container.children ?? []).flatMap(
+    (id) => state.containers.get(id)?.image ?? [],
+  );
+  const images = container.image ? [container.image] : items;
   const { id } = addPost(state, user, {
     text: container.text,
     replyToId: container.replyToId,
     entities,
-    card,
+    // GUESS: a post with images shows no preview of a link.
+    card: images.length > 0 ? null : card,
     ...(topicTag !== null && { topicTag }),
+    ...(container.mediaType === "IMAGE" && { media: "IMAGE", images }),
+    ...(container.mediaType === "CAROUSEL" && {
+      media: "CAROUSEL_ALBUM",
+      images,
+      childIds: images.map(() => nextId(state.world)),
+    }),
   });
   state.containers.put(container.id, { ...container, publishedAs: id });
   use(state, quota, user.id);
@@ -372,8 +614,20 @@ function media(
     id: post.id,
     media_product_type: "THREADS",
     // Documented: a post of text says TEXT_POST, where its container was
-    // made as TEXT.
+    // made as TEXT, and one of a carousel CAROUSEL_ALBUM.
     media_type: post.media ?? "TEXT_POST",
+    // GUESS: a post of one image says what it shows here, and a carousel
+    // says it of each of its items.
+    alt_text:
+      post.media === "IMAGE" ? (post.images?.[0]?.alt ?? "") : undefined,
+    children:
+      post.media === "CAROUSEL_ALBUM"
+        ? (post.images ?? []).map((image, index) => ({
+            id: post.childIds?.[index] ?? `${post.id}${index}`,
+            media_type: "IMAGE",
+            alt_text: image.alt,
+          }))
+        : undefined,
     permalink: post.url,
     // Documented: the owner is only said of a post of the account's own.
     owner: post.accountId === user.id ? { id: post.accountId } : undefined,
@@ -422,7 +676,7 @@ export function object(
       status,
       // Said only of a container that Threads could not prepare, which a
       // text is never.
-      error_message: undefined,
+      error_message: status === "ERROR" ? container.error : undefined,
     });
     return picked instanceof Response ? picked : json(200, picked);
   }

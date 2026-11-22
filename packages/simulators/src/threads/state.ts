@@ -1,5 +1,6 @@
 import type {
   SimAccount,
+  SimImage,
   SimPost,
   SimToken,
   SimWorld,
@@ -45,11 +46,16 @@ export type ThreadsPost = SimPost & {
   /** The part of the address of the post that names it. */
   shortcode: string;
   /**
-   * What the post has besides its text, for one that a person made in
-   * the app of Threads: the API of this simulation makes posts of plain
-   * text, which have none of these.
+   * What the post has besides its text: an image or a carousel of them,
+   * which an app can post, and a video, which a person can in the app of
+   * Threads. A post of plain text has none.
    */
   media?: "IMAGE" | "VIDEO" | "CAROUSEL_ALBUM";
+  /**
+   * The IDs of the items of a carousel, in the order of `images`: each is
+   * an object of its own to the API.
+   */
+  childIds?: string[];
   quote?: boolean;
   poll?: boolean;
   /** The one topic tag of the post, without its sign, if it has one. */
@@ -63,6 +69,19 @@ export type ThreadsPost = SimPost & {
 export type Container = {
   id: string;
   userId: string;
+  /**
+   * What it is of: a text, an image, or a carousel of images. A
+   * container from before images is of a text.
+   */
+  mediaType?: "TEXT" | "IMAGE" | "CAROUSEL";
+  /** An item of a carousel, which is published only with the carousel. */
+  carouselItem?: boolean;
+  /** The image that Threads fetched for it, with what it shows. */
+  image?: SimImage;
+  /** The items of a carousel, by their containers, in order. */
+  children?: string[];
+  /** Why Threads could not prepare it: it is then of no use. */
+  error?: string;
   text: string;
   replyToId: string | null;
   /** In milliseconds since the epoch. */

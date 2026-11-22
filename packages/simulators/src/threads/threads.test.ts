@@ -1,3 +1,4 @@
+import { jpegFile, pngFile, webpFile } from "@pigy/core/test-images";
 import { describe, expect, it } from "vitest";
 import {
   answerConsent,
@@ -788,6 +789,272 @@ describe("publishing", () => {
     // A reply has a quota of its own.
     const [first] = feed(sim.world);
     await post(sim, token, "A reply", { reply_to_id: first?.post.id ?? "" });
+  });
+});
+
+describe("images", () => {
+  /**
+   * A world whose web has `pages`: what Threads fetches an `image_url`
+   * from. Every address that the web is asked for is noted.
+   */
+  function withWeb(pages: Record<string, Uint8Array | number>) {
+    const world = createWorld({ now: () => new Date("2026-11-15T10:00:00Z") });
+    const fetched: string[] = [];
+    const simulator = createThreadsSimulator(world, {
+      web: async (input) => {
+        const url = String(input instanceof Request ? input.url : input);
+        fetched.push(url);
+        const page = pages[url];
+        if (page === undefined) throw new TypeError(`Nothing at ${url}`);
+        return typeof page === "number"
+          ? new Response("No", { status: page })
+          : new Response(page as Uint8Array<ArrayBuffer>);
+      },
+    });
+    const app = simulator.addApp({ name: "pigy", redirectUris: [redirectUri] });
+    const ada = simulator.addUser({ username: "ada", name: "Ada Lovelace" });
+    const grace = simulator.addUser({
+      username: "grace",
+      name: "Grace Hopper",
+    });
+    return { world, simulator, app, ada, grace, fetched };
+  }
+
+  /** Makes a container and returns its ID, or what refused it. */
+  async function container(
+    sim: Sim,
+    token: string,
+    params: Record<string, string>,
+  ) {
+    const made = await answer(
+      await call(sim, "POST", "/me/threads", {
+        ...params,
+        access_token: token,
+      }),
+    );
+    return made.status === 200 ? (made.body.id ?? "") : made;
+  }
+
+  /** What Threads says of a container. */
+  async function statusOf(sim: Sim, token: string, id: string) {
+    const { body } = await answer(
+      await call(sim, "GET", `/${id}`, {
+        fields: "status,error_message",
+        access_token: token,
+      }),
+    );
+    return body;
+  }
+
+  const publishOf = async (sim: Sim, token: string, id: string) =>
+    answer(
+      await call(sim, "POST", "/me/threads_publish", {
+        creation_id: id,
+        access_token: token,
+      }),
+    );
+
+  it("fetches the image of a container from its address, once, and publishes a post of it with what it shows", async () => {
+    const png = await pngFile(640, 480);
+    const sim = withWeb({ "https://pigy.example/image?signature=x": png });
+    const token = await tokenFor(sim);
+    const id = await container(sim, token, {
+      media_type: "IMAGE",
+      image_url: "https://pigy.example/image?signature=x",
+      alt_text: "A harbour",
+      text: "With an image",
+    });
+    expect(sim.fetched).toEqual(["https://pigy.example/image?signature=x"]);
+    expect(await statusOf(sim, token, String(id))).toMatchObject({
+      status: "FINISHED",
+    });
+    const { body } = await publishOf(sim, token, String(id));
+    // Nothing is fetched again when it is published.
+    expect(sim.fetched).toHaveLength(1);
+
+    const read = await answer(
+      await call(sim, "GET", `/${body.id}`, {
+        fields: "media_type,alt_text,text",
+        access_token: token,
+      }),
+    );
+    expect(read.body).toEqual({
+      media_type: "IMAGE",
+      alt_text: "A harbour",
+      text: "With an image",
+    });
+    const [{ post } = { post: undefined }] = feed(sim.world);
+    expect(post?.images).toMatchObject([
+      { type: "image/png", width: 640, height: 480, alt: "A harbour" },
+    ]);
+    expect(sim.world.blobs.get(post?.images?.[0]?.blob ?? "")).toEqual(png);
+  });
+
+  it("publishes a carousel of items that were made before, in their order, and says what each shows", async () => {
+    const sim = withWeb({
+      "https://pigy.example/1": await pngFile(300, 200),
+      "https://pigy.example/2": jpegFile(200, 300),
+    });
+    const token = await tokenFor(sim);
+    const item = (url: string, alt: string) =>
+      container(sim, token, {
+        media_type: "IMAGE",
+        image_url: url,
+        alt_text: alt,
+        is_carousel_item: "true",
+      });
+    const one = String(await item("https://pigy.example/1", "One"));
+    const two = String(await item("https://pigy.example/2", ""));
+    // An item is published with its carousel and not by itself.
+    expect((await publishOf(sim, token, one)).status).toBe(400);
+    const carousel = String(
+      await container(sim, token, {
+        media_type: "CAROUSEL",
+        children: `${one},${two}`,
+        text: "Two images",
+      }),
+    );
+    const { body } = await publishOf(sim, token, carousel);
+
+    const read = await answer(
+      await call(sim, "GET", `/${body.id}`, {
+        fields: "media_type,text,children{media_type,alt_text}",
+        access_token: token,
+      }),
+    );
+    expect(read.body).toEqual({
+      media_type: "CAROUSEL_ALBUM",
+      text: "Two images",
+      children: {
+        data: [
+          { media_type: "IMAGE", alt_text: "One" },
+          { media_type: "IMAGE", alt_text: "" },
+        ],
+      },
+    });
+    // Without braces, the items are named by their IDs.
+    const ids = await answer(
+      await call(sim, "GET", `/${body.id}`, {
+        fields: "children",
+        access_token: token,
+      }),
+    );
+    expect(ids.body).toEqual({
+      children: {
+        data: [{ id: expect.any(String) }, { id: expect.any(String) }],
+      },
+    });
+    expect(
+      feed(sim.world)[0]?.post.images?.map(({ width, alt }) => [width, alt]),
+    ).toEqual([
+      [300, "One"],
+      [200, ""],
+    ]);
+  });
+
+  it("refuses a carousel of one item and of 21, of an item that is not ready, and of a container that is no item", async () => {
+    const sim = withWeb({ "https://pigy.example/1": await pngFile(300, 200) });
+    const token = await tokenFor(sim);
+    const item = async () =>
+      String(
+        await container(sim, token, {
+          media_type: "IMAGE",
+          image_url: "https://pigy.example/1",
+          is_carousel_item: "true",
+        }),
+      );
+    const ready = await item();
+    const refused = async (children: string) => {
+      const made = await container(sim, token, {
+        media_type: "CAROUSEL",
+        children,
+      });
+      return typeof made === "string" ? 200 : made.status;
+    };
+    expect(await refused(ready)).toBe(400);
+    expect(
+      await refused(Array.from({ length: 21 }, () => ready).join(",")),
+    ).toBe(400);
+    const text = String(
+      await container(sim, token, { media_type: "TEXT", text: "No item" }),
+    );
+    expect(await refused(`${ready},${text}`)).toBe(400);
+    sim.simulator.arm({ kind: "slow-processing", operation: "container" });
+    const slow = await item();
+    expect(await refused(`${ready},${slow}`)).toBe(400);
+    sim.world.advance(slowProcessingMs);
+    expect(await refused(`${ready},${slow}`)).toBe(200);
+  });
+
+  it("says by the status of a container what is wrong with the image at its address, and does not repeat the address", async () => {
+    const sim = withWeb({
+      "https://pigy.example/gone?signature=secret": 404,
+      "https://pigy.example/webp?signature=secret": webpFile(300, 200),
+      "https://pigy.example/long?signature=secret": await pngFile(1100, 100),
+      "https://pigy.example/large?signature=secret": new Uint8Array(
+        8 * 1024 * 1024 + 1,
+      ),
+    });
+    const token = await tokenFor(sim);
+    for (const path of ["gone", "nowhere", "webp", "long", "large"]) {
+      const id = String(
+        await container(sim, token, {
+          media_type: "IMAGE",
+          image_url: `https://pigy.example/${path}?signature=secret`,
+        }),
+      );
+      const status = await statusOf(sim, token, id);
+      expect(status).toMatchObject({ status: "ERROR" });
+      expect(String(status.error_message)).not.toContain("secret");
+      expect((await publishOf(sim, token, id)).status).toBe(400);
+    }
+    // An address that is no HTTPS one is refused at once.
+    const plain = await container(sim, token, {
+      media_type: "IMAGE",
+      image_url: "http://pigy.example/1",
+    });
+    expect(plain).toMatchObject({ status: 400 });
+    expect(feed(sim.world)).toEqual([]);
+  });
+
+  it("fetches nothing in a world without a web, and fails the container", async () => {
+    const sim = setup();
+    const token = await tokenFor(sim);
+    const id = String(
+      await container(sim, token, {
+        media_type: "IMAGE",
+        image_url: "https://pigy.example/1",
+      }),
+    );
+    expect(await statusOf(sim, token, id)).toMatchObject({ status: "ERROR" });
+  });
+
+  it("refuses a description of more than 1000 characters, an item with a text or a reply, and what belongs to another kind of container", async () => {
+    const sim = withWeb({ "https://pigy.example/1": await pngFile(300, 200) });
+    const token = await tokenFor(sim);
+    const image = { media_type: "IMAGE", image_url: "https://pigy.example/1" };
+    const status = async (params: Record<string, string>) => {
+      const made = await container(sim, token, params);
+      return typeof made === "string" ? 200 : made.status;
+    };
+    expect(await status({ ...image, alt_text: "a".repeat(1001) })).toBe(400);
+    expect(await status({ ...image, alt_text: "a".repeat(1000) })).toBe(200);
+    expect(
+      await status({ ...image, is_carousel_item: "true", text: "No" }),
+    ).toBe(400);
+    expect(
+      await status({
+        media_type: "TEXT",
+        text: "a",
+        image_url: "https://pigy.example/1",
+      }),
+    ).toBe(400);
+    expect(
+      await status({ media_type: "TEXT", text: "a", alt_text: "No" }),
+    ).toBe(400);
+    expect(
+      await status({ media_type: "VIDEO", video_url: "https://x.example/" }),
+    ).toBe(400);
   });
 });
 
