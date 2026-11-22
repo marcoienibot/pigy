@@ -237,7 +237,9 @@ test("an edit that the server refuses is taken back, and the person is told", as
   const notice = page
     .getByRole("listitem")
     .filter({ hasText: "An edit was not saved" });
-  await expect(notice).toContainText("This post no longer exists");
+  await expect(notice).toContainText(
+    "This part is gone: it was removed, or its post was deleted",
+  );
   await expect(notice).toContainText("Edited after it was deleted elsewhere");
   await expect(editor(page)).toHaveCount(0);
   await expect(draftRows(page)).toHaveCount(0);

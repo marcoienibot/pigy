@@ -1539,6 +1539,41 @@ it("refuses a part for the text of an account that has none of its own", () => {
   expect(workspace.rows("post_part")).toHaveLength(2);
 });
 
+it.each([
+  ["left out", "target.remove", { postId, channelId }, "client"],
+  ["disconnected", "channel.disconnect", { id: channelId }, "server"],
+] as const)(
+  "refuses a part for the text of an account that was %s meanwhile, and leaves the post's text alone",
+  (_name, name, args, source) => {
+    const workspace = customized();
+    // Another device takes the account away, and its text with it, while
+    // this one is offline in the middle of that text.
+    workspace.mutate(name, args, 4000, source);
+
+    // What the first device then sends: a part after one of the text that
+    // is gone. Without a target, nothing says whose text the part is for,
+    // and it must not be taken for one of the post's own.
+    expect(
+      rejectionOf(() =>
+        workspace.mutate(
+          "part.add",
+          {
+            id: thirdPartId,
+            postId,
+            channelId,
+            afterId: ownPartId,
+            text: "For one account only",
+          },
+          5000,
+        ),
+      ),
+    ).toBe("not_found");
+    // The text that every other account gets is as it was.
+    expect(textsOf(workspace)).toEqual(["One", "Two"]);
+    expect(workspace.rows("post_part")).toHaveLength(2);
+  },
+);
+
 it("refuses to remove the only part of the text of an account", () => {
   const workspace = customized();
   workspace.mutate("part.remove", { id: otherOwnPartId });

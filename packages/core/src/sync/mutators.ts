@@ -117,6 +117,14 @@ function existingPost(tx: Transaction, id: string): Row<"post"> {
   return post;
 }
 
+/**
+ * What a mutation about a part that is gone is told. The part names its
+ * post, so nothing says which of the two went: another device removed the
+ * part, dropped the text of an account that it was of, or deleted the
+ * post.
+ */
+const partGone = "This part is gone: it was removed, or its post was deleted";
+
 /** The post with this ID, which has to be a draft: only a draft is edited. */
 function draft(tx: Transaction, id: string): Row<"post"> {
   const post = existingPost(tx, id);
@@ -267,8 +275,10 @@ export const mutators = {
     (tx, { id, text }) => {
       const part = tx.get("post_part", id);
       const post = part && tx.get("post", part.postId);
+      // The part can be gone while its post is there: another device
+      // removed it, or dropped the text of an account that it was of.
       if (!part || !post) {
-        throw new MutationRejected("not_found", "This post no longer exists");
+        throw new MutationRejected("not_found", partGone);
       }
       if (post.status !== "draft") {
         throw new MutationRejected("not_a_draft", "Only a draft can be edited");
@@ -289,6 +299,9 @@ export const mutators = {
    * nearer to the part that both named. If that part is gone by now, or
    * is not of this text, the new one goes to the end: what was typed
    * into it is kept.
+   *
+   * A part for an account whose text is gone is refused, whether the text
+   * was dropped or went with its target: it is never put anywhere else.
    */
   "part.add": mutator(
     z.strictObject({
@@ -308,11 +321,22 @@ export const mutators = {
       }
       const target =
         channelId === null ? undefined : targetTo(tx, postId, channelId);
+      // A part for an account is a part of the text of its target, and of
+      // no other: when the post no longer goes there, the account was left
+      // out or disconnected since, and what was written for it has gone
+      // with it. The post's own text, which the other accounts get, is
+      // not the place for it.
+      if (channelId !== null && !target) {
+        throw new MutationRejected(
+          "not_found",
+          "The post no longer goes to this account",
+        );
+      }
       const parts = textOf(tx, postId, target?.id ?? null);
       // A text for an account begins with `target.customize`. One that
-      // was dropped since, with its account or without, is not begun
-      // anew by a part that was meant for the middle of it.
-      if (channelId !== null && parts.length === 0) {
+      // was dropped since is not begun anew by a part that was meant for
+      // the middle of it.
+      if (target && parts.length === 0) {
         throw new MutationRejected(
           "not_found",
           "This account no longer has a text of its own",
@@ -378,7 +402,7 @@ export const mutators = {
     (tx, { id, afterId }) => {
       const part = tx.get("post_part", id);
       if (!part) {
-        throw new MutationRejected("not_found", "This part no longer exists");
+        throw new MutationRejected("not_found", partGone);
       }
       const post = draft(tx, part.postId);
       const parts = textOf(tx, part.postId, part.targetId);

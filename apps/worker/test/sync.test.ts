@@ -494,7 +494,11 @@ it("reports a mutation that was rejected and counts it as processed", async () =
   // The mutation in the middle did nothing, and did not stop the third.
   expect(patch).toMatchObject({ from: 0, to: 2, lastMutationId: 3 });
   expect(patch.rejected).toEqual([
-    { id: 2, code: "not_found", message: "This post no longer exists" },
+    {
+      id: 2,
+      code: "not_found",
+      message: "This part is gone: it was removed, or its post was deleted",
+    },
   ]);
   expect(client.table("post").map(({ id }) => id)).toEqual(
     [first.id, third.id].sort(),
@@ -575,7 +579,11 @@ it("tells a client of a rejection when the answer that carried it was lost", asy
   // the reason, the edit would be gone and the user would not be told.
   expect(hello).toMatchObject({ from: 2, to: 2, lastMutationId: edit.id });
   expect(hello.rejected).toEqual([
-    { id: edit.id, code: "not_found", message: "This post no longer exists" },
+    {
+      id: edit.id,
+      code: "not_found",
+      message: "This part is gone: it was removed, or its post was deleted",
+    },
   ]);
   // Now the client has seen it, and says so in its next hello. It is not
   // told again: `SyncClient` would fail on a rejection that comes twice.
@@ -791,7 +799,7 @@ it("tells the Worker why a mutation of its own was rejected", async () => {
   expect(outcome).toEqual({
     ok: false,
     code: "not_found",
-    message: "This post no longer exists",
+    message: "This part is gone: it was removed, or its post was deleted",
   });
   // The clients hear nothing of it: the next thing this one receives is
   // the next change.
@@ -845,7 +853,7 @@ it("answers a call with a key the same way every time, also when it was refused"
   const refused = {
     ok: false,
     code: "not_found",
-    message: "This post no longer exists",
+    message: "This part is gone: it was removed, or its post was deleted",
   };
 
   expect(await edit()).toEqual(refused);

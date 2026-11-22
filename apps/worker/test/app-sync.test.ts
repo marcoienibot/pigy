@@ -9,6 +9,7 @@ import { expect, it, vi } from "vitest";
 import { maxSockets, socketLifetimeMs } from "../src/workspace/object.ts";
 import { device, shown, synced } from "./app-client.ts";
 import { adminEmail, invite, setup, signedIn } from "./helpers.ts";
+import { connectAccount } from "./publishing.ts";
 import { newId, objectOf, SyncClient, workspaceIds } from "./sync-client.ts";
 
 // The sync client of the app against the real workspace object. What the
@@ -139,7 +140,7 @@ it("shows a rejection once, also when the answer that carried it was lost", asyn
       name: "part.setText",
       args: { id: partId, text: "Edited too late" },
       code: "not_found",
-      message: "This post no longer exists",
+      message: "This part is gone: it was removed, or its post was deleted",
     },
   ]);
 
@@ -150,6 +151,55 @@ it("shows a rejection once, also when the answer that carried it was lost", asyn
   tab.link.pass(syncTimings.retry[1]);
   await synced(tab.store);
   expect(tab.store.getRejections()).toHaveLength(1);
+});
+
+it("refuses what one device wrote for an account that another has left out meanwhile, and keeps it out of the post's own text", async () => {
+  const { test, browser, workspace } = await start();
+  const channelId = await connectAccount(test, browser, workspace);
+  const one = await device(browser, workspace).online();
+  const two = await device(browser, workspace).online();
+  const { id: postId } = createDraft(one.store, "For everybody");
+  const ownPartId = newId();
+  one.store.mutate("target.add", { id: newId(), postId, channelId });
+  one.store.mutate("target.customize", {
+    postId,
+    channelId,
+    parts: [{ id: ownPartId, text: "For one account" }],
+  });
+  await synced(one.store);
+  await vi.waitFor(() => expect(shown(two.store)).toEqual(shown(one.store)));
+
+  // Offline, the first device goes on with the text of the account: it
+  // adds a part and types into it. Meanwhile the second leaves the
+  // account out, and its text goes with it.
+  await one.link.lose();
+  const addedId = newId();
+  one.store.mutate("part.add", {
+    id: addedId,
+    postId,
+    channelId,
+    afterId: ownPartId,
+    text: "",
+  });
+  one.store.mutate("part.setText", { id: addedId, text: "And more for it" });
+  two.store.mutate("target.remove", { postId, channelId });
+  await synced(two.store);
+
+  one.link.pass(syncTimings.retry[0]);
+  await synced(one.store);
+
+  // Nothing of the text of the one account is in what the others get: the
+  // post has its own text and no other part, on both devices.
+  expect(texts(one.store)).toEqual(["For everybody"]);
+  await vi.waitFor(() => expect(shown(two.store)).toEqual(shown(one.store)));
+  // And the first device is told that its work did not go in, part and
+  // text.
+  expect(
+    one.store.getRejections().map(({ name, code }) => ({ name, code })),
+  ).toEqual([
+    { name: "part.add", code: "not_found" },
+    { name: "part.setText", code: "not_found" },
+  ]);
 });
 
 it("opens a new socket when the old one has run out, and loses nothing on the way", async () => {
