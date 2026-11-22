@@ -13,19 +13,26 @@
  * kept for its fields keeps those fields alone.
  *
  * - JPEG: the frame, the scans and their tables. Of the application
- *   segments, the first JFIF, without its thumbnail, which is the picture
- *   before it was cut, an ICC profile, which is what the colours mean,
- *   and the first of Adobe's colour transforms. Not Exif, where a camera
+ *   segments before the first scan, which is where decoders read them,
+ *   the first JFIF, without its thumbnail, which is the picture before
+ *   it was cut, an ICC profile, which is what the colours mean, and the
+ *   first of Adobe's colour transforms. Not Exif, where a camera
  *   writes the place and the time, nor XMP, IPTC, comments, the
  *   extension of JFIF with its thumbnails, or any other marker. The way
  *   up of the picture is in Exif, so a copy whose picture is turned gets
  *   an Exif segment of pigy's own that says that and nothing else. The
  *   first Exif segment before the scans is the one that counts, as for
  *   decoders: a second one says nothing.
- * - PNG: the chunks that a decoder draws with. That takes the text
- *   chunks, the time and Exif.
- * - WebP: the header, the ICC profile, the picture with its alpha, or the
- *   frames of an animation with its fields. A frame is its picture and
+ * - PNG: the chunks that a decoder draws with, each the first of its kind
+ *   that is as long as its fields, where decoders read it, and an end
+ *   with nothing in it: `pngAncillary`. That takes the text chunks, the
+ *   time and Exif, and a chunk that has more than its fields, or is out
+ *   of its place, as decoders pass it over. The frames only of a picture
+ *   that says that it moves.
+ * - WebP: the header, the ICC profile, the picture with its alpha
+ *   directly before it, or the frames of an animation with its fields.
+ *   A second alpha, or one for a lossless picture, which has its alpha
+ *   in itself, is refused: decoders do not agree on what it is. A frame is its picture and
  *   its alpha and nothing else, or the file is refused: what a frame
  *   holds cannot be left out of it without saying its length anew before
  *   it. A WebP whose way up is only in its Exif loses it: cameras do not
@@ -592,7 +599,7 @@ async function walkJpeg(walk: Walk, soi: Uint8Array): Promise<Found> {
       } else {
         await walk.pass(payloadLength - name.length, false);
       }
-    } else if (marker === 0xe0 && !jfif) {
+    } else if (marker === 0xe0 && !jfif && !scanned) {
       const fields = await walk.take(Math.min(payloadLength, jfifLength));
       if (fields.length === jfifLength && startsWith(fields, "JFIF\0")) {
         jfif = true;
@@ -603,7 +610,7 @@ async function walkJpeg(walk: Walk, soi: Uint8Array): Promise<Found> {
         await writeSegment(walk, marker, fields);
       }
       await walk.pass(payloadLength - fields.length, false);
-    } else if (marker === 0xe2) {
+    } else if (marker === 0xe2 && !scanned) {
       // A part of the profile, which can take several segments.
       const name = await walk.take(Math.min(payloadLength, iccName.length));
       const keep = startsWith(name, iccName);
@@ -613,7 +620,7 @@ async function walkJpeg(walk: Walk, soi: Uint8Array): Promise<Found> {
         await walk.write(name);
       }
       await walk.pass(payloadLength - name.length, keep);
-    } else if (marker === 0xee && !adobe) {
+    } else if (marker === 0xee && !adobe && !scanned) {
       const fields = await walk.take(Math.min(payloadLength, adobeLength));
       if (fields.length === adobeLength && startsWith(fields, "Adobe")) {
         adobe = true;
@@ -652,28 +659,92 @@ async function jpegMarker(walk: Walk, first?: Uint8Array): Promise<number> {
   return marker;
 }
 
-/** The chunks of a PNG that a decoder draws with. */
-const pngChunks = new Set([
-  "IHDR",
-  "PLTE",
-  "IDAT",
-  "IEND",
-  "tRNS",
-  "gAMA",
-  "cHRM",
-  "sRGB",
-  "iCCP",
-  "sBIT",
-  "bKGD",
-  "pHYs",
-  "cICP",
-  "mDCV",
-  "cLLI",
-  // An animation.
-  "acTL",
-  "fcTL",
-  "fdAT",
-]);
+/** How long a chunk of a PNG is for each type of colour, where that decides it. */
+type ByColour = Partial<Record<number, number>>;
+
+/**
+ * Whether a chunk of a PNG of `length` bytes is laid out as its kind, in a
+ * picture of the type of colour `colour` whose palette has `palette`
+ * entries, none if it has no palette yet.
+ */
+type PngFits = (length: number, colour: number, palette: number) => boolean;
+
+const exactly =
+  (fields: number): PngFits =>
+  (length) =>
+    length === fields;
+
+const byColour =
+  (lengths: ByColour): PngFits =>
+  (length, colour) =>
+    lengths[colour] === length;
+
+/**
+ * The chunks of a PNG besides its header, its palette, its data, its
+ * frames and its end that a decoder draws with: how long each is, and
+ * whether it comes before the palette as well as before the data. A
+ * decoder reads the first of each kind that is laid out as one, where it
+ * reads it: one that is longer or shorter than its fields, out of its
+ * place or a second of its kind, it passes over, and the copy leaves it
+ * out. Whatever a chunk holds beyond its fields would otherwise be
+ * copied with it.
+ */
+const pngAncillary: Record<string, { beforePalette: boolean; fits: PngFits }> =
+  {
+    cHRM: { beforePalette: true, fits: exactly(32) },
+    gAMA: { beforePalette: true, fits: exactly(4) },
+    // Its name, a zero, how it is compressed, and the profile: read below.
+    iCCP: { beforePalette: true, fits: (length) => length >= 4 },
+    sBIT: {
+      beforePalette: true,
+      fits: byColour({ 0: 1, 2: 3, 3: 3, 4: 2, 6: 4 }),
+    },
+    sRGB: { beforePalette: true, fits: exactly(1) },
+    cICP: { beforePalette: true, fits: exactly(4) },
+    mDCV: { beforePalette: true, fits: exactly(24) },
+    cLLI: { beforePalette: true, fits: exactly(8) },
+    tRNS: {
+      beforePalette: false,
+      // An alpha for each entry of the palette, at most, or the one colour
+      // that is transparent. A picture with alpha has none.
+      fits: (length, colour, palette) =>
+        colour === 3
+          ? length >= 1 && length <= palette
+          : byColour({ 0: 2, 2: 6 })(length, colour, palette),
+    },
+    bKGD: {
+      beforePalette: false,
+      fits: (length, colour, palette) =>
+        colour === 3
+          ? palette > 0 && length === 1
+          : byColour({ 0: 2, 4: 2, 2: 6, 6: 6 })(length, colour, palette),
+    },
+    pHYs: { beforePalette: false, fits: exactly(9) },
+    // That the picture moves: how many frames, and how often they repeat.
+    acTL: { beforePalette: false, fits: exactly(8) },
+  };
+
+/** The end of a PNG, which has nothing in it, with its checksum. */
+const pngEnd = Uint8Array.of(
+  0,
+  0,
+  0,
+  0,
+  0x49,
+  0x45,
+  0x4e,
+  0x44,
+  0xae,
+  0x42,
+  0x60,
+  0x82,
+);
+
+/**
+ * The longest name of a colour profile, and with it the zero after the
+ * name and the byte that says how the profile is compressed.
+ */
+const iccpNameLength = 79;
 
 async function walkPng(walk: Walk, signature: Uint8Array): Promise<Found> {
   await walk.write(signature);
@@ -685,8 +756,13 @@ async function walkPng(walk: Walk, signature: Uint8Array): Promise<Found> {
   const width = u32be(header, 0);
   const height = u32be(header, 4);
   checkedSize(width, height);
+  const colour = header[9] as number;
   await walk.write(first);
   await walk.write(header);
+  /** The kinds of chunk that the copy has. */
+  const kept = new Set<string>();
+  /** How many entries the palette has that the copy has. */
+  let palette = 0;
   let animated = false;
   let data = false;
   for (;;) {
@@ -695,11 +771,34 @@ async function walkPng(walk: Walk, signature: Uint8Array): Promise<Found> {
     const length = u32be(head, 0);
     const type = ascii(head, 4, 4);
     if (type === "IHDR") throw damaged("it has two headers");
-    if (type === "acTL") animated = true;
-    if (type === "IDAT") data = true;
-    const keep = pngChunks.has(type);
-    if (keep) await walk.write(head);
-    if (type === "fcTL") {
+    if (type === "IEND") {
+      // The end has nothing in it: whatever a file put there is left out.
+      await walk.pass(length + 4, false);
+      await walk.write(pngEnd);
+      break;
+    }
+    const rule = pngAncillary[type];
+    if (type === "IDAT") {
+      data = true;
+      await walk.write(head);
+      await walk.pass(length + 4, true);
+    } else if (type === "PLTE") {
+      // The first, before the data, of a picture in colour, with whole
+      // entries: three bytes each, 256 at most.
+      const keep =
+        palette === 0 &&
+        !data &&
+        colour !== 0 &&
+        colour !== 4 &&
+        length >= 3 &&
+        length <= 3 * 256 &&
+        length % 3 === 0;
+      if (keep) {
+        palette = length / 3;
+        await walk.write(head);
+      }
+      await walk.pass(length + 4, keep);
+    } else if (type === "fcTL" && animated) {
       // A frame: its number, its size and its place, then how long it is
       // shown and how it is drawn over the one before.
       if (length !== 26) throw damaged("a frame is not laid out as one");
@@ -716,13 +815,45 @@ async function walkPng(walk: Walk, signature: Uint8Array): Promise<Found> {
         frameHeight,
         { width, height },
       );
+      await walk.write(head);
       await walk.write(frame);
       await walk.pass(4, true);
+    } else if (type === "fdAT" && animated) {
+      // The data of a frame.
+      await walk.write(head);
+      await walk.pass(length + 4, true);
+    } else if (
+      rule &&
+      !kept.has(type) &&
+      !data &&
+      !(rule.beforePalette && palette > 0) &&
+      rule.fits(length, colour, palette)
+    ) {
+      // A profile is its name, a zero, a zero for how it is compressed,
+      // and what is compressed.
+      const start =
+        type === "iCCP"
+          ? await walk.take(Math.min(length, iccpNameLength + 2))
+          : new Uint8Array(0);
+      const named = start.indexOf(0);
+      const keep =
+        type !== "iCCP" ||
+        (named >= 1 &&
+          named <= iccpNameLength &&
+          named + 2 < length &&
+          start[named + 1] === 0);
+      if (keep) {
+        kept.add(type);
+        if (type === "acTL") animated = true;
+        await walk.write(head);
+        await walk.write(start);
+      }
+      await walk.pass(length - start.length + 4, keep);
     } else {
-      // The data and its checksum.
-      await walk.pass(length + 4, keep);
+      // Texts, the time, Exif, frames of a picture that does not move,
+      // and whatever is not laid out as its kind or not in its place.
+      await walk.pass(length + 4, false);
     }
-    if (type === "IEND") break;
   }
   if (!data) throw damaged("it has no picture");
   return { type: "image/png", width, height, animated };
@@ -920,10 +1051,20 @@ async function walkWebp(
   let pictures = 0;
   let profile = false;
   let loop = false;
+  // Whether the alpha of the picture was kept, which goes directly before
+  // it in the copy: a lossy picture has its alpha beside it, a lossless
+  // one in itself. Decoders do not agree on a second alpha, or on one
+  // for a lossless picture, so a file that has either is refused.
+  let alpha = false;
+  const alphaFor = (type: string) => {
+    if (alpha && type !== "VP8 ") {
+      throw damaged("its alpha is not where decoders read it");
+    }
+  };
   while (left > 0) {
     const { chunk, type, length, padded } = await chunkIn(left);
     left -= 8 + padded;
-    if (type === "ICCP" && !profile && pictures === 0) {
+    if (type === "ICCP" && !profile && pictures === 0 && !alpha) {
       profile = true;
       await walk.write(chunk);
       await walk.pass(padded, true);
@@ -954,7 +1095,9 @@ async function walkWebp(
       let inside = length - 16;
       let sub = await chunkIn(inside);
       inside -= 8 + sub.padded;
+      alpha = false;
       if (sub.type === "ALPH") {
+        alpha = true;
         await walk.write(sub.chunk);
         await walk.pass(sub.padded, true);
         sub = await chunkIn(inside);
@@ -963,6 +1106,8 @@ async function walkWebp(
       if (!isWebpPicture(sub.type)) {
         throw damaged("a frame holds something other than its picture");
       }
+      alphaFor(sub.type);
+      alpha = false;
       const picture = await webpPicture(walk, sub.type, sub.length);
       if (picture.width !== width || picture.height !== height) {
         throw damaged("a frame does not lie within the picture");
@@ -973,11 +1118,14 @@ async function walkWebp(
       }
       pictures += 1;
     } else if (!animated && type === "ALPH" && pictures === 0) {
+      alphaFor(type);
+      alpha = true;
       await walk.write(chunk);
       await walk.pass(padded, true);
     } else if (!animated && isWebpPicture(type)) {
       // The one picture, of the size that the header says.
       if (pictures > 0) throw damaged("it has two pictures");
+      alphaFor(type);
       const picture = await webpPicture(walk, type, length);
       if (picture.width !== canvas.width || picture.height !== canvas.height) {
         throw damaged("its picture is not of the size that it says");

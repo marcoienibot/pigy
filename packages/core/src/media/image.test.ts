@@ -420,6 +420,150 @@ test("a JPEG goes by its first Exif segment, as decoders do, and its copy has th
   );
 });
 
+test("a JPEG keeps its colour profile, JFIF and Adobe's colour transform only before its first scan, where decoders read them", async () => {
+  const profile = jpegSegment(0xe2, bytes("ICC_PROFILE\0", [1, 1], "COLOURS"));
+  const file = joined(
+    jpegStart,
+    profile,
+    jpegFrame(8, 8),
+    jpegScanHeader,
+    jpegScanData,
+    // After the scan: no decoder reads them there, and each is laid out
+    // as one, with words in the part of the profile.
+    jpegSegment(0xe2, bytes("ICC_PROFILE\0", [1, 1], "AT HOME")),
+    jpegSegment(0xee, bytes("Adobe", [0, 100, 0, 0, 0, 0, 1])),
+    jpegSegment(0xe0, bytes("JFIF\0", [1, 2, 0, 0, 1, 0, 1, 0, 0])),
+    jpegEnd,
+  );
+  const { copy } = await copyOf(file);
+  // Before, all three were kept.
+  expect(copy).toEqual(
+    joined(
+      jpegStart,
+      profile,
+      jpegFrame(8, 8),
+      jpegScanHeader,
+      jpegScanData,
+      jpegEnd,
+    ),
+  );
+});
+
+/** A PNG of 3 by 2 pixels with `before` before its data and `after` after it. */
+async function pngWith(before: Uint8Array[], after: Uint8Array[] = []) {
+  const plain = await pngFile(3, 2);
+  return joined(
+    plain.subarray(0, 33),
+    ...before,
+    // The data, without the end.
+    plain.subarray(33, plain.length - 12),
+    ...after,
+    pngChunk("IEND", []),
+  );
+}
+
+test("a PNG keeps of a chunk its fields alone: one that is longer or shorter than they are is left out, as decoders leave it, and its end has nothing in it", async () => {
+  const gamma = pngChunk("gAMA", [0, 0, 0xb1, 0x8f]);
+  const pixels = pngChunk("pHYs", [0, 0, 0x0b, 0x13, 0, 0, 0x0b, 0x13, 1]);
+  const file = await pngWith([
+    // Words behind the fields: a decoder that went by the length would
+    // read none of them, and the copy had them all.
+    pngChunk("gAMA", bytes([0, 0, 0xb1, 0x8f], "GPS 45.4642 N")),
+    pngChunk("sRGB", bytes([0], "AT HOME")),
+    pngChunk("pHYs", bytes([0, 0, 0x0b, 0x13, 0, 0, 0x0b, 0x13, 1], "AT HOME")),
+    // Shorter than its fields.
+    pngChunk("cHRM", [1, 2, 3]),
+    // The first of each kind that is laid out as one is the one that
+    // decoders read.
+    gamma,
+    pixels,
+  ]);
+  // Words in the end, which has none.
+  const ended = joined(
+    file.subarray(0, file.length - 12),
+    pngChunk("IEND", text("AT HOME")),
+  );
+  const { facts, copy } = await copyOf(ended);
+  expect(new TextDecoder("latin1").decode(copy)).not.toMatch(/HOME|GPS/);
+  expect(copy).toEqual(await pngWith([gamma, pixels]));
+  expect(facts.size).toBe(copy.length);
+});
+
+test("a PNG keeps the first chunk of each kind, and only where decoders read it", async () => {
+  const gamma = pngChunk("gAMA", [0, 0, 0xb1, 0x8f]);
+  // A palette that a picture of red, green and blue may suggest.
+  const palette = pngChunk("PLTE", [0, 0, 0, 255, 255, 255]);
+  const background = pngChunk("bKGD", [0, 1, 0, 1, 0, 1]);
+  const { copy } = await copyOf(
+    await pngWith(
+      [
+        gamma,
+        // A second of a kind, which decoders pass over.
+        pngChunk("gAMA", text("HOME")),
+        palette,
+        pngChunk("PLTE", text("AT HOME!!")),
+        // What has to come before the palette, after it.
+        pngChunk("sRGB", [0]),
+        background,
+        // What a picture of grey has, in one of red, green and blue.
+        pngChunk("tRNS", text("HO")),
+      ],
+      // After the data, where decoders read nothing but frames.
+      [pngChunk("pHYs", [0, 0, 0x0b, 0x13, 0, 0, 0x0b, 0x13, 1])],
+    ),
+  );
+  expect(copy).toEqual(await pngWith([gamma, palette, background]));
+});
+
+test("a PNG keeps a colour profile only as one is laid out, and frames only after the chunk that says that it moves", async () => {
+  const profile = pngChunk("iCCP", bytes("ICC", [0, 0], [0x78, 0x9c, 3, 0]));
+  const frame = pngChunk("fcTL", [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    3,
+    0,
+    0,
+    0,
+    2,
+    ...new Array(8).fill(0),
+    0,
+    1,
+    0,
+    10,
+    0,
+    0,
+  ]);
+  const frameData = pngChunk("fdAT", [0, 0, 0, 1, 0x78, 0x9c, 3, 0]);
+  const moving = pngChunk("acTL", [0, 0, 0, 2, 0, 0, 0, 0]);
+  // A profile without a name, and one whose name does not end.
+  const withProfiles = await pngWith([
+    pngChunk("iCCP", bytes([0, 0], "AT HOME")),
+    pngChunk("iCCP", text("AT HOME".repeat(20))),
+    profile,
+  ]);
+  expect((await copyOf(withProfiles)).copy).toEqual(await pngWith([profile]));
+
+  // Frames after a chunk that is not laid out as the one that says that
+  // the picture moves: no decoder shows them, and the copy is still.
+  const notMoving = await copyOf(
+    await pngWith(
+      [pngChunk("acTL", bytes([0, 0, 0, 2, 0, 0, 0, 0], "AT HOME")), frame],
+      [frameData],
+    ),
+  );
+  expect(notMoving.facts.animated).toBe(false);
+  expect(notMoving.copy).toEqual(await pngWith([]));
+  const animation = await pngWith([moving, frame], [frameData]);
+  const kept = await copyOf(animation);
+  expect(kept.facts.animated).toBe(true);
+  expect(kept.copy).toEqual(animation);
+});
+
 test("a GIF keeps of its extensions only what is drawn: no text, and nothing behind the fields of a control or of how often it repeats", async () => {
   const blocks = (...data: number[][]) =>
     joined(...data.map((block) => [block.length, ...block]), [0]);
@@ -534,6 +678,79 @@ test.each([
   ],
 ])(
   "%s is refused: what decodes it would be another picture than the one that pigy read",
+  async (_, file) => {
+    expect(await refusal(file)).toBe("damaged");
+  },
+);
+
+/** A WebP of `chunks`, with the header of the extended layout first. */
+const extendedWebp = (flags: number, ...chunks: Uint8Array[]) => {
+  const body = joined(
+    text("WEBP"),
+    // 3 by 2 pixels.
+    webpChunk("VP8X", [flags, 0, 0, 0, 2, 0, 0, 1, 0, 0]),
+    ...chunks,
+  );
+  const length = body.length;
+  return joined(
+    text("RIFF"),
+    [length & 0xff, (length >> 8) & 0xff, (length >> 16) & 0xff, length >>> 24],
+    body,
+  );
+};
+const lossy = webpChunk("VP8 ", [0, 0, 0, 0x9d, 0x01, 0x2a, 3, 0, 2, 0, 1, 2]);
+const lossless = webpChunk("VP8L", [0x2f, 2, 0x40, 0, 0, 7]);
+const alpha = (what: string) => webpChunk("ALPH", text(what));
+/** A frame of an animation of 3 by 2 pixels that holds `chunks`. */
+const webpFrame = (...chunks: Uint8Array[]) =>
+  webpChunk(
+    "ANMF",
+    joined([0, 0, 0, 0, 0, 0, 2, 0, 0, 1, 0, 0, 100, 0, 0, 0], ...chunks),
+  );
+
+test("a WebP keeps its alpha directly before its lossy picture", async () => {
+  const still = extendedWebp(0x10, alpha("ALPHA"), lossy);
+  expect((await copyOf(still)).copy).toEqual(still);
+  // What stands between them is left out, as everything that a decoder
+  // does not draw with.
+  expect(
+    (
+      await copyOf(
+        extendedWebp(
+          0x10,
+          alpha("ALPHA"),
+          webpChunk("ZZZZ", text("AT HOME")),
+          lossy,
+        ),
+      )
+    ).copy,
+  ).toEqual(still);
+  const frames = extendedWebp(
+    0x12,
+    webpChunk("ANIM", [255, 255, 255, 255, 0, 0]),
+    webpFrame(alpha("ALPHA"), lossy),
+  );
+  expect((await copyOf(frames)).copy).toEqual(frames);
+});
+
+test.each([
+  // libwebp draws with the last, its demuxer stops at the second.
+  ["two alphas", extendedWebp(0x10, alpha("ALPHA"), alpha("AT HOME"), lossy)],
+  // A lossless picture has its alpha in itself.
+  [
+    "an alpha before a lossless picture",
+    extendedWebp(0x10, alpha("AT HOME"), lossless),
+  ],
+  [
+    "an alpha before a lossless picture in a frame",
+    extendedWebp(
+      0x12,
+      webpChunk("ANIM", [255, 255, 255, 255, 0, 0]),
+      webpFrame(alpha("AT HOME"), lossless),
+    ),
+  ],
+])(
+  "a WebP with %s is refused: decoders do not agree on what it is",
   async (_, file) => {
     expect(await refusal(file)).toBe("damaged");
   },
