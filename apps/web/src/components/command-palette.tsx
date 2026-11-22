@@ -25,7 +25,14 @@ import {
   UserPlus,
   Zap,
 } from "lucide-react";
-import { createContext, type ReactNode, use, useMemo, useState } from "react";
+import {
+  createContext,
+  type ReactNode,
+  use,
+  useCallback,
+  useMemo,
+  useState,
+} from "react";
 import { type Theme, useTheme } from "@/components/theme-provider";
 import {
   Command,
@@ -50,7 +57,7 @@ import {
   useShortcuts,
   withMod,
 } from "@/lib/keyboard";
-import { goTo, paletteFilter } from "@/lib/palette";
+import { namedScreen } from "@/lib/palette";
 import { selectSchedule } from "@/lib/queue";
 import { useReloadToUpdate, useUpdateOffer } from "@/lib/reload-to-update";
 import {
@@ -99,7 +106,13 @@ export function useOpenCommandPalette(): () => void {
  * press while a dialog is open.
  */
 export function CommandPalette({ children }: { children: ReactNode }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpenState] = useState(false);
+  // What is typed into the palette, which begins empty every time.
+  const [search, setSearch] = useState("");
+  const setOpen = useCallback((open: boolean) => {
+    setOpenState(open);
+    if (!open) setSearch("");
+  }, []);
   const navigate = useNavigate();
   const router = useRouter();
   const newDraft = useNewDraft();
@@ -116,6 +129,11 @@ export function CommandPalette({ children }: { children: ReactNode }) {
   const editor = useEditorCommands();
   const { paused } = useSynced(selectSchedule);
   const mutate = useMutate();
+  /** The screens that the workspace has. */
+  const shown = screens.filter(({ to }) =>
+    hasScreen(workspace.environment, to),
+  );
+  const named = namedScreen(search, shown);
 
   useKeyDown((event) => {
     if (withMod(event) && event.key.toLowerCase() === "k") {
@@ -137,7 +155,7 @@ export function CommandPalette({ children }: { children: ReactNode }) {
     setOpen(false);
     command();
   };
-  const show = useMemo(() => () => setOpen(true), []);
+  const show = useMemo(() => () => setOpen(true), [setOpen]);
 
   return (
     <PaletteContext value={show}>
@@ -148,10 +166,31 @@ export function CommandPalette({ children }: { children: ReactNode }) {
         title="Commands"
         description="Search for something to do or a screen to go to."
       >
-        <Command filter={paletteFilter}>
-          <CommandInput placeholder="Type a command or search…" />
+        <Command>
+          <CommandInput
+            placeholder="Type a command or search…"
+            value={search}
+            onValueChange={setSearch}
+          />
           <CommandList>
             <CommandEmpty>Nothing found.</CommandEmpty>
+            {/* A screen whose name is typed in full, before everything
+                else that matches: Enter takes the first of the list, and
+                somebody who types "queue" means the Queue screen, not
+                the command that pauses the queue. The palette library
+                lists its groups in the order that they are written in,
+                whatever matches best, so the screen is written first. */}
+            {named && (
+              <CommandGroup heading="Go to">
+                <CommandItem
+                  value={`Go to ${named.label}`}
+                  onSelect={run(() => void navigate({ to: named.to }))}
+                >
+                  <named.icon aria-hidden="true" />
+                  {named.label}
+                </CommandItem>
+              </CommandGroup>
+            )}
             <CommandGroup heading="Drafts">
               <CommandItem onSelect={run(() => newDraft())}>
                 <Plus aria-hidden="true" />
@@ -283,12 +322,13 @@ export function CommandPalette({ children }: { children: ReactNode }) {
                 })}
             </CommandGroup>
             <CommandGroup heading="Go to">
-              {screens
-                .filter(({ to }) => hasScreen(workspace.environment, to))
+              {shown
+                // Not a second time, where it is listed first.
+                .filter((screen) => screen !== named)
                 .map(({ to, label, icon: Icon }) => (
                   <CommandItem
                     key={to}
-                    value={goTo(label)}
+                    value={`Go to ${label}`}
                     onSelect={run(() => void navigate({ to }))}
                   >
                     <Icon aria-hidden="true" />
