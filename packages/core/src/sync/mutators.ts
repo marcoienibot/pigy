@@ -823,6 +823,7 @@ export const mutators = {
       const channel = tx.get("channel", id);
       if (channel?.connectedAt === connectedAt) {
         tx.put("channel", { ...channel, status: "needs_reconnect" });
+        notifyOfChannel(tx, channel.id, "channel_needs_reconnect");
       }
     },
     { serverOnly: true },

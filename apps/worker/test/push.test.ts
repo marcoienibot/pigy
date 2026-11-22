@@ -1,9 +1,15 @@
+import type { SimToken } from "@pigy/simulators/world";
 import { describe, expect, it, onTestFinished } from "vitest";
-import { connectInSandbox, connectLinkedInLive } from "./channels.ts";
+import {
+  connectInSandbox,
+  connectLinkedInLive,
+  connectThreadsLive,
+} from "./channels.ts";
 import {
   adminEmail,
   breakDatabase,
   expectErrors,
+  expectWarnings,
   invite,
   logged,
   signedIn,
@@ -315,6 +321,99 @@ describe("a channel that needs connecting again", () => {
 
     // What is left is the post, which still has not arrived.
     expect(client.table("notification")).toMatchObject([{ id: postId }]);
+  });
+});
+
+describe("an access that pigy renews", () => {
+  /** A Threads account connected to the live workspace, and a device. */
+  async function withThreads() {
+    const context = await withPush();
+    const { test, browser } = context;
+    const workspace = context.workspaces.live;
+    const outcome = await connectThreadsLive(test, browser, workspace);
+    expect(outcome.connect).toBe("connected");
+    await Promise.all(test.keptAlive);
+    const phone = await turnOn(test, browser);
+    return { ...context, workspace, phone, channel: outcome.channel ?? "" };
+  }
+
+  it("is told of as one to connect again when its network will not renew it", async () => {
+    const { test, browser, workspace, phone, channel } = await withThreads();
+    expectWarnings();
+    // The person has removed pigy in the settings of their account.
+    for (const { token } of test.network.world.tokens<SimToken>("threads")) {
+      test.network.world.revokeToken("threads", token);
+    }
+
+    // A week after the connection the timer asks Threads, which refuses.
+    await pass(test, browser, 7);
+    await attend(workspace);
+
+    expect(
+      (await looking(browser, workspace)).table("notification"),
+    ).toMatchObject([{ id: channel, kind: "channel_needs_reconnect" }]);
+    expect(await received(test, phone, 1)).toEqual([
+      {
+        v: 1,
+        kind: "channel_needs_reconnect",
+        workspaceId: workspace,
+        environment: "live",
+        channelId: channel,
+        network: "threads",
+      },
+    ]);
+  });
+
+  it("is not reminded of while the renewals work, and is once they have not worked for weeks", async () => {
+    const { test, browser, workspace, phone, channel } = await withThreads();
+
+    // More than the 60 days of one access, renewed every week: its end is
+    // never less than 53 days away.
+    for (let week = 0; week < 10; week += 1) {
+      await pass(test, browser, 7);
+      await attend(workspace);
+    }
+    expect((await looking(browser, workspace)).table("notification")).toEqual(
+      [],
+    );
+    expect(messagesOf(test, phone)).toEqual([]);
+
+    // Nothing has renewed the access for 54 days, and Threads is in
+    // trouble when the timer asks now: the end is six days away.
+    expectWarnings();
+    await pass(test, browser, 54);
+    test.network.threads.arm({ kind: "server-error", operation: "refresh" });
+    await attend(workspace);
+
+    expect(
+      (await looking(browser, workspace)).table("notification"),
+    ).toMatchObject([{ id: channel, kind: "channel_expiring" }]);
+    expect(await received(test, phone, 1)).toMatchObject([
+      { kind: "channel_expiring", channelId: channel, network: "threads" },
+    ]);
+  });
+
+  it("is reminded of again when the renewals stop working another time", async () => {
+    const { test, browser, workspace, phone } = await withThreads();
+    expectWarnings();
+    await pass(test, browser, 54);
+    test.network.threads.arm({ kind: "server-error", operation: "refresh" });
+    await attend(workspace);
+    await received(test, phone, 1);
+
+    // An hour later Threads answers: the access has another end, and the
+    // reminder of the old one goes.
+    await pass(test, browser, 1);
+    await attend(workspace);
+    expect((await looking(browser, workspace)).table("notification")).toEqual(
+      [],
+    );
+
+    // Months later the same happens to the end that the access has then.
+    await pass(test, browser, 54);
+    test.network.threads.arm({ kind: "server-error", operation: "refresh" });
+    await attend(workspace);
+    expect(await received(test, phone, 2)).toHaveLength(2);
   });
 });
 

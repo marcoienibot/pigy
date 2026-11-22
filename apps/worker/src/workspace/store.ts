@@ -1418,23 +1418,28 @@ export class WorkspaceStore {
 
   /**
    * The channels whose access ends by a date and whose owner has not been
-   * told of the end of the access that they have now.
+   * told of the end that it has now. Not one that waits to be connected
+   * again: the inbox has said that, and there is nothing to remind of.
    */
   private readonly notWarned = and(
     isNotNull(channels.expiresAt),
+    eq(channels.status, "connected"),
     or(
       isNull(channels.expiryWarnedFor),
-      ne(channels.expiryWarnedFor, channels.connectedAt),
+      ne(channels.expiryWarnedFor, channels.expiresAt),
     ),
   );
 
   /**
    * Tells the owner of every access that ends within `expiryNoticeMs`,
-   * once for each access: through the mutator `channel.warnOfExpiry`,
-   * which puts it into the inbox, and with a note next to the channel
-   * that it was said, in one transaction. The note names the access by the
-   * time of its connection, so an account that is connected again is told
-   * of the end of its new access when that comes.
+   * once for each end: through the mutator `channel.warnOfExpiry`, which
+   * puts it into the inbox, and with a note next to the channel that it
+   * was said, in one transaction. The note is the end that was told of,
+   * so an account that is connected again is told of the end of its new
+   * access when that comes. So is one whose access pigy renews, as that
+   * of Threads: its end moves with every renewal, which comes weeks
+   * before it, so it is within the week only when the renewals have not
+   * worked for weeks, and again when they stop working another time.
    *
    * An access whose end has passed unsaid is noted too, and nothing is
    * said of it: the mutator does not tell of an end that is over, and the
@@ -1443,13 +1448,13 @@ export class WorkspaceStore {
   warnOfExpiry(now: number): void {
     this.storage.transactionSync(() => {
       const due = this.db
-        .select({ id: channels.id, connectedAt: channels.connectedAt })
+        .select({ id: channels.id, expiresAt: channels.expiresAt })
         .from(channels)
         .where(
           and(this.notWarned, lte(channels.expiresAt, now + expiryNoticeMs)),
         )
         .all();
-      for (const { id, connectedAt } of due) {
+      for (const { id, expiresAt } of due) {
         const [refusal] = this.run(
           [{ name: "channel.warnOfExpiry", args: { id } }],
           now,
@@ -1458,7 +1463,7 @@ export class WorkspaceStore {
         if (refusal) throw new Error(`Not warned: ${refusal.message}`);
         this.db
           .update(channels)
-          .set({ expiryWarnedFor: connectedAt })
+          .set({ expiryWarnedFor: expiresAt })
           .where(eq(channels.id, id))
           .run();
       }

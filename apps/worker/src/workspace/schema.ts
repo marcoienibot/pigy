@@ -101,10 +101,11 @@ export const channels = sqliteTable(
      */
     refreshAt: integer("refresh_at"),
     /**
-     * The access that the person was told the end of, a week before it:
-     * the `connectedAt` of the connection that the reminder was for. A
-     * reminder is given once per access, and this is what says that it
-     * was. Null until the first.
+     * The end of an access that the person was told of, a week before
+     * it: the `expiresAt` that the reminder was for. A reminder is given
+     * once for each end, and this is what says that it was: an access
+     * that is connected again or renewed has another end. Null until the
+     * first.
      */
     expiryWarnedFor: integer("expiry_warned_for"),
   },

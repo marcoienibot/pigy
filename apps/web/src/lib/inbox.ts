@@ -132,7 +132,11 @@ export function inboxWords(
         ? "Connect the account again to keep posting."
         : channel.expiresAt <= now
           ? "It has ended: connect the account again to go on posting."
-          : `It ends on ${dayOf(channel.expiresAt, now)}, and ${network} does not let pigy renew it. Connect the account again before then to keep posting.`,
+          : networkInfo[channel.network].renewsAccess
+            ? // As the Channels screen says it: an end that is this near
+              // is one that the renewals are not going to put off.
+              `pigy could not renew it, and it ends on ${dayOf(channel.expiresAt, now)}. Connect the account again before then to keep posting.`
+            : `It ends on ${dayOf(channel.expiresAt, now)}, and ${network} does not let pigy renew it. Connect the account again before then to keep posting.`,
     action: "Connect again",
   };
 }

@@ -2,6 +2,7 @@ import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { feed, type SimToken } from "@pigy/simulators/world";
 import { describe, expect, it, vi } from "vitest";
 import { renewalBrokenMs, renewalRetryMs } from "../src/workspace/renewal.ts";
+import { notificationLifetimeMs } from "../src/workspace/store.ts";
 import {
   connectBlueskyLive,
   connectThreadsLive,
@@ -222,8 +223,16 @@ describe("the access of a Threads channel", () => {
       status: "needs_reconnect",
     });
     expect(warnings).toHaveBeenCalled();
-    // A channel that waits for its person has nothing to renew.
-    expect(await nextLookIn(workspace)).toBeNull();
+    // A channel that waits for its person has nothing to renew. The next
+    // look is the inbox's, which has said that the account needs
+    // connecting again and keeps that for 30 days: no reminder of the end
+    // of this access is due before.
+    expect(await nextLookIn(workspace)).toBeGreaterThan(
+      notificationLifetimeMs - slack,
+    );
+    expect(await nextLookIn(workspace)).toBeLessThan(
+      notificationLifetimeMs + slack,
+    );
     expect(asked(test, threadsRefresh)).toBe(1);
   });
 
