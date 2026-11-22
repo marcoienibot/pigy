@@ -1,9 +1,11 @@
 import { type MutatorName, maxImagesPerPart } from "@pigy/core";
 import { jpegFile, pngFile } from "@pigy/core/test-images";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   attachFiles,
   contentImage,
+  fetchedBytes,
+  fetchedUrl,
   imageNotes,
   imagesOf,
   readFile,
@@ -324,5 +326,41 @@ describe("attaching files", () => {
     expect(refusals).toEqual([
       "c.png was not added: a part has 4 images at most.",
     ]);
+  });
+});
+
+describe("fetched pictures", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("are kept up to so many bytes, and the ones asked for longest ago go first, with their addresses", async () => {
+    // Pictures of a quarter of what a tab keeps: four of them fit.
+    const size = fetchedBytes / 4;
+    let fetches = 0;
+    vi.stubGlobal("fetch", async () => {
+      fetches += 1;
+      return new Response(new Uint8Array(size));
+    });
+    const revoked: string[] = [];
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation((url) => {
+      revoked.push(url);
+    });
+    const path = (index: number) => `/api/sandbox/images/picture-${index}`;
+    const urls: string[] = [];
+    for (let index = 0; index < 4; index++) {
+      urls.push(await fetchedUrl(path(index)));
+    }
+    // The first is asked for again, and is the last to go now.
+    expect(await fetchedUrl(path(0))).toBe(urls[0]);
+    expect(revoked).toEqual([]);
+    // Before, every picture stayed for as long as the page.
+    await fetchedUrl(path(4));
+    expect(revoked).toEqual([urls[1]]);
+    expect(fetches).toBe(5);
+    // A picture that went is fetched again when it is drawn anew.
+    expect(await fetchedUrl(path(1))).not.toBe(urls[1]);
+    expect(fetches).toBe(6);
   });
 });

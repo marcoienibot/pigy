@@ -8,7 +8,9 @@
  * One database per person, next to the copies of their workspaces and
  * under the same beginning of a name, so that whatever deletes the
  * copies of a person deletes these with them: `deleteCopies` of
- * sync/indexed-db.ts. A file is deleted when its upload has ended.
+ * sync/indexed-db.ts. A file is deleted when its upload has ended: by the
+ * tab that ran the upload, or the next time a tab looks after the uploads
+ * of its workspace, `Uploads` of uploads.ts.
  */
 
 /** The name of the database with the files of `userId`. */
@@ -19,11 +21,15 @@ export function filesName(userId: string): string {
 /** Whether `name` is the database of somebody's files, and no copy. */
 export const isFilesName = (name: string) => name.endsWith("/files");
 
-/** Where files are kept by a key. */
+/**
+ * Where files are kept by a key: `<workspace ID>/<image ID>`, so that the
+ * files of each workspace can be looked through by themselves.
+ */
 export type FileStore = {
   put(key: string, file: Blob): Promise<void>;
   get(key: string): Promise<Blob | undefined>;
   delete(key: string): Promise<void>;
+  keys(): Promise<string[]>;
 };
 
 const done = <Result>(request: IDBRequest<Result>) =>
@@ -67,6 +73,10 @@ export function indexedDbFiles(userId: string): FileStore {
     delete: async (key) => {
       await done((await store("readwrite")).delete(key));
     },
+    keys: async () =>
+      (await done((await store("readonly")).getAllKeys())).filter(
+        (key): key is string => typeof key === "string",
+      ),
   };
 }
 
@@ -81,5 +91,6 @@ export function memoryFiles(): FileStore {
     delete: async (key) => {
       files.delete(key);
     },
+    keys: async () => [...files.keys()],
   };
 }

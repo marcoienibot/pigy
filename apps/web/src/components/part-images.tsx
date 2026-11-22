@@ -1,10 +1,16 @@
-import { type Limits, maxAltLength, maxImagesPerPart } from "@pigy/core";
+import {
+  type Limits,
+  maxAltLength,
+  maxImagesPerPart,
+  type SyncStore,
+} from "@pigy/core";
 import { useRouteContext } from "@tanstack/react-router";
 import { ArrowLeft, ArrowRight, ImagePlus, X } from "lucide-react";
 import {
   type ChangeEvent,
   useEffect,
   useEffectEvent,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -16,6 +22,7 @@ import {
   attachFiles,
   imageNotes,
   type PartImage,
+  selectMediaIds,
   selectUploading,
   thumbnailUrl,
   uploadsFor,
@@ -23,7 +30,8 @@ import {
 import { useOnline } from "@/lib/online";
 import type { Uploads } from "@/lib/uploads";
 import { cn } from "@/lib/utils";
-import { useMutate, useSynced } from "@/sync/react";
+import { useMutate } from "@/sync/react";
+import { onSyncChange, openStore } from "@/sync/workspace-sync";
 
 /** The uploads of the tab, for whoever is signed in. */
 export function useUploads(): Uploads {
@@ -32,19 +40,56 @@ export function useUploads(): Uploads {
 }
 
 /**
- * Keeps the uploads of the workspace on screen going, whatever screen is
- * shown: it goes on with the images that are on their way and whose file
- * the device has, and tries again when the connection is back. It shows
- * nothing.
+ * Keeps the uploads of the workspaces that the tab syncs going, whatever
+ * screen is shown: it goes on with the images that are on their way and
+ * whose file the device has, tries again when the connection is back, and
+ * has the files deleted that no upload needs any more. It shows nothing.
  */
 export function UploadKeeper() {
-  const { workspace } = useRouteContext({ from: "/_app" });
+  const { me, workspaces } = useRouteContext({ from: "/_app" });
   const uploads = useUploads();
-  const uploading = useSynced(selectUploading);
-  useEffect(() => {
-    void uploads.resume(workspace.id, uploading ? uploading.split(" ") : []);
-  }, [uploads, workspace.id, uploading]);
+  // The workspace on screen, and the other one once the tab syncs it.
+  const open = useSyncExternalStore(onSyncChange, () =>
+    workspaces
+      .filter(({ id }) => openStore(me.user.id, id))
+      .map(({ id }) => id)
+      .join(" "),
+  );
   useOnline(() => uploads.retry());
+  return open
+    .split(" ")
+    .filter(Boolean)
+    .map((workspaceId) => {
+      const store = openStore(me.user.id, workspaceId);
+      return store ? (
+        <WorkspaceUploads
+          key={workspaceId}
+          workspaceId={workspaceId}
+          store={store}
+          uploads={uploads}
+        />
+      ) : null;
+    });
+}
+
+const words = (text: string) => (text ? text.split(" ") : []);
+
+/** The uploads of one workspace, by what its copy says of its images. */
+function WorkspaceUploads({
+  workspaceId,
+  store,
+  uploads,
+}: {
+  workspaceId: string;
+  store: SyncStore;
+  uploads: Uploads;
+}) {
+  const tables = useSyncExternalStore(store.subscribe, store.getView);
+  const uploading = useMemo(() => selectUploading(tables), [tables]);
+  const known = useMemo(() => selectMediaIds(tables), [tables]);
+  useEffect(() => {
+    void uploads.resume(workspaceId, words(uploading), words(known));
+  }, [uploads, workspaceId, uploading, known]);
   return null;
 }
 
@@ -78,7 +123,13 @@ export function filesOf(transfer: DataTransfer | null): File[] {
   );
 }
 
-/** An address for the picture of an image, once there is one. */
+/**
+ * An address for the picture of an image, once there is one: the file
+ * while this tab uploads it, and the small picture once the server has
+ * made it, in its place. A file of millions of pixels is not drawn into a
+ * tile for longer than it has to be, and its address goes with its
+ * upload.
+ */
 function usePicture(image: PartImage, uploads: Uploads): string | undefined {
   const { workspace } = useRouteContext({ from: "/_app" });
   const local = useSyncExternalStore(uploads.subscribe, () =>
@@ -88,7 +139,7 @@ function usePicture(image: PartImage, uploads: Uploads): string | undefined {
   const ready = image.media?.status === "ready";
   const mediaId = image.media?.id;
   useEffect(() => {
-    if (local || !ready || !mediaId) return;
+    if (!ready || !mediaId) return;
     let shown = true;
     thumbnailUrl(workspace.id, mediaId).then(
       (url) => {
@@ -100,8 +151,8 @@ function usePicture(image: PartImage, uploads: Uploads): string | undefined {
     return () => {
       shown = false;
     };
-  }, [local, ready, mediaId, workspace.id]);
-  return local ?? fetched;
+  }, [ready, mediaId, workspace.id]);
+  return (ready && fetched) || local || fetched;
 }
 
 /** What the tile of an image says of where the image is, or null. */
@@ -112,6 +163,9 @@ function useStatus(image: PartImage, uploads: Uploads): string | null {
   );
   const lacks = useSyncExternalStore(uploads.subscribe, () =>
     media ? uploads.lacks(media.id) : false,
+  );
+  const elsewhere = useSyncExternalStore(uploads.subscribe, () =>
+    media ? uploads.elsewhere(media.id) : false,
   );
   if (!media) return "No longer kept";
   if (media.status === "failed") return media.error ?? "Not uploaded";
@@ -125,6 +179,7 @@ function useStatus(image: PartImage, uploads: Uploads): string | null {
       ? "Checking"
       : `Uploading ${Math.floor((progress.sent / progress.total) * 100)}%`;
   }
+  if (elsewhere) return "Uploading in another window";
   return lacks
     ? "Waiting for the device that has the file"
     : "Waiting to upload";

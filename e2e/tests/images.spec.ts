@@ -2,6 +2,7 @@ import {
   channelChoice,
   connectSimulated,
   connectSimulatedLinkedIn,
+  draftRow,
   editor,
   expectSync,
   feedOf,
@@ -255,6 +256,57 @@ test("an upload that loses its connection waits, says so, and goes on with what 
   expect(sent.filter((step) => step === "PUT /1")).toHaveLength(1);
   expect(sent.filter((step) => step === "POST /complete")).toHaveLength(1);
   expect(sent.at(-1)).toBe("POST /complete");
+});
+
+test("of two tabs, the one that attached an image uploads it, and the other takes the upload over when that one is closed", async ({
+  ownPage: page,
+  context,
+}) => {
+  const large = png(1400, 1300, { noise: true });
+  /** What a page sends of an upload, and a second chunk that fails while `cut`. */
+  let cut = true;
+  const watch = async (tab: Page) => {
+    const sent: string[] = [];
+    await tab.route(/\/media\/[^/]+\/upload(\/|$)/, async (route) => {
+      const request = route.request();
+      const step = new URL(request.url()).pathname.split("/upload")[1] || "/";
+      sent.push(`${request.method()} ${step}`);
+      if (cut && step === "/2") return route.abort("connectionfailed");
+      return route.continue();
+    });
+    return sent;
+  };
+  const sentByFirst = await watch(page);
+  await page.getByRole("button", { name: "New draft" }).click();
+  await editor(page).fill("Two tabs");
+  await choose(page, [file("large.png", large)]);
+  await expect(image(page, 1).getByRole("status")).toHaveText(
+    "Waiting for a connection",
+    { timeout: 30_000 },
+  );
+  expect(sentByFirst).toContain("PUT /1");
+
+  // A second tab of the same person opens the draft. The rows and the
+  // file that the device keeps reach it too, and before, it uploaded the
+  // file as well.
+  const second = await context.newPage();
+  const sentBySecond = await watch(second);
+  await second.goto("/");
+  await draftRow(second, "Two tabs").click();
+  await expect(image(second, 1).getByRole("status")).toHaveText(
+    "Uploading in another window",
+    { timeout: 30_000 },
+  );
+  expect(sentBySecond).toEqual([]);
+
+  // The first tab is closed while its upload waits: the second takes it
+  // over, from the chunks that the server has.
+  cut = false;
+  await page.close();
+  await uploaded(second, 1);
+  expect(sentBySecond[0]).toBe("POST /");
+  expect(sentBySecond).not.toContain("PUT /1");
+  expect(sentBySecond.at(-1)).toBe("POST /complete");
 });
 
 test("an image that is dropped on a part of a thread goes into that part, and an Undo brings a removed part back with it", async ({

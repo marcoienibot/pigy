@@ -1,8 +1,8 @@
-import { uploadChunkBytes } from "@pigy/core";
+import { uploadChunkBytes, uuidv7 } from "@pigy/core";
 import { expect, test } from "vitest";
 import { ApiError, Unanswered } from "@/lib/api";
 import { memoryFiles } from "@/lib/upload-files";
-import { type UploadApi, Uploads } from "@/lib/uploads";
+import { type UploadApi, type UploadLocks, Uploads } from "@/lib/uploads";
 
 const workspaceId = "workspace";
 const base = `/api/workspaces/${workspaceId}/media`;
@@ -38,8 +38,87 @@ function server(
   return { api, received, completed, requests };
 }
 
+/**
+ * The Web Locks of a browser, which its tabs share: `tab()` is the locks
+ * of a tab, and `close` closes it, which lets go of what it holds.
+ */
+function browserLocks() {
+  type Waiter = { tab: number; grant: () => void };
+  const held = new Map<string, number>();
+  const queues = new Map<string, Waiter[]>();
+  let tabs = 0;
+  const free = (name: string) => {
+    held.delete(name);
+    queues.get(name)?.shift()?.grant();
+  };
+  return {
+    held,
+    tab() {
+      const id = ++tabs;
+      let closed = false;
+      const locks: UploadLocks = {
+        request(name, { ifAvailable }, callback) {
+          // A closed tab runs nothing.
+          if (closed) return new Promise(() => {});
+          const run = async () => {
+            held.set(name, id);
+            try {
+              await callback({ name });
+            } finally {
+              if (!closed && held.get(name) === id) free(name);
+            }
+          };
+          if (!held.has(name) && !queues.get(name)?.length) return run();
+          if (ifAvailable) return callback(null);
+          return new Promise<void>((resolve, reject) => {
+            const queue = queues.get(name) ?? [];
+            queues.set(name, queue);
+            queue.push({
+              tab: id,
+              grant: () => void run().then(resolve, reject),
+            });
+          });
+        },
+      };
+      const close = () => {
+        closed = true;
+        for (const queue of queues.values()) {
+          queue.splice(
+            0,
+            queue.length,
+            ...queue.filter(({ tab }) => tab !== id),
+          );
+        }
+        for (const [name, tab] of held) if (tab === id) free(name);
+      };
+      return { locks, close };
+    },
+  };
+}
+
+/** Addresses of files that a test can count. */
+function fileUrls() {
+  const made: string[] = [];
+  const revoked: string[] = [];
+  return {
+    made,
+    revoked,
+    urls: {
+      create: () => {
+        made.push(`blob:${made.length + 1}`);
+        return made.at(-1) as string;
+      },
+      revoke: (url: string) => revoked.push(url),
+    },
+  };
+}
+
 /** Uploads with timers that the test runs. */
-function uploadsOf(api: UploadApi, files = memoryFiles()) {
+function uploadsOf(
+  api: UploadApi,
+  files = memoryFiles(),
+  more: Partial<ConstructorParameters<typeof Uploads>[0]> = {},
+) {
   const waiting: (() => void)[] = [];
   const uploads = new Uploads({
     api,
@@ -48,6 +127,7 @@ function uploadsOf(api: UploadApi, files = memoryFiles()) {
       waiting.push(run);
       return () => {};
     },
+    ...more,
   });
   /** Lets every wait of an upload end, as when its time is up. */
   const pass = () => {
@@ -142,7 +222,7 @@ test("an upload whose row the server does not have yet asks again, and one that 
 test("a tab that is loaded again goes on with the files that the device kept, and says which it does not have", async () => {
   const { api, completed } = server();
   const files = memoryFiles();
-  await files.put("kept", fileOf(10));
+  await files.put(`${workspaceId}/kept`, fileOf(10));
   const { uploads } = uploadsOf(api, files);
   await uploads.resume(workspaceId, ["kept", "elsewhere"]);
   await until(() => completed.length === 1);
@@ -154,5 +234,107 @@ test("a tab that is loaded again goes on with the files that the device kept, an
   // The row says that the upload has ended: the file is let go of.
   await uploads.resume(workspaceId, ["elsewhere"]);
   await until(() => uploads.progress("kept") === undefined);
-  expect(await files.get("kept")).toBeUndefined();
+  expect(await files.get(`${workspaceId}/kept`)).toBeUndefined();
+});
+
+test("of two tabs, one uploads an image, and the other takes it over when that tab is closed", async () => {
+  const { api, completed } = server();
+  const sent = { first: [] as string[], second: [] as string[] };
+  // The first tab's upload gets no answer for as long as the tab lives.
+  const first: UploadApi = (path, method) => {
+    sent.first.push(`${method} ${path}`);
+    return new Promise(() => {});
+  };
+  const second: UploadApi = (path, method, body) => {
+    sent.second.push(`${method} ${path}`);
+    return api(path, method, body);
+  };
+  const browser = browserLocks();
+  const files = memoryFiles();
+  const one = browser.tab();
+  const two = browser.tab();
+  const a = uploadsOf(first, files, { locks: one.locks });
+  const b = uploadsOf(second, files, { locks: two.locks });
+
+  await a.uploads.add(workspaceId, "one", fileOf(10));
+  // The second tab hears of the row, as every tab of the person does, and
+  // finds the file that the first one keeps. Before, it uploaded it too.
+  await b.uploads.resume(workspaceId, ["one"]);
+  await until(() => b.uploads.elsewhere("one"));
+  expect(sent.second).toEqual([]);
+  expect(b.uploads.lacks("one")).toBe(false);
+
+  // The first tab is closed in the middle of its upload.
+  one.close();
+  await until(() => completed.includes("one"));
+  expect(sent.second[0]).toBe(`POST ${base}/one/upload`);
+  expect(b.uploads.elsewhere("one")).toBe(false);
+  expect(completed).toEqual(["one"]);
+});
+
+test("a tab that waits for another to upload an image does not upload it once that one is done", async () => {
+  const { api, completed, requests } = server();
+  const browser = browserLocks();
+  const files = memoryFiles();
+  const one = browser.tab();
+  const two = browser.tab();
+  const a = uploadsOf(api, files, { locks: one.locks });
+  const b = uploadsOf(
+    () => Promise.reject(new Error("The second tab sent a request")),
+    files,
+    { locks: two.locks },
+  );
+  await a.uploads.add(workspaceId, "one", fileOf(10));
+  await b.uploads.resume(workspaceId, ["one"]);
+  await until(() => completed.includes("one"));
+  // The row says that the upload has ended, the first tab first: it lets
+  // go of the file and then of the lock, and the second tab, which has not
+  // heard yet, finds no file.
+  await a.uploads.resume(workspaceId, []);
+  await until(() => b.uploads.lacks("one"));
+  await b.uploads.resume(workspaceId, []);
+  expect(
+    requests.filter((request) => request.startsWith("POST /one/upload")),
+  ).toHaveLength(2);
+  expect(await files.keys()).toEqual([]);
+  expect(browser.held.size).toBe(0);
+});
+
+test("the address of a file goes with its upload", async () => {
+  const { api, completed } = server();
+  const { urls, made, revoked } = fileUrls();
+  const { uploads } = uploadsOf(api, memoryFiles(), { urls });
+  await uploads.add(workspaceId, "one", fileOf(10));
+  await until(() => completed.includes("one"));
+  expect(uploads.url("one")).toBe("blob:1");
+  // The row says that the image is ready: the tile shows the small
+  // picture, and the file, which may be of millions of pixels, is let go.
+  await uploads.resume(workspaceId, []);
+  expect(revoked).toEqual(made);
+  expect(uploads.url("one")).toBeUndefined();
+});
+
+test("the files of uploads that ended while no tab ran them are deleted, and the ones that may still be needed are kept", async () => {
+  const { api } = server();
+  const files = memoryFiles();
+  const now = new Date("2026-11-22T12:00:00Z");
+  const ended = uuidv7(new Date("2026-11-22T11:00:00Z"));
+  const gone = uuidv7(new Date("2026-11-20T12:00:00Z"));
+  const unheard = uuidv7(new Date("2026-11-22T11:59:00Z"));
+  for (const id of [ended, gone, unheard]) {
+    await files.put(`${workspaceId}/${id}`, fileOf(10));
+  }
+  await files.put(`other/${gone}`, fileOf(10));
+  const { uploads } = uploadsOf(api, files, {
+    locks: browserLocks().tab().locks,
+    now: () => now.getTime(),
+  });
+  // The tab knows the row of the first, which is ready. Of the second it
+  // knows nothing, and it is two days old: its row is gone. The third is
+  // a minute old: its row may not have reached this tab yet. Before, all
+  // of them stayed until the person signed out.
+  await uploads.resume(workspaceId, [], [ended]);
+  expect((await files.keys()).sort()).toEqual(
+    [`${workspaceId}/${unheard}`, `other/${gone}`].sort(),
+  );
 });

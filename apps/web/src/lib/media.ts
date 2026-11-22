@@ -119,6 +119,11 @@ export function selectUploading(tables: Tables): string {
     .join(" ");
 }
 
+/** The IDs of every image of the workspace, as one text: see `selectUploading`. */
+export function selectMediaIds(tables: Tables): string {
+  return [...tables.media.keys()].sort().join(" ");
+}
+
 /**
  * An image of a part as `validateContent` of @pigy/core judges it for an
  * account: what its row says of it, and whether it can go out as things
@@ -335,16 +340,65 @@ export function uploadsFor(userId: string): Uploads {
         const timer = setTimeout(run, ms);
         return () => clearTimeout(timer);
       },
+      // Not in every browser: without them, every tab uploads what the
+      // device keeps, as before there were several tabs.
+      locks: typeof navigator === "undefined" ? undefined : navigator.locks,
     });
     uploadsOf.set(userId, uploads);
   }
   return uploads;
 }
 
-// The small pictures that the tab has fetched, by the address of each.
-// In the memory of the page and nowhere else: an image of a workspace is
-// somebody's, and the service worker keeps none.
-const fetched = new Map<string, Promise<string>>();
+/**
+ * The pictures that the tab has fetched, by the address of each, the ones
+ * asked for last at the end. In the memory of the page and nowhere else:
+ * an image of a workspace is somebody's, and the service worker keeps
+ * none. Each holds its bytes for as long as its address exists, so the
+ * ones asked for longest ago go when they come to more than
+ * `fetchedBytes`, with their addresses: a picture that is on screen stays
+ * drawn, and is fetched again if it is drawn anew.
+ */
+const fetched = new Map<string, { url: Promise<string>; size: number }>();
+
+/** The most bytes of pictures that a tab keeps fetched: 64 MiB. */
+export const fetchedBytes = 64 * 1024 * 1024;
+
+/** Lets go of the pictures asked for longest ago, beyond `fetchedBytes`. */
+function forgetFetched(keep: string): void {
+  let total = 0;
+  for (const { size } of fetched.values()) total += size;
+  for (const [path, { url, size }] of fetched) {
+    if (total <= fetchedBytes) return;
+    if (path === keep) continue;
+    fetched.delete(path);
+    total -= size;
+    void url.then((address) => URL.revokeObjectURL(address)).catch(() => {});
+  }
+}
+
+/** An address of the picture at `path`, fetched once and kept while used. */
+function fetchedAt(path: string): Promise<string> {
+  const found = fetched.get(path);
+  if (found) {
+    // Asked for again: the last to go.
+    fetched.delete(path);
+    fetched.set(path, found);
+    return found.url;
+  }
+  const entry = { url: Promise.resolve(""), size: 0 };
+  entry.url = fetchImage(path).then((blob) => {
+    entry.size = blob.size;
+    const address = URL.createObjectURL(blob);
+    forgetFetched(path);
+    return address;
+  });
+  fetched.set(path, entry);
+  // One that failed is asked for again the next time.
+  entry.url.catch(() => {
+    if (fetched.get(path) === entry) fetched.delete(path);
+  });
+  return entry.url;
+}
 
 /**
  * An address of the small picture of an image of `workspaceId`, for a
@@ -354,24 +408,10 @@ export function thumbnailUrl(
   workspaceId: string,
   mediaId: string,
 ): Promise<string> {
-  const path = mediaFilePath(workspaceId, mediaId, "thumbnail");
-  let url = fetched.get(path);
-  if (!url) {
-    url = fetchImage(path).then((blob) => URL.createObjectURL(blob));
-    fetched.set(path, url);
-    // One that failed is asked for again the next time.
-    url.catch(() => fetched.delete(path));
-  }
-  return url;
+  return fetchedAt(mediaFilePath(workspaceId, mediaId, "thumbnail"));
 }
 
 /** The same for an image of a post of the sandbox, by its address. */
 export function fetchedUrl(path: string): Promise<string> {
-  let url = fetched.get(path);
-  if (!url) {
-    url = fetchImage(path).then((blob) => URL.createObjectURL(blob));
-    fetched.set(path, url);
-    url.catch(() => fetched.delete(path));
-  }
-  return url;
+  return fetchedAt(path);
 }
