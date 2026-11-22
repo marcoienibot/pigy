@@ -198,8 +198,10 @@ async function watchPolicy(context: BrowserContext): Promise<string[]> {
       );
     });
   });
-  // What has no page to tell, such as the service worker, and a page
-  // that the event did not reach.
+  // What a worker writes that has no page to tell it. That is not what
+  // the browser says of a service worker: Playwright passes on of one only
+  // what its own code writes with `console`, so a violation inside sw.js
+  // is not seen here.
   context.on("console", (message) => {
     if (
       message.type() === "error" &&
