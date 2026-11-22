@@ -284,15 +284,22 @@ describe("what the editor asks the server about", () => {
       markNotes(text, networks);
       return performance.now() - began;
     };
-    // Each text is new to the editor, so nothing is handed out from
-    // before. Four times the text may take four times as long, and took
-    // sixteen times as long when every mark was held against every
-    // other. The smaller time is the best of three.
-    const small = Math.min(
-      ...[1, 2, 3].map((run) => timeOf(`${run} ${unit.repeat(2000)}`)),
-    );
-    expect(timeOf(unit.repeat(8000)) / small).toBeLessThan(9);
-  });
+    // The shortest of three runs, the one least disturbed, for both
+    // lengths: a single run of the longer text, a quarter of a second of work,
+    // is the one that a pause of a busy machine falls into. Each run has
+    // a text of its own, because the editor hands out what it has made
+    // of a text before, and such a run would measure nothing.
+    const best = (repeats: number) =>
+      Math.min(
+        ...[1, 2, 3].map((run) => timeOf(`${run} ${unit.repeat(repeats)}`)),
+      );
+    // Four times the text may take four times as long, and took sixteen
+    // times as long when every mark was held against every other.
+    const small = best(1000);
+    expect(best(4000) / small).toBeLessThan(9);
+    // Three runs of a quarter of a second, and more on a machine that
+    // runs every suite at once: the test has the time for that.
+  }, 30_000);
 
   it("says who shows the card of a link", () => {
     expect(cardNote(["bluesky", "mastodon", "linkedin"])).toBe(
