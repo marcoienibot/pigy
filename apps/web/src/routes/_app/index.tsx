@@ -53,12 +53,13 @@ import {
   type Gauge,
   gaugesOf,
   type Meter,
-  meterOf,
   ownTextsOf,
+  partMetersOf,
   readersOf,
   selectDraftTargets,
   selectOwnTexts,
   targetsOf,
+  wholeMetersOf,
 } from "@/lib/publish";
 import { timeAgo, useNow } from "@/lib/time";
 import { cn } from "@/lib/utils";
@@ -820,6 +821,7 @@ function Editor({
     (choice) => choice.chosen && !choice.own,
   );
   const alone = parts.length === 1;
+  const wholeMeters = wholeMetersOf(gauges, parts);
 
   return (
     <>
@@ -940,6 +942,24 @@ function Editor({
             />
           ))}
         </ol>
+        {wholeMeters.length > 0 && (
+          // Under the last part: a network that makes one post of the
+          // parts counts them together, and has no counter under a part.
+          // biome-ignore lint/a11y/useSemanticElements: a fieldset would put a frame around a line of text.
+          <div
+            role="group"
+            aria-label="Length of the parts as one post"
+            className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t px-4 py-2 text-xs text-muted-foreground md:px-6"
+          >
+            {wholeMeters.map((meter) => (
+              <Counter key={meter.key} meter={meter} />
+            ))}
+            <span>
+              for the parts together: they go out as one post there, with an
+              empty line between them.
+            </span>
+          </div>
+        )}
         {!alone && (
           <p className="hidden shrink-0 flex-wrap items-center gap-1 px-6 pb-3 text-xs text-muted-foreground md:flex">
             <Kbd>↑</Kbd>
@@ -1056,7 +1076,7 @@ const PartField = memo(function PartField({
     }
   }, [text]);
 
-  const meters = gauges.map((gauge) => meterOf(gauge, text));
+  const meters = partMetersOf(gauges, text, count);
   const characters = countCharacters(text);
 
   return (

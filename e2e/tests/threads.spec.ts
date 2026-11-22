@@ -3,6 +3,7 @@ import {
   channelChoice,
   connectSimulated,
   connectSimulatedBluesky,
+  connectSimulatedLinkedIn,
   counterOf,
   deliveryTo,
   draftRow,
@@ -12,12 +13,14 @@ import {
   feedOf,
   grace,
   graceOnBluesky,
+  graceOnLinkedIn,
   openScreen,
   overflowOf,
   partField,
   partTexts,
   publishPanel,
   sentPost,
+  wholeCounterOf,
   writeDraft,
 } from "../app.ts";
 import { expect, type Page, test } from "../fixtures.ts";
@@ -220,6 +223,84 @@ test("each part is counted the way the network of each chosen account counts, an
   await expect(publish).toBeDisabled();
   await partField(page, 2).fill("Short");
   await expect(publish).toBeEnabled();
+  expect(await overflowOf(page)).toBe(0);
+});
+
+test("a thread for LinkedIn, which makes one post of it, is counted once as that post, and is kept back when the parts fit and the post does not", async ({
+  ownPage: page,
+}) => {
+  await openScreen(page, "Channels");
+  await connectSimulatedLinkedIn(page, graceOnLinkedIn);
+  await openScreen(page, "Drafts");
+  await page.getByRole("button", { name: "New draft" }).click();
+  await editor(page).fill("a".repeat(1600));
+  await channelChoice(page, graceOnLinkedIn).click();
+
+  // One part is the post: it is counted under its part, like on every
+  // network.
+  await expect(counterOf(editor(page), "LinkedIn")).toHaveText(
+    /^LinkedIn 1600\/3000/,
+  );
+  await expect(wholeCounterOf(page, "LinkedIn")).toHaveCount(0);
+
+  // A second part. Each is about half of what LinkedIn takes, so a
+  // counter under each part would say that all is well, and the post is
+  // the two with an empty line between them: 1600 + 2 + 1600.
+  await draftEditor(page).getByRole("button", { name: "Add a part" }).click();
+  await partField(page, 2).fill("b".repeat(1600));
+  await expect(wholeCounterOf(page, "LinkedIn")).toHaveText(
+    /^LinkedIn 3202\/3000/,
+  );
+  await expect(wholeCounterOf(page, "LinkedIn")).toHaveAttribute(
+    "data-tone",
+    "over",
+  );
+  // The counter of the post is the only one: no part has LinkedIn's
+  // limit to itself. The fields are there, so the count of none is not
+  // that of a page without parts.
+  await expect(partField(page, 2)).toHaveValue("b".repeat(1600));
+  await expect(draftEditor(page).locator("[data-tone]")).toHaveCount(1);
+  await expect(draftEditor(page)).toContainText(
+    "they go out as one post there, with an empty line between them",
+  );
+  await expect(publishPanel(page)).toContainText(
+    `LinkedIn would refuse this for ${graceOnLinkedIn}: The parts are 3202 characters long together.`,
+  );
+  const publish = publishPanel(page).getByRole("button", {
+    name: "Publish now",
+  });
+  await expect(publish).toBeDisabled();
+
+  // To the character what LinkedIn takes: 1600 + 2 + 1398.
+  await partField(page, 2).fill("b".repeat(1398));
+  await expect(wholeCounterOf(page, "LinkedIn")).toHaveText(
+    /^LinkedIn 3000\/3000/,
+  );
+  await expect(wholeCounterOf(page, "LinkedIn")).toHaveAttribute(
+    "data-tone",
+    "near",
+  );
+  await expect(publish).toBeEnabled();
+
+  // A text that is written for the account is counted the same way, and
+  // it is that text which is counted: the post's own, which nobody gets
+  // now, has no network to count for.
+  await draftEditor(page)
+    .getByRole("button", { name: `Customize for ${graceOnLinkedIn}` })
+    .click();
+  await page
+    .getByRole("textbox", { name: `Part 2 for ${graceOnLinkedIn}` })
+    .fill("c".repeat(1500));
+  await expect(wholeCounterOf(page, "LinkedIn")).toHaveText(
+    /^LinkedIn 3102\/3000/,
+  );
+  await expect(publishPanel(page)).toContainText(
+    `LinkedIn would refuse this for ${graceOnLinkedIn}: The parts are 3102 characters long together.`,
+  );
+  await expect(publish).toBeDisabled();
+  await draftEditor(page).getByRole("button", { name: "Post text" }).click();
+  await expect(partField(page, 2)).toHaveValue("b".repeat(1398));
+  await expect(draftEditor(page).locator("[data-tone]")).toHaveCount(0);
   expect(await overflowOf(page)).toBe(0);
 });
 

@@ -212,6 +212,18 @@ export function counterOf(field: Locator, network: string): Locator {
     .filter({ hasText: new RegExp(`^${literally(network)} `) });
 }
 
+/**
+ * The counter of a network that makes one post of a thread, under the
+ * last part of the text that the editor shows: how long the parts are
+ * together, as that post.
+ */
+export function wholeCounterOf(page: Page, network: string): Locator {
+  return page
+    .getByRole("group", { name: "Length of the parts as one post" })
+    .locator("[data-tone]")
+    .filter({ hasText: new RegExp(`^${literally(network)} `) });
+}
+
 /** Where the caret is in the text of the open draft, or the selection. */
 export function selectionOf(page: Page): Promise<[number, number]> {
   return editor(page).evaluate((field: HTMLTextAreaElement) => [

@@ -1,6 +1,7 @@
 import {
   countCharacters,
   inReadingOrder,
+  joinLinkedInParts,
   type Limits,
   type Row,
   type Tables,
@@ -290,9 +291,35 @@ const nearLimit = 0.9;
  * `channels`, which are the accounts that get the text, one entry for
  * all accounts with the same limits. An account whose limits pigy does
  * not know yet has none. Made once for a text, and not for each of its
- * parts: `meterOf` then counts a part against each.
+ * parts: `partMetersOf` then counts a part against each, and
+ * `wholeMetersOf` the text.
  */
-export type Gauge = { key: string; label: string; limits: Limits };
+export type Gauge = {
+  key: string;
+  label: string;
+  limits: Limits;
+  /**
+   * The network makes one post of a thread, so the limit is that of all
+   * the parts together and not of each: the text is counted once, as
+   * the account gets it.
+   */
+  joins: boolean;
+};
+
+/**
+ * The one post that a thread of `parts` is on the network of `limits`,
+ * as `validateContent` and the adapter make it, or null on a network
+ * where each part is a post of its own.
+ */
+function joinedText(limits: Limits, parts: readonly Text[]): string | null {
+  switch (limits.network) {
+    case "linkedin":
+      return joinLinkedInParts({ parts: parts.map(({ text }) => ({ text })) });
+    case "bluesky":
+    case "mastodon":
+      return null;
+  }
+}
 
 export function gaugesOf(
   channels: readonly Pick<Channel, "handle" | "limits">[],
@@ -323,12 +350,16 @@ export function gaugesOf(
           ? `${network} (${of.map(({ handle }) => handle).join(", ")})`
           : network,
       limits,
+      joins: joinedText(limits, []) !== null,
     };
   });
 }
 
 /** How long `text` is against the limits of `gauge`. */
-export function meterOf({ key, label, limits }: Gauge, text: string): Meter {
+export function meterOf(
+  { key, label, limits }: Pick<Gauge, "key" | "label" | "limits">,
+  text: string,
+): Meter {
   const count = countCharacters(limits, text);
   const max = limits.maxCharacters;
   const bytes = "maxBytes" in limits ? utf8Length(text) : 0;
@@ -349,6 +380,45 @@ export function meterOf({ key, label, limits }: Gauge, text: string): Meter {
         ? `${label}: ${bytes} of ${limits.maxBytes} bytes`
         : `${label}: ${count} of ${max} characters`,
   };
+}
+
+/**
+ * The counters under one part, with the text `text`, of a text of
+ * `partCount` parts: one for each of `gauges` whose network counts the
+ * part by itself. A network that joins a thread into one post has none
+ * under a part of a thread, where its limit is not the part's:
+ * `wholeMetersOf` has its counter. A text of one part is that post, and
+ * is counted under its part like every other.
+ */
+export function partMetersOf(
+  gauges: readonly Gauge[],
+  text: string,
+  partCount: number,
+): Meter[] {
+  return gauges
+    .filter(({ joins }) => partCount === 1 || !joins)
+    .map((gauge) => meterOf(gauge, text));
+}
+
+/**
+ * The counters of a thread as a whole: one for each of `gauges` whose
+ * network makes one post of the `parts`, of that post as the account
+ * gets it, with what stands between the parts. None for a text of one
+ * part, which `partMetersOf` counts.
+ */
+export function wholeMetersOf(
+  gauges: readonly Gauge[],
+  parts: readonly Text[],
+): Meter[] {
+  if (parts.length < 2) return [];
+  return gauges.flatMap((gauge) => {
+    const text = joinedText(gauge.limits, parts);
+    if (text === null) return [];
+    const meter = meterOf(gauge, text);
+    return [
+      { ...meter, description: `${meter.description}, all parts as one post` },
+    ];
+  });
 }
 
 /**

@@ -6,9 +6,11 @@ import {
   gaugesOf,
   meterOf,
   ownTextsOf,
+  partMetersOf,
   readersOf,
   selectDraftTargets,
   selectOwnTexts,
+  wholeMetersOf,
 } from "@/lib/publish";
 import {
   blueskyLimits,
@@ -336,6 +338,91 @@ describe("the counters of a part", () => {
       tone: "over",
       description: "Bluesky: 3750 of 3000 bytes",
     });
+  });
+});
+
+describe("the counters of a thread on a network that makes one post of it", () => {
+  const linkedin = channel({
+    network: "linkedin",
+    handle: "Grace Hopper",
+    limits: { network: "linkedin", maxCharacters: 3000 },
+  });
+  const read = (meters: { label: string; count: number; max: number }[]) =>
+    meters.map(({ label, count, max }) => `${label} ${count}/${max}`);
+  // Each part is half of what LinkedIn takes, and the three together
+  // are over it: what the counters of the parts used to hide.
+  const thread = [1, 2, 3].map(() => ({ text: "a".repeat(1500) }));
+
+  it("counts the parts together, with what stands between them, and not each against the limit of the post", () => {
+    const gauges = gaugesOf([mastodon, linkedin]);
+    // Under a part: Mastodon, where the part is a post. Not LinkedIn,
+    // whose limit is not the part's.
+    expect(read(partMetersOf(gauges, "a".repeat(1500), 3))).toEqual([
+      "Mastodon 1500/500",
+    ]);
+    // Once for the text: 4500 characters and two empty lines, which are
+    // two characters each.
+    const whole = wholeMetersOf(gauges, thread);
+    expect(read(whole)).toEqual(["LinkedIn 4504/3000"]);
+    expect(whole[0]).toMatchObject({
+      tone: "over",
+      description: "LinkedIn: 4504 of 3000 characters, all parts as one post",
+    });
+  });
+
+  it("is over the limit where the publish panel says that the account refuses the parts together, and not before", () => {
+    const gauges = gaugesOf([linkedin]);
+    const refused = (parts: { text: string }[]) =>
+      composeParts(parts, [linkedin], new Set([linkedin.id])).blocked;
+    // 1499 + 2 + 1499 is the limit to the character.
+    const fits = [{ text: "a".repeat(1499) }, { text: "b".repeat(1499) }];
+    expect(wholeMetersOf(gauges, fits)).toMatchObject([
+      { count: 3000, tone: "near" },
+    ]);
+    expect(refused(fits)).toBeNull();
+    const over = [{ text: "a".repeat(1499) }, { text: "b".repeat(1500) }];
+    expect(wholeMetersOf(gauges, over)).toMatchObject([
+      { count: 3001, tone: "over" },
+    ]);
+    expect(refused(over)).toBe("refused");
+  });
+
+  it("counts a text of one part under its part, which is the post", () => {
+    const gauges = gaugesOf([linkedin]);
+    expect(read(partMetersOf(gauges, "Hello", 1))).toEqual(["LinkedIn 5/3000"]);
+    expect(wholeMetersOf(gauges, [{ text: "Hello" }])).toEqual([]);
+  });
+
+  it("counts the text that is written for the account, and not the post's", () => {
+    const { choices } = composeParts(
+      [{ text: "Short" }],
+      [mastodon, linkedin],
+      new Set([mastodon.id, linkedin.id]),
+      new Map([[linkedin.id, thread]]),
+    );
+    // The post's text goes to Mastodon alone: nothing joins it.
+    const post = gaugesOf(readersOf(choices, null));
+    expect(wholeMetersOf(post, [{ text: "Short" }, { text: "Too" }])).toEqual(
+      [],
+    );
+    const own = gaugesOf(readersOf(choices, linkedin.id));
+    expect(read(partMetersOf(own, "a".repeat(1500), 3))).toEqual([]);
+    expect(read(wholeMetersOf(own, thread))).toEqual(["LinkedIn 4504/3000"]);
+  });
+
+  it("joins for the counters the networks that the editor says get one post", () => {
+    // Two places know which network joins a thread: the table of the
+    // networks, for the note, and the counters, by the function that
+    // joins. They have to agree.
+    const [chosen] = composeParts(
+      thread,
+      [linkedin],
+      new Set([linkedin.id]),
+    ).choices;
+    expect(chosen?.joined).toBe(true);
+    expect(
+      gaugesOf([mastodon, bluesky, linkedin]).map(({ joins }) => joins),
+    ).toEqual([false, false, true]);
   });
 });
 
