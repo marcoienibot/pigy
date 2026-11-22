@@ -77,6 +77,40 @@ test.describe("with a push service", () => {
     expect(await pushEndpointOf(page)).toBeNull();
   });
 
+  test("Settings say that pigy cannot send to a browser whose push service it does not know, and leave the browser unsubscribed", async ({
+    ownPage: page,
+  }) => {
+    // The browser subscribes at a push service of its own, which is not
+    // in the list of the Worker: the device that the simulated push
+    // service made up, at another address.
+    await page.route("**/api/e2e/push/devices", async (route) => {
+      const response = await route.fetch();
+      await route.fulfill({
+        response,
+        json: {
+          ...(await response.json()),
+          endpoint: "https://push.unknown-browser.example/device/1",
+        },
+      });
+    });
+    await openScreen(page, "Settings");
+    const row = notificationsRow(page);
+    await expect(row).toContainText("Off.");
+
+    await row.getByRole("button", { name: "Turn on" }).click();
+
+    // The Worker of the build refuses the address, and the row says what
+    // that means for the person.
+    await expect(row.getByRole("status")).toHaveText(
+      "Notifications could not be turned on. pigy cannot send notifications to this browser yet. The inbox has what they would say.",
+    );
+    await expect(row).toContainText("Off.");
+    await expect(row.getByRole("button", { name: "Turn on" })).toBeVisible();
+    // The browser is not left subscribed at a push service that nothing
+    // comes from.
+    expect(await pushEndpointOf(page)).toBeNull();
+  });
+
   test("the device is told when a post of the sandbox is not sent, as the sandbox's, and no more once it is turned off", async ({
     ownPage: page,
   }) => {

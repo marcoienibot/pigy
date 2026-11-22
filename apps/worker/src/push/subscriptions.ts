@@ -20,7 +20,8 @@ import type { PushTarget } from "./web-push.ts";
  * one.
  *
  * The push service of a browser that is not here has to be added: its
- * users are told by Settings that pigy does not send to this address.
+ * users are told by Settings that pigy cannot send to their browser yet,
+ * and the browser is not left subscribed.
  */
 export const pushServiceHosts = [
   // Chrome, and what is built on Chromium without a service of its own:

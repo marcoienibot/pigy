@@ -989,7 +989,14 @@ describe("the address of a push service", () => {
     });
 
     expect(response.status).toBe(400);
-    expect(await response.json()).toMatchObject({ field: "endpoint" });
+    // What Settings show the person: such an address is also what a
+    // browser has whose push service is not in pigy's list, and it is
+    // told what that means for it, not what is wrong with an address.
+    expect(await response.json()).toMatchObject({
+      field: "endpoint",
+      message:
+        "pigy cannot send notifications to this browser yet. The inbox has what they would say.",
+    });
     expect(await keptEndpoints(test)).toEqual([]);
     await published(context, tooLong);
     await attend(workspace);

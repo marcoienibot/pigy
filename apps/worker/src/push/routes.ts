@@ -74,9 +74,13 @@ export function pushRoutes(dependencies: AppDependencies): Hono<AppEnv> {
     );
     const checked = pushEndpoint(endpoint, new URL(c.req.url).host);
     if (checked === null) {
+      // Said to a person, in Settings: the one who gets this from a
+      // browser is somebody whose browser has a push service that is not
+      // in the list, `pushServiceHosts`. The address means nothing to
+      // them, and they can do nothing about it.
       throw new InvalidField(
         "endpoint",
-        "pigy does not send notifications to this address",
+        "pigy cannot send notifications to this browser yet. The inbox has what they would say.",
       );
     }
     if (!arePushKeys(keys)) {
