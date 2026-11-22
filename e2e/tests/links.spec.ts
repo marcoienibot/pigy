@@ -361,10 +361,10 @@ test("without a connection a link has no preview, which the editor says, and get
   await expect(preview).not.toContainText("No preview");
 });
 
-test("a preview that the server makes none of, because it was asked too often, says so and is asked for again a minute later", async ({
+test("a preview that the server makes none of, because it was asked too often, says so and is asked for again until the server answers", async ({
   ownPage: page,
 }) => {
-  // The clock of the page, for the minute to pass when the test says.
+  // The clock of the page, for the minutes to pass when the test says.
   await page.clock.install();
   let refused = 0;
   await page.route("**/link-card", async (route) => {
@@ -380,16 +380,176 @@ test("a preview that the server makes none of, because it was asked too often, s
   await page.getByRole("button", { name: "New draft" }).click();
   await editor(page).fill(`Read ${link}`);
   const preview = linkPreview(editor(page));
-  await expect(preview).toContainText(
-    "No preview for the moment: pigy makes 60 a minute for one person.",
-  );
+  const note =
+    "No preview for the moment: pigy makes 60 a minute for one person. It is asked for again by itself";
+  await expect(preview).toContainText(note);
   await expect(preview).not.toContainText("could not read");
   expect(refused).toBe(1);
 
-  // The minute of the server is over, and the server answers again.
-  await page.unroute("**/link-card");
+  // A minute later the editor asks again, and is refused again: another
+  // tab or another device of the person has used the minute up.
   await page.clock.fastForward("01:01");
+  await expect.poll(() => refused).toBe(2);
+  await expect(preview).toContainText(note);
+
+  // It goes on asking, as it says, after a longer pause: the second
+  // refusal sets a timer like the first. Not within the next minute,
+  // which the request below shows by being the third and not the fourth.
+  await page.clock.fastForward("01:01");
+  await page.unroute("**/link-card");
+  const answered = page.waitForResponse("**/link-card");
+  await page.clock.fastForward("01:01");
+  await answered;
   await expect(preview).toContainText("The example page");
+  expect(refused).toBe(2);
+});
+
+test("a link whose page could not be read is asked about again some minutes later, and at once when it is typed anew", async ({
+  ownPage: page,
+}) => {
+  await page.clock.install();
+  // The server's answers are the test's: a page that is not there at
+  // first and is there later, which the simulated web has none of.
+  const later = "https://later.example.test/";
+  const anew = "https://anew.example.test/";
+  const there = new Set<string>();
+  const asked: string[] = [];
+  await page.route("**/link-card", async (route) => {
+    const { url } = route.request().postDataJSON() as { url: string };
+    asked.push(url);
+    await route.fulfill({
+      json: {
+        card: there.has(url)
+          ? { url, title: `The page at ${url}`, description: "" }
+          : null,
+      },
+    });
+  });
+  await page.getByRole("button", { name: "New draft" }).click();
+  await editor(page).fill(`Read ${later}`);
+  const preview = linkPreview(editor(page));
+  await expect(preview).toContainText(
+    "pigy could not read the page at later.example.test",
+  );
+
+  // The page comes up. For some minutes the editor goes by what it was
+  // told, and then it asks again, with nothing typed.
+  there.add(later);
+  await page.clock.fastForward("04:00");
+  expect(asked).toEqual([later]);
+  await page.clock.fastForward("01:01");
+  await expect(preview).toContainText(`The page at ${later}`);
+  expect(asked).toEqual([later, later]);
+
+  // A card is kept: it is not asked for again, however long the draft is
+  // open. The requests that follow show that the time has passed.
+  await page.clock.fastForward("30:00");
+
+  // Another page that cannot be read. Whoever takes the link out and
+  // types it again is asking again, and gets an answer of now, with no
+  // minutes passed.
+  await editor(page).fill(`Read ${anew}`);
+  await expect(preview).toContainText(
+    "pigy could not read the page at anew.example.test",
+  );
+  there.add(anew);
+  await editor(page).fill("Read");
+  await expect(preview).toHaveCount(0);
+  await editor(page).fill(`Read ${anew}`);
+  await expect(preview).toContainText(`The page at ${anew}`);
+  expect(asked).toEqual([later, later, anew, anew]);
+});
+
+test("a handle is looked up once for the parts that are opened together, and one that was nobody's is looked up again later and when it is typed anew", async ({
+  ownPage: page,
+}) => {
+  test.slow();
+  await openScreen(page, "Channels");
+  await connectSimulatedBluesky(page, graceOnBluesky);
+  await openScreen(page, "Drafts");
+  await page.getByRole("button", { name: "New draft" }).click();
+  await choose(page, graceOnBluesky);
+  await editor(page).fill("Hi @ada.bsky.test and @grace.bsky.test");
+  await addPart(page, 2, "And @ada.bsky.test with @alan.bsky.test");
+  await expectSync(page, "Synced");
+
+  // The clock of the page, for the minutes to pass when the test says:
+  // before the page is loaded whose timers it is to move.
+  await page.clock.install();
+  // The lookups of the page from here on. The server answers them,
+  // except about the accounts that the test says are made meanwhile.
+  const made = new Set<string>();
+  const lookedUp: string[][] = [];
+  await page.route("**/mentions", async (route) => {
+    const { names } = route.request().postDataJSON() as { names: string[] };
+    lookedUp.push(names);
+    const response = await route.fetch();
+    const { known } = (await response.json()) as { known: string[] };
+    await route.fulfill({
+      json: { known: [...known, ...names.filter((name) => made.has(name))] },
+    });
+  });
+  // The draft is opened anew, with both of its parts at once: each asks
+  // on its own, in the same moment.
+  await page.reload();
+  await expect(partField(page, 2)).toHaveValue(/alan/);
+  await expect
+    .poll(() => lookedUp.flat().sort())
+    .toEqual(["ada.bsky.test", "alan.bsky.test", "grace.bsky.test"]);
+  // A part that is added later with the same handles asks nothing. The
+  // lookup of the handle after it shows that it had the time to.
+  await addPart(page, 3, "Also @ada.bsky.test and @alan.bsky.test");
+  await partField(page, 3).fill(
+    "Also @ada.bsky.test and @alan.bsky.test, not @nobody.bsky.test",
+  );
+  await expect(markNotes(partField(page, 3))).toContainText(
+    "Bluesky has no account @nobody.bsky.test",
+  );
+  expect(lookedUp.flat().sort()).toEqual([
+    "ada.bsky.test",
+    "alan.bsky.test",
+    "grace.bsky.test",
+    "nobody.bsky.test",
+  ]);
+
+  // The account is made. Some minutes later the editor asks again, with
+  // nothing typed, and marks the mention.
+  made.add("nobody.bsky.test");
+  await page.clock.fastForward("05:01");
+  await expect(markNotes(partField(page, 3))).toHaveCount(0);
+  expect(await marksIn(partField(page, 3))).toContain(
+    "mention @nobody.bsky.test",
+  );
+
+  // And a handle that is taken out and typed again is looked up again
+  // at once.
+  await partField(page, 3).fill("Not @anew.bsky.test");
+  await expect(markNotes(partField(page, 3))).toContainText(
+    "Bluesky has no account @anew.bsky.test",
+  );
+  made.add("anew.bsky.test");
+  await partField(page, 3).fill("Not");
+  await expect(markNotes(partField(page, 3))).toHaveCount(0);
+  await partField(page, 3).fill("Not @anew.bsky.test");
+  // Until an answer is in, a mention is taken for one of an account, so
+  // the marks say nothing here: the lookup itself is what shows that the
+  // answer of before was not handed out. Each of the two was looked up
+  // twice, and the accounts that there were from the first never again.
+  await expect
+    .poll(() => lookedUp.flat().sort())
+    .toEqual([
+      "ada.bsky.test",
+      "alan.bsky.test",
+      "anew.bsky.test",
+      "anew.bsky.test",
+      "grace.bsky.test",
+      "nobody.bsky.test",
+      "nobody.bsky.test",
+    ]);
+  expect(await marksIn(partField(page, 3))).toEqual([
+    "mention @anew.bsky.test",
+  ]);
+  await expect(markNotes(partField(page, 3))).toHaveCount(0);
 });
 
 test("each network is said to show the card of the link that it leads with, and LinkedIn one card for a whole thread", async ({

@@ -61,7 +61,13 @@ import {
 } from "@/lib/markup";
 import { connectableNetworks } from "@/lib/networks";
 import { undoMs } from "@/lib/notices";
-import { Answers, unaskedNote, useAsked } from "@/lib/preview";
+import {
+  Answers,
+  noLastsMs,
+  unaskedNote,
+  useAsked,
+  useAskedAll,
+} from "@/lib/preview";
 import {
   compose,
   type Gauge,
@@ -596,12 +602,16 @@ const partLetters =
  * never that of the other workspace, whose web is another.
  */
 type EditorAnswers = {
-  /** The card of a link, by its address. Null for a page without one. */
+  /**
+   * The card of a link, by its address. Null for a page without one,
+   * which is kept for some minutes only: `noLastsMs`.
+   */
   cards: Answers<LinkCard | null>;
-  /** Which of the handles of a question are accounts, by the handles. */
-  mentions: Answers<string[] | null>;
-  /** Whether a handle is an account of Bluesky, by the handle. */
-  handles: Answers<boolean>;
+  /**
+   * Whether a handle is an account of Bluesky, by the handle. That it is
+   * none is kept for some minutes only. Null where nobody is looked up.
+   */
+  handles: Answers<boolean | null>;
 };
 
 /**
@@ -729,20 +739,33 @@ function Editor({
     [readerNetworks],
   );
 
-  // The cards that the parts are shown with, for each network by the
+  // The cards that the parts are cardsShown with, for each network by the
   // link that the network leads with, over the whole text: LinkedIn makes
   // one post of the parts, with one card. Each part is handed its own as
   // a text, which is the same from one key to the next unless it has
   // changed: the field of a part renders again only then.
   const texts = parts.map(({ text }) => text);
-  const previews = previewsOf(texts, networks).map((shown) =>
-    JSON.stringify(shown),
-  );
+  const cardsShown = previewsOf(texts, networks);
+  const previews = cardsShown.map((ofPart) => JSON.stringify(ofPart));
   const [answers] = useState<EditorAnswers>(() => ({
-    cards: new Answers(),
-    mentions: new Answers(),
-    handles: new Answers(),
+    cards: new Answers({ lasts: (card) => (card === null ? noLastsMs : null) }),
+    handles: new Answers({
+      lasts: (found) => (found === false ? noLastsMs : null),
+    }),
   }));
+  // What the texts ask about now. An answer that says "no" is the
+  // editor's only while its link or its handle stands in a text: one
+  // that is taken out and typed again is asked about again.
+  const links = cardsShown.flatMap((ofPart) => ofPart.map(({ link }) => link));
+  const mentioned = networks.includes("bluesky")
+    ? texts.flatMap(lookedUpHandles)
+    : [];
+  // After every render, which is when the texts may have changed: a look
+  // through the few answers that have an end.
+  useEffect(() => {
+    answers.cards.present(links);
+    answers.handles.present(mentioned);
+  });
 
   const fields = useRef(new Map<string, HTMLTextAreaElement>());
   /** The part that is to get the keyboard once its field is on the page. */
@@ -1254,24 +1277,19 @@ const PartField = memo(function PartField({
   // What Bluesky has to be asked: a mention is marked there only for a
   // handle that is an account, which the server finds out as a post
   // would, for the handles that a post looks up. Each handle is asked
-  // about once in the editor, whichever part mentions it: only those
-  // that have no answer yet are asked about, and not with every key.
+  // about once in the editor, whichever parts mention it and whenever:
+  // only those are asked about that have no answer and no question on
+  // its way, which another part may have sent a moment ago.
   const handles = networks.includes("bluesky") ? lookedUpHandles(text) : [];
-  const unknown = handles.filter((handle) => !answers.handles.kept(handle));
-  useAsked(
-    answers.mentions,
-    unknown.length > 0 ? unknown.join(" ") : null,
-    async () => {
-      const found = await fetchMentioned(workspace.id, "bluesky", unknown);
-      for (const handle of found === null ? [] : unknown) {
-        answers.handles.keep(handle, found?.includes(handle) ?? false);
-      }
-      return found;
-    },
-  );
+  useAskedAll(answers.handles, handles, async (unknown) => {
+    const found = await fetchMentioned(workspace.id, "bluesky", unknown);
+    return (handle) => (found === null ? null : found.includes(handle));
+  });
   // Until the answer is in, a mention is taken for one of an account. A
   // question that got no answer leaves it at that.
-  const asked = handles.filter((handle) => answers.handles.kept(handle));
+  const asked = handles.filter(
+    (handle) => typeof answers.handles.kept(handle)?.answer === "boolean",
+  );
   const known =
     asked.length > 0
       ? {
