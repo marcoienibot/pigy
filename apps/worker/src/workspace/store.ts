@@ -1051,6 +1051,43 @@ export class WorkspaceStore {
    * that has none yet. `nothing` if none waits or is under way.
    */
   deliveriesNeed(now: number): "begin" | "renew" | "watch" | "nothing" {
+    const { ready, waiting } = this.deliveriesWaiting(now);
+    if (ready) return "begin";
+    if (waiting.size > 0) return "renew";
+    return this.underWay ? "watch" : "nothing";
+  }
+
+  /**
+   * The channels with a delivery that could begin but for the access of
+   * the channel, which is overdue for renewal at `now`. The alarm goes by
+   * it to tell a delivery that it has just renewed for, or tried to,
+   * from one that came to wait while it was busy with another channel.
+   */
+  awaitingRenewal(now: number): Set<string> {
+    return this.deliveriesWaiting(now).waiting;
+  }
+
+  /** Whether a delivery waits its turn or is under way. */
+  private get underWay(): boolean {
+    return (
+      this.db
+        .select({ id: postTargets.id })
+        .from(postTargets)
+        .where(inArray(postTargets.status, ["queued", "sending"]))
+        .limit(1)
+        .get() !== undefined
+    );
+  }
+
+  /**
+   * The deliveries whose channel has none under way at `now`: whether
+   * one of them can begin, `ready`, and the channels of those that wait
+   * for a renewal that is overdue, `waiting`.
+   */
+  private deliveriesWaiting(now: number): {
+    ready: boolean;
+    waiting: Set<string>;
+  } {
     const targets = this.db
       .select({
         channelId: postTargets.channelId,
@@ -1067,11 +1104,16 @@ export class WorkspaceStore {
     const ready = targets.filter(
       ({ status, channelId }) => status === "queued" && !busy.has(channelId),
     );
-    if (ready.length === 0) return targets.length > 0 ? "watch" : "nothing";
+    if (ready.length === 0) return { ready: false, waiting: new Set() };
     const overdue = this.renewalsOverdue(now);
-    return ready.some(({ channelId }) => !overdue.has(channelId))
-      ? "begin"
-      : "renew";
+    return {
+      ready: ready.some(({ channelId }) => !overdue.has(channelId)),
+      waiting: new Set(
+        ready
+          .map(({ channelId }) => channelId)
+          .filter((channelId) => overdue.has(channelId)),
+      ),
+    };
   }
 
   /**

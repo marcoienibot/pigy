@@ -517,6 +517,9 @@ export function workspaceObject(
         // True if the alarm stopped waiting for the push messages to be
         // sent, because a delivery asked to begin: it comes back at once.
         let stoodAside = false;
+        // The channels whose access this alarm turned to, or undefined
+        // if it did not get to say: see `#nextLookIn`.
+        let renewed: ReadonlySet<string> | undefined;
         for (const [look, failed] of [
           [
             () => this.#publishDue(),
@@ -532,7 +535,9 @@ export function workspaceObject(
           ],
           [
             async () => {
-              unfinished = await this.#renewAccesses();
+              const turnedTo = new Set<string>();
+              unfinished = await this.#renewAccesses(turnedTo);
+              renewed = turnedTo;
             },
             "The accesses of a workspace were not renewed",
           ],
@@ -572,7 +577,11 @@ export function workspaceObject(
         // messages is over, or the alarm stood aside, and says so. And
         // nothing else has set the alarm while this one ran, `#looking`,
         // so none is set, and the runtime does not have to be asked.
-        const wait = this.#nextLookIn("alarm", { unfinished, stoodAside });
+        const wait = this.#nextLookIn("alarm", {
+          unfinished,
+          renewed,
+          stoodAside,
+        });
         const set =
           wait === null
             ? undefined
@@ -651,6 +660,15 @@ export function workspaceObject(
      *   because a change asked for a delivery to begin, `stoodAside`: at
      *   once, for that delivery. It takes a change to get here, so this
      *   ends.
+     * - A delivery waits for an access that is overdue for renewal, and
+     *   the alarm did not turn to that access, `renewed`: at once. The
+     *   delivery came to wait while the alarm was busy with another
+     *   channel, after it had taken its list of the accesses that are
+     *   due, on which this one was not: a delivery to its channel was
+     *   under way then. The next alarm turns to it, which leaves the
+     *   access no longer overdue, whatever comes of it, so this ends
+     *   too. Not when the alarm could not say what it turned to, because
+     *   renewing failed as a whole: that would be a loop.
      * - A scheduled post is due: at its time. If its time has passed,
      *   and the object has looked for what was due since, it did not
      *   manage to take the post up, and comes back in `deliveryWatchMs`.
@@ -676,10 +694,12 @@ export function workspaceObject(
       after: "change" | "alarm",
       {
         unfinished = false,
+        renewed,
         stoodAside = false,
         pushQueued = false,
       }: {
         unfinished?: boolean;
+        renewed?: ReadonlySet<string> | undefined;
         stoodAside?: boolean;
         pushQueued?: boolean;
       } = {},
@@ -693,6 +713,15 @@ export function workspaceObject(
         );
       }
       if (unfinished || stoodAside) waits.push(0);
+      if (
+        need === "renew" &&
+        renewed &&
+        [...this.#store.awaitingRenewal(time)].some(
+          (channelId) => !renewed.has(channelId),
+        )
+      ) {
+        waits.push(0);
+      }
       const pruneAt = this.#store.nextPruneAt;
       if (pruneAt !== null) {
         waits.push(
@@ -777,13 +806,15 @@ export function workspaceObject(
      * too when the delivery is one that waited for this renewal, which
      * the alarm begins as its last step.
      *
-     * Returns whether it stopped so with channels left to turn to.
+     * Returns whether it stopped so with channels left to turn to, and
+     * notes in `turnedTo` the channels that it turned to.
      */
-    async #renewAccesses(): Promise<boolean> {
+    async #renewAccesses(turnedTo: Set<string>): Promise<boolean> {
       const workspace = this.#store.identity;
       const due = this.#store.renewalsDue(now().getTime());
       for (const [index, channel] of due.entries()) {
         const { channelId, credentials } = channel;
+        turnedTo.add(channelId);
         const renewal = await renewAccess(
           dependencies,
           this.env,

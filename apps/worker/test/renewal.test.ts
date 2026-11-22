@@ -560,4 +560,80 @@ describe("the alarm of a workspace", () => {
     await look(workspace);
     expect(asked(test, threadsRefresh)).toBe(1);
   });
+
+  it("comes back at once for a delivery that came to wait for an overdue renewal while it was busy with another channel", async () => {
+    const answer = { held: false, waiting: false };
+    const publishing = gate((request) => request === threadsPublish);
+    const context = await withChannel("bluesky", {
+      interceptNetwork: (network) => {
+        const gated = publishing.intercept(network);
+        return async (input, init) => {
+          const response = await gated(input, init);
+          // Holds the answer of Bluesky to a refresh.
+          if (
+            answer.held &&
+            response.ok &&
+            urlOf(input).endsWith("/oauth/token")
+          ) {
+            answer.waiting = true;
+            while (answer.held) {
+              await new Promise((resolve) => setTimeout(resolve, 5));
+            }
+          }
+          return response;
+        };
+      },
+    });
+    const { test, browser, workspace, client } = context;
+    expect((await connectThreadsLive(test, browser, workspace)).connect).toBe(
+      "connected",
+    );
+    await Promise.all(test.keptAlive);
+    // Both accesses have been due for nearly a day, with nobody having
+    // looked: neither is overdue yet.
+    test.advance(week + day - 60 * 1000);
+    await context.channel();
+    const threads =
+      client.table("channel").find(({ network }) => network === "threads")
+        ?.id ?? "";
+    const first = await writeDraft(client, workspace, "First");
+    const second = await writeDraft(client, workspace, "Second");
+
+    // The alarm that publishing sets begins the first delivery, which is
+    // held in the middle of its step that publishes. Then it takes its
+    // list of the accesses to renew: Bluesky's, and not the one of
+    // Threads, whose channel is being sent to. It waits for Bluesky.
+    publishing.close();
+    answer.held = true;
+    const [firstTarget = ""] = await publishTo(client, first.postId, threads);
+    await publishing.reached();
+    await vi.waitFor(() => expect(answer.waiting).toBe(true), patience);
+
+    // While it waits, the renewal of Threads becomes overdue, a second
+    // post is asked for, and the first delivery ends: the second could
+    // begin but for the renewal, which is not on the list of the alarm.
+    test.advance(2 * 60 * 1000);
+    const [secondTarget = ""] = await publishTo(client, second.postId, threads);
+    publishing.open();
+    await follow(client, () => targetOf(client, firstTarget).status === "sent");
+    expect(targetOf(client, secondTarget).status).toBe("queued");
+    expect(asked(test, threadsRefresh)).toBe(0);
+
+    // Bluesky answers, and the alarm is done. Nobody runs the next one
+    // by hand, and no change sets it: the alarm itself has to come back
+    // for the renewal that it did not turn to, and at once. In a minute,
+    // as for a delivery that it has just tried and left, `follow` would
+    // have given up long before.
+    answer.held = false;
+    await follow(
+      client,
+      () => targetOf(client, secondTarget).status === "sent",
+    );
+    // The renewal had its turn before the delivery that waited for it.
+    expect(
+      test.network.requests
+        .map((made) => made.replace(/\?.*$/, ""))
+        .filter((made) => made === threadsPublish || made === threadsRefresh),
+    ).toEqual([threadsPublish, threadsRefresh, threadsPublish]);
+  });
 });
