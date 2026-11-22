@@ -897,7 +897,8 @@ describe("a push service that does not answer", () => {
         }
         try {
           // Without the signal of the app, which may have fired by now.
-          return await push(input, { ...init, signal: undefined });
+          const { signal: _, ...rest } = init ?? {};
+          return await push(input, rest);
         } finally {
           service.over += 1;
         }
