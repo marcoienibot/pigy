@@ -7,9 +7,8 @@ import type { SimStorage } from "./storage.ts";
  * ahead of time and strikes the next request that it applies to, once.
  *
  * These are the kinds that a network simulated so far can suffer from. A
- * kind that only another network has, such as media that takes long to
- * process, is added here together with the simulator that applies it, and
- * its tests. A network's simulator declares which of them it has.
+ * kind that only another network has is added here together with the
+ * simulator that applies it, and its tests. A network's simulator declares which of them it has.
  */
 export const faultKinds = [
   /** The network answers that it has been asked too often. */
@@ -30,6 +29,13 @@ export const faultKinds = [
    * cures that: only a network whose access can be renewed has this.
    */
   "token-expired",
+  /**
+   * The network takes what it is handed and is not done with it when it
+   * is next asked: what the request began is still being prepared, for
+   * some time. Only a network that publishes in more than one step has
+   * this, as Threads does, which makes a container of a post first.
+   */
+  "slow-processing",
 ] as const;
 
 export type FaultKind = (typeof faultKinds)[number];

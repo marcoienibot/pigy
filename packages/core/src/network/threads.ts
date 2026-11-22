@@ -18,9 +18,10 @@
 /** The most characters in the text of a post. */
 export const threadsMaxCharacters = 500;
 
-// A code point that an emoji is made of.
+// A code point that an emoji is made of. An alternation, because a class
+// with a joiner in it reads like a mistake.
 const emojiPart =
-  /[\p{Extended_Pictographic}\p{Emoji_Modifier}\p{Regional_Indicator}‍️⃣\u{E0020}-\u{E007F}]/u;
+  /\p{Extended_Pictographic}|\p{Emoji_Modifier}|\p{Regional_Indicator}|\u200D|\uFE0F|\u20E3|[\u{E0020}-\u{E007F}]/u;
 
 /** How many bytes a code point takes in UTF-8. */
 function utf8Bytes(codePoint: number): number {
