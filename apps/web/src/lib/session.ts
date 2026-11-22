@@ -81,6 +81,18 @@ function write(
 }
 
 /**
+ * A name for the session that this device holds, for what the device
+ * remembers of that session and of no other, such as that notifications
+ * were turned on in it. Null if it holds none, or one that is over.
+ */
+export function sessionOnDevice(): string | null {
+  const stored = read();
+  return stored && !stored.ended && stored.key !== undefined
+    ? `${stored.me.user.id}/${stored.key}`
+    : null;
+}
+
+/**
  * What this device holds now, if that is still the session `of`: the same
  * person and the same key. Null if it holds another one, or none.
  */

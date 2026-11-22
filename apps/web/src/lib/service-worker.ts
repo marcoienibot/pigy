@@ -1,5 +1,11 @@
+import { safeReturnTo } from "@pigy/core";
 import { useSyncExternalStore } from "react";
-import { activateMessage, navigateMessage } from "@/sw/messages";
+import {
+  activateMessage,
+  navigatedMessage,
+  navigateMessage,
+  subscriptionChangedMessage,
+} from "@/sw/messages";
 import { keeps } from "@/sw/precache";
 import { unsavedInSomeWindow, whenSaved } from "@/sync/workspace-sync";
 
@@ -237,21 +243,56 @@ export async function startServiceWorker(): Promise<void> {
  */
 export function onNotificationPressed(go: (url: string) => void): void {
   container?.addEventListener("message", (event) => {
+    const url = pressedPath(event.data);
+    if (url === null) return;
+    go(url);
+    // The worker opens a window if it does not hear that this one goes.
+    event.ports[0]?.postMessage(navigatedMessage);
+  });
+}
+
+/**
+ * Calls `changed` when the service worker says that the browser has
+ * replaced the push subscription of this device, or taken it away:
+ * `subscriptionChangedMessage` of src/sw/messages.ts. Returns what ends
+ * the listening.
+ */
+export function onSubscriptionChanged(changed: () => void): () => void {
+  const listener = (event: MessageEvent) => {
     const data: unknown = event.data;
     if (
-      typeof data !== "object" ||
-      data === null ||
-      !("type" in data) ||
-      data.type !== navigateMessage.type ||
-      !("url" in data)
+      typeof data === "object" &&
+      data !== null &&
+      "type" in data &&
+      data.type === subscriptionChangedMessage.type
     ) {
-      return;
+      changed();
     }
-    // A path of the app and nothing else, whoever says so.
-    if (typeof data.url === "string" && /^\/(?!\/)/.test(data.url)) {
-      go(data.url);
-    }
-  });
+  };
+  container?.addEventListener("message", listener);
+  return () => container?.removeEventListener("message", listener);
+}
+
+/**
+ * Where `message` tells a window to go, if it is `navigateMessage` with a
+ * path of the app, and null otherwise. A path of the app and nothing
+ * else, whoever says so: not an address at another site, and nothing that
+ * a browser reads as one, such as "//host".
+ */
+export function pressedPath(message: unknown): string | null {
+  if (
+    typeof message !== "object" ||
+    message === null ||
+    !("type" in message) ||
+    message.type !== navigateMessage.type ||
+    !("url" in message) ||
+    typeof message.url !== "string"
+  ) {
+    return null;
+  }
+  // The path that is returned is the one that was checked.
+  const path = safeReturnTo(message.url);
+  return path === "/" && message.url !== "/" ? null : path;
 }
 
 /**

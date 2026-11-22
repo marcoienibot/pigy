@@ -19,3 +19,22 @@ export const activateMessage = { type: "activate" } as const;
  * so the two change together.
  */
 export const navigateMessage = { type: "navigate" } as const;
+
+/**
+ * What a window answers to `navigateMessage`, on the port that came with
+ * it: it has heard, and goes there. A window that does not answer is one
+ * that cannot: a page that is still starting, or one of the same address
+ * that is not the app. The service worker then opens a window instead.
+ */
+export const navigatedMessage = { type: "navigated" } as const;
+
+/**
+ * What the service worker says to the windows of the app when the browser
+ * has replaced the push subscription of the device, or taken it away: the
+ * browser tells the worker alone. A window hands the server the new one,
+ * `renewNotifications` of src/lib/notifications.ts: it has the session
+ * that the notifications were turned on in, which the worker has not.
+ */
+export const subscriptionChangedMessage = {
+  type: "subscription-changed",
+} as const;

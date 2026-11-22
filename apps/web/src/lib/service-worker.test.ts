@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { mayTakeOver } from "./service-worker.ts";
+import { mayTakeOver, pressedPath } from "./service-worker.ts";
 
 // Whether a page that starts lets a version that waits take over, by what
 // the browser says when it is asked who holds a Web Lock. The page has no
@@ -45,4 +45,36 @@ it("lets the new version take over when the browser fails to say who holds the l
   await vi.advanceTimersByTimeAsync(0);
 
   expect(await Promise.race([decided, "undecided"])).toBe(true);
+});
+
+// Where a message of the service worker leads a window: to a path of the
+// app, and nowhere else. The address in it is read back from a
+// notification, and a message can come from anything that controls the
+// page.
+
+it.each([
+  ["a screen", "/inbox"],
+  ["a screen with what it is to show", "/sent?post=1&inWorkspace=a-b"],
+  ["the first screen", "/"],
+])("leads to %s of the app", (_what, url) => {
+  expect(pressedPath({ type: "navigate", url })).toBe(url);
+});
+
+it.each([
+  ["an address at another site", "https://elsewhere.example/"],
+  ["an address that leaves the site", "//elsewhere.example/"],
+  // A browser reads a backslash as a slash, and drops a tab.
+  ["the same with a backslash", "/\\elsewhere.example/"],
+  ["the same with a tab in it", "/\t/elsewhere.example/"],
+  ["a script", "javascript:alert(1)"],
+  ["what is no address", 7],
+  ["no address at all", undefined],
+])("leads nowhere for %s", (_what, url) => {
+  expect(pressedPath({ type: "navigate", url })).toBeNull();
+});
+
+it("leads nowhere for a message that is not about a notification", () => {
+  expect(pressedPath({ type: "activate", url: "/inbox" })).toBeNull();
+  expect(pressedPath("navigate")).toBeNull();
+  expect(pressedPath(null)).toBeNull();
 });

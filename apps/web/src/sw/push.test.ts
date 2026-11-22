@@ -1,6 +1,18 @@
 import { type PushMessage, pushMessageSchema } from "@pigy/core";
 import { describe, expect, it } from "vitest";
-import { type AppWindow, push, shownFor } from "./push.ts";
+import {
+  type AppWindow,
+  answerWithinMs,
+  push,
+  shownFor as shownAt,
+} from "./push.ts";
+import { workerPaths } from "./worker-paths.ts";
+
+const now = Date.UTC(2026, 10, 14, 10);
+const day = 24 * 60 * 60 * 1000;
+
+/** What is shown for a message that arrives now. */
+const shownFor = (text: string | undefined) => shownAt(text, now);
 
 const workspaceId = "0d8c2f7e-5a1b-4c3d-9e8f-7a6b5c4d3e2f";
 const postId = "01932c07-0000-7000-8000-000000000001";
@@ -50,10 +62,7 @@ describe("what a push message is shown as", () => {
       "channel_needs_reconnect",
       "pigy can no longer post to your LinkedIn account",
     ],
-    [
-      "channel_expiring",
-      "pigy's access to your LinkedIn account ends in a week",
-    ],
+    ["channel_expiring", "pigy's access to your LinkedIn account ends soon"],
   ] as const)(
     "says of %s which network, and leads to connecting the account again",
     (kind, title) => {
@@ -77,7 +86,7 @@ describe("what a push message is shown as", () => {
     // A network that came after this worker was built.
     expect(
       shownFor(JSON.stringify({ ...message, network: "nextwork" })).title,
-    ).toBe("pigy's access to an account ends in a week");
+    ).toBe("pigy's access to an account ends soon");
   });
 
   it.each([
@@ -96,6 +105,32 @@ describe("what a push message is shown as", () => {
       url: "/inbox",
     });
   });
+
+  it.each([
+    // A reminder that is on time, a little less than seven days before.
+    [7 * day - 60_000, "ends in a week", "keep"],
+    // The first alarm after a deploy found an access that ends tomorrow.
+    [day - 60_000, "ends within a day", "keep"],
+    [3 * day - 1, "ends in 3 days", "keep"],
+    // The message waited at the push service past the end.
+    [-60_000, "has ended", "go on"],
+  ])(
+    "says when an access ends by the time that the message names: in %i ms it %s",
+    (left, ends, verb) => {
+      const shown = shownFor(
+        sent({
+          kind: "channel_expiring",
+          environment: "live",
+          channelId,
+          network: "threads",
+          expiresAt: now + left,
+        }),
+      );
+
+      expect(shown.title).toBe(`pigy's access to your Threads account ${ends}`);
+      expect(shown.body).toBe(`Connect it again to ${verb} posting.`);
+    },
+  );
 
   it("shows a kind that it does not know in general words, in the workspace that it is about", () => {
     const text = JSON.stringify({ v: 1, kind: "queue_empty", workspaceId });
@@ -130,11 +165,18 @@ describe("what a push message is shown as", () => {
   });
 });
 
-/** A browser with these windows of the app open. */
-function browser(...open: Partial<AppWindow>[]) {
+/**
+ * A window as a test makes one up. `hears` says whether it answers when
+ * it is told where to go, as a window of the app does.
+ */
+type Made = Partial<AppWindow> & { hears?: boolean };
+
+/** A browser with these windows at the address of the app open. */
+function browser(...open: Made[]) {
   const shown: { title: string; options: unknown }[] = [];
   const opened: string[] = [];
-  const windows = open.map((window, index) => ({
+  const waits: number[] = [];
+  const windows = open.map(({ hears = true, ...window }, index) => ({
     url: `https://pigy.example/window-${index}`,
     focused: false,
     visibilityState: "hidden",
@@ -143,8 +185,11 @@ function browser(...open: Partial<AppWindow>[]) {
     async focus() {
       this.brought += 1;
     },
-    postMessage(message: unknown) {
+    postMessage(message: unknown, transfer: unknown[]) {
       this.told.push(message);
+      // The port that came with the message is how a window answers.
+      const [port] = transfer as { answer(): void }[];
+      if (hears) port?.answer();
     },
     ...window,
   }));
@@ -156,8 +201,25 @@ function browser(...open: Partial<AppWindow>[]) {
     openWindow: async (url) => {
       opened.push(url);
     },
+    // The paths of the Worker, as wrangler.jsonc has them.
+    isWorkerPath: workerPaths(["/api/*", "/connect/*", "/sim/*", "/sync/*"]),
+    // No time passes in a test: a window that has not answered by the
+    // time it was told has not answered in time.
+    reply: (milliseconds) => {
+      waits.push(milliseconds);
+      let heard = false;
+      return {
+        port: {
+          answer() {
+            heard = true;
+          },
+        },
+        answered: Promise.resolve().then(() => heard),
+      };
+    },
+    now: () => now,
   });
-  return { worker, shown, opened, windows };
+  return { worker, shown, opened, windows, waits };
 }
 
 describe("a push message that arrives", () => {
@@ -190,6 +252,27 @@ describe("a push message that arrives", () => {
     await worker.received(undefined);
 
     expect(shown).toHaveLength(1);
+  });
+});
+
+describe("a subscription that the browser has changed", () => {
+  it("is told to the windows of the app, which have the session to hand the server the new one with", async () => {
+    const { worker, windows, opened } = browser(
+      {},
+      // Not a page of the app: nothing there listens.
+      { url: "https://pigy.example/sim/network/mastodon/x" },
+      {},
+    );
+
+    await worker.changed();
+
+    expect(windows.map(({ told }) => told)).toEqual([
+      [{ type: "subscription-changed" }],
+      [],
+      [{ type: "subscription-changed" }],
+    ]);
+    // With no window open, the app sees to it when it next starts.
+    expect(opened).toEqual([]);
   });
 });
 
@@ -246,6 +329,53 @@ describe("a notification that is pressed", () => {
     await worker.clicked(data);
 
     expect(windows[0]?.told).toHaveLength(1);
+  });
+
+  it("opens a window when the one that is open does not say that it has heard", async () => {
+    // A page of the app that is still starting, and does not listen yet.
+    const { worker, opened, windows, waits } = browser({ hears: false });
+
+    await worker.clicked(data);
+
+    expect(windows[0]?.told).toHaveLength(1);
+    // Pressing the notification leads somewhere all the same.
+    expect(opened).toEqual([data.url]);
+    expect(waits).toEqual([answerWithinMs]);
+  });
+
+  it.each([
+    ["the consent page of a simulated network", "/sim/network/mastodon/x"],
+    ["a page of a connection", "/connect/threads/callback?code=1"],
+    ["an answer of the API", "/api/health"],
+  ])(
+    "does not take a window that shows %s for the app",
+    async (_what, path) => {
+      // It has the address of the app and the focus, and nothing in it
+      // listens to the service worker.
+      const { worker, opened, windows } = browser(
+        { url: `https://pigy.example${path}`, focused: true, hears: false },
+        { url: "https://pigy.example/sent" },
+      );
+
+      await worker.clicked(data);
+
+      expect(windows.map(({ told }) => told.length)).toEqual([0, 1]);
+      expect(windows[1]?.brought).toBe(1);
+      expect(opened).toEqual([]);
+    },
+  );
+
+  it("opens a window when the only one that is open shows a page of the Worker", async () => {
+    const { worker, opened, windows } = browser({
+      url: "https://pigy.example/sim/network/mastodon/x",
+      focused: true,
+      hears: false,
+    });
+
+    await worker.clicked(data);
+
+    expect(windows[0]?.told).toEqual([]);
+    expect(opened).toEqual([data.url]);
   });
 
   it.each([

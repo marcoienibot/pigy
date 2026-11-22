@@ -483,6 +483,9 @@ describe("an access that ends by its date", () => {
         environment: "live",
         channelId: channel,
         network: "linkedin",
+        // For the device to say how far the end is when it shows this.
+        expiresAt: (await looking(browser, workspace)).table("channel")[0]
+          ?.expiresAt,
       },
     ]);
 

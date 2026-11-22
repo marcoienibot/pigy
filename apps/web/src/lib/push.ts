@@ -64,6 +64,25 @@ export type PushDevice = {
   >;
 };
 
+/**
+ * What the device remembers of the notifications that were turned on in
+ * it: in which session, and with which subscription of the browser. A
+ * browser can replace a subscription by itself, or lose it, and tells
+ * only the service worker, if anybody. With this the app sees at its next
+ * start that the subscription is no longer the one that was turned on,
+ * and hands the server the new one: `renewPush`.
+ *
+ * It names the session, so that nothing is turned on by it for a session
+ * that did not ask: somebody who signs in anew turns notifications on
+ * again, as before.
+ */
+export type TurnedOn = { session: string; endpoint: string };
+
+export type PushMemory = {
+  read(): TurnedOn | null;
+  write(turnedOn: TurnedOn | null): void;
+};
+
 /** What this module takes from the server: `lib/api.ts`. */
 export type PushServer = {
   key(signal?: AbortSignal): Promise<string | null>;
@@ -145,6 +164,8 @@ export async function readPushState(
 export async function turnOnPush(
   device: PushDevice,
   server: PushServer,
+  memory: PushMemory,
+  session: string | null,
 ): Promise<PushState | "dismissed"> {
   const inTheWay = obstacle(device);
   if (inTheWay) return inTheWay;
@@ -158,13 +179,36 @@ export async function turnOnPush(
   const key = await server.key();
   if (key === null) return "not-set-up";
   const before = await manager.getSubscription();
-  // A browser keeps one subscription, and does not make another with a
-  // new key while the old one stands.
-  if (before && !madeWith(before, key)) await before.unsubscribe();
+  // A browser keeps one subscription, and hands the same one out again
+  // for as long as it stands. So one that is of no use has to go first:
+  // one of another key, with which the browser makes no other, and one
+  // that the server does not send to. The server has dropped that one
+  // because its push service said that it is gone, or it is from a
+  // session that is over, or of somebody else who used this browser.
+  // Saved again as it is, the first would be turned "on" and never get
+  // a message.
+  if (
+    before &&
+    (!madeWith(before, key) || !(await server.state(before.endpoint)))
+  ) {
+    await before.unsubscribe();
+  }
   const subscription = await manager.subscribe({
     userVisibleOnly: true,
     applicationServerKey: fromBase64Url(key),
   });
+  await save(server, subscription);
+  memory.write(
+    session === null ? null : { session, endpoint: subscription.endpoint },
+  );
+  return "on";
+}
+
+/** Hands the server what the browser got when it subscribed. */
+async function save(
+  server: PushServer,
+  subscription: DeviceSubscription,
+): Promise<void> {
   await server.save(
     pushSubscriptionRequestSchema.parse(
       // The form that a browser writes a subscription in has more than
@@ -172,7 +216,45 @@ export async function turnOnPush(
       pick(subscription.toJSON()),
     ),
   );
-  return "on";
+}
+
+/**
+ * Hands the server the subscription that the browser has now, if it is
+ * no longer the one that was turned on in `session`: the browser has
+ * replaced it, or lost it, in which case it subscribes anew. Nobody is
+ * asked anything: the person has turned notifications on here, in this
+ * session, and the browser still may show them.
+ *
+ * Does nothing for a session that turned nothing on, and nothing where
+ * Settings would say something else than "on" or "off": there the person
+ * has to do something first.
+ */
+export async function renewPush(
+  device: PushDevice,
+  server: PushServer,
+  memory: PushMemory,
+  session: string | null,
+): Promise<void> {
+  const turnedOn = memory.read();
+  if (!turnedOn || turnedOn.session !== session) return;
+  if (obstacle(device) || device.permission() !== "granted") return;
+  const manager = await device.manager();
+  if (!manager) return;
+  const now = await manager.getSubscription();
+  // As it was turned on: nothing to do, and nothing to ask the server.
+  if (now?.endpoint === turnedOn.endpoint) return;
+  const key = await server.key();
+  if (key === null) return;
+  // Of another key: this pigy has a new one, and Settings say "off".
+  if (now && !madeWith(now, key)) return;
+  const subscription =
+    now ??
+    (await manager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: fromBase64Url(key),
+    }));
+  await save(server, subscription);
+  memory.write({ session: turnedOn.session, endpoint: subscription.endpoint });
 }
 
 /** The endpoint and the keys of what `PushSubscription.toJSON()` returns. */
@@ -192,7 +274,10 @@ function pick(json: unknown): unknown {
 export async function turnOffPush(
   device: PushDevice,
   server: PushServer,
+  memory: PushMemory,
 ): Promise<PushState> {
+  // First: nothing is to turn them on again behind the person's back.
+  memory.write(null);
   const manager = await device.manager();
   const subscription = await manager?.getSubscription();
   if (subscription) {

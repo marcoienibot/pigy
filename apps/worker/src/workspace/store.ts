@@ -1362,6 +1362,10 @@ export class WorkspaceStore {
       kind: notification.kind,
       channelId: channel.id,
       network: channel.network,
+      // A reminder is given a week before the end, or later: by the first
+      // alarm after that time has come.
+      ...(notification.kind === "channel_expiring" &&
+        channel.expiresAt !== null && { expiresAt: channel.expiresAt }),
     };
   }
 

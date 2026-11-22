@@ -194,11 +194,23 @@ test("a notification that is pressed leads to its screen in its workspace, in a 
   await page.evaluate(() => {
     (window as { stayed?: boolean }).stayed = true;
   });
-  await page.evaluate((url) => {
-    navigator.serviceWorker.dispatchEvent(
-      new MessageEvent("message", { data: { type: "navigate", url } }),
-    );
-  }, `/inbox?inWorkspace=${live}`);
+  const answer = await page.evaluate(
+    (url) =>
+      new Promise((resolve) => {
+        // The worker sends a port along, and opens a window of its own
+        // if nothing comes back on it.
+        const { port1, port2 } = new MessageChannel();
+        port1.onmessage = ({ data }) => resolve(data);
+        navigator.serviceWorker.dispatchEvent(
+          new MessageEvent("message", {
+            data: { type: "navigate", url },
+            ports: [port2],
+          }),
+        );
+      }),
+    `/inbox?inWorkspace=${live}`,
+  );
+  expect(answer).toEqual({ type: "navigated" });
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Inbox");
   await expectWorkspace(page, "Live");
   expect(
@@ -215,17 +227,36 @@ test("a notification that is pressed leads to its screen in its workspace, in a 
 test("a message from the service worker leads to no address but one of the app", async ({
   ownPage: page,
 }) => {
-  await page.evaluate(() => {
-    for (const url of ["https://elsewhere.example/", "//elsewhere.example/"]) {
-      navigator.serviceWorker.dispatchEvent(
-        new MessageEvent("message", { data: { type: "navigate", url } }),
-      );
-    }
+  const answers = await page.evaluate(async () => {
+    /** Tells the page to go to `url`, and returns whether it said it does. */
+    const tell = (url: string) =>
+      new Promise<boolean>((resolve) => {
+        const { port1, port2 } = new MessageChannel();
+        port1.onmessage = () => resolve(true);
+        navigator.serviceWorker.dispatchEvent(
+          new MessageEvent("message", {
+            data: { type: "navigate", url },
+            ports: [port2],
+          }),
+        );
+        // The page answers in the same turn in which it hears, or not.
+        setTimeout(() => resolve(false), 200);
+      });
+    return [
+      await tell("https://elsewhere.example/"),
+      await tell("//elsewhere.example/"),
+      await tell("/\\elsewhere.example/"),
+      // An address of the app, last: the page still listens, and goes.
+      await tell("/sent"),
+    ];
   });
 
-  // The guard of the tests would fail on a request to another host, and
-  // the page is where it was.
-  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Drafts");
+  // The page said of each whether it goes there, which is what this test
+  // goes by: a page that had left for one of the first three would not
+  // have answered the last, and the guard of the tests fails a test whose
+  // page asks another host for anything.
+  expect(answers).toEqual([false, false, false, true]);
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Sent");
 });
 
 test("Settings say that notifications are blocked where the person has refused them, and offer no button", async ({

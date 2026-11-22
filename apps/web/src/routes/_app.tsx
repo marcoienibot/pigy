@@ -9,8 +9,9 @@ import { useEffect, useSyncExternalStore } from "react";
 import { AppShell } from "@/components/app-shell";
 import { PublicPage } from "@/components/page";
 import { Button } from "@/components/ui/button";
+import { renewNotifications } from "@/lib/notifications";
 import { useOnline } from "@/lib/online";
-import { checkForUpdate } from "@/lib/service-worker";
+import { checkForUpdate, onSubscriptionChanged } from "@/lib/service-worker";
 import { checkSession, loadSession, SessionUnknown } from "@/lib/session";
 import { chosenWorkspace, showWorkspace } from "@/lib/workspace";
 import { SyncProvider } from "@/sync/react";
@@ -113,6 +114,15 @@ function App() {
     check();
     return store.subscribe(check);
   }, [store]);
+
+  // Notifications that were turned on in this session go on when the
+  // browser has replaced its subscription since: seen when the app
+  // starts, and when the service worker hears of it. Beside everything
+  // else, and for nobody who has not turned them on.
+  useEffect(() => {
+    void renewNotifications();
+    return onSubscriptionChanged(() => void renewNotifications());
+  }, []);
 
   // This window is too old for the server or for the local copy, and says
   // "Reload to update". The version that the reload is to bring is fetched

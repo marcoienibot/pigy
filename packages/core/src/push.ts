@@ -17,7 +17,7 @@ export const pushKinds = [
   "post_uncertain",
   /** A network no longer takes the access of a channel. */
   "channel_needs_reconnect",
-  /** The access of a channel ends in a week. */
+  /** The access of a channel ends within a week. */
   "channel_expiring",
 ] as const;
 
@@ -44,6 +44,12 @@ export const pushMessageSchema = z.strictObject({
   /** The channel that it is about, if it is about one, and its network. */
   channelId: idSchema.optional(),
   network: networkSchema.optional(),
+  /**
+   * When the access of the channel ends, in milliseconds since the epoch,
+   * for a message that tells of that: it can be days away or hours, and a
+   * device shows the message whenever it gets it.
+   */
+  expiresAt: z.number().int().optional(),
 });
 
 export type PushMessage = z.infer<typeof pushMessageSchema>;

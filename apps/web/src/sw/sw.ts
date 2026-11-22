@@ -3,6 +3,7 @@ import type { Build } from "./build.ts";
 import { activateMessage } from "./messages.ts";
 import { precache } from "./precache.ts";
 import { push } from "./push.ts";
+import { workerPaths } from "./worker-paths.ts";
 
 /**
  * The service worker of pigy. It makes the app start without a connection:
@@ -63,13 +64,36 @@ const notifications = push({
   showNotification: (title, options) =>
     self.registration.showNotification(title, options),
   // Also the windows that this worker does not answer for yet.
-  windows: async () => [
-    ...(await self.clients.matchAll({
+  windows: async () => {
+    const clients = await self.clients.matchAll({
       type: "window",
       includeUncontrolled: true,
-    })),
-  ],
+    });
+    return clients.map((client) => ({
+      url: client.url,
+      focused: client.focused,
+      visibilityState: client.visibilityState,
+      focus: () => client.focus(),
+      postMessage: (message, transfer) =>
+        client.postMessage(message, transfer as Transferable[]),
+    }));
+  },
   openWindow: (url) => self.clients.openWindow(url),
+  isWorkerPath: workerPaths(__BUILD__.workerFirst),
+  reply: (milliseconds) => {
+    const { port1, port2 } = new MessageChannel();
+    const answered = new Promise<boolean>((resolve) => {
+      const late = setTimeout(() => resolve(false), milliseconds);
+      port1.onmessage = () => {
+        clearTimeout(late);
+        resolve(true);
+      };
+    });
+    // Closed either way, so that nothing is left listening.
+    void answered.then(() => port1.close());
+    return { port: port2, answered };
+  },
+  now: () => Date.now(),
 });
 
 self.addEventListener("push", (event) => {
@@ -80,6 +104,11 @@ self.addEventListener("push", (event) => {
     // Shown in general words: something is always shown.
   }
   event.waitUntil(notifications.received(text));
+});
+
+// Not in the types of TypeScript, and not sent by every browser.
+self.addEventListener("pushsubscriptionchange", (event) => {
+  (event as ExtendableEvent).waitUntil(notifications.changed());
 });
 
 self.addEventListener("notificationclick", (event) => {
