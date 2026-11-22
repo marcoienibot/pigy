@@ -11,6 +11,7 @@ import { type Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { readAdminEmails } from "../auth/config.ts";
 import { requireAdmin, requireUser } from "../auth/guards.ts";
+import { revokeKeysOf } from "../auth/session.ts";
 import { allowedEmails, sessions, users } from "../db/schema.ts";
 import type { AppDependencies, AppEnv } from "../env.ts";
 import { parseJsonBody } from "../errors.ts";
@@ -125,7 +126,13 @@ export function adminRoutes(dependencies: AppDependencies): Hono<AppEnv> {
   app.delete("/allowed-emails/:email", async (c) => {
     const email = changeableEmail(c);
     const db = drizzle(c.env.DB);
-    // One transaction: the invitation and the sessions go together.
+    const stored = eq(users.email, email);
+    // One transaction: the invitation, the sessions and the API keys go
+    // together. The keys of the accounts that are stored with the address
+    // stop with the invitation anyway. They are revoked so that they do
+    // not work again when the address is invited again: by then it may be
+    // somebody else's, and until that person has signed in nothing has
+    // told pigy so.
     const [removed] = await db.batch([
       db
         .delete(allowedEmails)
@@ -136,12 +143,10 @@ export function adminRoutes(dependencies: AppDependencies): Hono<AppEnv> {
         .where(
           inArray(
             sessions.userId,
-            db
-              .select({ id: users.id })
-              .from(users)
-              .where(eq(users.email, email)),
+            db.select({ id: users.id }).from(users).where(stored),
           ),
         ),
+      revokeKeysOf(db, stored, now()),
     ]);
     if (removed.length === 0) {
       throw new HTTPException(404, { message: `${email} is not on the list` });

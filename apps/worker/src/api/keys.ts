@@ -182,18 +182,17 @@ const unknown = { refused: "This API key is not valid" };
  * goes by, or by `adminEmails`. So the keys of a person who is removed
  * stop with the next request, whichever way their access ended: a row
  * that an admin removed, or an address that was taken out of
- * `ADMIN_EMAILS`, which no route hears of. Revoking the keys when the row
- * is removed would miss the second, and costs nothing less: the key has
- * to be read anyway, and the owner comes with it in one statement. They
- * work again if the person is invited again, as their workspaces are
- * there again.
+ * `ADMIN_EMAILS`, which no route hears of. The key has to be read anyway,
+ * and the owner comes with it in one statement.
  *
  * That lookup goes by the address that is stored for the owner, which
- * says who they were at their last sign-in that succeeded. When Google
- * says at a sign-in that the account no longer has that address, or that
- * another account has it, the address stays stored and may stay invited:
- * the keys are revoked then, with the sessions, by `auth/session.ts`,
- * and do not come back.
+ * says who they were at their last sign-in that succeeded, and an address
+ * can become somebody else's. So the keys are also revoked, and do not
+ * come back, wherever something says that the address may no longer be
+ * the owner's: when Google says at a sign-in that the account no longer
+ * has it, or that another account has it, by `auth/session.ts`, and when
+ * an admin removes the address from the allowlist, by `admin/routes.ts`,
+ * because a new invitation of the address may be meant for somebody else.
  *
  * Until the secret has been found right, every refusal reads the same:
  * whoever has no key learns nothing of the keys that exist.

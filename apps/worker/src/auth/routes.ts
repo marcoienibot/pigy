@@ -21,9 +21,9 @@ import {
   deleteExpiredSessions,
   isSecure,
   readSessionCookie,
+  revokeAccessAtRefusedSignIn,
   revokeAccessOfOtherAccountsWith,
   revokeSession,
-  revokeSessionsOfAccount,
   writeSessionCookie,
 } from "./session.ts";
 
@@ -155,9 +155,14 @@ export function authRoutes(dependencies: AppDependencies): Hono<AppEnv> {
       // sign-in that succeeds starts one, and it stores the address of that
       // day first. And the API keys of the account, which are good for as
       // long as its stored address is invited, are revoked here unless
-      // Google has verified that very address for the account today: then
-      // it is only not invited, and its keys stop by that.
-      await revokeSessionsOfAccount(db, identity.sub, email, now());
+      // Google has verified that very address for the account today.
+      //
+      // An address that Google has verified for this account is no longer
+      // that of any other account, invited or not. So the access of the
+      // accounts that are stored with it ends here too, as at a sign-in
+      // that succeeds: their keys would otherwise work again the day the
+      // address is invited for the person who has it now.
+      await revokeAccessAtRefusedSignIn(db, identity.sub, email, now());
       return identity.emailVerified
         ? c.redirect("/invite-only")
         : signInFailed(c, "email_not_verified");

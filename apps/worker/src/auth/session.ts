@@ -106,8 +106,12 @@ const workspacesOf = (db: DrizzleD1Database, accounts: SQL | undefined) =>
     .innerJoin(users, eq(users.id, workspaces.ownerId))
     .where(accounts);
 
-/** Revokes the API keys of the accounts that `accounts` selects. */
-const revokeKeysOf = (
+/**
+ * Revokes the API keys of the accounts that `accounts` selects. A statement
+ * for a batch: a key is revoked with what ends the access of its owner, or
+ * a request with the key could find the one without the other.
+ */
+export const revokeKeysOf = (
   db: DrizzleD1Database,
   accounts: SQL | undefined,
   now: Date,
@@ -122,49 +126,68 @@ const revokeKeysOf = (
       ),
     );
 
+/** Ends the sessions of the accounts that `accounts` selects. */
+const endSessionsOf = (db: DrizzleD1Database, accounts: SQL | undefined) =>
+  db
+    .delete(sessions)
+    .where(
+      inArray(
+        sessions.userId,
+        db.select({ id: users.id }).from(users).where(accounts),
+      ),
+    );
+
 /**
- * Ends every session of the Google account `googleSub`, on all devices,
- * because Google has just said that the account is nobody who may sign
- * in. Does nothing for an account that has never signed in.
- *
- * `verifiedEmail` is the address that Google has verified for the account
- * today, if it has one. Unless that is the address that the account is
- * stored with, the account has lost the identity that it was let in with:
- * its address is no longer verified, or it has another one. Its API keys
- * are then revoked with its sessions, in one batch. A key is good for as
- * long as the stored address of its owner is invited, and that address
- * stays stored, so the keys would go on working for somebody of whom
- * nothing says any more that the address is theirs. They do not come
- * back: the person makes new ones once they have signed in again.
- *
- * An account that still has its address and is only no longer invited
- * keeps its keys, which stop by themselves: `verifyApiKey` looks the
- * invitation up with every request, and they work again when the person
- * is invited again.
+ * The accounts that are stored with `email` and are not the Google account
+ * `googleSub`.
  */
-export async function revokeSessionsOfAccount(
+const othersWith = (email: string, googleSub: string) =>
+  and(eq(users.email, email), ne(users.googleSub, googleSub));
+
+/**
+ * What a sign-in that is refused ends, in one batch. Google has just said
+ * who the account `googleSub` is today, and that is nobody who may sign in.
+ *
+ * - Every session of the account, on all devices. Nothing for an account
+ *   that has never signed in.
+ * - The API keys of the account, unless `verifiedEmail`, the address that
+ *   Google has verified for it today, is the address that it is stored
+ *   with. Otherwise the account has lost the identity that it was let in
+ *   with: its address is no longer verified, or it has another one. A key
+ *   is good for as long as the stored address of its owner is invited, and
+ *   that address stays stored, so the keys would go on working for
+ *   somebody of whom nothing says any more that the address is theirs.
+ * - The sessions and the API keys of every other account that is stored
+ *   with `verifiedEmail`, as `revokeAccessOfOtherAccountsWith` ends them
+ *   at a sign-in that succeeds. Google says today that the address is this
+ *   account's, so an account that was let in with it earlier has lost it,
+ *   whether or not the address is invited now. Left alone, its keys would
+ *   work again the day the address is invited for the person who has it
+ *   now, until that person first signs in.
+ *
+ * Keys that are revoked do not come back: the person makes new ones once
+ * they have signed in again.
+ */
+export async function revokeAccessAtRefusedSignIn(
   db: DrizzleD1Database,
   googleSub: string,
   verifiedEmail: string | undefined,
   now: Date,
 ): Promise<void> {
   const account = eq(users.googleSub, googleSub);
+  if (verifiedEmail === undefined) {
+    await db.batch([
+      endSessionsOf(db, account),
+      revokeKeysOf(db, account, now),
+    ]);
+    return;
+  }
+  const others = othersWith(verifiedEmail, googleSub);
   await db.batch([
-    db
-      .delete(sessions)
-      .where(
-        inArray(
-          sessions.userId,
-          db.select({ id: users.id }).from(users).where(account),
-        ),
-      ),
-    revokeKeysOf(
-      db,
-      verifiedEmail === undefined
-        ? account
-        : and(account, ne(users.email, verifiedEmail)),
-      now,
-    ),
+    endSessionsOf(db, account),
+    revokeKeysOf(db, and(account, ne(users.email, verifiedEmail)), now),
+    endSessionsOf(db, others),
+    revokeKeysOf(db, others, now),
   ]);
 }
 
@@ -182,18 +205,8 @@ export async function revokeAccessOfOtherAccountsWith(
   googleSub: string,
   now: Date,
 ): Promise<void> {
-  const others = and(eq(users.email, email), ne(users.googleSub, googleSub));
-  await db.batch([
-    db
-      .delete(sessions)
-      .where(
-        inArray(
-          sessions.userId,
-          db.select({ id: users.id }).from(users).where(others),
-        ),
-      ),
-    revokeKeysOf(db, others, now),
-  ]);
+  const others = othersWith(email, googleSub);
+  await db.batch([endSessionsOf(db, others), revokeKeysOf(db, others, now)]);
 }
 
 /**

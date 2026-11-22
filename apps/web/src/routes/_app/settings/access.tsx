@@ -184,7 +184,8 @@ function Access() {
             <AlertDialogTitle>Remove {removing}?</AlertDialogTitle>
             <AlertDialogDescription>
               They are signed out at once, on every device, and cannot sign in
-              until they are invited again.
+              until they are invited again. Their API keys are revoked, and do
+              not work again with a new invitation.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

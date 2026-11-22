@@ -258,26 +258,43 @@ it("takes no key that is unknown, wrong, revoked or expired", async () => {
   expect(await listed(browser, workspaces.live)).toHaveLength(1);
 });
 
-it("stops the keys of a person who is no longer invited, and takes them again when they are", async () => {
+it("revokes the keys of a person whose invitation is removed: a new invitation does not bring them back", async () => {
   const { test, browser } = await startedApi();
   await invite(test, "member@example.com");
-  const member = await signedIn(test, { email: "member@example.com" });
-  const { secret } = await makeKey(member, (await workspaceIds(member)).live);
-  const api = apiClient(test, secret);
-  await api.ok("/account");
+  const account = { email: "member@example.com", sub: "1001" };
+  const member = await signedIn(test, account);
+  const ids = await workspaceIds(member);
+  const live = apiClient(test, (await makeKey(member, ids.live)).secret);
+  const sandbox = apiClient(test, (await makeKey(member, ids.sandbox)).secret);
+  await live.ok("/account");
+  await sandbox.ok("/account");
 
   const removed = await browser.fetch(
     "/api/admin/allowed-emails/member%40example.com",
     { method: "DELETE" },
   );
   expect(removed.status).toBe(204);
-  expect((await api.refused("/account", {}, 401)).message).toBe(
-    "The owner of this API key no longer has access",
-  );
-  // Nothing was done to the key: the owner is looked up with every
-  // request, so it is good again when they are.
+  for (const api of [live, sandbox]) {
+    expect((await api.refused("/account", {}, 401)).message).toBe(
+      "This API key was revoked",
+    );
+  }
+
+  // The address is invited again, and nobody has signed in with it
+  // since: nothing says whose it is today. It can have been given to
+  // somebody else meanwhile, so the keys of the account that had it do
+  // not work again by the invitation alone.
   await invite(test, "member@example.com");
-  await api.ok("/account");
+  for (const api of [live, sandbox]) {
+    expect((await api.refused("/account", {}, 401)).message).toBe(
+      "This API key was revoked",
+    );
+  }
+
+  // The person who still has the address signs in and makes new ones.
+  const back = await signedIn(test, account);
+  expect(await listed(back, ids.live)).toEqual([]);
+  await apiClient(test, (await makeKey(back, ids.live)).secret).ok("/account");
 });
 
 it("revokes the keys of an account whose address Google no longer verifies, with its sessions", async () => {
@@ -363,28 +380,67 @@ it("revokes the keys of an account that Google reports with another address, whi
   );
 });
 
-it("keeps the keys of somebody who is only no longer invited and tries to sign in: they stop, and work again", async () => {
-  const { test, browser } = await startedApi();
-  await invite(test, "member@example.com");
-  const account = { email: "member@example.com", sub: "1001" };
-  const member = await signedIn(test, account);
-  const { secret } = await makeKey(member, (await workspaceIds(member)).live);
+it("revokes the keys of an account whose address another Google account tries to sign in with, also when that sign-in is refused", async () => {
+  const { test } = await startedApi({
+    env: { ADMIN_EMAILS: `${adminEmail},second@example.com` },
+  });
+  // An admin by configuration, so that no route hears of the end of their
+  // access, and nothing has revoked their key by then.
+  const before = await signedIn(test, {
+    email: "second@example.com",
+    sub: "1001",
+  });
+  const { secret } = await makeKey(before, (await workspaceIds(before)).live);
+  const api = apiClient(test, secret);
+  await api.ok("/account");
+  test.redeploy({ ADMIN_EMAILS: adminEmail });
+  expect((await api.refused("/account", {}, 401)).message).toBe(
+    "The owner of this API key no longer has access",
+  );
+
+  // The address is given to somebody new, who tries to sign in. Google
+  // verifies it for the new account, and it is not invited: the sign-in
+  // is refused, and nothing is stored of the new account.
+  const refused = await signIn(test, test.browser(), {
+    email: "second@example.com",
+    sub: "2002",
+  });
+  expect(locationOf(refused)).toBe("/invite-only");
+  expect(
+    await env.DB.prepare("select google_sub from user where email = ?")
+      .bind("second@example.com")
+      .all(),
+  ).toMatchObject({ results: [{ google_sub: "1001" }] });
+
+  // The address is let in again, for the new person. The key of the
+  // account that had it posts to that account's channels: it is not
+  // good again, although the new person has not signed in yet.
+  test.redeploy({ ADMIN_EMAILS: `${adminEmail},second@example.com` });
+  expect((await api.refused("/account", {}, 401)).message).toBe(
+    "This API key was revoked",
+  );
+});
+
+it("keeps the keys of an account that is only not let in when it tries to sign in with the address that it has", async () => {
+  const { test } = await startedApi({
+    env: { ADMIN_EMAILS: `${adminEmail},second@example.com` },
+  });
+  const account = { email: "second@example.com", sub: "1001" };
+  const second = await signedIn(test, account);
+  const { secret } = await makeKey(second, (await workspaceIds(second)).live);
   const api = apiClient(test, secret);
 
-  const removed = await browser.fetch(
-    "/api/admin/allowed-emails/member%40example.com",
-    { method: "DELETE" },
-  );
-  expect(removed.status).toBe(204);
+  test.redeploy({ ADMIN_EMAILS: adminEmail });
   // The sign-in is refused, and Google has verified the address that the
-  // account is stored with: nothing is lost but the invitation.
+  // account is stored with: nothing of its identity is lost, and nothing
+  // has revoked its keys. They stop by the lookup of every request.
   expect(locationOf(await signIn(test, test.browser(), account))).toBe(
     "/invite-only",
   );
   expect((await api.refused("/account", {}, 401)).message).toBe(
     "The owner of this API key no longer has access",
   );
-  await invite(test, "member@example.com");
+  test.redeploy({ ADMIN_EMAILS: `${adminEmail},second@example.com` });
   await api.ok("/account");
 });
 
