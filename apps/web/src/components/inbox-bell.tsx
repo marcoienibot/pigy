@@ -23,7 +23,7 @@ export function InboxBell() {
       to="/inbox"
       aria-label={unread > 0 ? `Inbox, ${unread} unread` : "Inbox"}
       className={cn(
-        "relative flex size-8 items-center justify-center rounded-md text-muted-foreground outline-none",
+        "relative flex size-7 items-center justify-center rounded-md text-muted-foreground outline-none",
         "hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring",
         "aria-[current=page]:text-foreground",
       )}

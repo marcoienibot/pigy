@@ -40,18 +40,22 @@ export function Page({
 
   return (
     <>
-      <header className="flex h-11 shrink-0 items-center gap-2 border-b px-4">
+      {/* A phone has the bell, the switch, the indicator and the menu
+          here, next to what the screen puts in: the header is closer set
+          there, and its title gives way before the page grows wider than
+          its window. */}
+      <header className="flex h-11 shrink-0 items-center gap-2 border-b px-3 md:px-4">
         <h1
           ref={heading}
           tabIndex={heading ? -1 : undefined}
-          className="rounded-sm font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="min-w-0 truncate rounded-sm font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           {title}
         </h1>
-        <div className="ml-auto flex items-center gap-1">
+        <div className="ml-auto flex shrink-0 items-center gap-1">
           {actions}
           {/* On desktop these are in the sidebar. */}
-          <div className="flex items-center gap-1 pl-1 md:hidden">
+          <div className="flex items-center gap-0.5 md:hidden">
             <InboxBell />
             <WorkspaceSwitch placement="header" />
             <SyncIndicator placement="header" />
