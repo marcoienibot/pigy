@@ -295,6 +295,26 @@ export function publishedPosts(published: PublishedPart[]): PublishedPost[] {
 }
 
 /**
+ * What the Sent screen says over the text that was written for the
+ * account of `target`: that it got one, and what the network made of a
+ * text of several parts, a thread or, where it has none, one post.
+ */
+export function ownTextHeading({
+  status,
+  ownText,
+  channel,
+}: Pick<SentTarget, "status" | "ownText" | "channel">): string {
+  const parts = ownText?.length ?? 0;
+  const got = `${status === "sent" ? "Got" : "Gets"} a text of its own`;
+  if (parts < 2) return `${got}:`;
+  // An account that is disconnected has no network to ask: its text is
+  // called what it was written as.
+  return channel && networkInfo[channel.network].thread === "joined"
+    ? `${got}, ${parts} parts as one post:`
+    : `${got}, a thread of ${parts} parts:`;
+}
+
+/**
  * Whether a post can be deleted from pigy. Not while it is being sent: the
  * server refuses that, because a post that is deleted in the middle would
  * leave posts on the networks that pigy knows nothing of.

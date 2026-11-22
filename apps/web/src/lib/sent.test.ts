@@ -9,6 +9,7 @@ import {
 } from "@/lib/rows.test-support";
 import {
   canDelete,
+  ownTextHeading,
   postStatusWords,
   postTimeWord,
   publishedPosts,
@@ -362,6 +363,78 @@ describe("targetExplanation", () => {
     expect(unknownTo(channel(), "pigy lost track.")).toBe(
       "If the post is there, do not try again, or it is posted twice.",
     );
+  });
+});
+
+describe("a text of its own on a network that makes one post of a thread", () => {
+  const linkedin = channel({
+    network: "linkedin",
+    handle: "Grace Hopper",
+    limits: { network: "linkedin", maxCharacters: 3000 },
+  });
+
+  it("is one post with one link, under the text that the account got", () => {
+    const published = post({ status: "sent" });
+    const own = part(published.id, { text: "The post" });
+    const customized = target(published.id, linkedin.id, {
+      status: "sent",
+      queuedAt: 1,
+    });
+    const first = part(published.id, {
+      targetId: customized.id,
+      position: 0,
+      text: "For Grace, one",
+    });
+    const second = part(published.id, {
+      targetId: customized.id,
+      position: 1,
+      text: "For Grace, two",
+    });
+    const [item] = selectSent(
+      tablesOf({
+        post: [published],
+        post_part: [own, second, first],
+        channel: [linkedin],
+        post_target: [customized],
+        // LinkedIn has one post, which the result of every part names.
+        target_part_result: [
+          result(customized.id, second.id, { remoteId: "urn:li:share:1" }),
+          result(customized.id, first.id, { remoteId: "urn:li:share:1" }),
+        ],
+      }),
+    );
+    const [toGrace] = item?.targets ?? [];
+    expect(toGrace?.ownText?.map(({ text }) => text)).toEqual([
+      "For Grace, one",
+      "For Grace, two",
+    ]);
+    expect(publishedPosts(toGrace?.published ?? [])).toMatchObject([
+      { remoteId: "urn:li:share:1", first: 1, last: 2 },
+    ]);
+    // Not "a thread": LinkedIn has none.
+    expect(toGrace && ownTextHeading(toGrace)).toBe(
+      "Got a text of its own, 2 parts as one post:",
+    );
+  });
+
+  it("is called a thread where the network has threads, and neither for one part or before it is sent", () => {
+    const two = [
+      { id: "a", text: "One" },
+      { id: "b", text: "Two" },
+    ];
+    expect(
+      ownTextHeading({ status: "sent", ownText: two, channel: channel() }),
+    ).toBe("Got a text of its own, a thread of 2 parts:");
+    expect(
+      ownTextHeading({ status: "error", ownText: two, channel: linkedin }),
+    ).toBe("Gets a text of its own, 2 parts as one post:");
+    expect(
+      ownTextHeading({
+        status: "sent",
+        ownText: two.slice(0, 1),
+        channel: linkedin,
+      }),
+    ).toBe("Got a text of its own:");
   });
 });
 

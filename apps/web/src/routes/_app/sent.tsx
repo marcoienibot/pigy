@@ -25,6 +25,7 @@ import { useShortcuts } from "@/lib/keyboard";
 import { networkInfo } from "@/lib/networks";
 import {
   canDelete,
+  ownTextHeading,
   postStatusWords,
   postTimeWord,
   publishedPosts,
@@ -384,13 +385,7 @@ function TargetRow({
         )}
         {target.ownText && (
           <div className="text-xs">
-            <p className="text-muted-foreground">
-              {target.status === "sent" ? "Got" : "Gets"} a text of its own
-              {target.ownText.length > 1
-                ? `, a thread of ${target.ownText.length} parts`
-                : ""}
-              :
-            </p>
+            <p className="text-muted-foreground">{ownTextHeading(target)}</p>
             <ol
               aria-label={`Text for ${handle}`}
               className="mt-0.5 flex flex-col gap-1 border-l-2 pl-2"
