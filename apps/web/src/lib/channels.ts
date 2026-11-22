@@ -24,14 +24,22 @@ export function selectChannels(tables: Tables): Channel[] {
  * is renewed. An access that has ended is said to have: the network
  * refuses the next post, and only then does the channel say that it needs
  * connecting again.
+ *
+ * An access that pigy renews has an end too, as that of Threads has, and
+ * that end moves with every renewal: nothing is said of it while it is
+ * to come. It is said to have ended when it has, which is when pigy could
+ * not renew it in all its weeks.
  */
 export function accessEnds(
-  { expiresAt }: Pick<Channel, "expiresAt">,
+  { network, expiresAt }: Pick<Channel, "network" | "expiresAt">,
   now: number,
 ): string | null {
   if (expiresAt === null) return null;
-  return expiresAt <= now
-    ? "Its access has ended: connect the account again."
+  if (expiresAt <= now) {
+    return "Its access has ended: connect the account again.";
+  }
+  return networkInfo[network].renewsAccess
+    ? null
     : `Its access ends on ${dayOf(expiresAt, now)}: connect the account again before then.`;
 }
 

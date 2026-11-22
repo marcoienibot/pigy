@@ -10,6 +10,7 @@ import {
 import {
   chainOf,
   faultKind,
+  faultOperation,
   firstNetwork,
   makesWait,
   offeredOperations,
@@ -51,6 +52,17 @@ describe("the failure panel", () => {
   it("starts with a network that the sandbox has an account of", () => {
     expect(firstNetwork(["mastodon", "bluesky"], ["bluesky"])).toBe("bluesky");
     expect(firstNetwork(["mastodon", "bluesky"], [])).toBe("mastodon");
+  });
+
+  it("has words for the fault and the requests that only Threads has", () => {
+    expect(faultKind("slow-processing", "threads")).toEqual({
+      label: "Slow to prepare",
+      description: expect.stringContaining("half a minute"),
+    });
+    for (const operation of ["container", "exchange", "refresh"]) {
+      // Words, and not the name that the server has for the request.
+      expect(faultOperation(operation)).not.toBe(operation);
+    }
   });
 
   it("says of a fault on LinkedIn what pigy does there, where it cannot look for a post", () => {

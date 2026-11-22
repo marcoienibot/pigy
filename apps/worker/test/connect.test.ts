@@ -309,23 +309,6 @@ describe("starting a connection", () => {
     expect(refusal).toEqual({ status: 502, error: "UnexpectedError", message });
   });
 
-  it("says so when pigy cannot connect a network yet", async () => {
-    const { test, browser, workspaces } = await start();
-
-    const refusal = await refused(test, browser, workspaces.live, {
-      network: "threads",
-    });
-
-    // Not about what was typed: a form shows it where the network is
-    // chosen.
-    expect(refusal).toEqual({
-      status: 400,
-      error: "InvalidInputError",
-      message: "pigy cannot connect accounts of threads yet.",
-      field: "network",
-    });
-  });
-
   it("tells a person in a sandbox which server the sandbox has", async () => {
     const { test, browser, workspaces } = await start();
 

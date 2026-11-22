@@ -7,20 +7,33 @@ const now = Date.UTC(2026, 10, 15, 12);
 
 describe("accessEnds", () => {
   it("says nothing of an access that lasts or is renewed", () => {
-    expect(accessEnds({ expiresAt: null }, now)).toBeNull();
+    expect(
+      accessEnds({ network: "mastodon", expiresAt: null }, now),
+    ).toBeNull();
+  });
+
+  it("says nothing of the end of an access that pigy renews, as that of Threads, until it has ended", () => {
+    // The end moves with every renewal, which comes weeks before it.
+    expect(
+      accessEnds({ network: "threads", expiresAt: now + 60 * day }, now),
+    ).toBeNull();
+    // pigy could not renew it in all that time.
+    expect(accessEnds({ network: "threads", expiresAt: now }, now)).toBe(
+      "Its access has ended: connect the account again.",
+    );
   });
 
   it("names the day on which an access ends, as LinkedIn's does after 60 days", () => {
     const expiresAt = now + 60 * day;
     // In the words of the device, and with the year: it is the next one.
-    expect(accessEnds({ expiresAt }, now)).toBe(
+    expect(accessEnds({ network: "linkedin", expiresAt }, now)).toBe(
       `Its access ends on ${dayOf(expiresAt, now)}: connect the account again before then.`,
     );
     expect(dayOf(expiresAt, now)).toContain("2027");
   });
 
   it("says that an access has ended once its time is up", () => {
-    expect(accessEnds({ expiresAt: now }, now)).toBe(
+    expect(accessEnds({ network: "linkedin", expiresAt: now }, now)).toBe(
       "Its access has ended: connect the account again.",
     );
   });

@@ -58,6 +58,12 @@ type NetworkInfo = {
    * a person looks. PLAN.md section 8.
    */
   cannotLook?: true;
+  /**
+   * pigy renews the access to an account of this network by itself, well
+   * before the day on which it would end, so that day is nothing to tell
+   * a person of: PLAN.md section 6, "Threads".
+   */
+  renewsAccess?: true;
 };
 
 export const networkInfo: Record<Network, NetworkInfo> = {
@@ -107,7 +113,17 @@ export const networkInfo: Record<Network, NetworkInfo> = {
     ownPosts: "https://www.linkedin.com/in/me/recent-activity/all/",
     cannotLook: true,
   },
-  threads: { label: "Threads", thread: "replies" },
+  threads: {
+    label: "Threads",
+    // One place to sign in: nothing to type.
+    connect: {
+      // GUESS: where Threads lists the apps that an account has let in.
+      // A live run has to confirm it, PLAN.md section 19.
+      revoke: "Settings → Account → Website permissions",
+    },
+    thread: "replies",
+    renewsAccess: true,
+  },
 };
 
 /** The networks in the order in which they are listed. */

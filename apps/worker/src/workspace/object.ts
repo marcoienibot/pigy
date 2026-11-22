@@ -444,18 +444,24 @@ export function workspaceObject(dependencies: RenewalDependencies) {
       // than an access that is good for weeks. The runtime runs one alarm
       // of an object at a time, and deliveries begin here alone, so none
       // begins while an access is being renewed.
-      for (const look of [
-        () => this.#watchDeliveries(),
-        () => this.#startDeliveries(),
-        () => this.#renewAccesses(),
-      ]) {
+      for (const [look, failed] of [
+        [
+          () => this.#watchDeliveries(),
+          "The deliveries of a workspace were not looked after",
+        ],
+        [
+          () => this.#startDeliveries(),
+          "The deliveries of a workspace were not looked after",
+        ],
+        [
+          () => this.#renewAccesses(),
+          "The accesses of a workspace were not renewed",
+        ],
+      ] as const) {
         try {
           await look();
         } catch (error) {
-          console.error(
-            "The deliveries and accesses of a workspace were not looked after",
-            loggable(error),
-          );
+          console.error(failed, loggable(error));
         }
       }
       try {

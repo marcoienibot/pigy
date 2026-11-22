@@ -37,6 +37,11 @@ const kinds: Record<string, Words> = {
     label: "Access ran out",
     description: "The access ends before its time. pigy renews it and goes on.",
   },
+  "slow-processing": {
+    label: "Slow to prepare",
+    description:
+      "The network takes the next post and needs half a minute to prepare it before it can be published. pigy waits, asks again every few seconds, and publishes the post when it is ready.",
+  },
 };
 
 /**
@@ -89,6 +94,7 @@ export const waitNote =
 
 const operations: Record<string, string> = {
   publish: "Posting",
+  container: "Preparing a post",
   read: "Reading posts",
   delete: "Deleting a post",
   instance: "Reading the server",
@@ -97,6 +103,8 @@ const operations: Record<string, string> = {
   server: "Reading the sign-in server",
   authorize: "Beginning a connection",
   token: "Getting or renewing the access",
+  exchange: "Getting the access that lasts",
+  refresh: "Renewing the access",
   revoke: "Giving the access back",
   profile: "Reading the profile",
 };

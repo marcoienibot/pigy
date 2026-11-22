@@ -132,6 +132,13 @@ it("lists the accounts of a new sandbox, which have posted nothing", async () =>
         name: "Grace Hopper",
         posts: [],
       },
+      ...["ada", "alan", "grace"].map((username, index) => ({
+        network: "threads",
+        id: expect.any(String),
+        handle: `@${username}.sandbox`,
+        name: ["Ada Lovelace", "Alan Turing", "Grace Hopper"][index],
+        posts: [],
+      })),
     ],
   });
 });
@@ -310,6 +317,27 @@ it("says how each simulated network can be made to fail", async () => {
         operations: ["instance", "account", "publish", "read", "delete"],
         armed: [],
       },
+      {
+        network: "threads",
+        kinds: [
+          "rate-limit",
+          "server-error",
+          "lost-response",
+          "token-revoked",
+          "slow-processing",
+        ],
+        operations: [
+          "publish",
+          "container",
+          "read",
+          "account",
+          "token",
+          "exchange",
+          "refresh",
+          "delete",
+        ],
+        armed: [],
+      },
     ],
   });
 });
@@ -399,11 +427,6 @@ it("arms faults in the order in which they were asked for, and disarms them all"
 it.each([
   // What a panel sends is what the simulators declare. Anything else is
   // refused with the field that it is about, and arms nothing.
-  [
-    "a network that the sandbox does not simulate",
-    { network: "threads", kind: "rate-limit" },
-    "network",
-  ],
   [
     "a failure that the network does not have",
     { network: "mastodon", kind: "meteor-strike" },
