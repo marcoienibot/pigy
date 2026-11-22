@@ -452,13 +452,16 @@ export function workspaceObject(dependencies: RenewalDependencies) {
       // deliveries to its channel have kept waiting. No delivery begins
       // there before it was renewed, and the ones that waited for that
       // begin last, in the same alarm.
+      // The runs that this alarm could not create, which its second look
+      // at the deliveries does not try again: the next alarm does.
+      const uncreated = new Set<string>();
       for (const [look, failed] of [
         [
           () => this.#watchDeliveries(),
           "The deliveries of a workspace were not looked after",
         ],
         [
-          () => this.#startDeliveries(),
+          () => this.#startDeliveries(uncreated),
           "The deliveries of a workspace were not looked after",
         ],
         [
@@ -466,7 +469,13 @@ export function workspaceObject(dependencies: RenewalDependencies) {
           "The accesses of a workspace were not renewed",
         ],
         [
-          () => this.#startDeliveries(),
+          // Only for a delivery that can begin now: one that waited for
+          // its access, or that became ready while an access was renewed.
+          async () => {
+            if (this.#store.deliveriesNeed(now().getTime()) === "begin") {
+              await this.#startDeliveries(uncreated);
+            }
+          },
           "The deliveries of a workspace were not looked after",
         ],
       ] as const) {
@@ -605,11 +614,11 @@ export function workspaceObject(dependencies: RenewalDependencies) {
      *
      * A workflow that cannot be created does not keep the others from
      * being created: the deliveries to other channels have nothing to do
-     * with it. It is logged, and left for the next alarm.
+     * with it. It is logged, and left for the next alarm: `failed` has
+     * the runs that this alarm could not create, and takes the ones that
+     * this look cannot.
      */
-    async #startDeliveries(): Promise<void> {
-      // The runs that this look could not create.
-      const failed = new Set<string>();
+    async #startDeliveries(failed: Set<string>): Promise<void> {
       for (;;) {
         const from = this.#store.seq;
         this.#store.startDeliveries(now().getTime());
