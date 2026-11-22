@@ -9,6 +9,7 @@
     "vite.config.ts",
     "vitest.config.ts",
     "service-worker-plugin.ts",
+    "service-worker-plugin.test.ts",
     "security-headers-plugin.ts",
     "security-headers-plugin.test.ts",
     "zod-without-eval.ts"

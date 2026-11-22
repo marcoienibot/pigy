@@ -65,26 +65,44 @@ export function serviceWorker(options: {
 }
 
 /**
- * What Cloudflare reads in the directory of the assets and does not serve.
- * The service worker itself is not a file that it keeps, either.
+ * What Cloudflare reads in the directory of the assets and serves the
+ * files by: the headers of each, the content security policy of the app
+ * shell among them, and where it redirects. It does not serve them.
  */
-const notServed = new Set(["_headers", "_redirects", "sw.js"]);
+const rules = new Set(["_headers", "_redirects"]);
 
-/** The files of the build in `directory`, and the version they make. */
+/**
+ * What Cloudflare does not serve. The service worker itself is not a file
+ * that it keeps, either.
+ */
+const notServed = new Set([...rules, "sw.js"]);
+
+/**
+ * The files of the build in `directory`, and the version they make.
+ *
+ * The version is a digest of the files and of the rules that they are
+ * served by. The service worker keeps the app shell with the headers that
+ * it was answered with, its content security policy among them, and a
+ * browser installs a new service worker only when `sw.js` has changed:
+ * without the rules, a release that changes only the policy would be the
+ * same version, and a device would go on with the policy that it has.
+ */
 function filesOf(directory: string): Pick<Build, "version" | "files"> {
   const hash = createHash("sha256");
-  const files = readdirSync(directory, { recursive: true, withFileTypes: true })
+  const found = readdirSync(directory, { recursive: true, withFileTypes: true })
     .filter((entry) => entry.isFile())
     .map((entry) =>
       relative(directory, join(entry.parentPath, entry.name))
         .split(sep)
         .join("/"),
     )
+    .sort();
+  const files = found.filter(
     // Files whose names begin with a dot are not served: Cloudflare's Vite
     // plugin writes `.assetsignore` here.
-    .filter((file) => !file.startsWith(".") && !notServed.has(file))
-    .sort();
-  for (const file of files) {
+    (file) => !file.startsWith(".") && !notServed.has(file),
+  );
+  for (const file of [...files, ...found.filter((file) => rules.has(file))]) {
     hash.update(`${file}\0`);
     hash.update(readFileSync(join(directory, file)));
   }
