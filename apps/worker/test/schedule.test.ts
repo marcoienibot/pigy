@@ -1,6 +1,7 @@
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import {
   lateMs,
+  metricMoments,
   type Row,
   type SandboxFeed,
   sandboxBlueskyHandles,
@@ -571,10 +572,17 @@ it("holds the queue while it is paused, sends a post with a time of its own all 
   expect(await settled(later, exact.postId)).toMatchObject({ status: "sent" });
   expect(posts()).toEqual(["Exact"]);
   expect(postOf(later, queued)).toMatchObject({ status: "scheduled" });
-  // Nothing of the workspace has a time now. The alarm that looked
-  // after the delivery comes once more, and sets none after it.
+  // Nothing of the queue has a time now. The alarm that looked after the
+  // delivery comes once more, and the one that it sets after it is for
+  // the stats of the post that went out, ten minutes after it was sent:
+  // not for the queue, which is paused.
   await alarm(workspace);
-  expect(await alarmOf(workspace)).toBeNull();
+  const ahead = ((await alarmOf(workspace)) ?? 0) - Date.now();
+  // A moment past: the post was sent by the time of its mutation, which
+  // can be some milliseconds after the clock.
+  const stats = metricMoments[1] ?? 0;
+  expect(ahead).toBeGreaterThan(stats - minute);
+  expect(ahead).toBeLessThan(stats + minute);
 
   // The queue goes on five minutes after the slot that passed: the post
   // takes the next one, and does not go out for the one it missed.
@@ -673,12 +681,23 @@ it("publishes a post that an alarm finds late, and holds one that it finds more 
   expect(targetOf(later, early.targets[0] ?? "").status).toBe("pending");
   // A held post is nothing to come back for: the alarm that looked
   // after the delivery comes once more, and the one that it sets after
-  // it is for the inbox alone, which tells of the held post and removes
-  // what it says when that is old.
+  // it is for the stats of the post that went out, ten minutes after it
+  // was sent, and after them for the inbox, which tells of the held post
+  // and removes what it says when that is old.
   await alarm(workspace);
   const ahead = ((await alarmOf(workspace)) ?? 0) - Date.now();
-  expect(ahead).toBeGreaterThan(notificationLifetimeMs - minute);
-  expect(ahead).toBeLessThanOrEqual(notificationLifetimeMs);
+  // A moment past: the post was sent by the time of its mutation, which
+  // can be some milliseconds after the clock.
+  const stats = metricMoments[1] ?? 0;
+  expect(ahead).toBeGreaterThan(stats - minute);
+  expect(ahead).toBeLessThan(stats + minute);
+  await runInDurableObject(objectOf(workspace), (_, state) =>
+    state.storage.sql.exec("update post_target set metrics_at = null"),
+  );
+  await alarm(workspace);
+  const inbox = ((await alarmOf(workspace)) ?? 0) - Date.now();
+  expect(inbox).toBeGreaterThan(notificationLifetimeMs - minute);
+  expect(inbox).toBeLessThanOrEqual(notificationLifetimeMs);
 
   // The person sends it after all.
   await mutate(later, later.mutation("post.publish", { id: early.postId }));

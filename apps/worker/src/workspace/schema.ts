@@ -4,6 +4,7 @@ import {
   imageTypes,
   type Limits,
   mediaStatuses,
+  metricStatuses,
   networks,
   notificationKinds,
   type PushMessage,
@@ -204,6 +205,15 @@ export const postTargets = sqliteTable(
     mayHaveSent: integer("may_have_sent", { mode: "boolean" })
       .notNull()
       .default(false),
+    /**
+     * When the server next reads the stats of the delivery, for one that
+     * is `sent`: at once when it was sent, then at the moments of
+     * `metricMoments` after that, or later where the network asked to be
+     * asked later. Null when it reads no more, and for every target that
+     * is not sent: src/workspace/stats.ts. A target that was sent before
+     * the column has none, and gets no stats.
+     */
+    metricsAt: integer("metrics_at"),
   },
   (table) => [
     // A post goes to a channel once.
@@ -216,6 +226,13 @@ export const postTargets = sqliteTable(
     // up by their status at every change of the workspace, and they are
     // few among all that were ever published.
     index("post_target_status_idx").on(table.status),
+    // For the next stats to read, which every change asks for, among all
+    // that were ever published: most have none to read any more. Only a
+    // target that is sent is read, and under its status the targets are in
+    // the order of their next read, so a question for the sent ones goes
+    // straight to the first that has one: by the time alone, or by the
+    // status alone, SQLite goes through every delivery that was ever sent.
+    index("post_target_metrics_at_idx").on(table.status, table.metricsAt),
   ],
 );
 
@@ -245,6 +262,22 @@ export const targetPartResults = sqliteTable(
     index("target_part_result_part_id_idx").on(table.partId),
   ],
 );
+
+/** The stats of a delivery: see `metricRowSchema`. */
+export const metrics = sqliteTable("metric", {
+  // The ID of the target. The mutators delete it before its target.
+  id: text("id")
+    .primaryKey()
+    .references(() => postTargets.id),
+  status: text("status", { enum: metricStatuses }).notNull(),
+  likes: integer("likes"),
+  reposts: integer("reposts"),
+  replies: integer("replies"),
+  quotes: integer("quotes"),
+  views: integer("views"),
+  countedAt: integer("counted_at"),
+  reason: text("reason"),
+});
 
 /** What the inbox of the app says: see `notificationRowSchema`. */
 export const notifications = sqliteTable(

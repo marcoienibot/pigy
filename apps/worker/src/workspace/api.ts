@@ -5,6 +5,7 @@ import {
   type MutatorName,
   maxApiTime,
   type Network,
+  networkNames,
   networks,
   ownParts,
   ownTextMutations,
@@ -17,6 +18,7 @@ import {
 } from "@pigy/core";
 import {
   type ApiChannel,
+  type ApiMetrics,
   type ApiMode,
   type ApiPost,
   type ApiPostingSchedule,
@@ -211,13 +213,6 @@ function statusOf(code: RejectionCode): number {
   }
 }
 
-const networkNames: { readonly [N in Network]: string } = {
-  bluesky: "Bluesky",
-  linkedin: "LinkedIn",
-  mastodon: "Mastodon",
-  threads: "Threads",
-};
-
 /** Carries out `call`, or throws an `ApiRefusal`. */
 export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
   const { db } = bench;
@@ -301,6 +296,24 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
     left: maxApiAnswerTextLength - lengthOf(ownParts(parts)),
   });
 
+  /** The stats of a delivery as the API says them, or null without any. */
+  const metricsResource = (
+    metric: Row<"metric"> | undefined,
+  ): ApiMetrics | null =>
+    metric
+      ? {
+          status: metric.status,
+          likes: metric.likes,
+          reposts: metric.reposts,
+          replies: metric.replies,
+          quotes: metric.quotes,
+          views: metric.views,
+          countedAt:
+            metric.countedAt === null ? null : apiTime(metric.countedAt),
+          reason: metric.reason,
+        }
+      : null;
+
   /**
    * The delivery `target` of a post with the parts `parts`, as the API
    * says it. `room` is what is left of the answer for the texts that
@@ -340,8 +353,7 @@ export function carryOut(call: ApiCall, bench: ApiBench): ApiAnswer {
       error: target.error,
       disconnected: target.disconnected,
       sentAt: target.sentAt === null ? null : apiTime(target.sentAt),
-      // Engagement comes with phase 10.
-      metrics: null,
+      metrics: metricsResource(readRow(db, "metric", target.id)),
     };
   };
 

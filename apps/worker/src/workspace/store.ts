@@ -1,6 +1,7 @@
 import {
   applyMutation,
   type Change,
+  type ChannelStatus,
   environmentSchema,
   expiryNoticeMs,
   type ImageFacts,
@@ -69,6 +70,7 @@ import {
   type KeyedOutcome,
   keyedCalls,
   media,
+  metrics,
   notifications,
   partMedia,
   postParts,
@@ -224,6 +226,75 @@ export type StoredChannelAccess = {
    */
   connectedAt: number;
 };
+
+/**
+ * A read of the stats of a delivery whose time has come, with what it
+ * takes: stats.ts.
+ */
+export type DueMetrics = {
+  targetId: string;
+  /** When the delivery was sent, which the moments of reading go by. */
+  sentAt: number;
+  /**
+   * The network's ID of the first part that the delivery published, which
+   * the stats are read of. Null if the workspace has none on record.
+   */
+  remoteId: string | null;
+  /** The channel and its access, or null if the channel is gone. */
+  channel:
+    | (StoredChannelAccess & { channelId: string; status: ChannelStatus })
+    | null;
+};
+
+/**
+ * Whether `metrics_at` of a target says that the server reads its stats
+ * at `now`: at that time or before.
+ */
+const metricsDueAt = (now: number) =>
+  and(isNotNull(postTargets.metricsAt), lte(postTargets.metricsAt, now));
+
+/**
+ * The question for the reads of stats that are due at `now`, `limit` at
+ * most, the one that was due first first, of the deliveries that are
+ * sent: `metricsDue` of the store.
+ *
+ * Written, with `nextMetricsQuery`, for `post_target_metrics_at_idx`, which
+ * has the targets by status and then by the time of their next read: SQLite
+ * walks it from the first sent target with a time on, and stops at `now`
+ * or at the limit. Every delivery that was ever sent is in the table, and
+ * most have nothing left to read: the index of the status alone has all
+ * of them under `sent`, and the time alone has the targets of every
+ * status. A test reads the plan.
+ */
+export function metricsDueQuery(
+  db: DrizzleSqliteDODatabase,
+  now: number,
+  limit: number,
+) {
+  return db
+    .select({
+      targetId: postTargets.id,
+      channelId: postTargets.channelId,
+      sentAt: postTargets.sentAt,
+    })
+    .from(postTargets)
+    .where(and(eq(postTargets.status, "sent"), metricsDueAt(now)))
+    .orderBy(asc(postTargets.metricsAt), asc(postTargets.id))
+    .limit(limit);
+}
+
+/**
+ * The question for when the next read of stats is due, of the deliveries
+ * that are sent: `nextMetricsAt` of the store, which every change asks.
+ * SQLite answers it from the first entry of `post_target_metrics_at_idx`
+ * under `sent` that has a time, as `metricsDueQuery` says.
+ */
+export function nextMetricsQuery(db: DrizzleSqliteDODatabase) {
+  return db
+    .select({ at: min(postTargets.metricsAt) })
+    .from(postTargets)
+    .where(eq(postTargets.status, "sent"));
+}
 
 /** A channel whose access is due to be renewed, with that access. */
 /**
@@ -695,6 +766,28 @@ export class WorkspaceStore {
         .returning({ id: channels.id })
         .all();
       if (!stored) throw new Error("The channel was not stored");
+      // What could not be read of the stats of its posts with the access
+      // before may be read with this one, as the permission that an old
+      // Threads account lacked: those reads are made now, and not at
+      // their next moment, which can be weeks away.
+      this.db
+        .update(postTargets)
+        .set({ metricsAt: now })
+        .where(
+          and(
+            eq(postTargets.channelId, stored.id),
+            eq(postTargets.status, "sent"),
+            gt(postTargets.metricsAt, now),
+            inArray(
+              postTargets.id,
+              this.db
+                .select({ id: metrics.id })
+                .from(metrics)
+                .where(eq(metrics.status, "unavailable")),
+            ),
+          ),
+        )
+        .run();
       return {
         ok: true,
         channelId: stored.id,
@@ -1696,7 +1789,12 @@ export class WorkspaceStore {
       if (end.status !== "error") {
         this.db
           .update(postTargets)
-          .set({ mayHaveSent: end.status === "uncertain" })
+          .set({
+            mayHaveSent: end.status === "uncertain",
+            // A delivery that is sent has stats: the first read is at
+            // once, and says whether its network gives any.
+            ...(end.status === "sent" && { metricsAt: now }),
+          })
           .where(eq(postTargets.id, end.id))
           .run();
       }
@@ -1918,6 +2016,106 @@ export class WorkspaceStore {
         and(eq(channels.id, channelId), eq(channels.credentials, expected)),
       )
       .run();
+  }
+
+  /**
+   * The reads of stats that are due at `now`, `limit` at most, the one
+   * that was due first first: of deliveries that are sent, each with the
+   * first part that it published and the access of its channel.
+   */
+  metricsDue(now: number, limit: number): DueMetrics[] {
+    return metricsDueQuery(this.db, now, limit)
+      .all()
+      .map(({ targetId, channelId, sentAt }) => {
+        // The first part of what the target got: of the parts that have
+        // a result, the one that its text has first.
+        const first = this.db
+          .select({ remoteId: targetPartResults.remoteId })
+          .from(targetPartResults)
+          .innerJoin(postParts, eq(postParts.id, targetPartResults.partId))
+          .where(eq(targetPartResults.targetId, targetId))
+          .orderBy(asc(postParts.position), asc(postParts.id))
+          .limit(1)
+          .get();
+        const channel = this.db
+          .select({
+            channelId: channels.id,
+            network: channels.network,
+            accountId: channels.accountId,
+            credentials: channels.credentials,
+            connectedAt: channels.connectedAt,
+            status: channels.status,
+          })
+          .from(channels)
+          .where(eq(channels.id, channelId))
+          .get();
+        return {
+          targetId,
+          // A target that is sent has a time it was sent at.
+          sentAt: sentAt ?? 0,
+          remoteId: first?.remoteId ?? null,
+          channel: channel ?? null,
+        };
+      });
+  }
+
+  /**
+   * Stores what a read of the stats of a delivery found, with
+   * `metric.record`, and when to read them next, `at`, or never with null:
+   * in one transaction, so that a read whose outcome is stored is not due
+   * any more. Without a `reading` it stores the time alone.
+   */
+  recordMetrics(
+    targetId: string,
+    reading: MutatorArgs<"metric.record"> | null,
+    at: number | null,
+    now: number,
+  ): void {
+    this.storage.transactionSync(() => {
+      if (reading) {
+        const [refusal] = this.run(
+          [{ name: "metric.record", args: reading }],
+          now,
+          "server",
+        );
+        if (refusal) throw new Error(`Not recorded: ${refusal.message}`);
+      }
+      this.db
+        .update(postTargets)
+        .set({ metricsAt: at })
+        .where(eq(postTargets.id, targetId))
+        .run();
+    });
+  }
+
+  /**
+   * Puts off until `until` every read of stats to the channel `channelId`
+   * that is due before then: its network has asked to be asked later.
+   */
+  postponeMetricsOf(channelId: string, until: number): void {
+    this.db
+      .update(postTargets)
+      .set({ metricsAt: until })
+      .where(
+        and(
+          eq(postTargets.channelId, channelId),
+          eq(postTargets.status, "sent"),
+          metricsDueAt(until - 1),
+        ),
+      )
+      .run();
+  }
+
+  /**
+   * When the stats of a delivery are next to be read, in milliseconds
+   * since the epoch, or null if none ever are. Of the deliveries that are
+   * sent, as `metricsDue` reads them: a time that the pass would not read
+   * would bring the alarm back at once, for good.
+   */
+  get nextMetricsAt(): number | null {
+    // Every change asks this, so it is one look into an index: see
+    // `nextMetricsQuery`.
+    return nextMetricsQuery(this.db).get()?.at ?? null;
   }
 
   /**

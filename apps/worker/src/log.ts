@@ -28,6 +28,8 @@ export type LogKind =
   | "connection"
   /** Renewing the access of a channel by the timer. */
   | "renewal"
+  /** Reading the stats of a delivery by the timer. */
+  | "stats"
   /** Publishing: the workflow, and the workspace that looks after it. */
   | "delivery"
   /** The scheduled posts of a workspace. */

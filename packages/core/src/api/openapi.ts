@@ -42,7 +42,9 @@ const introduction = `The API of pigy does what the app does: it writes posts, s
 
 **Pages.** A list is answered a page at a time, with \`pageInfo\`: pass its \`endCursor\` as \`after\` for the next page while \`hasNextPage\` is true. A page can have fewer posts than were asked for.
 
-**Not there yet.** Images: \`POST /media\` and \`assets\` are refused. Engagement: \`metrics\` is null.`;
+**Stats.** An entry of \`targets\` that is \`sent\` has \`metrics\`: what people did with the post on its network, which pigy reads by itself, soon after the post was sent and less and less often after, for 30 days. Null until the first read.
+
+**Not there yet.** Images: \`POST /media\` and \`assets\` are refused.`;
 
 /** The schemas that have a name, as JSON Schema, by their names. */
 function namedSchemas(): { [name: string]: JsonObject } {

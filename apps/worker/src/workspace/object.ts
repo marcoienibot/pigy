@@ -34,6 +34,7 @@ import {
   renewAccess,
   renewalBrokenMs,
 } from "./renewal.ts";
+import { metricsBrokenMs, readMetrics } from "./stats.ts";
 import {
   type ChannelAccess,
   type ConnectChannelCall,
@@ -102,6 +103,17 @@ export const farthestLookMs = 365 * 24 * 60 * 60 * 1000;
  */
 export const pushesPerPass = 20;
 export const pushPassMs = 30 * 1000;
+
+/**
+ * How many reads of stats one pass makes at most, and how long it takes
+ * up new ones, in milliseconds: see `#metricsPass` of the object. What is
+ * left waits for the next pass, which comes `metricsPauseMs` later, so
+ * that a workspace with hundreds of posts whose stats are due together
+ * asks their networks a few at a time.
+ */
+export const metricsPerPass = 20;
+export const metricsPassMs = 30 * 1000;
+export const metricsPauseMs = 60 * 1000;
 
 /**
  * The least time between two alarms that are for renewing an access, in
@@ -178,16 +190,36 @@ export function workspaceObject(
      */
     #pushing: Promise<void> | null = null;
     /**
-     * Has the alarm that waits for the pass over the push messages stop
-     * waiting. Null unless an alarm does.
+     * Set while the alarm waits for a pass that it has begun beside
+     * itself, `#waitAside`: `stand` has it stop waiting, and `rearm` sets
+     * anew when it stops by itself, after a change that can have brought
+     * a scheduled post nearer. `pushes` says whether a push message that
+     * a change queues is a reason to stop: it is while the alarm waits for
+     * the stats, and not while it waits for the push messages to be sent.
+     * Null unless an alarm waits.
      */
-    #standAside: (() => void) | null = null;
+    #aside: { stand(): void; rearm(): void; pushes: boolean } | null = null;
     /**
      * True when the last pass over the push messages stopped at its limit
      * and left messages for the next one, until that begins: see
      * `#nextLookIn`.
      */
     #passStopped = false;
+    /**
+     * The pass over the stats that are due that is under way, if one is:
+     * see `#metricsPass`. In memory, like the pass over the push messages:
+     * an object that leaves memory in the middle of one reads what is left
+     * with its next alarm.
+     */
+    #counting: Promise<void> | null = null;
+    /**
+     * True from the moment a pass over the stats begins until one has
+     * read all that were due when it began: a read that is due while this
+     * holds is one that a pass has yet to get to, or that it stopped
+     * short of, and is come back to in `metricsPauseMs`, see
+     * `#nextLookIn`.
+     */
+    #metricsBehind = false;
     /**
      * True while the alarm runs. It sets the next alarm when it is done,
      * from what it finds then, so a change in the meantime sets none.
@@ -604,14 +636,21 @@ export function workspaceObject(
      * workflow is over without having said so, and begins the ones whose
      * turn has come, each as a run of the publishing workflow. Then it
      * renews the access of every channel whose time for that has come,
-     * and begins the deliveries that waited for one of those. Last it
-     * keeps the inbox, and sends the push messages that wait:
-     * `#sendPushes`, which does not keep a delivery waiting. It runs at
-     * the moment that `#nextLookIn` names: when the next scheduled post
-     * is due, soon after anything changes that can make a delivery begin
-     * or that queues a push message, every `deliveryWatchMs` while a
-     * delivery is under way or a push message waits, and when the next
-     * access or the inbox is due.
+     * and begins the deliveries that waited for one of those. Then it
+     * keeps the inbox and looks after the images, `#keepMedia`. Last it
+     * sends the push messages that wait, `#sendPushes`, and reads the
+     * stats of the deliveries whose time for that has come,
+     * `#metricsPass`: both beside itself, so that neither keeps a delivery
+     * or a scheduled post waiting, `#waitAside`. A renewal and an image
+     * that come due while it waits for them wait with it: see
+     * `#untilNextPost`.
+     *
+     * It runs at the moment that `#nextLookIn` names: when the next
+     * scheduled post is due, soon after anything changes that can make a
+     * delivery begin or that queues a push message, every
+     * `deliveryWatchMs` while a delivery is under way or a push message
+     * waits, and when the next access, the inbox, an image or the stats
+     * of a delivery are due.
      *
      * What goes wrong in looking after them does not fail the alarm: it
      * is logged, and tried again the next time. The one thing that does
@@ -693,19 +732,37 @@ export function workspaceObject(
           ],
           [
             // After the deliveries, and bounded: so many images in a
-            // look, each a request or two to the bucket.
+            // look, each a request or two to the bucket. Before the stats
+            // are begun, so that the images wait for none of them.
             () => this.#keepMedia(),
             "media",
             "The images of a workspace were not looked after",
           ],
           [
-            // Last: this waits for the push services, and leaves as soon
-            // as a delivery asks to begin.
+            // Begun before the push messages are, and read beside them.
+            () => this.#beginMetricsPass(),
+            "stats",
+            "The stats of a workspace were not read",
+          ],
+          [
+            // Last, with the stats: these wait for the push services and
+            // the networks, and leave as soon as a delivery asks to begin.
             async () => {
               stoodAside = await this.#sendPushes();
             },
             "push",
             "The push messages of a workspace were not sent",
+          ],
+          [
+            async () => {
+              if (!stoodAside && this.#counting) {
+                stoodAside = await this.#waitAside(this.#counting, {
+                  pushes: true,
+                });
+              }
+            },
+            "stats",
+            "The stats of a workspace were not read",
           ],
         ] as const satisfies readonly (readonly [
           () => unknown,
@@ -967,10 +1024,13 @@ export function workspaceObject(
      * - The alarm stopped renewing accesses for a delivery, `unfinished`:
      *   at once, for the rest of them. It has renewed one at least, so
      *   this ends.
-     * - The alarm stopped waiting for the push messages to be sent,
-     *   because a change asked for a delivery to begin, `stoodAside`: at
-     *   once, for that delivery. It takes a change to get here, so this
-     *   ends.
+     * - The alarm stopped waiting for a pass beside it, because a change
+     *   asked for a delivery to begin, or queued a push message while it
+     *   waited for the stats, `stoodAside`: at once, for that delivery or
+     *   message. It takes a change to get here, so this ends. The alarm
+     *   also stops waiting at the time of a scheduled post, `#waitAside`,
+     *   which is no change: what brings it back then is the moment of
+     *   that post below.
      * - A delivery waits for an access that is overdue for renewal, and
      *   the alarm did not turn to that access, `renewed`: at once. The
      *   delivery came to wait while the alarm was busy with another
@@ -1004,6 +1064,15 @@ export function workspaceObject(
      *   earliest, which is when the rest is taken where a look has done
      *   as many as it does, and when it is tried again if it did not
      *   work.
+     * - The stats of a delivery are to be read: at their time, which is
+     *   at once for a delivery that has just been sent. While a pass over
+     *   the stats is under way, or the last one stopped short of what was
+     *   due, `#metricsBehind`: in `metricsPauseMs` at the earliest. Every
+     *   read that a pass gets to leaves its delivery with a later time or
+     *   with none, whatever comes of it, so this ends. All but one whose
+     *   account was connected again or disconnected while its network was
+     *   asked, which stays due, with the pass behind: it takes a change to
+     *   get there, so that ends too.
      *
      * `after` says who asks: a change, or the alarm when it has looked.
      */
@@ -1067,6 +1136,12 @@ export function workspaceObject(
       const images = this.#store.nextMediaAt;
       if (images !== null) {
         waits.push(Math.max(deliveryWatchMs, images - time));
+      }
+      const metricsAt = this.#store.nextMetricsAt;
+      if (metricsAt !== null) {
+        waits.push(
+          Math.max(this.#metricsBehind ? metricsPauseMs : 0, metricsAt - time),
+        );
       }
       // The runtime sets no alarm for a time that is centuries away, and
       // a post can be scheduled for one. The alarm comes back before
@@ -1247,21 +1322,206 @@ export function workspaceObject(
             }
           });
       }
+      return this.#waitAside(this.#pushing, { pushes: false });
+    }
+
+    /**
+     * Waits for `pass`, a pass that the alarm has begun beside itself, to
+     * end, unless something comes first that the alarm has to do: a
+     * delivery that a change asks to begin, or with `pushes` a push
+     * message that a change queues, which `#wake` says here, and the time
+     * of the next scheduled post, `#untilNextPost`. Returns whether it
+     * stopped waiting for a change. The pass goes on all the same.
+     *
+     * A pass can wait for a network or a push service for a minute and
+     * more, and the alarm, which takes up the posts and renews the
+     * accesses, does not run meanwhile: the runtime runs one at a time.
+     * Time that passes is no change that `#wake` hears of, so the alarm
+     * stops waiting by itself when a post is due, and comes back for it
+     * at once: `#nextLookIn` has it due then.
+     */
+    async #waitAside(
+      pass: Promise<void>,
+      { pushes }: { pushes: boolean },
+    ): Promise<boolean> {
       let stoodAside = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
       try {
         await Promise.race([
-          this.#pushing,
+          pass,
           new Promise<void>((resolve) => {
-            this.#standAside = () => {
-              stoodAside = true;
-              resolve();
+            // By the clock of the runtime, as far ahead as the moment is
+            // by the clock of the workspace, as the alarm is set.
+            const rearm = () => {
+              if (timer !== null) clearTimeout(timer);
+              const wait = this.#untilNextPost();
+              if (wait !== null) timer = setTimeout(resolve, wait);
             };
+            this.#aside = {
+              stand: () => {
+                stoodAside = true;
+                resolve();
+              },
+              rearm,
+              pushes,
+            };
+            rearm();
           }),
         ]);
       } finally {
-        this.#standAside = null;
+        this.#aside = null;
+        // Nothing that runs in the object leaves a timer behind: the
+        // runtime would keep it busy for as long as one is pending.
+        if (timer !== null) clearTimeout(timer);
       }
       return stoodAside;
+    }
+
+    /**
+     * In how many milliseconds the alarm has a scheduled post to take up,
+     * by the clock of the workspace, or null if none is ahead: when the
+     * alarm stops waiting for a pass beside it. A post whose time the
+     * alarm has looked for already is one that it could not take up, and
+     * waits for a later alarm, `#nextLookIn`, and not for this.
+     *
+     * Not the renewal of an access, which waits for the pass: an access
+     * is good for weeks when its renewal comes due, and the alarm keeps a
+     * minute between two looks for renewals all the same, `renewalPauseMs`.
+     * The alarm has two waits in a row, for the push messages and for the
+     * stats, and a time that passed in the first is one that the second
+     * would have to know that it did not look for, as it knows of a post
+     * by `dueLookedAt`: for a renewal, nothing to win. Nor what an image is
+     * due for, for the same reasons: it comes due hours or days after
+     * what it waits for, and the alarm keeps `deliveryWatchMs` between two
+     * looks at the images. The alarm looks after the images before it
+     * begins the stats, so those never wait for a pass that it begins.
+     */
+    #untilNextPost(): number | null {
+      const dueAt = this.#store.nextDueAt;
+      return dueAt !== null && dueAt > this.#store.dueLookedAt
+        ? Math.max(0, dueAt - now().getTime())
+        : null;
+    }
+
+    /**
+     * Begins a pass over the stats that are due, `#metricsPass`, unless one
+     * is under way or none is due: the alarm waits for it with the push
+     * messages, and leaves it to itself as it leaves those. An alarm that
+     * comes while a pass is under way begins no second one.
+     */
+    #beginMetricsPass(): void {
+      if (this.#counting) return;
+      const due = this.#store.nextMetricsAt;
+      if (due === null || due > now().getTime()) {
+        this.#metricsBehind = false;
+        return;
+      }
+      this.#metricsBehind = true;
+      this.#counting = this.#metricsPass()
+        .catch((error: unknown) =>
+          log.error(
+            "stats",
+            "The stats of a workspace were not read",
+            this.#store.where,
+            error,
+          ),
+        )
+        .finally(() => {
+          this.#counting = null;
+        });
+    }
+
+    /**
+     * One pass over the stats that are due, the ones that were due first
+     * first: stats.ts reads each, and what came of it is stored before
+     * the next is read, with the time of the next read. A network that
+     * asks to be asked later is asked no more in this pass, and the reads
+     * of its channel that are due wait with the one that it refused. A
+     * read during which its account was connected again is stored nothing
+     * of: the pass reads with the access that its list was taken with,
+     * and the read stays due for a later one, with the new access.
+     *
+     * A pass makes `metricsPerPass` reads at most and takes up no new one
+     * after `metricsPassMs`. What is left goes with a later pass, which
+     * `#nextLookIn` asks for in `metricsPauseMs`: a workspace that has
+     * sent hundreds of posts at once asks their networks a few at a time.
+     */
+    async #metricsPass(): Promise<void> {
+      // By the clock of the runtime: this is about how long the object
+      // has been at it, not about a time in the workspace.
+      const began = Date.now();
+      const workspace = this.#store.identity;
+      // The channels whose network asked to be asked later, and those
+      // that were connected again since the list was taken.
+      const resting = new Set<string>();
+      // Whether a read is left due for a later pass.
+      let leftDue = false;
+      const list = this.#store.metricsDue(now().getTime(), metricsPerPass);
+      for (const due of list) {
+        if (Date.now() - began >= metricsPassMs) return;
+        if (due.channel && resting.has(due.channel.channelId)) continue;
+        const outcome = await readMetrics(
+          dependencies,
+          this.env,
+          workspace,
+          due,
+        );
+        // The account was connected again, or disconnected, while its
+        // network was asked: what the read found is of the access
+        // before, which a new connection can have made good, as the
+        // permission that an old Threads account lacked. It is stored
+        // nothing of, and the read stays due, as do the other reads of
+        // the channel on this list, which has the access before: a
+        // later pass reads them with the new one. The connection does
+        // not bring them forward, being due already. Never at once:
+        // the pass is behind, `#metricsBehind`.
+        if (
+          due.channel &&
+          this.#store.channelAccess(due.channel.channelId)?.connectedAt !==
+            due.channel.connectedAt
+        ) {
+          resting.add(due.channel.channelId);
+          leftDue = true;
+          continue;
+        }
+        const from = this.#store.seq;
+        try {
+          if (outcome.rest !== undefined && due.channel) {
+            // Its network asked to be asked later: so are the other reads
+            // of the channel until then, also where this one is given
+            // up, and this pass asks it nothing more.
+            resting.add(due.channel.channelId);
+            this.#store.postponeMetricsOf(due.channel.channelId, outcome.rest);
+          }
+          this.#store.recordMetrics(
+            due.targetId,
+            outcome.reading,
+            outcome.next,
+            now().getTime(),
+          );
+        } catch (error) {
+          log.error(
+            "stats",
+            "What came of reading the stats of a delivery was not stored",
+            { ...this.#store.where, targetId: due.targetId },
+            error,
+          );
+          // Not left due, or the next pass would come straight back to
+          // it.
+          this.#store.recordMetrics(
+            due.targetId,
+            null,
+            now().getTime() + metricsBrokenMs,
+            now().getTime(),
+          );
+        }
+        this.#publish(from);
+      }
+      // All that was due is read, unless the list stopped at its limit,
+      // and there may be more, or a read was left due.
+      if (list.length < metricsPerPass && !leftDue) {
+        this.#metricsBehind = false;
+      }
     }
 
     /**
@@ -1723,12 +1983,23 @@ export function workspaceObject(
           this.#store.dropQueuedPushes();
           pushQueued = false;
         }
-        if (this.#standAside) {
-          // An alarm that waits for the push messages to be sent is in
-          // the way of a delivery that this change has made ready: it
-          // ends here, its sending goes on, and it comes back at once.
+        if (this.#aside) {
+          // An alarm that waits for a pass beside it is in the way of a
+          // delivery that this change has made ready, and while it waits
+          // for the stats, of a push message that this change has queued:
+          // it ends here, the pass goes on, and it comes back at once.
+          // Otherwise this change may have brought a scheduled post
+          // nearer, whose time it stops waiting at.
           const need = this.#store.deliveriesNeed(now().getTime());
-          if (need === "begin" || need === "renew") this.#standAside();
+          if (
+            need === "begin" ||
+            need === "renew" ||
+            (pushQueued && this.#aside.pushes)
+          ) {
+            this.#aside.stand();
+          } else {
+            this.#aside.rearm();
+          }
         }
         this.#setNextAlarm(pushQueued).catch(failed);
       } catch (error) {

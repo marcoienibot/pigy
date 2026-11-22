@@ -5,6 +5,7 @@ import type { SQLiteColumn, SQLiteTable } from "drizzle-orm/sqlite-core";
 import {
   channels,
   media,
+  metrics,
   notifications,
   partMedia,
   postParts,
@@ -90,6 +91,20 @@ const synced = {
       partId: targetPartResults.partId,
       remoteId: targetPartResults.remoteId,
       url: targetPartResults.url,
+    },
+  },
+  metric: {
+    table: metrics,
+    columns: {
+      id: metrics.id,
+      status: metrics.status,
+      likes: metrics.likes,
+      reposts: metrics.reposts,
+      replies: metrics.replies,
+      quotes: metrics.quotes,
+      views: metrics.views,
+      countedAt: metrics.countedAt,
+      reason: metrics.reason,
     },
   },
   notification: {

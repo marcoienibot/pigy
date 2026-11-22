@@ -8,7 +8,9 @@ import {
   maxPartTextLength,
   maxSlots,
   maxTimeZoneLength,
+  metricStatusSchema,
   postStatusSchema,
+  targetLimits,
   targetStatusSchema,
 } from "../sync/tables.ts";
 import { environmentSchema } from "../workspace.ts";
@@ -254,6 +256,36 @@ export const movePostRequestSchema = named(
 
 export type MovePostRequest = z.infer<typeof movePostRequestSchema>;
 
+/** A count of what people did with a post, or null without one. */
+const apiCountSchema = z.number().int().nonnegative().nullable();
+
+export const apiMetricsSchema = named(
+  "Metrics",
+  "What people did with a post on the network of a target, as pigy last read it: of the first part, which is the post that people see in their feed. pigy reads it soon after the delivery was sent, and again about ten minutes, an hour, six hours, a day, three days, a week and 30 days after it, and never after that. A count is null where the network has none: Mastodon and Bluesky count no views, and Mastodon has quotes from version 4.5 on.",
+  z.strictObject({
+    status: metricStatusSchema.describe(
+      "`counted`: the network said the counts at `countedAt`. `unavailable`: pigy has no stats of this post, and `reason` says why: LinkedIn has none for the posts of a member, a Threads channel that was connected before pigy asked to read stats has none until it is connected again, and neither has a channel that has to be connected again. pigy also says so where it stops reading without stats: the channel was disconnected, or the network did not give them by the last read. `gone`: the post was deleted on the network, and pigy reads no more. A delivery that is `unavailable` or `gone` keeps the counts that were read before, with their `countedAt`.",
+    ),
+    likes: apiCountSchema,
+    reposts: apiCountSchema.describe("Boosts on Mastodon, reposts elsewhere."),
+    replies: apiCountSchema.describe(
+      "As the network counts them under the post, which takes in the parts of a thread, replies of the account itself: the second on Mastodon and Bluesky, which count the replies to the post, and every part after the first on Threads, which counts every reply in the thread under the post that begins it.",
+    ),
+    quotes: apiCountSchema,
+    views: apiCountSchema.describe("Threads alone counts them."),
+    countedAt: timeSchema
+      .nullable()
+      .describe("When the counts were read. Null if they never were."),
+    reason: z
+      .string()
+      .max(targetLimits.errorLength)
+      .nullable()
+      .describe("Why the stats are `unavailable`, for people. Null otherwise."),
+  }),
+);
+
+export type ApiMetrics = z.infer<typeof apiMetricsSchema>;
+
 export const apiTargetSchema = named(
   "Target",
   "The delivery of a post to one channel.",
@@ -302,9 +334,11 @@ export const apiTargetSchema = named(
         "True if the delivery ended because the channel was disconnected while it waited or was under way. Such a delivery is in `error`, is never tried again and is not told of in the inbox of the app.",
       ),
     sentAt: timeSchema.nullable(),
-    metrics: z
-      .null()
-      .describe("Not available yet: engagement comes with a later version."),
+    metrics: apiMetricsSchema
+      .nullable()
+      .describe(
+        "Null until pigy has read the stats of the delivery, which it does soon after the delivery was sent, and for one that is not `sent`: only a post that has arrived has stats. A delivery that is `sent` is never null for good, except one that was sent before pigy read stats, which has none.",
+      ),
   }),
 );
 
