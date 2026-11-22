@@ -529,6 +529,34 @@ it("leaves nothing of a request that failed in its middle, and carries it out wh
   ]);
 });
 
+it("does what a change takes only for a call that changed something", async () => {
+  const { test, browser, workspaces } = await startedApi();
+  const api = apiClient(test, (await makeKey(browser, workspaces.live)).secret);
+  const draft = await api.create({ text: "A draft", saveToDraft: true });
+
+  // What the object does after every change: it reads the changes for
+  // its sockets, and works out when to look next. A script that asks
+  // every few seconds is not a change, and neither is a request that is
+  // refused.
+  const changes = vi.spyOn(WorkspaceStore.prototype, "changesSince");
+  await api.ok("/posts");
+  await api.ok(`/posts/${draft.id}`);
+  await api.ok("/channels");
+  await api.ok("/posting-schedule");
+  await api.refused(
+    `/posts/${draft.id}`,
+    { method: "PATCH", json: { mode: "shareNow" } },
+    400,
+  );
+  expect(changes).not.toHaveBeenCalled();
+
+  await api.ok(`/posts/${draft.id}`, {
+    method: "PATCH",
+    json: { text: "Changed" },
+  });
+  expect(changes).toHaveBeenCalledTimes(1);
+});
+
 it("tells a key that has made too many requests when to come again, and counts each key by itself", async () => {
   // A limiter of the test's own, with a limit of three: it counts as the
   // one of the platform does, by the key that it is asked about.

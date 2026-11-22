@@ -476,7 +476,12 @@ export function workspaceObject(
           },
         );
       } finally {
-        this.#publish(from);
+        // A read changes nothing, and neither does a write that was
+        // refused or that was a repeat. A script that asks every few
+        // seconds would otherwise cost what a change costs each time: the
+        // changes are read, the next look is worked out and the runtime
+        // is asked for the alarm. Every change of a mutator has a number.
+        if (this.#store.seq !== from) this.#publish(from);
       }
     }
 
