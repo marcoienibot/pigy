@@ -53,6 +53,22 @@ async function boundedText(
   }
 }
 
+/**
+ * A signal that gives up after `milliseconds`, like `AbortSignal.timeout`,
+ * with a way to let go of its timer: `clear`, which whoever made it calls
+ * when the request is over. A timer that is left to run keeps whatever
+ * made the request in memory until it is up, which for the object of a
+ * workspace is half a minute after every access that it renews.
+ */
+function timeLimit(milliseconds: number) {
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(new DOMException("The time is up", "TimeoutError")),
+    milliseconds,
+  );
+  return { signal: controller.signal, clear: () => clearTimeout(timer) };
+}
+
 /** Whether `status` is that of a redirect. */
 const redirects = (status: number) =>
   // 0 is what a redirect looks like where the runtime hides it.
@@ -79,7 +95,13 @@ export async function send(
   init: RequestInit,
   limits: HttpLimits,
 ): Promise<HttpAnswer> {
-  const answer = await exchange(fetch, host, url, init, limits);
+  const limit = timeLimit(limits.timeoutMs);
+  let answer: HttpAnswer;
+  try {
+    answer = await exchange(fetch, host, url, init, limits, limit.signal);
+  } finally {
+    limit.clear();
+  }
   if (redirects(answer.status)) {
     throw new ProviderError(
       "fail",
@@ -107,42 +129,52 @@ export async function sendFollowing(
   limits: HttpLimits,
   hops: number,
 ): Promise<HttpAnswer> {
-  const deadline = AbortSignal.timeout(limits.timeoutMs);
-  let at = url;
-  for (let hop = 0; ; hop++) {
-    const { host } = new URL(at);
-    const answer = await exchange(fetch, host, at, init, limits, deadline);
-    if (!redirects(answer.status)) return answer;
-    const location = answer.headers.get("Location");
-    let next: string | null = null;
-    try {
-      next = location === null ? null : publicUrl(new URL(location, at).href);
-    } catch {
-      next = null;
-    }
-    if (next === null || hop >= hops) {
-      throw new ProviderError(
-        "fail",
-        `${host} sends pigy on to an address that it does not follow.`,
-        { status: answer.status },
+  const deadline = timeLimit(limits.timeoutMs);
+  try {
+    let at = url;
+    for (let hop = 0; ; hop++) {
+      const { host } = new URL(at);
+      const answer = await exchange(
+        fetch,
+        host,
+        at,
+        init,
+        limits,
+        deadline.signal,
       );
+      if (!redirects(answer.status)) return answer;
+      const location = answer.headers.get("Location");
+      let next: string | null = null;
+      try {
+        next = location === null ? null : publicUrl(new URL(location, at).href);
+      } catch {
+        next = null;
+      }
+      if (next === null || hop >= hops) {
+        throw new ProviderError(
+          "fail",
+          `${host} sends pigy on to an address that it does not follow.`,
+          { status: answer.status },
+        );
+      }
+      at = next;
     }
-    at = next;
+  } finally {
+    deadline.clear();
   }
 }
 
 /**
  * `send`, with the answer of a redirect returned as it is. It gives up
- * when `timeout` says so, which is when the time of `limits` is up unless
- * the caller says otherwise.
+ * when `timeout` says so: the time of `limits`, which the caller counts.
  */
 async function exchange(
   fetch: Fetch,
   host: string,
   url: string,
   init: RequestInit,
-  { timeoutMs, maxBytes }: HttpLimits,
-  timeout: AbortSignal = AbortSignal.timeout(timeoutMs),
+  { maxBytes }: HttpLimits,
+  timeout: AbortSignal,
 ): Promise<HttpAnswer> {
   const unreachable = (cause: unknown) =>
     new ProviderError("retry", `${host} could not be reached.`, { cause });
