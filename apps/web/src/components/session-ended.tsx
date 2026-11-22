@@ -34,7 +34,12 @@ const leaveMs = 5_000;
  */
 export function SessionEnded() {
   const held = useSyncExternalStore(onSessionEndHeld, sessionEndHeld);
-  const unsaved = useUnsavedInTab();
+  const counted = useUnsavedInTab();
+  // What the tab counted when the person let the changes go. From then on
+  // it counts none, and the dialog, which stays until the page has gone,
+  // goes on saying what it said when its button was pressed.
+  const [letGo, setLetGo] = useState<number>();
+  const unsaved = letGo ?? counted;
   const [leaving, setLeaving] = useState(false);
   // The page is gone a moment after the person has said that it may go.
   // If it is still here, something kept it, and the button has to work
@@ -45,6 +50,7 @@ export function SessionEnded() {
     return () => clearTimeout(timer);
   }, [leaving]);
   if (!held) return null;
+  const one = unsaved === 1;
 
   return (
     <AlertDialog open>
@@ -54,17 +60,16 @@ export function SessionEnded() {
           <AlertDialogDescription>
             {
               // None is counted while a write is under way that has not
-              // failed: it is slow, and may yet end either way. Nor once
-              // the person has let them go, and the page is leaving.
+              // failed: it is slow, and may yet end either way.
               unsaved === 0
                 ? "pigy has not finished saving your last changes on this device."
                 : `pigy could not save ${
-                    unsaved === 1 ? "1 change" : `${unsaved} changes`
+                    one ? "1 change" : `${unsaved} changes`
                   } on this device, which may be out of space.`
             }{" "}
-            They exist only in this window. pigy keeps trying, and goes to the
-            sign-in page once they are saved: they are synced when you sign in
-            again. If you go there now, they are lost.
+            {one
+              ? "It exists only in this window. pigy keeps trying, and goes to the sign-in page once it is saved: it is synced when you sign in again. If you go there now, it is lost."
+              : "They exist only in this window. pigy keeps trying, and goes to the sign-in page once they are saved: they are synced when you sign in again. If you go there now, they are lost."}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
@@ -75,10 +80,11 @@ export function SessionEnded() {
               // The dialog stays until the page has gone.
               event.preventDefault();
               setLeaving(true);
+              setLetGo(unsaved);
               discardUnsaved();
             }}
           >
-            Lose them and sign in
+            Lose {one ? "it" : "them"} and sign in
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
