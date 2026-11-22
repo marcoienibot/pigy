@@ -1,5 +1,6 @@
 import {
   type Clock,
+  type ContentImage,
   type Fetch,
   type Limits,
   threadsMaxCharacters,
@@ -15,6 +16,7 @@ import {
 } from "../http.ts";
 import {
   type Json,
+  type MediaSource,
   type Provider,
   type PublishedPart,
   type PublishProgress,
@@ -26,11 +28,11 @@ import {
  * follows Meta's documentation of the Threads API at
  * https://developers.facebook.com/docs/threads: "Get Access Tokens and
  * Permissions", "Long-Lived Access Tokens", "Posts", "Reply Management",
- * "Retrieve Threads Media Objects", "Delete Posts" and "Troubleshooting".
- * It was written without access to those pages, from what its author knew
- * of them, and nothing of it has met the real Threads: what had to be
- * assumed is marked GUESS, and PLAN.md section 19 lists what a first run
- * has to settle. Text only so far.
+ * "Carousel Posts", "Retrieve Threads Media Objects", "Delete Posts" and
+ * "Troubleshooting". It was written without access to those pages, from
+ * what its author knew of them, and nothing of it has met the real
+ * Threads: what had to be assumed is marked GUESS, and PLAN.md section 19
+ * lists what a first run has to settle. Text and images.
  *
  * Threads differs from the other networks in three ways that shape this
  * file:
@@ -43,6 +45,10 @@ import {
  *   token that has ended cannot be renewed. So nothing that Threads
  *   refuses asks for a refresh, and the refresh has to come by a timer.
  * - Threads has no way for an app to give an access back.
+ * - Threads takes no bytes of an image. It is told an address, and
+ *   fetches the image from there itself: a link of pigy's that is signed
+ *   and good for a short time, `MediaSource.link`, made in the step that
+ *   hands it over and put nowhere else.
  */
 
 export type ThreadsProviderOptions = {
@@ -101,6 +107,13 @@ const stateSchema = z.strictObject({
       ids: z.array(idSchema).nullable(),
     })
     .nullable(),
+  /**
+   * The items of a carousel that are made, by their containers, in the
+   * order of the images of the part: for a part with several images,
+   * while its container is not made yet. Left out otherwise, and by notes
+   * from before pigy posted images.
+   */
+  items: z.array(idSchema).optional(),
   /** How often in a row the container was found not to be ready. */
   polls: z.number().int().nonnegative(),
   /**
@@ -141,6 +154,17 @@ const mediaSchema = z.object({
   media_type: z.string().optional(),
   is_quote_post: z.boolean().optional(),
   poll_attachment: z.unknown().optional(),
+  alt_text: z.string().optional(),
+  children: z
+    .object({
+      data: z.array(
+        z.object({
+          media_type: z.string().optional(),
+          alt_text: z.string().optional(),
+        }),
+      ),
+    })
+    .optional(),
   text: z.string().optional(),
   permalink: z.unknown().optional(),
   timestamp: z.string().optional(),
@@ -286,18 +310,47 @@ const lookSeconds = 10;
 
 /**
  * What a post has to say of itself to be taken for a part that pigy
- * published: pigy publishes plain text, and a photo, a video, a quote or
- * a poll that a person posted with the same words is none of its own.
- * `media_type` and `is_quote_post` are documented. GUESS, PLAN.md section
- * 19: that a post says a poll with `poll_attachment`, and that a field
- * which a post has nothing for is left out and not refused.
+ * published: the images of the part, the same in number and each saying
+ * what it shows as the part does, or none, and nothing else. A photo, a
+ * video, a quote or a poll that a person posted with the same words is
+ * none of pigy's own. `media_type`, `is_quote_post` and `children` are
+ * documented. GUESS, PLAN.md section 19: that a post says a poll with
+ * `poll_attachment`, that it says what an image shows with `alt_text`,
+ * and what each item of a carousel shows when `children` is asked for
+ * with the fields of an item in braces, and that a field which a post has
+ * nothing for is left out and not refused.
  */
-const plainFields = "media_type,is_quote_post,poll_attachment";
+const shapeFields =
+  "media_type,is_quote_post,poll_attachment,alt_text,children{media_type,alt_text}";
 
-const plain = (media: Media) =>
-  media.media_type === "TEXT_POST" &&
-  media.is_quote_post !== true &&
-  media.poll_attachment == null;
+const shaped = (media: Media, images: readonly ContentImage[]) => {
+  if (media.is_quote_post === true || media.poll_attachment != null) {
+    return false;
+  }
+  const [one] = images;
+  if (!one) return media.media_type === "TEXT_POST";
+  if (images.length === 1) {
+    return media.media_type === "IMAGE" && (media.alt_text ?? "") === one.alt;
+  }
+  const items = media.children?.data ?? [];
+  return (
+    media.media_type === "CAROUSEL_ALBUM" &&
+    items.length === images.length &&
+    items.every(
+      (item, index) =>
+        (item.media_type ?? "IMAGE") === "IMAGE" &&
+        (item.alt_text ?? "") === images[index]?.alt,
+    )
+  );
+};
+
+/**
+ * What Threads says went wrong with a container, without an address: a
+ * container of an image has the link that Threads fetched it from, which
+ * is good for whoever has it until it expires.
+ */
+const withoutAddresses = (said: string) =>
+  said.replaceAll(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, "an address");
 
 /** `value` as `schema` describes it. Fails if Threads sent other. */
 const understood = understanding(
@@ -677,7 +730,12 @@ export function createThreadsProvider({
      *
      * 1. Make a container of the part, as a reply to the part before it.
      *    Nothing is published by that. For the first part the step notes
-     *    before, where the posts of the account stand.
+     *    before, where the posts of the account stand. A container of a
+     *    part with one image names it by a signed link, which Threads
+     *    fetches. A part with several is a carousel: one step makes a
+     *    container of each image, an item of the carousel, which replies
+     *    to nothing and has no text, and notes it, and the container of
+     *    the part is made of the items when Threads has them ready.
      * 2. Ask Threads for the status of the container, and go by it:
      *    - `FINISHED`: publish it. If Threads refuses, ask for the status
      *      once more and go by that: the container may be published.
@@ -700,7 +758,7 @@ export function createThreadsProvider({
      * that was made twice, because the answer to the first was lost, is
      * one that nobody publishes.
      */
-    async publishStep({ credentials, content, progress }) {
+    async publishStep({ credentials, content, progress, media }) {
       const { accessToken: token } = parseCredentials(credentials);
       const recorded =
         progress === null
@@ -722,31 +780,121 @@ export function createThreadsProvider({
       if (text === undefined) {
         return { parts, done: true, waitSeconds: 0, state: null };
       }
+      const images = content.parts[index]?.media ?? [];
       const before = parts[index - 1];
 
-      /** Makes a container of the part, for the next step to publish. */
-      const contain = async (
-        after: State["after"],
-      ): Promise<PublishProgress> => {
-        const { id } = understood(
+      /** Where the images are read from: at a link, for Threads to fetch. */
+      const source = (): MediaSource => {
+        if (!media) {
+          throw new ProviderError(
+            "fail",
+            "pigy cannot hand the images of this post to Threads.",
+          );
+        }
+        return media;
+      };
+
+      /**
+       * Makes a container with `params`, and returns its ID. `link` is
+       * the address of an image in it, which no message may repeat.
+       */
+      const make = async (
+        params: Record<string, string>,
+        link?: string,
+      ): Promise<string> =>
+        understood(
           createdSchema,
           await call(`/${version}/me/threads`, {
             method: "POST",
             token,
-            params: {
-              media_type: "TEXT",
-              text,
-              ...(before && { reply_to_id: before.id }),
-            },
+            params,
+            ...(link !== undefined && { secrets: [link] }),
           }),
           "Threads",
-        );
+        ).id;
+
+      /**
+       * Makes the container of the part, for the next step to publish: of
+       * its text, of its one image with its text, or of the items of its
+       * carousel, `items`, with its text.
+       */
+      const contain = async (
+        after: State["after"],
+        items: readonly string[] = [],
+      ): Promise<PublishProgress> => {
+        const reply = before ? { reply_to_id: before.id } : {};
+        const withText = text === "" ? {} : { text };
+        const [image] = images;
+        let id: string;
+        if (!image) {
+          id = await make({ media_type: "TEXT", text, ...reply });
+        } else if (images.length === 1) {
+          // Made now, for this request: it is good for minutes, and goes
+          // nowhere else.
+          const link = await source().link(image.id);
+          id = await make(
+            {
+              media_type: "IMAGE",
+              image_url: link,
+              ...(image.alt !== "" && { alt_text: image.alt }),
+              ...withText,
+              ...reply,
+            },
+            link,
+          );
+        } else {
+          id = await make({
+            media_type: "CAROUSEL",
+            children: items.join(","),
+            ...withText,
+            ...reply,
+          });
+        }
         return {
           parts,
           done: false,
           waitSeconds: 0,
           state: { container: id, after, polls: 0, looks: 0 } satisfies State,
         };
+      };
+
+      /** Makes the container of an item of a carousel: one image. */
+      const item = async (image: ContentImage): Promise<string> => {
+        const link = await source().link(image.id);
+        return make(
+          {
+            media_type: "IMAGE",
+            image_url: link,
+            is_carousel_item: "true",
+            ...(image.alt !== "" && { alt_text: image.alt }),
+          },
+          link,
+        );
+      };
+
+      /**
+       * What Threads says of the container `id`: its status, or "GONE"
+       * for one that it no longer has. GUESS, PLAN.md section 19, that
+       * Threads forgets a container at some time.
+       */
+      const statusOf = async (id: string) => {
+        const asked: Call = {
+          token,
+          params: { fields: "status,error_message" },
+        };
+        const answer = await request(`/${version}/${id}`, asked);
+        if (gone(answer)) return { status: "GONE", error_message: undefined };
+        if (!succeeded(answer)) throw failure(answer, asked);
+        return understood(containerSchema, answer.json, "Threads");
+      };
+
+      /** Fails for a container that Threads could not prepare. */
+      const unprepared = (said: string | undefined) => {
+        const quoted = withoutAddresses(quotable(said ?? "", [token]));
+        return new ProviderError(
+          "fail",
+          `Threads could not prepare the post${quoted ? `: ${quoted}` : "."}`,
+        );
       };
 
       /** The progress with the part in it. */
@@ -767,17 +915,19 @@ export function createThreadsProvider({
         };
       };
 
-      if (!state || state.container === null) {
-        if (before) return contain(null);
-        // The first part: where the posts of the account stand, so that a
-        // step which has to look for the part takes nothing from before.
+      /**
+       * Where the posts of the account stand, before the first request of
+       * the first part that makes something: so that a step which has to
+       * look for the part takes nothing from before.
+       */
+      const standing = async (): Promise<State["after"]> => {
         // One list is nearly always enough for the newest second of
         // them. Where a list ends within that second, the second may go
         // on in the next one, and the step reads on, a few lists at most:
         // a post of that second which it did not note would pass for one
         // that came after the delivery began.
-        const standing: { id: string; timestamp: string; time: number }[] = [];
-        let newest: (typeof standing)[number] | undefined;
+        const noted: { id: string; timestamp: string; time: number }[] = [];
+        let newest: (typeof noted)[number] | undefined;
         let whole = false;
         let after: string | undefined;
         for (let page = 0; page < standingPages && !whole; page++) {
@@ -795,7 +945,7 @@ export function createThreadsProvider({
           );
           for (const media of data) {
             const post = { ...media, time: timeOf(media.timestamp) };
-            standing.push(post);
+            noted.push(post);
             if (!newest || post.time > newest.time) newest = post;
           }
           after = paging?.cursors?.after;
@@ -809,18 +959,92 @@ export function createThreadsProvider({
             );
         }
         const { time, timestamp } = newest ?? {};
-        return contain(
-          timestamp === undefined
-            ? null
-            : {
-                timestamp,
-                ids: whole
-                  ? standing
-                      .filter((post) => post.time === time)
-                      .map(({ id }) => id)
-                  : null,
-              },
-        );
+        return timestamp === undefined
+          ? null
+          : {
+              timestamp,
+              ids: whole
+                ? noted.filter((post) => post.time === time).map(({ id }) => id)
+                : null,
+            };
+      };
+
+      if (!state || state.container === null) {
+        const items = state?.items ?? [];
+        // Noted once for the first part, before its first request that
+        // makes something: the first item of a carousel, or its
+        // container. A later part is found as a reply.
+        const after = before
+          ? null
+          : items.length > 0
+            ? (state?.after ?? null)
+            : await standing();
+        if (images.length < 2) return contain(after);
+        const next = images[items.length];
+        if (next) {
+          return {
+            parts,
+            done: false,
+            waitSeconds: 0,
+            state: {
+              container: null,
+              items: [...items, await item(next)],
+              after,
+              polls: 0,
+              looks: 0,
+            } satisfies State,
+          };
+        }
+        // Every item is made. Threads takes a carousel only of items that
+        // it has ready: GUESS, PLAN.md section 19.
+        let ready = true;
+        for (const id of items) {
+          const { status, error_message } = await statusOf(id);
+          if (status === "FINISHED") continue;
+          if (status === "IN_PROGRESS") {
+            ready = false;
+            continue;
+          }
+          // Expired, or no longer known: the items are made anew. No
+          // post was made of them, so the part begins anew.
+          if (status === "EXPIRED" || status === "GONE") {
+            return {
+              parts,
+              done: false,
+              waitSeconds: 0,
+              state: {
+                container: null,
+                items: [],
+                after,
+                polls: 0,
+                looks: 0,
+              } satisfies State,
+            };
+          }
+          throw unprepared(error_message);
+        }
+        if (!ready) {
+          const polls = state?.polls ?? 0;
+          if (polls >= maxPolls) {
+            throw new ProviderError(
+              "retry",
+              "Threads is still preparing the images of the post.",
+            );
+          }
+          return {
+            parts,
+            done: false,
+            waitSeconds: pollSeconds,
+            state: {
+              container: null,
+              items,
+              after,
+              polls: polls + 1,
+              looks: 0,
+            },
+          };
+        }
+        return contain(after, items);
       }
       const container = state.container;
       const which = content.parts.length > 1 ? `part ${index + 1}` : "the post";
@@ -837,7 +1061,7 @@ export function createThreadsProvider({
        * not the same to a caller that would publish after "none".
        */
       const find = async (): Promise<PublishedPart | "none" | "unknown"> => {
-        const fields = `id,text,permalink,timestamp,is_reply_owned_by_me,${plainFields}`;
+        const fields = `id,text,permalink,timestamp,is_reply_owned_by_me,${shapeFields}`;
         const since = state.after;
         const sinceTime = timeOf(since?.timestamp);
         let unreadable = false;
@@ -865,8 +1089,9 @@ export function createThreadsProvider({
         if (listedPosts === undefined || unreadable) return "unknown";
         const candidates = listedPosts.filter(
           (media) =>
-            media.text?.trim() === text.trim() &&
-            plain(media) &&
+            // A post of images says no text where it has none.
+            (media.text ?? "").trim() === text.trim() &&
+            shaped(media, images) &&
             // A post of the second in which the delivery began that was
             // there before it: the times of Threads do not tell it from
             // one that came after.
@@ -924,7 +1149,12 @@ export function createThreadsProvider({
             parts,
             done: false,
             waitSeconds: lookSeconds,
-            state: { ...state, looks: state.looks + 1 } satisfies State,
+            state: {
+              container: state.container,
+              after: state.after,
+              polls: state.polls,
+              looks: state.looks + 1,
+            } satisfies State,
           };
         }
         // The post was deleted or changed since, or Threads does not
@@ -945,7 +1175,24 @@ export function createThreadsProvider({
       const mayBePublished = async (): Promise<PublishProgress> => {
         const part = await find();
         if (part === "unknown") throw cannotTell();
-        return part === "none" ? contain(state.after) : published(part);
+        if (part !== "none") return published(part);
+        // The items of a carousel have expired with it, or are gone: they
+        // are made anew first.
+        if (images.length >= 2) {
+          return {
+            parts,
+            done: false,
+            waitSeconds: 0,
+            state: {
+              container: null,
+              items: [],
+              after: state.after,
+              polls: 0,
+              looks: 0,
+            } satisfies State,
+          };
+        }
+        return contain(state.after);
       };
 
       /** Waits for a container that Threads is still preparing. */
@@ -960,25 +1207,17 @@ export function createThreadsProvider({
           parts,
           done: false,
           waitSeconds: pollSeconds,
-          state: { ...state, polls: state.polls + 1 } satisfies State,
+          state: {
+            container: state.container,
+            after: state.after,
+            polls: state.polls + 1,
+            looks: state.looks,
+          } satisfies State,
         };
       };
 
-      /**
-       * What Threads says of the container: its status, or "GONE" for
-       * one that it no longer has. GUESS, PLAN.md section 19, that
-       * Threads forgets a container at some time.
-       */
-      const statusNow = async () => {
-        const asked: Call = {
-          token,
-          params: { fields: "status,error_message" },
-        };
-        const answer = await request(`/${version}/${container}`, asked);
-        if (gone(answer)) return { status: "GONE", error_message: undefined };
-        if (!succeeded(answer)) throw failure(answer, asked);
-        return understood(containerSchema, answer.json, "Threads");
-      };
+      /** What Threads says of the container of the part. */
+      const statusNow = () => statusOf(container);
 
       const status = await statusNow();
       switch (status.status) {
@@ -1036,13 +1275,8 @@ export function createThreadsProvider({
         case "EXPIRED":
         case "GONE":
           return mayBePublished();
-        default: {
-          const said = quotable(status.error_message ?? "", [token]);
-          throw new ProviderError(
-            "fail",
-            `Threads could not prepare the post${said ? `: ${said}` : "."}`,
-          );
-        }
+        default:
+          throw unprepared(status.error_message);
       }
     },
 
@@ -1051,7 +1285,9 @@ export function createThreadsProvider({
       if (!idSchema.safeParse(id).success) return null;
       const options: Call = {
         token,
-        params: { fields: "id,text,permalink,is_reply,replied_to" },
+        params: {
+          fields: `id,text,permalink,is_reply,replied_to,media_type,alt_text,children{alt_text}`,
+        },
       };
       const answer = await request(`/${version}/${id}`, options);
       if (gone(answer)) return null;
@@ -1062,7 +1298,12 @@ export function createThreadsProvider({
         url: httpsUrl(media.permalink),
         text: media.text ?? "",
         replyToId: media.replied_to?.id ?? null,
-        images: [],
+        images:
+          media.media_type === "IMAGE"
+            ? [{ alt: media.alt_text ?? "" }]
+            : (media.children?.data ?? []).map((item) => ({
+                alt: item.alt_text ?? "",
+              })),
       };
     },
 
