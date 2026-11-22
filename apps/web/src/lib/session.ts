@@ -571,12 +571,15 @@ export function holdsSession(): boolean {
  * whose they are. Null if there are none. `count` is what the copies hold.
  * `unstored` is what other windows say that they could not store: they are
  * in no copy, and those windows stay open for them, see `sessionOver`.
- * Whatever discards the first discards the second, so whoever asks about
- * that counts both.
+ * `unknown` says that a window holds changes that it has not stored and
+ * has not said how many, see `unsavedInWindowsOf`: there is something to
+ * lose then, also if nothing was counted. Whatever discards the first
+ * discards the others, so whoever asks about that says all three.
  */
 export async function keptChanges(): Promise<{
   count: number;
   unstored: number;
+  unknown: boolean;
   email: string;
 } | null> {
   const stored = read();
@@ -584,9 +587,11 @@ export async function keptChanges(): Promise<{
   const { id, email } = stored.me.user;
   // In this order, as the sign-out counts: a change that a window stores
   // in between is counted twice and not left out.
-  const unstored = await unsavedInWindowsOf(id);
+  const { count: unstored, unknown } = await unsavedInWindowsOf(id);
   const count = await countUnsynced(id);
-  return count + unstored > 0 ? { count, unstored, email } : null;
+  return count + unstored > 0 || unknown
+    ? { count, unstored, unknown, email }
+    : null;
 }
 
 // The other tabs of this browser follow what this module stores: when

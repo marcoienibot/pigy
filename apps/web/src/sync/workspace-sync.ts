@@ -166,19 +166,32 @@ function sayUnsaved(unsaved: boolean): void {
 }
 
 /**
- * Whether a window of the app in this browser holds changes that it could
- * not store. False where that cannot be found out, as in a browser
+ * How many windows of the app in this browser hold `unsavedLock`, or have
+ * asked for it. None where that cannot be found out, as in a browser
  * without Web Locks.
  */
-export async function unsavedInSomeWindow(): Promise<boolean> {
-  if (!("locks" in navigator)) return false;
+async function unsavedHolders(): Promise<number> {
+  if (!("locks" in navigator)) return 0;
   try {
     const { held = [], pending = [] } = await navigator.locks.query();
-    return [...held, ...pending].some(({ name }) => name === unsavedLock);
+    return new Set(
+      [...held, ...pending].flatMap(({ name, clientId }) =>
+        name === unsavedLock ? [clientId] : [],
+      ),
+    ).size;
   } catch (error) {
     report(error);
-    return false;
+    return 0;
   }
+}
+
+/**
+ * Whether a window of the app in this browser holds changes that it could
+ * not store, or waits to store them after its session has ended. False
+ * where that cannot be found out, as in a browser without Web Locks.
+ */
+export async function unsavedInSomeWindow(): Promise<boolean> {
+  return (await unsavedHolders()) > 0;
 }
 
 /**
@@ -193,29 +206,51 @@ export async function unsavedInOtherWindow(): Promise<boolean> {
 }
 
 /**
- * How many changes the windows of `userId` in this browser say that they
- * could not store, for a page that has no store to ask with, as the
- * sign-in page: the stores answer on the channel of the person, as they do
- * for `SyncStore.unsavedInAllTabs`. Nobody is asked, and nothing is waited
- * for, unless a window holds the lock that says that there is something to
- * ask about. Then the windows have `tabAnswerMs` to answer, and the wait is
- * over a moment after the last answer: nobody knows how many will come.
+ * What the other windows hold that they have not stored, as far as they
+ * say. `count` is the sum of what they have said that they could not
+ * store. `unknown` says that a window which holds `unsavedLock` may not be
+ * in that sum: it has not answered, because it is put aside by the browser
+ * or slow, or it holds a write that is under way and has not failed, which
+ * no window counts. What such a window holds is as much at stake as what
+ * the others have counted, and nobody knows how much it is.
  */
-export async function unsavedInWindowsOf(userId: string): Promise<number> {
-  if (!(await unsavedInSomeWindow())) return 0;
+export type UnsavedElsewhere = { count: number; unknown: boolean };
+
+/**
+ * What the windows of `userId` in this browser say that they could not
+ * store, for a page that has no store to ask with, as the sign-in page:
+ * the stores answer on the channel of the person, as they do for
+ * `SyncStore.unsavedInAllTabs`. Nobody is asked, and nothing is waited
+ * for, unless a window holds the lock that says that there is something to
+ * ask about.
+ *
+ * Then the windows have `tabAnswerMs` to answer, all of it, unless every
+ * window that holds the lock is known to have answered before. A store
+ * answers only if it counts a change, and for itself: a window has up to
+ * two of them, one per workspace, and an answer does not say which window
+ * it is from. So the windows that have answered are at least half as many
+ * as the answers, and that is what is compared with the number of windows
+ * that hold the lock. Where it is less, the wait takes its whole time, and
+ * what comes back says `unknown`: no answer is not the answer "none".
+ */
+export async function unsavedInWindowsOf(
+  userId: string,
+): Promise<UnsavedElsewhere> {
+  await unsavedLockGone;
+  const holders = await unsavedHolders();
+  if (holders === 0) return { count: 0, unknown: false };
   const everyTab = new BroadcastChannel(`pigy/${userId}`);
   const counts = new Map<string, number>();
+  const allAnswered = () => Math.ceil(counts.size / 2) >= holders;
   await new Promise<void>((resolve) => {
-    let quiet: ReturnType<typeof setTimeout> | undefined;
     const limit = setTimeout(resolve, tabAnswerMs);
     everyTab.onmessage = ({ data }: MessageEvent<TabMessage>) => {
       if (data?.type !== "unsaved") return;
       counts.set(data.tab, data.count);
-      clearTimeout(quiet);
-      quiet = setTimeout(() => {
+      if (allAnswered()) {
         clearTimeout(limit);
         resolve();
-      }, answersEndMs);
+      }
     };
     const ask: TabMessage = { type: "unsaved?" };
     everyTab.postMessage(ask);
@@ -223,14 +258,8 @@ export async function unsavedInWindowsOf(userId: string): Promise<number> {
   everyTab.close();
   let count = 0;
   for (const held of counts.values()) count += held;
-  return count;
+  return { count, unknown: !allAnswered() };
 }
-
-/**
- * How long after an answer to `unsavedInWindowsOf` no other one is
- * expected, in milliseconds. The windows answer as they hear the question.
- */
-const answersEndMs = 250;
 
 /** A store of this tab has changed, or the tab has another set of them. */
 function changed(): void {

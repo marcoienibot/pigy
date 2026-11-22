@@ -166,23 +166,31 @@ function SignIn() {
  * were synced, what becomes of them, and lets the person discard them.
  *
  * `count` of them are in the copies. `unstored` are in other windows,
- * which could not store them and stay open to try again. Deleting takes
- * those too, because the windows start again when the copies go, so the
- * question that is asked first counts both.
+ * which could not store them and stay open to try again. With `unknown`,
+ * a window holds changes that it has not stored and has not said how
+ * many: it does not answer, or its write is still under way. Deleting
+ * takes all of those too, because the windows start again when the copies
+ * go, so the question that is asked first counts what was counted and
+ * says what was not.
  */
 function KeptChanges({
   count,
   unstored,
+  unknown,
   email,
 }: {
   count: number;
   unstored: number;
+  unknown: boolean;
   email: string;
 }) {
   const router = useRouter();
   const [confirming, setConfirming] = useState(false);
   const all = count + unstored;
   const changes = all === 1 ? "1 change" : `${all} changes`;
+  // One change, and no window that may hold more.
+  const one = all === 1 && !unknown;
+  const who = <span className="font-medium">{email}</span>;
 
   return (
     <div className="mt-4 rounded-lg border px-3 py-2 text-left">
@@ -190,19 +198,33 @@ function KeptChanges({
         <p>
           You were signed out before{" "}
           {count === 1 ? "1 change" : `${count} changes`} made on this device as{" "}
-          <span className="font-medium">{email}</span> could be synced. Sign in
-          with that account to sync {count === 1 ? "it" : "them"}. If somebody
-          else signs in, {count === 1 ? "it is" : "they are"} deleted.
+          {who} could be synced. Sign in with that account to sync{" "}
+          {count === 1 ? "it" : "them"}. If somebody else signs in,{" "}
+          {count === 1 ? "it is" : "they are"} deleted.
         </p>
       )}
-      {unstored > 0 && (
+      {unstored > 0 && !unknown && (
         <p className={count > 0 ? "mt-2" : undefined}>
           Another window of pigy holds{" "}
-          {unstored === 1 ? "1 change" : `${unstored} changes`} of{" "}
-          <span className="font-medium">{email}</span> that it could not save on
-          this device. It keeps trying.{" "}
+          {unstored === 1 ? "1 change" : `${unstored} changes`} of {who} that it
+          could not save on this device. It keeps trying.{" "}
           {unstored === 1 ? "The change is" : "They are"} lost if that window is
           closed or somebody else signs in.
+        </p>
+      )}
+      {unstored > 0 && unknown && (
+        <p className={count > 0 ? "mt-2" : undefined}>
+          Other windows of pigy hold at least{" "}
+          {unstored === 1 ? "1 change" : `${unstored} changes`} of {who} that
+          they have not saved on this device: one of them has not said how many.
+          They are lost if those windows are closed or somebody else signs in.
+        </p>
+      )}
+      {unstored === 0 && unknown && (
+        <p className={count > 0 ? "mt-2" : undefined}>
+          Another window of pigy holds changes of {who} that it has not saved on
+          this device yet, and has not said how many. They are lost if that
+          window is closed or somebody else signs in.
         </p>
       )}
       <Button
@@ -211,15 +233,22 @@ function KeptChanges({
         className="mt-1 h-auto px-0 text-destructive"
         onClick={() => setConfirming(true)}
       >
-        Delete {all === 1 ? "this change" : "these changes"}
+        Delete {one ? "this change" : "these changes"}
       </Button>
       <AlertDialog open={confirming} onOpenChange={setConfirming}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete {changes}?</AlertDialogTitle>
+            <AlertDialogTitle>
+              {!unknown && `Delete ${changes}?`}
+              {unknown && all > 0 && `Delete at least ${changes}?`}
+              {unknown && all === 0 && "Delete the changes of another window?"}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              They exist only on this device and cannot be brought back.
-              {unstored > 0 &&
+              {one ? "It exists" : "They exist"} only on this device and cannot
+              be brought back.
+              {unknown &&
+                " Another window of pigy holds changes that it has not saved, and has not said how many: they go too."}
+              {(unstored > 0 || unknown) &&
                 " The other window of pigy goes to the sign-in page too."}
             </AlertDialogDescription>
           </AlertDialogHeader>
