@@ -138,6 +138,9 @@ jobs:
       # job: a deploy is never made on a guess.
       - name: Check that this is still the newest commit of main
         id: newest
+        # GitHub's API has this long to answer, and not the 15 minutes of
+        # the job.
+        timeout-minutes: 2
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
