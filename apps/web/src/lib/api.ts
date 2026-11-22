@@ -368,7 +368,7 @@ export async function deletePushSubscription(endpoint: string): Promise<void> {
 export async function fetchLinkCard(
   workspaceId: string,
   url: string,
-  signal: AbortSignal,
+  signal?: AbortSignal,
 ): Promise<LinkCard | null> {
   const response = await request(`/api/workspaces/${workspaceId}/link-card`, {
     method: "POST",
@@ -386,7 +386,7 @@ export async function fetchMentioned(
   workspaceId: string,
   network: Network,
   names: string[],
-  signal: AbortSignal,
+  signal?: AbortSignal,
 ): Promise<string[] | null> {
   const response = await request(`/api/workspaces/${workspaceId}/mentions`, {
     method: "POST",

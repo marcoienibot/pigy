@@ -1,5 +1,5 @@
 import {
-  maxMentionNames,
+  type LinkCard,
   maxOwnTextLength,
   maxParts,
   maxPartTextLength,
@@ -52,15 +52,16 @@ import {
   withMod,
 } from "@/lib/keyboard";
 import {
-  blueskyHandlesOf,
   cardNote,
+  lookedUpHandles,
   markNotes,
   marksOf,
-  previewLinkOf,
+  type Preview,
+  previewsOf,
 } from "@/lib/markup";
 import { connectableNetworks } from "@/lib/networks";
 import { undoMs } from "@/lib/notices";
-import { useAsked } from "@/lib/preview";
+import { Answers, unaskedNote, useAsked } from "@/lib/preview";
 import {
   compose,
   type Gauge,
@@ -588,6 +589,31 @@ const partLetters =
   "px-4 pt-4 pb-2 text-base leading-relaxed md:px-6 md:pt-5 md:text-[0.9375rem]";
 
 /**
+ * What the server has answered to the questions of one editor about its
+ * texts, for every part of them: see `Answers` of lib/preview.ts. The
+ * object is the same for as long as the editor is. A screen is made anew
+ * when the workspace changes, and its editor with it, so an answer is
+ * never that of the other workspace, whose web is another.
+ */
+type EditorAnswers = {
+  /** The card of a link, by its address. Null for a page without one. */
+  cards: Answers<LinkCard | null>;
+  /** Which of the handles of a question are accounts, by the handles. */
+  mentions: Answers<string[] | null>;
+  /** Whether a handle is an account of Bluesky, by the handle. */
+  handles: Answers<boolean>;
+};
+
+/**
+ * Makes the field of a part as high as its text, where the browser does
+ * not: see `sizesFields`.
+ */
+function fit(field: HTMLTextAreaElement) {
+  field.style.height = "auto";
+  field.style.height = `${field.scrollHeight}px`;
+}
+
+/**
  * What the field of a part asks of the editor. The object is the same for
  * as long as the editor is, so that a field renders again only when its
  * part has changed: `PartField` is kept by `memo`.
@@ -702,6 +728,21 @@ function Editor({
     () => readerNetworks.split(" ").filter(Boolean) as Network[],
     [readerNetworks],
   );
+
+  // The cards that the parts are shown with, for each network by the
+  // link that the network leads with, over the whole text: LinkedIn makes
+  // one post of the parts, with one card. Each part is handed its own as
+  // a text, which is the same from one key to the next unless it has
+  // changed: the field of a part renders again only then.
+  const texts = parts.map(({ text }) => text);
+  const previews = previewsOf(texts, networks).map((shown) =>
+    JSON.stringify(shown),
+  );
+  const [answers] = useState<EditorAnswers>(() => ({
+    cards: new Answers(),
+    mentions: new Answers(),
+    handles: new Answers(),
+  }));
 
   const fields = useRef(new Map<string, HTMLTextAreaElement>());
   /** The part that is to get the keyboard once its field is on the page. */
@@ -1036,6 +1077,8 @@ function Editor({
               handle={reader?.channel.handle ?? null}
               gauges={gauges}
               networks={networks}
+              previews={previews[index] ?? "[]"}
+              answers={answers}
               actions={stable}
             />
           ))}
@@ -1118,6 +1161,8 @@ const PartField = memo(function PartField({
   handle,
   gauges,
   networks,
+  previews,
+  answers,
   actions,
 }: {
   part: Part;
@@ -1131,6 +1176,12 @@ const PartField = memo(function PartField({
   gauges: readonly Gauge[];
   /** The networks of the accounts that get the text, each once. */
   networks: readonly Network[];
+  /**
+   * The links whose cards the part is shown with, each with the networks
+   * that show it: `Preview[]` of lib/markup.ts, as JSON.
+   */
+  previews: string;
+  answers: EditorAnswers;
   actions: PartActions;
 }) {
   const { text } = part;
@@ -1163,10 +1214,7 @@ const PartField = memo(function PartField({
     if (!element) return;
     // Where the browser does not size a field by its text, as high as
     // the text is.
-    if (!sizesFields) {
-      element.style.height = "auto";
-      element.style.height = `${element.scrollHeight}px`;
-    }
+    if (!sizesFields) fit(element);
     if (text === typed.current) return;
     typed.current = text;
     if (document.activeElement === element && selection.current) {
@@ -1178,40 +1226,67 @@ const PartField = memo(function PartField({
     }
   }, [text]);
 
+  // The same when the field gets another width: its text then wraps
+  // otherwise, on a phone that is turned or in a window that is made
+  // narrower. The field does not scroll, so the lines beyond its old
+  // height would be cut off, and the tints behind it would no longer
+  // stand behind their words.
+  useLayoutEffect(() => {
+    const element = field.current;
+    if (sizesFields || !element || typeof ResizeObserver === "undefined") {
+      return;
+    }
+    let width = element.clientWidth;
+    const observer = new ResizeObserver(() => {
+      // Its height changes by what this does, which is no reason to do
+      // it again.
+      if (element.clientWidth === width) return;
+      width = element.clientWidth;
+      fit(element);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
   const meters = partMetersOf(gauges, text, count);
   const characters = countCharacters(text);
 
   // What Bluesky has to be asked: a mention is marked there only for a
   // handle that is an account, which the server finds out as a post
-  // would. Asked again only when the handles change, not with every key.
-  const handles = networks.includes("bluesky")
-    ? blueskyHandlesOf(text).slice(0, maxMentionNames)
-    : [];
-  const handlesKey = handles.join(" ");
-  const mentioned = useAsked(
-    handles.length > 0 ? `${workspace.id} ${handlesKey}` : null,
-    (signal) => fetchMentioned(workspace.id, "bluesky", handles, signal),
+  // would, for the handles that a post looks up. Each handle is asked
+  // about once in the editor, whichever part mentions it: only those
+  // that have no answer yet are asked about, and not with every key.
+  const handles = networks.includes("bluesky") ? lookedUpHandles(text) : [];
+  const unknown = handles.filter((handle) => !answers.handles.kept(handle));
+  useAsked(
+    answers.mentions,
+    unknown.length > 0 ? unknown.join(" ") : null,
+    async () => {
+      const found = await fetchMentioned(workspace.id, "bluesky", unknown);
+      for (const handle of found === null ? [] : unknown) {
+        answers.handles.keep(handle, found?.includes(handle) ?? false);
+      }
+      return found;
+    },
   );
-  const known = useMemo(
-    () =>
-      mentioned.answer
-        ? {
-            asked: new Set(handlesKey.split(" ")),
-            found: new Set(mentioned.answer),
-          }
-        : null,
-    [mentioned.answer, handlesKey],
-  );
+  // Until the answer is in, a mention is taken for one of an account. A
+  // question that got no answer leaves it at that.
+  const asked = handles.filter((handle) => answers.handles.kept(handle));
+  const known =
+    asked.length > 0
+      ? {
+          asked: new Set(asked),
+          found: new Set(
+            asked.filter((handle) => answers.handles.kept(handle)?.answer),
+          ),
+        }
+      : null;
   const marks = marksOf(text, networks, known);
   const notes = markNotes(text, networks, known);
 
-  // The card of the first link, as far as it can be known before the
-  // post goes out: what the page says now.
-  const link = previewLinkOf(text, networks);
-  const preview = useAsked(
-    link === null ? null : `${workspace.id} ${link}`,
-    (signal) => fetchLinkCard(workspace.id, link ?? "", signal),
-  );
+  // The cards of the links that the part leads with, as far as they can
+  // be known before the post goes out: what the pages say now.
+  const shown = useMemo(() => JSON.parse(previews) as Preview[], [previews]);
 
   return (
     <li
@@ -1321,14 +1396,14 @@ const PartField = memo(function PartField({
           </ul>
         </div>
       )}
-      {link !== null && preview.settled && (
+      {shown.map((preview) => (
         <LinkPreview
-          link={link}
-          card={preview.answer}
-          networks={networks}
-          sandbox={workspace.environment === "sandbox"}
+          key={preview.link}
+          preview={preview}
+          cards={answers.cards}
+          workspace={workspace}
         />
-      )}
+      ))}
       <div className="flex min-h-9 flex-wrap items-center gap-x-3 gap-y-1 px-4 pb-2 text-xs text-muted-foreground md:px-6">
         {!alone && (
           <span className="tabular-nums">
@@ -1400,29 +1475,36 @@ const PartField = memo(function PartField({
 });
 
 /**
- * The card of the first link of a part, as the page of the link makes it
- * now: what pigy sends with the post where a network shows the card that
- * it is sent. Its texts are what the page says of itself, shown as text.
- * It has no picture: pigy sends none yet, and the browser of whoever
- * writes a post asks the page of a link for nothing.
+ * The card of a link that a part leads with, as the page of the link
+ * makes it now: what pigy sends with the post where a network shows the
+ * card that it is sent, with the networks that show the post with it.
+ * Its texts are what the page says of itself, shown as text. It has no
+ * picture: pigy sends none yet, and the browser of whoever writes a post
+ * asks the page of a link for nothing.
+ *
+ * It asks for the card itself, through the answers of its editor: a
+ * thread whose parts lead to the same page asks once. Until an answer is
+ * there it shows nothing. A question that got no answer says so, and not
+ * that the page could not be read, which nobody has tried.
  */
 function LinkPreview({
-  link,
-  card,
-  networks,
-  sandbox,
+  preview: { link, networks },
+  cards,
+  workspace,
 }: {
-  link: string;
-  card: { title: string; description: string } | null;
-  networks: readonly Network[];
-  sandbox: boolean;
+  preview: Preview;
+  cards: Answers<LinkCard | null>;
+  workspace: { id: string; environment: "live" | "sandbox" };
 }) {
+  const asked = useAsked(cards, link, () => fetchLinkCard(workspace.id, link));
+  if (asked.state === "waiting") return null;
   let host = link;
   try {
     host = new URL(link).host;
   } catch {
     // Shown as it is written.
   }
+  const card = asked.state === "answered" ? asked.answer : null;
   return (
     <section
       aria-label="Link preview"
@@ -1443,12 +1525,16 @@ function LinkPreview({
           </div>
           <p>{cardNote(networks)}</p>
         </>
+      ) : asked.state === "unasked" ? (
+        <p>
+          <span className="break-all">{host}</span>: {unaskedNote[asked.why]}
+        </p>
       ) : (
         <p>
           No preview: pigy could not read the page at{" "}
           <span className="break-all">{host}</span>. The post goes out with its
           link all the same.
-          {sandbox &&
+          {workspace.environment === "sandbox" &&
             ` The sandbox reaches a simulated web only: ${sandboxLink} is a page of it.`}
         </p>
       )}

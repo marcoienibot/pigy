@@ -299,6 +299,195 @@ test("each part of a thread has its own marks and its own preview", async ({
   await expect(linkPreview(partField(page, 1))).toHaveCount(0);
 });
 
+/** Adds a part to the open draft and writes `text` into it. */
+async function addPart(page: Page, number: number, text: string) {
+  await page
+    .getByRole("region", { name: "Draft" })
+    // After the last part: each part of a thread has such a button.
+    .getByRole("button", { name: "Add a part" })
+    .last()
+    .click();
+  await partField(page, number).fill(text);
+}
+
+test("a thread asks once for the card of a link that several of its parts lead with", async ({
+  ownPage: page,
+}) => {
+  const asked: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().endsWith("/link-card")) {
+      asked.push(request.postData() ?? "");
+    }
+  });
+  await page.getByRole("button", { name: "New draft" }).click();
+  await editor(page).fill(`One ${link}`);
+  await expect(linkPreview(editor(page))).toContainText("The example page");
+  for (const number of [2, 3, 4]) {
+    await addPart(page, number, `Part ${number} ${link}`);
+    // The answer is the editor's, so the part has it with its first
+    // letter.
+    await expect(linkPreview(partField(page, number))).toContainText(
+      "The example page",
+    );
+  }
+  // A part that leads to another page asks for that one. Its request is
+  // also what shows that the others had the time to ask, and did not.
+  await addPart(page, 5, "And https://news.example.test/story");
+  await expect(linkPreview(partField(page, 5))).toContainText(
+    "A story from the simulated news",
+  );
+  expect(asked.map((body) => JSON.parse(body).url)).toEqual([
+    link,
+    "https://news.example.test/story",
+  ]);
+});
+
+test("without a connection a link has no preview, which the editor says, and gets it when the connection is back", async ({
+  ownPage: page,
+  context,
+}) => {
+  await page.getByRole("button", { name: "New draft" }).click();
+  await editor(page).fill("Written on a train");
+  await context.setOffline(true);
+  await editor(page).fill(`Written on a train ${link}`);
+  const preview = linkPreview(editor(page));
+  await expect(preview).toContainText("No preview without a connection");
+  // Nobody has tried to read the page, so nothing says that it could
+  // not be read.
+  await expect(preview).not.toContainText("could not read");
+  await context.setOffline(false);
+  // The browser says that the connection is back, and the editor asks.
+  await expect(preview).toContainText("The example page");
+  await expect(preview).not.toContainText("No preview");
+});
+
+test("a preview that the server makes none of, because it was asked too often, says so and is asked for again a minute later", async ({
+  ownPage: page,
+}) => {
+  // The clock of the page, for the minute to pass when the test says.
+  await page.clock.install();
+  let refused = 0;
+  await page.route("**/link-card", async (route) => {
+    refused++;
+    await route.fulfill({
+      status: 429,
+      json: {
+        error: "LimitReachedError",
+        message: "pigy was asked for more previews than it makes in a minute.",
+      },
+    });
+  });
+  await page.getByRole("button", { name: "New draft" }).click();
+  await editor(page).fill(`Read ${link}`);
+  const preview = linkPreview(editor(page));
+  await expect(preview).toContainText(
+    "No preview for the moment: pigy makes 60 a minute for one person.",
+  );
+  await expect(preview).not.toContainText("could not read");
+  expect(refused).toBe(1);
+
+  // The minute of the server is over, and the server answers again.
+  await page.unroute("**/link-card");
+  await page.clock.fastForward("01:01");
+  await expect(preview).toContainText("The example page");
+});
+
+test("each network is said to show the card of the link that it leads with, and LinkedIn one card for a whole thread", async ({
+  ownPage: page,
+}) => {
+  test.slow();
+  await openScreen(page, "Channels");
+  await connectSimulatedBluesky(page, graceOnBluesky);
+  await connectSimulatedLinkedIn(page, graceOnLinkedIn);
+  await openScreen(page, "Drafts");
+  await page.getByRole("button", { name: "New draft" }).click();
+  await choose(page, graceOnBluesky);
+  await choose(page, graceOnLinkedIn);
+  // An address without its scheme is a link on Bluesky alone: Bluesky
+  // leads with it, and LinkedIn with the address after it.
+  await editor(page).fill(`example.com and ${link}`);
+  const previews = linkPreview(editor(page));
+  await expect(previews).toHaveCount(2);
+  // The sandbox has no page at example.com: no card goes to Bluesky.
+  await expect(previews.nth(0)).toContainText(
+    "pigy could not read the page at example.com",
+  );
+  await expect(previews.nth(1)).toContainText("The example page");
+  await expect(previews.nth(1)).toContainText(
+    "LinkedIn shows this with the post.",
+  );
+  await expect(previews.nth(1)).not.toContainText("Bluesky");
+
+  // A thread is one post on LinkedIn, with the card of its first link,
+  // and a post per part on Bluesky, each with its own.
+  await editor(page).fill(`First ${link}`);
+  await addPart(page, 2, "Second https://news.example.test/story");
+  await expect(linkPreview(partField(page, 1))).toContainText(
+    "Bluesky and LinkedIn show this with the post.",
+  );
+  const second = linkPreview(partField(page, 2));
+  await expect(second).toContainText("A story from the simulated news");
+  await expect(second).toContainText("Bluesky shows this with the post.");
+  await expect(second).not.toContainText("LinkedIn");
+  expect(await overflowOf(page)).toBeLessThanOrEqual(0);
+});
+
+test("where the browser does not size a field by its text, a field shows all of its text after its width has changed", async ({
+  ownPage: page,
+}) => {
+  // A browser that knows no `field-sizing`, as Safari before 26 and
+  // Firefox: the app then sizes the field of a part itself. The Chromium
+  // of the tests knows it, so the test says for it that it does not,
+  // before the app starts.
+  await page.addInitScript(() => {
+    const supports = CSS.supports.bind(CSS);
+    CSS.supports = ((...args: [string, string?]) =>
+      args[0] === "field-sizing"
+        ? false
+        : supports(...(args as [string]))) as typeof CSS.supports;
+  });
+  await page.reload();
+  await page.getByRole("button", { name: "New draft" }).click();
+  // Two parts: the one part of a post takes the room that there is, and
+  // the parts of a thread are as high as their text.
+  await editor(page).fill("First");
+  const text = `Several lines that wrap, with a ${link} and a #tag: ${"words and more words ".repeat(12)}`;
+  await addPart(page, 2, text);
+  const field = partField(page, 2);
+  /** The field against its text, and against the layer behind it. */
+  const sizes = () =>
+    field.evaluate((element) => {
+      const layer = element.parentElement?.querySelector("[data-marks]");
+      return {
+        cut: element.scrollHeight - element.clientHeight,
+        // The app has set the height, and not the browser: the test is
+        // about the app's own sizing.
+        sized: (element as HTMLElement).style.height !== "",
+        field: Math.round(element.getBoundingClientRect().height),
+        layer: Math.round(layer?.getBoundingClientRect().height ?? 0),
+      };
+    });
+  const before = await sizes();
+  expect(before).toMatchObject({ cut: 0, sized: true });
+
+  // The window is made narrower, as when a phone is turned: the text
+  // wraps into more lines.
+  const { width = 0, height = 0 } = page.viewportSize() ?? {};
+  await page.setViewportSize({ width: Math.round(width * 0.7), height });
+  await expect
+    .poll(async () => (await sizes()).field)
+    .toBeGreaterThan(before.field);
+  const after = await sizes();
+  // Nothing of the text is beyond the field, which does not scroll, and
+  // the layer with the tints is as high as the field.
+  expect(after.cut).toBe(0);
+  expect(after.layer).toBe(after.field);
+  // And wider again.
+  await page.setViewportSize({ width, height });
+  await expect.poll(async () => (await sizes()).field).toBe(before.field);
+  expect((await sizes()).cut).toBe(0);
+});
+
 test("a post goes out with its link, its mention and its tag, and the Sent screen and the feed show them, with the card", async ({
   ownPage: page,
 }) => {

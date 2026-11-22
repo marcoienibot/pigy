@@ -1,12 +1,21 @@
-import { describe, expect, it } from "vitest";
+import * as core from "@pigy/core";
+import { describe, expect, it, vi } from "vitest";
 import {
-  blueskyHandlesOf,
   cardNote,
+  detected,
+  lookedUpHandles,
   markNotes,
   marksOf,
-  previewLinkOf,
+  previewsOf,
   segmentsOf,
 } from "./markup.ts";
+
+// The detection of `@pigy/core` itself, watched: how often the editor
+// has a text looked through is what one of the tests is about.
+vi.mock("@pigy/core", async (original) => {
+  const actual = await original<typeof import("@pigy/core")>();
+  return { ...actual, detectEntities: vi.fn(actual.detectEntities) };
+});
 
 /** The marks of `text`, each as its kind and how it is written. */
 const marked = (...args: Parameters<typeof marksOf>) =>
@@ -156,20 +165,133 @@ describe("markNotes", () => {
 
 describe("what the editor asks the server about", () => {
   it("previews the first link that an account of the text takes for one", () => {
-    expect(
-      previewLinkOf("example.com then https://b.example", ["bluesky"]),
-    ).toBe("https://example.com");
+    const text = "example.com then https://b.example";
+    expect(previewsOf([text], ["bluesky"])).toEqual([
+      [{ link: "https://example.com", networks: ["bluesky"] }],
+    ]);
     // Mastodon links no address without its scheme.
-    expect(
-      previewLinkOf("example.com then https://b.example", ["mastodon"]),
-    ).toBe("https://b.example");
-    expect(previewLinkOf("no link", [])).toBeNull();
+    expect(previewsOf([text], ["mastodon"])).toEqual([
+      [{ link: "https://b.example", networks: ["mastodon"] }],
+    ]);
+    expect(previewsOf(["no link"], ["mastodon"])).toEqual([[]]);
+    // A text that goes nowhere yet: what any network would take.
+    expect(previewsOf([text, "no link"], [])).toEqual([
+      [{ link: "https://example.com", networks: [] }],
+      [],
+    ]);
   });
 
-  it("asks Bluesky about each handle once, in an order that does not change as the text does", () => {
+  it("previews for each network the link that the network leads with, and names the network with it", () => {
+    // An address without its scheme is a link on Bluesky alone: Bluesky
+    // shows the card of the first address, and LinkedIn that of the
+    // second. One preview for both said that LinkedIn shows a card which
+    // it does not get.
     expect(
-      blueskyHandlesOf("@grace.bsky.test @Ada.bsky.test @ada.bsky.test @ada"),
-    ).toEqual(["ada.bsky.test", "grace.bsky.test"]);
+      previewsOf(["example.com https://other.com"], ["linkedin", "bluesky"]),
+    ).toEqual([
+      [
+        { link: "https://example.com", networks: ["bluesky"] },
+        { link: "https://other.com", networks: ["linkedin"] },
+      ],
+    ]);
+    // Where they lead with the same link, it is one preview.
+    expect(
+      previewsOf(["https://example.com"], ["mastodon", "bluesky", "linkedin"]),
+    ).toEqual([
+      [
+        {
+          link: "https://example.com",
+          networks: ["bluesky", "linkedin", "mastodon"],
+        },
+      ],
+    ]);
+  });
+
+  it("previews one card for LinkedIn in a thread, with the part that its first link is in", () => {
+    // LinkedIn makes one post of the parts, with the card of the first
+    // link of them all. Bluesky makes a post of each, with its own.
+    expect(
+      previewsOf(
+        ["No link here", "https://one.example", "https://two.example"],
+        ["bluesky", "linkedin"],
+      ),
+    ).toEqual([
+      [],
+      [{ link: "https://one.example", networks: ["bluesky", "linkedin"] }],
+      [{ link: "https://two.example", networks: ["bluesky"] }],
+    ]);
+    expect(
+      previewsOf(["https://one.example", "https://two.example"], ["linkedin"]),
+    ).toEqual([[{ link: "https://one.example", networks: ["linkedin"] }], []]);
+  });
+
+  it("asks Bluesky about each handle once, in the order of the text, as a post looks them up", () => {
+    expect(
+      lookedUpHandles("@grace.bsky.test @Ada.bsky.test @ada.bsky.test @ada"),
+    ).toEqual(["grace.bsky.test", "ada.bsky.test"]);
+  });
+
+  it("takes a mention beyond the ten that a post looks up for text on Bluesky, and says why", () => {
+    const handles = Array.from(
+      { length: 12 },
+      // The later in the text, the earlier in the alphabet: the ten that
+      // are looked up are the first of the text, not of a sorted list.
+      (_, index) => `${String.fromCharCode(122 - index)}.bsky.test`,
+    );
+    const text = handles.map((handle) => `@${handle}`).join(" ");
+    expect(lookedUpHandles(text)).toEqual(handles.slice(0, 10));
+    // Before any answer is in: the first ten are taken for accounts, and
+    // the other two are text whatever is answered.
+    expect(marked(text, ["bluesky"])).toEqual(
+      handles.slice(0, 10).map((handle) => `mention @${handle}`),
+    );
+    expect(markNotes(text, ["bluesky"])).toEqual([
+      "@p.bsky.test and @o.bsky.test stay text on Bluesky: pigy looks up the first 10 accounts that a part mentions.",
+    ]);
+    // A handle that is repeated takes the place of no other: the first
+    // ten are still the same ten, with one of them marked three times.
+    expect(
+      marked(`@z.bsky.test @z.bsky.test ${text}`, ["bluesky"]),
+    ).toHaveLength(12);
+  });
+
+  it("has a text looked through once for each network, however often it is asked about", () => {
+    const detect = vi.mocked(core.detectEntities);
+    const text = "A text of its own: https://example.test/ @ada #tag";
+    const networks = ["bluesky", "linkedin", "mastodon", "threads"] as const;
+    detect.mockClear();
+    // What the editor does with a part at every key, and twice over.
+    for (let render = 0; render < 2; render++) {
+      marksOf(text, networks);
+      markNotes(text, networks);
+      lookedUpHandles(text);
+      previewsOf([text], networks);
+    }
+    // Once for each of the four, and once for no network in particular,
+    // which the notes go by.
+    expect(detect.mock.calls.map(([network]) => network).sort()).toEqual(
+      [null, ...networks].sort(),
+    );
+    expect(detected("bluesky", text)).toBe(detected("bluesky", text));
+  });
+
+  it("makes its marks and its notes in work that grows with the text, and not with its square", () => {
+    const unit = "@ada.bsky.test @ada #tag example.com ";
+    const networks = ["bluesky", "linkedin", "mastodon", "threads"] as const;
+    const timeOf = (text: string) => {
+      const began = performance.now();
+      marksOf(text, networks);
+      markNotes(text, networks);
+      return performance.now() - began;
+    };
+    // Each text is new to the editor, so nothing is handed out from
+    // before. Four times the text may take four times as long, and took
+    // sixteen times as long when every mark was held against every
+    // other. The smaller time is the best of three.
+    const small = Math.min(
+      ...[1, 2, 3].map((run) => timeOf(`${run} ${unit.repeat(2000)}`)),
+    );
+    expect(timeOf(unit.repeat(8000)) / small).toBeLessThan(9);
   });
 
   it("says who shows the card of a link", () => {
