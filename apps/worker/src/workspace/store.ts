@@ -684,6 +684,12 @@ export class WorkspaceStore {
   dueLookedAt = Number.NEGATIVE_INFINITY;
 
   /**
+   * The due posts that could not be taken up, since the object was made.
+   * Each is logged once, and tried again by the alarm alone.
+   */
+  private readonly notTakenUp = new Set<string>();
+
+  /**
    * The scheduled posts whose time has come by `now`, the one that was
    * due first first. Not those that are held: their time has passed, and
    * somebody has to say what becomes of them.
@@ -714,7 +720,7 @@ export class WorkspaceStore {
    */
   publishDue(now: number): void {
     this.storage.transactionSync(() => {
-      this.run([], now, "server");
+      this.run([], now, "server", true);
     });
   }
 
@@ -1316,26 +1322,43 @@ export class WorkspaceStore {
    *
    * The scheduled posts whose time has come are taken up first, with
    * `post.due`: a mutation never finds a post that should have gone out
-   * by its time. And again after the mutations, for a post that one of
-   * them scheduled for a time that has passed, as a device does that was
-   * without a connection.
+   * by its time. And again after every mutation, for a post whose time
+   * has come with the time of that mutation. Between the mutations of
+   * one message as between two messages: what becomes of a post does not
+   * depend on how a client packs what it sends.
    */
   private run(
     mutations: MutatorCall[],
     now: number,
     source: MutationSource,
+    // Also the due posts that could not be taken up before: for the alarm.
+    retryDue = false,
   ): (Refusal | null)[] {
     this.forgetHandedBack(now);
     const before = this.record();
     let { seq, time } = before;
     const due = () => {
-      for (const id of this.duePosts(Math.max(now, time + 1))) {
+      // One at a time, and looked for anew after each: taking up a post
+      // of the queue can give the others that were due another time.
+      const tried = new Set<string>();
+      for (;;) {
+        const id = this.duePosts(Math.max(now, time + 1)).find(
+          (id) => !tried.has(id) && (retryDue || !this.notTakenUp.has(id)),
+        );
+        if (id === undefined) return;
+        tried.add(id);
         const refusal = apply({ name: "post.due", args: { id } }, "server");
-        // The mutator takes every post that is due. The alarm comes back
-        // to one that it did not, in its own time.
-        if (refusal) {
+        if (!refusal) {
+          this.notTakenUp.delete(id);
+          continue;
+        }
+        // The mutator takes every post that is due, so this is a bug.
+        // The alarm comes back to the post in its own time, and the
+        // mutations before then leave it alone: it is said once.
+        if (!this.notTakenUp.has(id)) {
           console.error(`The due post ${id} was not taken up`, refusal.message);
         }
+        this.notTakenUp.add(id);
       }
     };
     const apply = (
@@ -1378,8 +1401,13 @@ export class WorkspaceStore {
       return null;
     };
     due();
-    const outcomes = mutations.map((mutation) => apply(mutation, source));
-    if (mutations.length > 0) due();
+    const outcomes = mutations.map((mutation) => {
+      const outcome = apply(mutation, source);
+      // After every one, as before the first: what a message does is
+      // what its mutations would do in messages of their own.
+      due();
+      return outcome;
+    });
 
     // The log is kept from growing by dropping what is older than the
     // window. A cursor from before the floor can no longer be served from

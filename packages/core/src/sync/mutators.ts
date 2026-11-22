@@ -12,6 +12,7 @@ import {
   maxOwnTextLength,
   maxParts,
   maxPartTextLength,
+  maxScheduled,
   maxSlots,
   maxTimeZoneLength,
   notificationRowSchema,
@@ -64,6 +65,13 @@ export const rejectionCodeSchema = z.enum([
   "not_scheduled",
   /** The workspace has as many slots as it can have. */
   "too_many_slots",
+  /** The workspace has as many scheduled posts as it can have. */
+  "too_many_scheduled",
+  /**
+   * The post that this one was to stand in for is there: it was not
+   * deleted after all, so nothing is scheduled in its place.
+   */
+  "not_gone",
   /** The part is the only one of its text, which has to keep one. */
   "last_part",
   /** The text has as many parts as a text can have. */
@@ -312,6 +320,35 @@ function slotsOf(tx: Transaction): Row<"schedule_slot">[] {
 }
 
 /**
+ * The places of the posts of `queue` in this order: each keeps the place
+ * that it has where that is after the place of the post before it, and
+ * takes the next number where it is not, or has none. A post without a
+ * place that comes to the front takes the number before the first place.
+ * So the places only have to grow along the queue, and may leave numbers
+ * out: a post that leaves the queue changes no other post, and one that
+ * enters it at either end changes none either.
+ */
+function placesOf(queue: readonly Row<"post">[]): number[] {
+  const places: number[] = [];
+  queue.forEach((post, index) => {
+    const before = places[index - 1];
+    let place = post.queuePosition;
+    if (before === undefined) {
+      if (place === null) {
+        const next = queue.find(
+          (other) => other.queuePosition !== null,
+        )?.queuePosition;
+        place = next === undefined || next === null ? 0 : next - 1;
+      }
+    } else if (place === null || place <= before) {
+      place = before + 1;
+    }
+    places.push(place);
+  });
+  return places;
+}
+
+/**
  * Stores `queue` as the queue, in this order, and gives each post its
  * time: the posts take the slots after now, one each, in their order. It
  * is run whenever the queue, the slots, the time zone or the pause
@@ -322,28 +359,38 @@ function slotsOf(tx: Transaction): Row<"schedule_slot">[] {
  * - While the queue is paused, and while the workspace has no slot, no
  *   post of it has a time.
  * - A post whose time has come keeps it, and takes no slot: it is as good
- *   as gone. The server sends it before it runs another mutation, so this
- *   is for a client, which shows such a post until the server has said
- *   what became of it. Not while the queue is paused: that holds every
- *   post of it.
+ *   as gone. The server takes it up before it runs another mutation, so
+ *   this is for a client, which shows such a post until the server has
+ *   said what became of it. Not while the queue is paused: that holds
+ *   every post of it.
  *
- * Only the posts that change are written, and `changed`, which the caller
- * has changed otherwise.
+ * Only the posts that change are written, and those of `changed`, which
+ * the caller has changed otherwise.
+ *
+ * This is the one costly thing that a mutator does, so a mutator runs it
+ * once, however many posts it changes. What it costs is bounded: a
+ * workspace has `maxScheduled` posts in its queue at most, and `timeOf`
+ * keeps the moments of the slots. That also bounds what a client pays
+ * that runs its unconfirmed mutations again with every change, a
+ * keystroke included.
  */
 function requeue(
   tx: Transaction,
   queue: readonly Row<"post">[] = queueOf(tx),
-  changed?: Row<"post">,
+  changed: ReadonlySet<Row<"post">> = new Set(),
 ): void {
+  requeues.count += 1;
   const { timeZone, queuePaused } = settingsOf(tx);
   const times = queuePaused
     ? undefined
     : slotTimes(timeZone ?? defaultTimeZone, slotsOf(tx), tx.now);
-  queue.forEach((post, queuePosition) => {
+  const places = placesOf(queue);
+  queue.forEach((post, index) => {
+    const queuePosition = places[index] ?? 0;
     const due = !queuePaused && post.dueAt !== null && post.dueAt <= tx.now;
     const dueAt = due ? post.dueAt : (times?.next().value ?? null);
     if (
-      post === changed ||
+      changed.has(post) ||
       post.queuePosition !== queuePosition ||
       post.dueAt !== dueAt
     ) {
@@ -353,10 +400,18 @@ function requeue(
 }
 
 /**
- * Makes a draft of a post that was scheduled: nothing says when it goes
- * out any more. The queue closes up behind a post that was in it.
+ * How often the posts of a queue were given their times, for a test that
+ * says that a mutator does it once.
  */
-function toDraft(tx: Transaction, post: Row<"post">): void {
+export const requeues = { count: 0 };
+
+/**
+ * Makes a draft of a post that was scheduled: nothing says when it goes
+ * out any more. The queue closes up behind a post that was in it, unless
+ * the caller does that itself, `closeUp`, for all the posts that it takes
+ * out of the queue at once.
+ */
+function toDraft(tx: Transaction, post: Row<"post">, closeUp = true): void {
   const queued = inQueue(post);
   tx.put("post", {
     ...post,
@@ -364,7 +419,84 @@ function toDraft(tx: Transaction, post: Row<"post">): void {
     status: "draft",
     updatedAt: tx.now,
   });
-  if (queued) requeue(tx);
+  if (queued && closeUp) requeue(tx);
+}
+
+/**
+ * Refuses to schedule `post` if the workspace has as many scheduled posts
+ * as it can have, the queue included. Not for a post that is scheduled
+ * already, which is given another time or place.
+ */
+function roomFor(tx: Transaction, post: Row<"post">): void {
+  if (
+    post.status !== "scheduled" &&
+    tx.find("post", "status", "scheduled").length >= maxScheduled
+  ) {
+    throw new MutationRejected(
+      "too_many_scheduled",
+      `A workspace has at most ${maxScheduled} scheduled posts`,
+    );
+  }
+}
+
+/**
+ * Refuses to schedule a post in the place of the post `ifGone` if that
+ * one is there. That is for the Undo of a delete, which schedules a copy:
+ * if the server did not take the delete, because the post was on its way
+ * by then, the copy would go out as well.
+ */
+function gone(tx: Transaction, ifGone: string | undefined): void {
+  if (ifGone !== undefined && tx.get("post", ifGone)) {
+    throw new MutationRejected(
+      "not_gone",
+      "The post that this one stands in for was not deleted",
+    );
+  }
+}
+
+/**
+ * Takes up the scheduled post `post`, whose time has come.
+ *
+ * - A post that is at most `lateMs` late is sent, the way `post.publish`
+ *   sends one: its targets wait their turn. It keeps its `mode` and its
+ *   `dueAt`, which say when it was to go out.
+ * - A post with a time that somebody chose which is later than that is
+ *   held: it stays `scheduled`, with `heldAt`, until somebody decides.
+ * - Of the queue, one post goes out at a time. When the time of several
+ *   has come, because nobody looked for a while, the first of them is
+ *   sent if it is at most `lateMs` late, and the others take the slots
+ *   after now, in their order: they do not go out one after the other at
+ *   once, which is what the slots are there to keep from happening. So
+ *   does the first if it is later than that. `post` is one of them, and
+ *   this is done for all of them.
+ */
+function takeUp(tx: Transaction, post: Row<"post"> & { dueAt: number }): void {
+  const late = (dueAt: number) => tx.now - dueAt > lateMs;
+  if (!inQueue(post)) {
+    if (late(post.dueAt)) {
+      tx.put("post", { ...post, heldAt: tx.now, updatedAt: tx.now });
+    } else {
+      send(tx, post, { mode: post.mode, dueAt: post.dueAt });
+    }
+    return;
+  }
+  const queue = queueOf(tx);
+  const isDue = ({ dueAt }: Row<"post">) => dueAt !== null && dueAt <= tx.now;
+  const first = queue.find(isDue);
+  const sent =
+    first && first.dueAt !== null && !late(first.dueAt) ? first : undefined;
+  // Without the time that has passed, so that each is given another: a
+  // post whose time has come would keep it.
+  const moved = new Set<Row<"post">>();
+  const rest = queue.flatMap((other) => {
+    if (other === sent) return [];
+    if (!isDue(other)) return [other];
+    const later = { ...other, dueAt: null, updatedAt: tx.now };
+    moved.add(later);
+    return [later];
+  });
+  if (sent) send(tx, sent, { mode: sent.mode, dueAt: sent.dueAt }, false);
+  requeue(tx, rest, moved);
 }
 
 /**
@@ -377,6 +509,7 @@ function send(
   tx: Transaction,
   post: Row<"post">,
   scheduled: Pick<Row<"post">, "mode" | "dueAt"> = unscheduled,
+  closeUp = true,
 ): void {
   const targets = tx.find("post_target", "postId", post.id);
   if (targets.length === 0) {
@@ -396,7 +529,7 @@ function send(
     status: "sending",
     updatedAt: tx.now,
   });
-  if (queued) requeue(tx);
+  if (queued && closeUp) requeue(tx);
 }
 
 /**
@@ -886,17 +1019,25 @@ export const mutators = {
    *
    * A time that has passed is not refused. A device can schedule a post
    * without a connection, and the server learns of it when the time has
-   * come and gone. The server treats such a post like every post whose
-   * time it finds out late: `post.due`.
+   * come and gone. Such a post is taken up at once, here, the way
+   * `post.due` takes up a post whose time the server finds out late: it
+   * is sent, or held if it is too late for that. A client does the same
+   * to what it shows, by its own clock.
+   *
+   * With `ifGone` the post stands in for one that was deleted, and is
+   * refused if that one is there: see `gone`.
    */
   "post.schedule": mutator(
     z.strictObject({
       id: idSchema,
       // Up to the last moment that a date can hold.
       dueAt: z.number().int().nonnegative().max(8.64e15),
+      ifGone: idSchema.optional(),
     }),
-    (tx, { id, dueAt }) => {
+    (tx, { id, dueAt, ifGone }) => {
       const post = unsent(tx, id);
+      gone(tx, ifGone);
+      roomFor(tx, post);
       if (tx.find("post_target", "postId", id).length === 0) {
         throw new MutationRejected(
           "no_channels",
@@ -904,7 +1045,7 @@ export const mutators = {
         );
       }
       const queued = inQueue(post);
-      tx.put("post", {
+      const scheduled = {
         ...post,
         status: "scheduled",
         mode: "custom",
@@ -912,8 +1053,10 @@ export const mutators = {
         queuePosition: null,
         heldAt: null,
         updatedAt: tx.now,
-      });
+      } as const;
+      tx.put("post", scheduled);
       if (queued) requeue(tx);
+      if (dueAt <= tx.now) takeUp(tx, scheduled);
     },
   ),
 
@@ -927,11 +1070,20 @@ export const mutators = {
    * A post that is in the queue already stays where it is, and moves to
    * the front with `first`. While the queue is paused or the workspace has
    * no slot, the post is in the queue without a time.
+   *
+   * With `ifGone` the post stands in for one that was deleted, and is
+   * refused if that one is there: see `gone`.
    */
   "post.enqueue": mutator(
-    z.strictObject({ id: idSchema, first: z.boolean() }),
-    (tx, { id, first }) => {
+    z.strictObject({
+      id: idSchema,
+      first: z.boolean(),
+      ifGone: idSchema.optional(),
+    }),
+    (tx, { id, first, ifGone }) => {
       const post = unsent(tx, id);
+      gone(tx, ifGone);
+      roomFor(tx, post);
       if (tx.find("post_target", "postId", id).length === 0) {
         throw new MutationRejected(
           "no_channels",
@@ -954,8 +1106,11 @@ export const mutators = {
       const others = queueOf(tx).filter((other) => other.id !== id);
       requeue(
         tx,
-        first ? [entered, ...others] : [...others, entered],
-        queued ? undefined : entered,
+        first
+          ? // At the front it takes a place anew, before the first.
+            [{ ...entered, queuePosition: null }, ...others]
+          : [...others, entered],
+        new Set(queued ? [] : [entered]),
       );
     },
   ),
@@ -986,7 +1141,14 @@ export const mutators = {
       if (!moved) return;
       others.splice(afterId === null ? 0 : after + 1, 0, moved);
       if (others.every((other, index) => other === queue[index])) return;
-      requeue(tx, others);
+      // The post that moves takes a place anew, between its neighbours
+      // where there is room, so that the others keep theirs.
+      requeue(
+        tx,
+        others.map((other) =>
+          other === moved ? { ...moved, queuePosition: null } : other,
+        ),
+      );
     },
   ),
 
@@ -1066,8 +1228,8 @@ export const mutators = {
   /**
    * Sets the time zone that the slots of the queue are in. With
    * `onlyIfUnset` it does nothing for a workspace that has one: that is
-   * how the app gives a workspace the zone of the device that first opens
-   * it. The posts of the queue take the slots as they are in the new zone.
+   * how the app gives a workspace the zone of the device on which its
+   * first slot is added or its first post is scheduled. The posts of the queue take the slots as they are in the new zone.
    *
    * The zone has to be one that the server knows: a mutator that computed
    * with a zone it does not know would compute with another.
@@ -1251,6 +1413,9 @@ export const mutators = {
   "channel.disconnect": mutator(
     z.strictObject({ id: idSchema }),
     (tx, { id }) => {
+      // Whether a post left the queue: it closes up once, at the end,
+      // however many posts were to go to this channel alone.
+      let left = false;
       for (const target of tx.find("post_target", "channelId", id)) {
         if (target.status === "pending") {
           dropOwnText(tx, target);
@@ -1263,7 +1428,8 @@ export const mutators = {
             post?.status === "scheduled" &&
             tx.find("post_target", "postId", post.id).length === 0
           ) {
-            toDraft(tx, post);
+            left ||= inQueue(post);
+            toDraft(tx, post, false);
           }
         } else if (target.status === "queued" || target.status === "sending") {
           tx.put("post_target", {
@@ -1278,6 +1444,7 @@ export const mutators = {
       if (tx.get("notification", id)?.channelId === id) {
         tx.delete("notification", id);
       }
+      if (left) requeue(tx);
       tx.delete("channel", id);
     },
     { serverOnly: true },
@@ -1286,15 +1453,8 @@ export const mutators = {
   /**
    * Takes up a scheduled post whose time has come: the server runs this
    * when it finds one, which is at that time or as soon after it as the
-   * server can.
-   *
-   * - A post that is at most `lateMs` late is sent, the way `post.publish`
-   *   sends one: its targets wait their turn. It keeps its `mode` and its
-   *   `dueAt`, which say when it was to go out.
-   * - A post with a time that somebody chose which is later than that is
-   *   held: it stays `scheduled`, with `heldAt`, until somebody decides.
-   * - A post of the queue that is later than that takes the next slot,
-   *   behind no other post: the slot that it had passed without it.
+   * server can. `takeUp` has what becomes of the post: it is sent, held,
+   * or given another slot.
    */
   "post.due": mutator(
     z.strictObject({ id: idSchema }),
@@ -1308,20 +1468,7 @@ export const mutators = {
       ) {
         throw new MutationRejected("not_current", "This post is not due");
       }
-      if (tx.now - post.dueAt <= lateMs) {
-        send(tx, post, { mode: post.mode, dueAt: post.dueAt });
-      } else if (inQueue(post)) {
-        // Without the time that has passed, so that it is given another:
-        // a post whose time has come would keep it.
-        const late = { ...post, dueAt: null };
-        requeue(
-          tx,
-          queueOf(tx).map((other) => (other.id === id ? late : other)),
-          late,
-        );
-      } else {
-        tx.put("post", { ...post, heldAt: tx.now });
-      }
+      takeUp(tx, { ...post, dueAt: post.dueAt });
     },
     { serverOnly: true },
   ),

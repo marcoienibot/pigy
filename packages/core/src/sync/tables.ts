@@ -89,10 +89,13 @@ export const postRowSchema = z.strictObject({
    */
   dueAt: timeSchema.nullable(),
   /**
-   * Where the post stands in the queue, counted from 0 and without a gap,
-   * for a `scheduled` post whose `mode` is `queue`. Null for every other.
+   * Where the post stands in the queue, for a `scheduled` post whose
+   * `mode` is `queue`: the posts of the queue go out in the order of
+   * these numbers. They only say the order: numbers are left out where a
+   * post has left the queue, and one that came to the front can be below
+   * zero. Null for every other post.
    */
-  queuePosition: z.number().int().nonnegative().nullable(),
+  queuePosition: z.number().int().nullable(),
   /**
    * When the server found that the time of the post had passed too long
    * ago to send it still: see `lateMs`. The post stays `scheduled` and
@@ -413,6 +416,14 @@ export const scheduleSlotRowSchema = z.strictObject({
   minute: z.number().int().min(0).max(1439),
 });
 
+/**
+ * The most posts that a workspace has scheduled at a time, those of the
+ * queue included. Every change of the queue gives each of its posts its
+ * time, on the server and on every device, so this is what bounds the
+ * cost of one.
+ */
+export const maxScheduled = 500;
+
 /** The most slots that a workspace has. */
 export const maxSlots = 200;
 
@@ -435,8 +446,9 @@ export const settingsRowSchema = z.strictObject({
   /**
    * The time zone that the slots of the queue are in, and that the app
    * shows times in: an IANA name such as "Europe/Rome". Null until one is
-   * set, which the app does with the zone of the device that first opens
-   * the workspace. Until then the slots are in UTC.
+   * set, which the app does with the zone of the device on which the
+   * first slot is added or the first post is scheduled. Until then the
+   * slots are in UTC.
    */
   timeZone: z.string().min(1).max(maxTimeZoneLength).nullable(),
   /**

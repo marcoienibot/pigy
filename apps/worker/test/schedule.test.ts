@@ -550,6 +550,128 @@ it("publishes at once a post that a device scheduled for a time that has just pa
   expect(posts()).toEqual(["Just missed"]);
 });
 
+it.each([
+  ["one message", true],
+  ["two messages", false],
+] as const)(
+  "publishes a post that is scheduled for a moment ago and taken back in %s",
+  async (_, together) => {
+    const { workspace, channel, client, posts } = await ready();
+    const { postId } = await writeDraft(client, workspace, "A minute ago");
+    await mutate(
+      client,
+      client.mutation("target.add", {
+        id: newId(),
+        postId,
+        channelId: channel,
+      }),
+    );
+    // What becomes of a post does not depend on how a device packs what it
+    // sends, which a device that was without a connection decides by how
+    // much it has to send: the post is taken up when it is scheduled, and
+    // taking it back comes too late either way.
+    const scheduling = client.mutation("post.schedule", {
+      id: postId,
+      dueAt: now() - minute,
+    });
+    const takingBack = client.mutation("post.unschedule", { id: postId });
+    const rejected = [];
+    for (const mutations of together
+      ? [[scheduling, takingBack]]
+      : [[scheduling], [takingBack]]) {
+      client.send({ type: "mutate", mutations });
+      rejected.push(...(await client.patch()).rejected);
+    }
+
+    expect(rejected).toMatchObject([
+      { id: takingBack.id, code: "not_scheduled" },
+    ]);
+    expect(await settled(client, postId)).toMatchObject({ status: "sent" });
+    expect(posts()).toEqual(["A minute ago"]);
+  },
+);
+
+it("sends one post of the queue when an alarm finds several late, and gives the others the slots after it", async () => {
+  const { test, browser, workspace, channel, client, posts } = await ready();
+  const errors = expectErrors();
+  await slotsIn(client, 10, 25, 40, 70, 85);
+  const queued = [];
+  for (const text of ["One", "Two", "Three"]) {
+    queued.push(await enqueue(client, workspace, text, channel));
+  }
+  const [one = "", two = "", three = ""] = queued;
+  const base = now();
+
+  // The alarm comes 50 minutes late, when three slots have passed.
+  test.advance(60 * minute);
+  await alarm(workspace);
+
+  const later = await watching(browser, workspace);
+  expect(await settled(later, one)).toMatchObject({ status: "sent" });
+  // Not all three to the same account, one after the other: the two
+  // behind the first take the slots that are still to come.
+  expect(posts()).toEqual(["One"]);
+  const slot = (ahead: number) => {
+    // A slot is at a minute of the clock, and `base` may not be.
+    const time = base + ahead * minute;
+    return time - (time % minute);
+  };
+  expect(postOf(later, two)).toMatchObject({
+    status: "scheduled",
+    dueAt: slot(70),
+  });
+  expect(postOf(later, three)).toMatchObject({
+    status: "scheduled",
+    dueAt: slot(85),
+  });
+  // Taking up the first took care of the others: the object did not try
+  // to take up posts that were no longer due, which it would log.
+  expect(errors).not.toHaveBeenCalled();
+});
+
+it("says once that a due post could not be taken up, and leaves it to the alarm", async () => {
+  const { test, workspace, channel, client } = await ready();
+  const errors = expectErrors();
+  const { postId } = await schedule(
+    client,
+    workspace,
+    "Nowhere to go",
+    now() + minute,
+    channel,
+  );
+  // What no mutator leaves behind: a scheduled post without an account,
+  // which the mutator that takes it up refuses.
+  await runInDurableObject(objectOf(workspace), (_, state) => {
+    state.storage.sql.exec("delete from post_target");
+  });
+  test.advance(minute);
+
+  // Two mutations of a client, each of which finds the post due.
+  await mutate(
+    client,
+    client.mutation("post.create", {
+      id: newId(),
+      partId: newId(),
+      text: "One",
+    }),
+    client.mutation("post.create", {
+      id: newId(),
+      partId: newId(),
+      text: "Two",
+    }),
+  );
+
+  const said = () =>
+    errors.mock.calls.filter(([message]) =>
+      String(message).includes("was not taken up"),
+    );
+  expect(said()).toHaveLength(1);
+  // The alarm tries again, and does not say it again.
+  await alarm(workspace);
+  expect(said()).toHaveLength(1);
+  expect(postOf(client, postId).status).toBe("scheduled");
+});
+
 it("takes up a post that is due before a mutation that would move it, without waiting for the alarm", async () => {
   const { test, workspace, channel, client, posts } = await ready();
   await slotsIn(client, 2, 4);

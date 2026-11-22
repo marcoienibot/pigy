@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import { memoryWorkspace } from "../../test/memory-transaction.ts";
-import { MutationRejected, type RejectionCode } from "./mutators.ts";
-import { lateMs, settingsId } from "./tables.ts";
+import { MutationRejected, type RejectionCode, requeues } from "./mutators.ts";
+import { lateMs, maxScheduled, settingsId } from "./tables.ts";
 
 /**
  * The mutators that say when a post goes out: a time that somebody chose,
@@ -151,16 +151,115 @@ it("refuses to schedule or queue a post that goes nowhere", () => {
   expect(postOf(workspace, post).status).toBe("draft");
 });
 
-it("takes a time that has passed: a device can schedule without a connection", () => {
+it("takes a time that has passed, and takes the post up at once: a device can schedule without a connection", () => {
   const workspace = scheduled();
-  const post = draft(workspace, 1);
+  const [recent = "", old = ""] = [1, 2].map((n) => draft(workspace, n));
 
-  workspace.mutate("post.schedule", { id: post, dueAt: start - 5000 }, start);
+  workspace.mutate("post.schedule", { id: recent, dueAt: start - 5000 }, start);
+  workspace.mutate(
+    "post.schedule",
+    { id: old, dueAt: start - lateMs - 1 },
+    start,
+  );
 
-  expect(postOf(workspace, post)).toMatchObject({
-    status: "scheduled",
+  // What `post.due` would do with them, done by the mutation itself: no
+  // mutation after it finds a post that is scheduled for the past.
+  expect(postOf(workspace, recent)).toMatchObject({
+    status: "sending",
+    mode: "custom",
     dueAt: start - 5000,
   });
+  expect(postOf(workspace, old)).toMatchObject({
+    status: "scheduled",
+    dueAt: start - lateMs - 1,
+    heldAt: start,
+  });
+  // So taking the first back is refused, whether it comes in the same
+  // message as the scheduling or in the next.
+  expect(
+    rejectionOf(() =>
+      workspace.mutate("post.unschedule", { id: recent }, start),
+    ),
+  ).toBe("not_scheduled");
+});
+
+it("schedules a post in the place of one that was deleted only if that one is gone", () => {
+  const workspace = scheduled();
+  const [original = "", copy = "", other = ""] = [1, 2, 3].map((n) =>
+    draft(workspace, n),
+  );
+  // The original is there: its delete was refused, or never arrived.
+  expect(
+    rejectionOf(() =>
+      workspace.mutate(
+        "post.schedule",
+        { id: copy, dueAt: start + 1000, ifGone: original },
+        start,
+      ),
+    ),
+  ).toBe("not_gone");
+  expect(
+    rejectionOf(() =>
+      workspace.mutate(
+        "post.enqueue",
+        { id: copy, first: false, ifGone: original },
+        start,
+      ),
+    ),
+  ).toBe("not_gone");
+  expect(postOf(workspace, copy).status).toBe("draft");
+
+  workspace.mutate("post.delete", { id: original }, start);
+  workspace.mutate(
+    "post.schedule",
+    { id: copy, dueAt: start + 1000, ifGone: original },
+    start,
+  );
+  workspace.mutate(
+    "post.enqueue",
+    { id: other, first: false, ifGone: original },
+    start,
+  );
+  expect(postOf(workspace, copy).status).toBe("scheduled");
+  expect(postOf(workspace, other).mode).toBe("queue");
+});
+
+it("schedules no more posts than a workspace can have", () => {
+  const workspace = scheduled();
+  const [has = "", post = ""] = [1, 2].map((n) => draft(workspace, n));
+  workspace.mutate("post.schedule", { id: has, dueAt: start + 1000 }, start);
+  for (let number = 1; number < maxScheduled; number += 1) {
+    // Without a mutator, which would take as long for each as the test
+    // has for all of them: the test is about the one that is refused.
+    workspace.put("post", {
+      id: id(1000 + number),
+      status: "scheduled",
+      createdAt: start,
+      updatedAt: start,
+      mode: "custom",
+      dueAt: start + lateMs,
+      queuePosition: null,
+      heldAt: null,
+    });
+  }
+
+  expect(
+    rejectionOf(() =>
+      workspace.mutate(
+        "post.schedule",
+        { id: post, dueAt: start + 1000 },
+        start,
+      ),
+    ),
+  ).toBe("too_many_scheduled");
+  expect(
+    rejectionOf(() =>
+      workspace.mutate("post.enqueue", { id: post, first: false }, start),
+    ),
+  ).toBe("too_many_scheduled");
+  // One that is scheduled already is given another time all the same.
+  workspace.mutate("post.schedule", { id: has, dueAt: start + 2000 }, start);
+  expect(postOf(workspace, has).dueAt).toBe(start + 2000);
 });
 
 it("gives a scheduled post another time", () => {
@@ -356,12 +455,48 @@ it("leaves one order behind when two devices reorder the queue at once", () => {
     [a, secondMonday],
     [c, secondWednesday],
   ]);
-  expect(
-    workspace
+  // Each has a place of its own. The places say the order and nothing
+  // else: numbers can be left out.
+  const places = workspace.rows("post").map((post) => post.queuePosition);
+  expect(new Set(places).size).toBe(4);
+});
+
+it("changes no other post when a post enters the queue at either end or leaves it", () => {
+  const workspace = scheduled();
+  const [a = "", b = "", c = "", d = ""] = [1, 2, 3, 4].map((n) =>
+    draft(workspace, n),
+  );
+  workspace.mutate("queue.setPaused", { paused: true }, start);
+  for (const post of [a, b]) {
+    workspace.mutate("post.enqueue", { id: post, first: false }, start);
+  }
+  // The rows that a mutation wrote: a row that it left alone is the same
+  // object after it. The queue is paused, so that no post changes its
+  // time, which a post at the front would have the others do.
+  const written = (mutate: () => void) => {
+    const before = new Set<unknown>(workspace.rows("post"));
+    mutate();
+    return workspace
       .rows("post")
-      .map(({ queuePosition }) => queuePosition)
-      .sort(),
-  ).toEqual([0, 1, 2, 3]);
+      .filter((row) => !before.has(row))
+      .map(({ id }) => id);
+  };
+
+  expect(
+    written(() =>
+      workspace.mutate("post.enqueue", { id: c, first: false }, start),
+    ),
+  ).toEqual([c]);
+  expect(
+    written(() =>
+      workspace.mutate("post.enqueue", { id: d, first: true }, start),
+    ),
+  ).toEqual([d]);
+  expect(queueOf(workspace).map(([post]) => post)).toEqual([d, a, b, c]);
+  expect(
+    written(() => workspace.mutate("post.unschedule", { id: a }, start)),
+  ).toEqual([a]);
+  expect(queueOf(workspace).map(([post]) => post)).toEqual([d, b, c]);
 });
 
 it("leaves a post where it is when the post to go after has left the queue", () => {
@@ -668,9 +803,13 @@ it.each([
 ] as const)("is held no more once a held post is %s", (_, name, args) => {
   const workspace = scheduled();
   const post = draft(workspace, 1);
-  workspace.mutate("post.schedule", { id: post, dueAt: start }, start);
+  workspace.mutate("post.schedule", { id: post, dueAt: start + 1 }, start);
   due(workspace, post, start + 2 * lateMs);
-  expect(postOf(workspace, post).heldAt).not.toBeNull();
+  // Held, which is something that was done to the post: it says when.
+  expect(postOf(workspace, post)).toMatchObject({
+    heldAt: start + 2 * lateMs,
+    updatedAt: start + 2 * lateMs,
+  });
 
   workspace.mutate(name, { id: post, ...args }, start + 3 * lateMs);
 
@@ -694,6 +833,75 @@ it("sends a queued post at its slot, and the others keep theirs", () => {
   expect(queueOf(workspace)).toEqual([[b, firstWednesday]]);
 });
 
+it("touches no other post of the queue when the first goes out at its slot", () => {
+  const workspace = scheduled();
+  const [a = "", b = "", c = ""] = [1, 2, 3].map((n) => draft(workspace, n));
+  for (const post of [a, b, c]) {
+    workspace.mutate("post.enqueue", { id: post, first: false }, start);
+  }
+  const before = new Set<unknown>(workspace.rows("post"));
+
+  due(workspace, a, at(firstMonday));
+
+  // A row that the mutation did not write is the same object after it:
+  // the others keep their places, which leave out the one of the post
+  // that went, and their times. So a client hears of one row.
+  expect(
+    workspace
+      .rows("post")
+      .filter((row) => !before.has(row))
+      .map(({ id }) => id),
+  ).toEqual([a]);
+  expect(queueOf(workspace)).toEqual([
+    [b, firstWednesday],
+    [c, secondMonday],
+  ]);
+});
+
+it("sends one post of the queue when the time of several has come, and gives the others the slots after now", () => {
+  const workspace = scheduled();
+  // Slots on Monday every quarter of an hour from 09:00 to 09:30, and at
+  // 10:00 and 10:15, besides the one on Wednesday.
+  [15, 30, 60, 75].forEach((later, index) => {
+    workspace.mutate(
+      "slot.add",
+      { id: id(310 + index), weekday: monday, minute: 9 * 60 + later },
+      start,
+    );
+  });
+  const [a = "", b = "", c = "", d = ""] = [1, 2, 3, 4].map((n) =>
+    draft(workspace, n),
+  );
+  for (const post of [a, b, c, d]) {
+    workspace.mutate("post.enqueue", { id: post, first: false }, start);
+  }
+  expect(queueOf(workspace).map(([, time]) => time)).toEqual([
+    "2026-01-05T08:00:00.000Z",
+    "2026-01-05T08:15:00.000Z",
+    "2026-01-05T08:30:00.000Z",
+    "2026-01-05T09:00:00.000Z",
+  ]);
+
+  // Nobody looked until 09:50: three posts are late, none by an hour.
+  const late = at("2026-01-05T08:50:00Z");
+  due(workspace, a, late);
+
+  // The first goes out. The two behind it do not follow it at once, to
+  // the same accounts: they take the slots after now, and the fourth
+  // moves back behind them.
+  expect(postOf(workspace, a).status).toBe("sending");
+  expect(queueOf(workspace)).toEqual([
+    [b, "2026-01-05T09:00:00.000Z"],
+    [c, "2026-01-05T09:15:00.000Z"],
+    [d, firstWednesday],
+  ]);
+  // They were given another time, which is something done to them.
+  expect(postOf(workspace, b).updatedAt).toBe(late);
+  expect(postOf(workspace, d).updatedAt).toBe(start);
+  // And are not due any more.
+  expect(rejectionOf(() => due(workspace, b, late))).toBe("not_current");
+});
+
 it("gives a queued post that is found too late the next slot, and keeps the order of the queue", () => {
   const workspace = scheduled();
   const [a = "", b = ""] = [1, 2].map((n) => draft(workspace, n));
@@ -702,9 +910,10 @@ it("gives a queued post that is found too late the next slot, and keeps the orde
 
   // The server was away from before Monday's slot until Thursday: both
   // slots of the week have passed.
+  // Taking up the first gives every post of the queue that was due
+  // another slot: one mutation, whichever of them it names.
   const thursday = at("2026-01-08T12:00:00Z");
   due(workspace, a, thursday);
-  due(workspace, b, thursday);
 
   expect(queueOf(workspace)).toEqual([
     [a, secondMonday],
@@ -713,7 +922,37 @@ it("gives a queued post that is found too late the next slot, and keeps the orde
   expect(postOf(workspace, a)).toMatchObject({
     status: "scheduled",
     heldAt: null,
+    updatedAt: thursday,
   });
+});
+
+it("gives the posts of the queue their times once when an account is disconnected, however many leave the queue", () => {
+  const workspace = scheduled();
+  connect(workspace, otherChannelId, "2");
+  const posts = Array.from({ length: 40 }, (_, index) =>
+    draft(workspace, index + 1),
+  );
+  // One post goes to the other account too, and stays in the queue.
+  const [stays = ""] = posts;
+  workspace.mutate("target.add", {
+    id: id(260),
+    postId: stays,
+    channelId: otherChannelId,
+  });
+  for (const post of posts) {
+    workspace.mutate("post.enqueue", { id: post, first: false }, start);
+  }
+  const before = requeues.count;
+
+  workspace.mutate("channel.disconnect", { id: channelId }, start, "server");
+
+  // Once, and not once for each post that left: that is the difference
+  // between a disconnect that takes a moment and one that does not end.
+  expect(requeues.count - before).toBe(1);
+  expect(queueOf(workspace)).toEqual([[stays, firstMonday]]);
+  expect(
+    workspace.rows("post").filter(({ status }) => status === "draft"),
+  ).toHaveLength(39);
 });
 
 it("takes a disconnected account off a scheduled post, and makes a draft of one that has no other", () => {

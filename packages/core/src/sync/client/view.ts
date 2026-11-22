@@ -94,7 +94,7 @@ class ViewTransaction implements Transaction {
  * The latest time that a mutator has written into `rows`, 0 if there is
  * none. Mutators take the time from their transaction and keep it in these
  * columns: `createdAt` of a post and its `updatedAt`, which is that time or
- * a later one, when a channel was connected and its limits were read, and
+ * a later one, its `heldAt`, when a channel was connected and its limits were read, and
  * when a target was asked for and sent. A mutator that writes the time of
  * its transaction to another column needs that column looked at here too.
  */
@@ -103,7 +103,10 @@ function latestTime(rows: Tables): number {
   const look = (time: number | null) => {
     if (time !== null && time > latest) latest = time;
   };
-  for (const { updatedAt } of rows.post.values()) look(updatedAt);
+  for (const { updatedAt, heldAt } of rows.post.values()) {
+    look(updatedAt);
+    look(heldAt);
+  }
   for (const { connectedAt, limitsCheckedAt } of rows.channel.values()) {
     look(connectedAt);
     look(limitsCheckedAt);

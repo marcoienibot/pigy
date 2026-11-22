@@ -239,6 +239,25 @@ it("runs a pending mutation after every time that the server has put into a chan
     { op: "put", table: "post_target", row: target },
   ]);
   expect(edited(sent)?.updatedAt).toBe(5_001);
+  // Another post, which the server has held: `heldAt` is a time of the
+  // server's too.
+  const held = applyChanges(rows, false, [
+    {
+      op: "put",
+      table: "post",
+      row: {
+        id: newId(),
+        status: "scheduled",
+        createdAt: 1,
+        updatedAt: 1,
+        mode: "custom",
+        dueAt: 5,
+        queuePosition: null,
+        heldAt: 6_000,
+      },
+    },
+  ]);
+  expect(edited(held)?.updatedAt).toBe(6_001);
 });
 
 it("lets a pending mutation see what the ones before it did", () => {
