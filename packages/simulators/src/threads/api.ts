@@ -13,7 +13,7 @@ import {
   usageOf,
   use,
 } from "./state.ts";
-import { countCharacters, maxCharacters } from "./text.ts";
+import { countCharacters, findEntities, maxCharacters } from "./text.ts";
 
 /**
  * The parts of the Threads API that an app uses to post text for an
@@ -256,7 +256,10 @@ export function createContainer(
 
 /** What a post is made of, besides who posts it and when. */
 export type NewPost = Pick<ThreadsPost, "text" | "replyToId"> &
-  Pick<Partial<ThreadsPost>, "media" | "quote" | "poll">;
+  Pick<
+    Partial<ThreadsPost>,
+    "media" | "quote" | "poll" | "entities" | "card" | "topicTag"
+  >;
 
 /** Puts a post of `user` into the world, now. It checks nothing. */
 export function addPost(
@@ -318,10 +321,21 @@ export function publish(
   if (usageOf(state, quota, user.id).length >= quotas[quota]) {
     return overQuota(state, quota);
   }
-  // GUESS: Threads keeps the text as it was sent.
+  // GUESS: Threads keeps the text as it was sent. What it shows in it as
+  // more than text, it finds itself: text.ts.
+  const { entities, card, topicTag } = findEntities(
+    container.text,
+    (username) =>
+      state.users
+        .all()
+        .find((known) => known.username.toLowerCase() === username)?.id,
+  );
   const { id } = addPost(state, user, {
     text: container.text,
     replyToId: container.replyToId,
+    entities,
+    card,
+    ...(topicTag !== null && { topicTag }),
   });
   state.containers.put(container.id, { ...container, publishedAs: id });
   use(state, quota, user.id);
@@ -368,6 +382,10 @@ function media(
     timestamp: timestamp(post.createdAt),
     shortcode: post.shortcode,
     is_quote_post: post.quote === true,
+    // Documented fields of a post: the address that its link preview is
+    // of, and its one topic tag. Left out where it has none.
+    link_attachment_url: post.card?.url,
+    topic_tag: post.topicTag,
     // GUESS: a post says its poll like this, and one without a poll
     // leaves the field out.
     poll_attachment: post.poll

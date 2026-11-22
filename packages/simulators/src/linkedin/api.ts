@@ -1,3 +1,5 @@
+import { findLinks } from "../mastodon/text.ts";
+import type { SimCard, SimEntity } from "../world/world.ts";
 import { apiError, empty, json } from "./http.ts";
 import {
   duplicateWindowMs,
@@ -34,10 +36,11 @@ export function userinfo(member: LinkedInMember): Response {
 export const postUrl = (id: string) =>
   `https://www.linkedin.com/feed/update/${id}/`;
 
-// What a post can have that this does not simulate: media, articles,
-// polls, a post that is shared again, a post in a group, a sponsored one.
+// What a post can have that this does not simulate: a post that is shared
+// again, a post in a group, a sponsored one. Of `content`, the article is
+// simulated, which is how an application gives a link its preview: see
+// `articleOf`.
 const notSimulated = [
-  "content",
   "reshareContext",
   "container",
   "adContext",
@@ -52,6 +55,7 @@ const known = [
   "distribution",
   "lifecycleState",
   "isReshareDisabledByAuthor",
+  "content",
   ...notSimulated,
 ];
 
@@ -64,6 +68,66 @@ const invalidField = (status: number, field: string, problem: string) =>
     status,
     `Field Value validation failed in REQUEST_BODY: Data Processing Exception while processing fields [/${field}]: ${problem}`,
   );
+
+/**
+ * The preview of a link that `content` gives a post, or what is wrong
+ * with it: "Posts API", "Article Post Creation". LinkedIn reads no page
+ * for a post of an application, so the application says what the preview
+ * shows: the address, `source`, and a `title`, both required, and a
+ * `description`.
+ *
+ * Not simulated, and refused: every other content, which is media, a
+ * poll and a carousel, and the picture of an article, `thumbnail`, which
+ * is an image that was uploaded before.
+ */
+function articleOf(
+  content: unknown,
+): SimCard | null | { error: string; notSimulated?: true } {
+  if (content === undefined) return null;
+  if (!isRecord(content)) return { error: "content must be an object" };
+  const kinds = Object.keys(content);
+  if (kinds.length !== 1 || kinds[0] !== "article") {
+    return {
+      notSimulated: true,
+      error: `The simulated LinkedIn takes an article for the content of a post, and no "${kinds.find((kind) => kind !== "article") ?? "empty content"}"`,
+    };
+  }
+  const { article } = content;
+  if (!isRecord(article)) return { error: "content/article must be an object" };
+  for (const field of Object.keys(article)) {
+    if (field === "thumbnail") {
+      return {
+        notSimulated: true,
+        error:
+          "The simulated LinkedIn keeps no images: an article has no thumbnail there",
+      };
+    }
+    if (!["source", "title", "description"].includes(field)) {
+      return { error: `content/article has no field "${field}"` };
+    }
+  }
+  const { source, title, description } = article;
+  let url: URL | undefined;
+  try {
+    url = typeof source === "string" ? new URL(source) : undefined;
+  } catch {
+    url = undefined;
+  }
+  if (!url || (url.protocol !== "https:" && url.protocol !== "http:")) {
+    return { error: "content/article/source must be a URL" };
+  }
+  if (typeof title !== "string" || title.trim() === "") {
+    return { error: "content/article/title is required" };
+  }
+  if (description !== undefined && typeof description !== "string") {
+    return { error: "content/article/description must be a string" };
+  }
+  return {
+    url: source as string,
+    title,
+    description: (description as string | undefined) ?? "",
+  };
+}
 
 /**
  * `POST /rest/posts`: publishes a post of `member`. The answer has no
@@ -172,6 +236,12 @@ export async function createPost(
   const read = readLittleText(commentary);
   if ("error" in read) return apiError(400, read.error);
   const { text } = read;
+  const article = articleOf(body.content);
+  if (article && "error" in article) {
+    return article.notSimulated
+      ? apiError(400, article.error)
+      : invalidField(422, "content", article.error);
+  }
   if (text.trim() === "") {
     return invalidField(422, "commentary", "a post needs a text");
   }
@@ -224,9 +294,33 @@ export async function createPost(
     createdAt: now,
     url: postUrl(id),
     visibility,
+    entities: shownIn(text, read.hashtags),
+    card: article,
   };
   state.posts.put(id, post);
   return empty(201, { "x-restli-id": id, "x-linkedin-id": id });
+}
+
+/**
+ * What LinkedIn shows in the text of a post as more than text: the
+ * hashtags that the post marked, and the links, which LinkedIn finds
+ * itself. GUESS: what LinkedIn takes for a link is not documented. Here
+ * it is what the simulated Mastodon takes for one, an address with its
+ * scheme.
+ */
+function shownIn(text: string, hashtags: SimEntity[]): SimEntity[] {
+  const links: SimEntity[] = findLinks(text)
+    .map(({ start, end }) => ({
+      kind: "link" as const,
+      start,
+      end,
+      target: text.slice(start, end),
+    }))
+    .filter(
+      (link) =>
+        !hashtags.some((tag) => link.start < tag.end && tag.start < link.end),
+    );
+  return [...links, ...hashtags].sort((a, b) => a.start - b.start);
 }
 
 /**

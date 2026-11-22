@@ -52,6 +52,8 @@ export type ThreadsPost = SimPost & {
   media?: "IMAGE" | "VIDEO" | "CAROUSEL_ALBUM";
   quote?: boolean;
   poll?: boolean;
+  /** The one topic tag of the post, without its sign, if it has one. */
+  topicTag?: string;
 };
 
 /**

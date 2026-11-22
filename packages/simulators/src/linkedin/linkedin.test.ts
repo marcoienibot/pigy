@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   answerConsent,
   createWorld,
+  entitiesOf,
   feed,
   isSimulatedSecret,
   simulationNotice,
@@ -480,8 +481,78 @@ describe("posting", () => {
     expect(texts(sim)).toEqual(["1 * 2 (two) #tag a_b \\ @ada"]);
   });
 
+  it("shows a hashtag template as the tag, and finds the links of the text itself", async () => {
+    const sim = setup();
+    const response = await publish(
+      sim,
+      await tokenFor(sim),
+      postOf(
+        sim.ada.id,
+        // An underscore is reserved, also in the name of a tag.
+        "Read https://example.test/ {hashtag|\\#|big\\_news} and \\#not",
+      ),
+    );
+    expect(response.status).toBe(201);
+    const kept = feed(sim.world)[0]?.post;
+    expect(kept?.text).toBe("Read https://example.test/ #big_news and #not");
+    expect(kept && entitiesOf(kept)).toEqual([
+      ["link", "https://example.test/", "https://example.test/"],
+      ["hashtag", "#big_news", "big_news"],
+      // The escaped sign is the character, and no tag.
+    ]);
+    // No article was sent, and LinkedIn reads no page for an application.
+    expect(kept?.card).toBeNull();
+  });
+
+  it("previews a link as the article that the post says it is", async () => {
+    const sim = setup();
+    const article = {
+      source: "https://example.test/",
+      title: "The example page",
+      description: "A page.",
+    };
+    const response = await publish(sim, await tokenFor(sim), {
+      ...postOf(sim.ada.id, "Read https://example.test/"),
+      content: { article },
+    });
+    expect(response.status).toBe(201);
+    expect(feed(sim.world)[0]?.post.card).toEqual({
+      url: "https://example.test/",
+      title: "The example page",
+      description: "A page.",
+    });
+  });
+
+  it.each([
+    ["no title", { source: "https://example.test/" }, 422],
+    ["no address", { title: "A title" }, 422],
+    ["an address that is none", { source: "example", title: "A title" }, 422],
+    [
+      "a picture, which is not simulated",
+      {
+        source: "https://example.test/",
+        title: "A title",
+        thumbnail: "urn:li:image:1",
+      },
+      400,
+    ],
+  ])("refuses an article with %s", async (_name, article, status) => {
+    const sim = setup();
+    const response = await publish(sim, await tokenFor(sim), {
+      ...postOf(sim.ada.id, "Hello"),
+      content: { article },
+    });
+    expect(response.status).toBe(status);
+    expect(texts(sim)).toEqual([]);
+  });
+
   it.each([
     ["a reserved character that is not escaped", "Hello (world)"],
+    ["a hashtag that is written without its template", "Hello #world"],
+    ["a template that is not closed", "Hello {hashtag|\\#|world"],
+    ["a template without a tag", "Hello {hashtag|\\#|}"],
+    ["a template of something else", "Hello {mention|\\@|ada}"],
+    ["a tag with a space in it", "Hello {hashtag|\\#|two words}"],
     ["a mention", "Hello @[Ada](urn:li:person:abc)"],
     ["a backslash that escapes nothing", "a \\ b"],
     ["a backslash at the end", "a \\"],

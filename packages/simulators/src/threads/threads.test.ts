@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   answerConsent,
   createWorld,
+  entitiesOf,
   feed,
   isSimulatedSecret,
   simulationNotice,
@@ -698,6 +699,66 @@ describe("publishing", () => {
       media_type: "TEXT_POST",
       poll_attachment: expect.any(Object),
     });
+  });
+
+  it("previews the first link of a post, takes its first tag for its topic, and links the accounts that it mentions", async () => {
+    const sim = setup();
+    const token = await tokenFor(sim);
+    const id = await post(
+      sim,
+      token,
+      `Thanks @${sim.grace.username.toUpperCase()} and @nobody. https://news.example.test/story and https://example.test/ #First #second`,
+    );
+    const said = (
+      await answer(
+        await call(sim, "GET", `/${id}`, {
+          fields: "media_type,link_attachment_url,topic_tag",
+          access_token: token,
+        }),
+      )
+    ).body;
+    // A text post with a preview is a text post still.
+    expect(said).toEqual({
+      media_type: "TEXT_POST",
+      link_attachment_url: "https://news.example.test/story",
+      topic_tag: "First",
+    });
+    const kept = feed(sim.world)[0]?.post;
+    expect(kept && entitiesOf(kept)).toEqual([
+      // In whatever case it is written, and without the full stop of the
+      // sentence. Nobody is called "nobody", so that one stays text.
+      ["mention", `@${sim.grace.username.toUpperCase()}`, sim.grace.id],
+      [
+        "link",
+        "https://news.example.test/story",
+        "https://news.example.test/story",
+      ],
+      ["link", "https://example.test/", "https://example.test/"],
+      // One tag per post: the second is text.
+      ["hashtag", "#First", "First"],
+    ]);
+    // The page has no Open Graph tags: the card is its title and its
+    // description.
+    expect(kept?.card).toEqual({
+      url: "https://news.example.test/story",
+      title: "A story from the simulated news",
+      description: "Nothing happened today, and here is all of it.",
+    });
+  });
+
+  it("says nothing of a preview or a topic of a post that has neither", async () => {
+    const sim = setup();
+    const token = await tokenFor(sim);
+    const id = await post(sim, token, "Words, and #1 is no tag");
+    const said = (
+      await answer(
+        await call(sim, "GET", `/${id}`, {
+          fields: "link_attachment_url,topic_tag",
+          access_token: token,
+        }),
+      )
+    ).body;
+    expect(said).toEqual({});
   });
 
   it("limits the posts of an account to 250 in 24 hours, and says how many are used", async () => {
