@@ -1,25 +1,28 @@
 import { settingsId } from "@pigy/core";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import {
   addMonths,
+  bringBack,
   claimTimeZone,
+  deleteScheduled,
   entriesByDay,
+  fieldZone,
   minuteFromInput,
   minuteLabel,
   monthName,
-  movesOf,
-  nextQueueTime,
-  type Schedule,
+  movesIn,
   selectCalendar,
   selectQueue,
   selectSchedule,
   slotsByDay,
   suggestedTime,
+  takePost,
   timeFromInput,
   timeToInput,
   weekdayName,
   weeksOf,
   whenDue,
+  zoneNote,
 } from "./queue.ts";
 import {
   channel,
@@ -61,10 +64,122 @@ function tablesWith(...made: ReturnType<typeof scheduledPost>[]) {
 it("reads the schedule of a workspace that has set nothing: the zone of the device, not paused, no slots", () => {
   expect(selectSchedule(tablesOf({}), "Asia/Tokyo")).toEqual({
     timeZone: "Asia/Tokyo",
-    zoneSet: false,
+    zone: "device",
+    zoneName: null,
     paused: false,
     slots: [],
   });
+});
+
+/**
+ * Makes this runtime one that does not know the time zone `unknown`, as
+ * a browser with older time zone data than the device that set it. For
+ * a zone that nothing has computed with yet: what was read once is kept.
+ */
+function withoutZone(unknown: string) {
+  const Known = Intl.DateTimeFormat;
+  vi.spyOn(Intl, "DateTimeFormat").mockImplementation(((
+    locales?: Intl.LocalesArgument,
+    options?: Intl.DateTimeFormatOptions,
+  ) => {
+    if (options?.timeZone === unknown) {
+      throw new RangeError(`Invalid time zone specified: ${unknown}`);
+    }
+    return new Known(locales, options);
+  }) as typeof Intl.DateTimeFormat);
+}
+
+it("reads and shows times in UTC, and says so, where this device does not know the zone of the workspace", () => {
+  // A zone of 2022, which a browser from before does not have.
+  const juarez = "America/Ciudad_Juarez";
+  withoutZone(juarez);
+  const schedule = selectSchedule(
+    tablesOf({
+      settings: [{ id: settingsId, timeZone: juarez, queuePaused: false }],
+    }),
+    "Asia/Tokyo",
+  );
+  vi.restoreAllMocks();
+
+  // Not the zone of the workspace under the name of UTC's times, and not
+  // UTC's times under the name of the zone: UTC, said to be UTC.
+  expect(schedule).toMatchObject({
+    timeZone: "UTC",
+    zone: "unknown",
+    zoneName: juarez,
+  });
+  expect(fieldZone(schedule)).toBe(
+    "In UTC: this device does not know America/Ciudad Juarez, the time zone of this workspace.",
+  );
+  expect(zoneNote(schedule, "Asia/Tokyo")).toBe(
+    "Times are in UTC: this device does not know America/Ciudad Juarez, the time zone of this workspace.",
+  );
+  // What the dialog reads is the moment that it names: 09:00 in UTC.
+  expect(iso(timeFromInput("2026-06-01T09:00", schedule.timeZone))).toBe(
+    "2026-06-01T09:00:00.000Z",
+  );
+});
+
+it("shows UTC, and claims no zone again, for a workspace that has slots and no zone: the server refused the one of the device", () => {
+  const made: unknown[] = [];
+  const mutate = (name: string, args: unknown) => made.push([name, args]);
+  const tables = tablesOf({
+    schedule_slot: [{ id: id(), weekday: 1, minute: 540 }],
+  });
+
+  const schedule = selectSchedule(tables, "Asia/Tokyo");
+  claimTimeZone(mutate, tables, "Asia/Tokyo");
+
+  // The server computes the slots of such a workspace in UTC, so that is
+  // what the screens show, and not the zone of the device.
+  expect(schedule).toMatchObject({
+    timeZone: "UTC",
+    zone: "none",
+    zoneName: null,
+  });
+  expect(zoneNote(schedule, "Asia/Tokyo")).toBe(
+    "Times are in UTC until this workspace has a time zone.",
+  );
+  expect(fieldZone(schedule)).toBe(
+    "In UTC: this workspace has no time zone yet.",
+  );
+  // The claim was refused once. Made again with everything that is
+  // scheduled, it would be refused every time, with a notice each.
+  expect(made).toEqual([]);
+  // A scheduled post says the same as a slot.
+  const ada = channel();
+  expect(
+    selectSchedule(
+      tablesOf({
+        channel: [ada],
+        ...tablesWith(scheduledPost("Scheduled", ada.id, { dueAt: 5 })),
+      }),
+      "Asia/Tokyo",
+    ).zone,
+  ).toBe("none");
+});
+
+it("names the zone of the workspace where it is not the zone of the device, and nothing where it is", () => {
+  const schedule = selectSchedule(
+    tablesOf({
+      settings: [{ id: settingsId, timeZone: rome, queuePaused: false }],
+    }),
+    "Asia/Tokyo",
+  );
+
+  expect(zoneNote(schedule, "Asia/Tokyo")).toBe(
+    "Times are in Europe/Rome, the time zone of this workspace.",
+  );
+  expect(zoneNote(schedule, rome)).toBeNull();
+  expect(fieldZone(schedule)).toBe(
+    "In the time zone of this workspace, Europe/Rome.",
+  );
+  // A workspace that takes the zone of the device has nothing to add.
+  const fresh = selectSchedule(tablesOf({}), "America/New_York");
+  expect(zoneNote(fresh, "America/New_York")).toBeNull();
+  expect(fieldZone(fresh)).toBe(
+    "In the time zone of this device, America/New York, which this workspace takes as its own.",
+  );
 });
 
 it("gives a workspace the zone of the device before the first thing that goes by it, and only a workspace that has none", () => {
@@ -103,7 +218,8 @@ it("lists the slots Monday first, each day in the order of its times", () => {
 
   expect(schedule).toMatchObject({
     timeZone: rome,
-    zoneSet: true,
+    zone: "set",
+    zoneName: rome,
     paused: true,
   });
   expect(schedule.slots).toEqual([mondayEarly, mondayLate, sunday]);
@@ -198,7 +314,9 @@ it("says of a scheduled post where it goes, what it begins with and whether it i
 
 it("names the post to go after for each way that a post of the queue can move", () => {
   const ada = channel();
-  const [a, b, c] = [0, 1, 2].map((queuePosition) =>
+  // The rows say the order, and leave numbers out: a post has left the
+  // queue, and one came to the front.
+  const [a, b, c] = [-1, 3, 7].map((queuePosition) =>
     scheduledPost(`Post ${queuePosition}`, ada.id, {
       mode: "queue",
       dueAt: 1000 + queuePosition,
@@ -210,60 +328,152 @@ it("names the post to go after for each way that a post of the queue can move", 
   const items = selectQueue(
     tablesOf({ channel: [ada], ...tablesWith(a, b, c, chosen) }),
   );
+  const moves = movesIn(items);
 
+  // The places are counted, whatever the rows have.
+  expect(
+    [a, b, c].map(
+      (one) => items.find(({ id }) => id === one.post.id)?.position,
+    ),
+  ).toEqual([0, 1, 2]);
   // The first cannot go up, the last cannot go down.
-  expect(movesOf(items, a.post.id)).toEqual({ down: b.post.id });
+  expect(moves.get(a.post.id)).toEqual({ down: b.post.id });
   // Up from the second place is to the front.
-  expect(movesOf(items, b.post.id)).toEqual({
+  expect(moves.get(b.post.id)).toEqual({
     up: null,
     top: null,
     down: c.post.id,
   });
   // Up from the third is to after the first.
-  expect(movesOf(items, c.post.id)).toEqual({ up: a.post.id, top: null });
+  expect(moves.get(c.post.id)).toEqual({ up: a.post.id, top: null });
   // A post with a time of its own is not in the queue.
-  expect(movesOf(items, chosen.post.id)).toEqual({});
+  expect(moves.has(chosen.post.id)).toBe(false);
 });
 
-const weekly: Schedule = {
-  timeZone: rome,
-  zoneSet: true,
-  paused: false,
-  slots: [
-    { id: id(), weekday: 1, minute: 540 },
-    { id: id(), weekday: 3, minute: 540 },
-  ],
-};
+/** Collects the mutations that a function makes. */
+function recorded() {
+  const made: [string, unknown][] = [];
+  return {
+    made,
+    mutate: (name: string, args: unknown) => {
+      made.push([name, args]);
+    },
+  };
+}
 
-it("says which slot a post that is added to the queue would get, and one that is shared next", () => {
+/** IDs in the order they are asked for: "new-1", "new-2". */
+function numbered() {
+  let count = 0;
+  return () => {
+    count += 1;
+    return `new-${count}`;
+  };
+}
+
+it("deletes a scheduled post only as one, and schedules what Undo brings back only if the post is gone", () => {
   const ada = channel();
-  const queued = scheduledPost("Queued", ada.id, {
-    mode: "queue",
-    dueAt: at("2026-01-05T08:00:00Z"),
-    queuePosition: 0,
-  });
-  const items = selectQueue(
-    tablesOf({ channel: [ada], ...tablesWith(queued) }),
-  );
-  // Monday 5 January 2026, 08:00 in Rome.
-  const now = at("2026-01-05T07:00:00Z");
+  const one = scheduledPost("Scheduled", ada.id, { dueAt: 5000 });
+  const tables = tablesOf({ channel: [ada], ...tablesWith(one) });
+  const taken = takePost(tables, one.post.id);
+  if (!taken) throw new Error("The post is there");
+  const { made, mutate } = recorded();
 
-  // Behind the post that has Monday's slot.
-  expect(iso(nextQueueTime(weekly, items, now))).toBe(
-    "2026-01-07T08:00:00.000Z",
-  );
-  expect(iso(nextQueueTime(weekly, items, now, true))).toBe(
-    "2026-01-05T08:00:00.000Z",
-  );
-  // A post whose time has come takes no slot: it is as good as gone.
-  expect(iso(nextQueueTime(weekly, items, at("2026-01-05T08:00:30Z")))).toBe(
-    "2026-01-07T08:00:00.000Z",
-  );
+  deleteScheduled(mutate, one.post.id);
+  // The device has deleted the post: its copy no longer has it.
+  bringBack(mutate, tablesOf({ channel: [ada] }), taken, 1000, numbered());
+
+  // Both say what they count on. A device can make them hours before
+  // the server hears of them, and the post can have gone out by then:
+  // then neither is carried out, and the post goes out once.
+  expect(made).toEqual([
+    ["post.delete", { id: one.post.id, ifScheduled: true }],
+    ["post.create", { id: "new-1", partId: "new-2", text: "Scheduled" }],
+    ["target.add", { id: "new-3", postId: "new-1", channelId: ada.id }],
+    ["post.schedule", { id: "new-1", dueAt: 5000, ifGone: one.post.id }],
+  ]);
 });
 
-it("has no time to offer for a queue that is paused or has no slots", () => {
-  expect(nextQueueTime({ ...weekly, paused: true }, [], 0)).toBeNull();
-  expect(nextQueueTime({ ...weekly, slots: [] }, [], 0)).toBeNull();
+it("puts a post of the queue that Undo brings back where it was, only if the post is gone", () => {
+  const ada = channel();
+  const [a, b] = [0, 1].map((queuePosition) =>
+    scheduledPost(`Post ${queuePosition}`, ada.id, {
+      mode: "queue",
+      dueAt: 1000 + queuePosition,
+      queuePosition,
+    }),
+  );
+  if (!a || !b) throw new Error("Two posts");
+  const taken = takePost(
+    tablesOf({ channel: [ada], ...tablesWith(a, b) }),
+    b.post.id,
+  );
+  if (!taken) throw new Error("The post is there");
+  const { made, mutate } = recorded();
+
+  const back = bringBack(
+    mutate,
+    tablesOf({ channel: [ada], ...tablesWith(a) }),
+    taken,
+    1000,
+    numbered(),
+  );
+
+  expect(back).toEqual({ as: "scheduled", id: "new-1" });
+  expect(made.slice(-2)).toEqual([
+    ["post.enqueue", { id: "new-1", first: false, ifGone: b.post.id }],
+    ["post.move", { id: "new-1", afterId: a.post.id }],
+  ]);
+});
+
+it("brings nothing back while the post is there: the server did not delete it", () => {
+  const ada = channel();
+  const one = scheduledPost("Scheduled", ada.id, { dueAt: 5000 });
+  const tables = tablesOf({ channel: [ada], ...tablesWith(one) });
+  const taken = takePost(tables, one.post.id);
+  if (!taken) throw new Error("The post is there");
+  const { made, mutate } = recorded();
+
+  // The delete was refused, and the post is in the copy again, on its
+  // way by now: a copy of it would go out as well.
+  const sending = tablesOf({
+    channel: [ada],
+    ...tablesWith({ ...one, post: { ...one.post, status: "sending" } }),
+  });
+  const back = bringBack(mutate, sending, taken, 1000, numbered());
+
+  expect(back).toEqual({ as: "there", id: one.post.id });
+  expect(made).toEqual([]);
+});
+
+it("brings a post back as a draft when its time has passed or no account of it is left", () => {
+  const ada = channel();
+  const one = scheduledPost("Scheduled", ada.id, { dueAt: 5000 });
+  const taken = takePost(
+    tablesOf({ channel: [ada], ...tablesWith(one) }),
+    one.post.id,
+  );
+  if (!taken) throw new Error("The post is there");
+
+  const late = recorded();
+  expect(
+    bringBack(
+      late.mutate,
+      tablesOf({ channel: [ada] }),
+      taken,
+      5000,
+      numbered(),
+    ),
+  ).toEqual({ as: "draft", id: "new-1" });
+  expect(late.made.map(([name]) => name)).toEqual([
+    "post.create",
+    "target.add",
+  ]);
+  // The account was disconnected meanwhile.
+  const alone = recorded();
+  expect(
+    bringBack(alone.mutate, tablesOf({}), taken, 1000, numbered()),
+  ).toEqual({ as: "draft", id: "new-1" });
+  expect(alone.made.map(([name]) => name)).toEqual(["post.create"]);
 });
 
 it("says when a post is due on the clocks of the zone, as somebody there would", () => {
@@ -279,6 +489,17 @@ it("says when a post is due on the clocks of the zone, as somebody there would",
   expect(say("2026-01-12T08:00:00Z")).toBe("Mon 12 Jan, 09:00");
   // With the year where it is another one.
   expect(say("2027-01-12T08:00:00Z")).toBe("Tue, 12 Jan 2027, 09:00");
+});
+
+it("says a time in the middle of a sentence without making its names and its AM small", () => {
+  const now = at("2026-11-22T10:00:00Z");
+  const say = (time: string) => whenDue(at(time), now, "UTC", "en-US", true);
+
+  // Only the word for the day begins small.
+  expect(say("2026-11-22T17:00:00Z")).toBe("today, 05:00 PM");
+  expect(say("2026-11-23T05:00:00Z")).toBe("tomorrow, 05:00 AM");
+  // A name stays a name: this is what the Queue screen shows.
+  expect(say("2026-11-24T09:00:00Z")).toBe("Tue, Nov 24, 09:00 AM");
 });
 
 it("names weekdays, times of day and months", () => {

@@ -50,6 +50,7 @@ import {
   useShortcuts,
   withMod,
 } from "@/lib/keyboard";
+import { goTo, paletteFilter } from "@/lib/palette";
 import { selectSchedule } from "@/lib/queue";
 import { useReloadToUpdate, useUpdateOffer } from "@/lib/reload-to-update";
 import {
@@ -147,7 +148,7 @@ export function CommandPalette({ children }: { children: ReactNode }) {
         title="Commands"
         description="Search for something to do or a screen to go to."
       >
-        <Command>
+        <Command filter={paletteFilter}>
           <CommandInput placeholder="Type a command or search…" />
           <CommandList>
             <CommandEmpty>Nothing found.</CommandEmpty>
@@ -287,7 +288,7 @@ export function CommandPalette({ children }: { children: ReactNode }) {
                 .map(({ to, label, icon: Icon }) => (
                   <CommandItem
                     key={to}
-                    value={`Go to ${label}`}
+                    value={goTo(label)}
                     onSelect={run(() => void navigate({ to }))}
                   >
                     <Icon aria-hidden="true" />

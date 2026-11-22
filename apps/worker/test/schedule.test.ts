@@ -4,6 +4,7 @@ import { feed } from "@pigy/simulators/world";
 import { expect, it, vi } from "vitest";
 import { deliveryWatchMs } from "../src/workspace/object.ts";
 import { WorkspaceStore } from "../src/workspace/store.ts";
+import { device } from "./app-client.ts";
 import { connectBlueskyLive } from "./channels.ts";
 import { clock } from "./clock.ts";
 import { type Browser, expectErrors } from "./helpers.ts";
@@ -670,6 +671,60 @@ it("says once that a due post could not be taken up, and leaves it to the alarm"
   await alarm(workspace);
   expect(said()).toHaveLength(1);
   expect(postOf(client, postId).status).toBe("scheduled");
+});
+
+it("publishes a post once when its delete and the Undo of that reach the server after its time", async () => {
+  const { test, browser, workspace, channel, client, posts } = await ready();
+  const app = device(browser, workspace);
+  const phone = await app.online();
+  const dueAt = now() + 2 * minute;
+  const { postId } = await schedule(client, workspace, "Once", dueAt, channel);
+  await vi.waitFor(() =>
+    expect(phone.store.getView().post.get(postId)?.status).toBe("scheduled"),
+  );
+
+  // Two minutes before the time, without a connection: the phone deletes
+  // the post, and Undo brings it back. What the app makes of the two:
+  // a delete of a scheduled post, and a copy that is scheduled for the
+  // same time in the place of the post that is gone.
+  phone.connection.stop();
+  phone.store.mutate("post.delete", { id: postId, ifScheduled: true });
+  const copy = newId();
+  phone.store.mutate("post.create", {
+    id: copy,
+    partId: newId(),
+    text: "Once",
+  });
+  phone.store.mutate("target.add", {
+    id: newId(),
+    postId: copy,
+    channelId: channel,
+  });
+  phone.store.mutate("post.schedule", { id: copy, dueAt, ifGone: postId });
+  // The phone shows what it did: the post gone, its copy scheduled.
+  expect(phone.store.getView().post.has(postId)).toBe(false);
+  expect(phone.store.getView().post.get(copy)?.status).toBe("scheduled");
+
+  // The app is opened again twenty minutes after the time, with a
+  // connection, and sends what the phone kept. The server has not heard
+  // of the delete, and takes the post up before anything of the phone's:
+  // twenty minutes late, which is sent.
+  test.advance(22 * minute);
+  const back = await app.online();
+
+  const later = await watching(browser, workspace);
+  expect(await settled(later, postId)).toMatchObject({ status: "sent" });
+  // The delete came too late, and so the copy is not scheduled, which
+  // would have been twenty minutes late too, and sent: the post went out
+  // once. The copy is a draft, and the phone is told why.
+  expect(
+    back.store.getRejections().map(({ name, code }) => [name, code]),
+  ).toEqual([
+    ["post.delete", "not_scheduled"],
+    ["post.schedule", "not_gone"],
+  ]);
+  expect(postOf(later, copy).status).toBe("draft");
+  expect(posts()).toEqual(["Once"]);
 });
 
 it("takes up a post that is due before a mutation that would move it, without waiting for the alarm", async () => {

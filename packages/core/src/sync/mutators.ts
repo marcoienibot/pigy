@@ -422,6 +422,31 @@ function toDraft(tx: Transaction, post: Row<"post">, closeUp = true): void {
   if (queued && closeUp) requeue(tx);
 }
 
+/** Deletes the post `id` with everything that is its own. */
+function deletePost(tx: Transaction, id: string): void {
+  // What refers to something goes before it: a result cannot be without
+  // its target and its part, a part that is written for a target not
+  // without that target, and none of them without the post.
+  const targets = tx.find("post_target", "postId", id);
+  for (const target of targets) {
+    for (const result of tx.find("target_part_result", "targetId", target.id)) {
+      tx.delete("target_part_result", result.id);
+    }
+  }
+  for (const part of tx.find("post_part", "postId", id)) {
+    tx.delete("post_part", part.id);
+  }
+  for (const target of targets) tx.delete("post_target", target.id);
+  // What the inbox says of the post, which is under the ID of the post.
+  if (tx.get("notification", id)?.postId === id) {
+    tx.delete("notification", id);
+  }
+  const post = tx.get("post", id);
+  tx.delete("post", id);
+  // The queue closes up behind a post that was in it.
+  if (post && inQueue(post)) requeue(tx);
+}
+
 /**
  * Refuses to schedule `post` if the workspace has as many scheduled posts
  * as it can have, the queue included. Not for a post that is scheduled
@@ -449,7 +474,7 @@ function gone(tx: Transaction, ifGone: string | undefined): void {
   if (ifGone !== undefined && tx.get("post", ifGone)) {
     throw new MutationRejected(
       "not_gone",
-      "The post that this one stands in for was not deleted",
+      "The post that was deleted had gone out by then, so what was brought back stays a draft",
     );
   }
 }
@@ -818,40 +843,31 @@ export const mutators = {
    * A post that is being sent stays until all its targets have ended.
    * Deleted in the middle, it would leave posts on the networks that pigy
    * knows nothing of.
+   *
+   * With `ifScheduled` only a post that is scheduled is deleted, and one
+   * that has gone out is not: that is what somebody means who deletes a
+   * post on the Queue screen, where it has not gone out, on a device
+   * that may not have heard that it has.
    */
-  "post.delete": mutator(z.strictObject({ id: idSchema }), (tx, { id }) => {
-    if (tx.get("post", id)?.status === "sending") {
-      throw new MutationRejected(
-        "sending",
-        "A post cannot be deleted while it is being sent",
-      );
-    }
-    // What refers to something goes before it: a result cannot be without
-    // its target and its part, a part that is written for a target not
-    // without that target, and none of them without the post.
-    const targets = tx.find("post_target", "postId", id);
-    for (const target of targets) {
-      for (const result of tx.find(
-        "target_part_result",
-        "targetId",
-        target.id,
-      )) {
-        tx.delete("target_part_result", result.id);
+  "post.delete": mutator(
+    z.strictObject({ id: idSchema, ifScheduled: z.literal(true).optional() }),
+    (tx, { id, ifScheduled }) => {
+      const status = tx.get("post", id)?.status;
+      if (ifScheduled && status !== undefined && status !== "scheduled") {
+        throw new MutationRejected(
+          "not_scheduled",
+          "This post has gone out already",
+        );
       }
-    }
-    for (const part of tx.find("post_part", "postId", id)) {
-      tx.delete("post_part", part.id);
-    }
-    for (const target of targets) tx.delete("post_target", target.id);
-    // What the inbox says of the post, which is under the ID of the post.
-    if (tx.get("notification", id)?.postId === id) {
-      tx.delete("notification", id);
-    }
-    const post = tx.get("post", id);
-    tx.delete("post", id);
-    // The queue closes up behind a post that was in it.
-    if (post && inQueue(post)) requeue(tx);
-  }),
+      if (status === "sending") {
+        throw new MutationRejected(
+          "sending",
+          "A post cannot be deleted while it is being sent",
+        );
+      }
+      deletePost(tx, id);
+    },
+  ),
 
   /**
    * Chooses a channel for a draft to go to. Does nothing if the draft goes

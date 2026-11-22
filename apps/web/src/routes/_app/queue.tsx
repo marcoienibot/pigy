@@ -4,7 +4,7 @@ import { Page } from "@/components/page";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { useShortcuts } from "@/lib/keyboard";
-import { selectSchedule } from "@/lib/queue";
+import { selectSchedule, zoneNote } from "@/lib/queue";
 import { cn } from "@/lib/utils";
 import { useMutate, useSynced } from "@/sync/react";
 
@@ -25,7 +25,12 @@ const sectionLink = cn(
  * device, and on the server when it has reached it.
  */
 function Queue() {
-  const { paused } = useSynced(selectSchedule);
+  const schedule = useSynced(selectSchedule);
+  const { paused } = schedule;
+  // The times of the list and of the calendar are on the clocks of the
+  // workspace. Where those are not the clocks of this device, both say
+  // whose they are.
+  const zone = zoneNote(schedule);
   const mutate = useMutate();
   const toggle = () => mutate("queue.setPaused", { paused: !paused });
 
@@ -77,6 +82,19 @@ function Queue() {
               Resume
             </Button>
           </div>
+        )}
+        {zone && (
+          <p className="mb-3 text-xs text-muted-foreground">
+            {zone}{" "}
+            {schedule.zone === "none" && (
+              <Link
+                to="/settings/schedule"
+                className="font-medium text-foreground underline underline-offset-4"
+              >
+                Set a time zone
+              </Link>
+            )}
+          </p>
         )}
         <Outlet />
       </div>

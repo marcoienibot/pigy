@@ -52,9 +52,15 @@ function PostingSchedule() {
   const tablesNow = useSyncedNow();
   const id = useId();
   const device = deviceTimeZone();
+  // The zone that the workspace has, also one that this device does not
+  // know, or the one that it takes from this device with its first slot.
+  // None for a workspace that has slots and no zone: the server refused
+  // the zone of the device that they were added on.
+  const chosen =
+    schedule.zoneName ?? (schedule.zone === "device" ? device : null);
   const zones = useMemo(
-    () => zonesWith(schedule.timeZone, device),
-    [schedule.timeZone, device],
+    () => zonesWith(...(chosen === null ? [] : [chosen]), device),
+    [chosen, device],
   );
   const days = slotsByDay(schedule.slots);
 
@@ -71,18 +77,36 @@ function PostingSchedule() {
         <NativeSelect
           aria-labelledby={`${id}-zone`}
           className="mt-3 w-full max-w-xs"
-          value={schedule.timeZone}
+          value={chosen ?? ""}
           onChange={(event) =>
             mutate("settings.setTimeZone", { timeZone: event.target.value })
           }
         >
+          {chosen === null && (
+            <NativeSelectOption value="" disabled>
+              None yet: UTC
+            </NativeSelectOption>
+          )}
           {zones.map((zone) => (
             <NativeSelectOption key={zone} value={zone}>
               {zoneLabel(zone)}
             </NativeSelectOption>
           ))}
         </NativeSelect>
-        {schedule.timeZone !== device && (
+        {schedule.zone === "none" && (
+          <p role="status" className="mt-2 text-xs text-muted-foreground">
+            This workspace has no time zone yet, so its posting times are in
+            UTC. Choose the zone that they are meant in.
+          </p>
+        )}
+        {schedule.zone === "unknown" && (
+          <p role="status" className="mt-2 text-xs text-muted-foreground">
+            This device does not know {zoneLabel(schedule.zoneName ?? "")}, so
+            it shows the times of this workspace in UTC. pigy posts by{" "}
+            {zoneLabel(schedule.zoneName ?? "")} all the same.
+          </p>
+        )}
+        {chosen !== device && (
           <p className="mt-2 text-xs text-muted-foreground">
             This device is in {zoneLabel(device)}.{" "}
             <button

@@ -43,13 +43,7 @@ import {
   ownTextsOf,
   selectOwnTexts,
 } from "@/lib/publish";
-import {
-  claimTimeZone,
-  nextQueueTime,
-  selectQueue,
-  selectSchedule,
-  whenDue,
-} from "@/lib/queue";
+import { claimTimeZone, selectSchedule, whenDue } from "@/lib/queue";
 import { cn } from "@/lib/utils";
 import { useMutate, useSynced, useSyncedNow, useSyncState } from "@/sync/react";
 
@@ -224,7 +218,7 @@ export function PublishPanel({
     claimTimeZone(mutate, tablesNow());
     mutate("post.schedule", { id: draft.id, dueAt });
     queueNotice(
-      `Scheduled for ${whenDue(dueAt, Date.now(), schedule.timeZone).toLowerCase()}`,
+      `Scheduled for ${whenDue(dueAt, Date.now(), schedule.timeZone, undefined, true)}`,
       offline
         ? "The post is scheduled on this device, and on the server once pigy can reach it."
         : undefined,
@@ -234,15 +228,16 @@ export function PublishPanel({
 
   const enqueue = (first: boolean) => {
     if (blocked) return;
-    // What the mutator will give it, read before it does.
-    const now = Date.now();
-    const time = nextQueueTime(schedule, selectQueue(tablesNow()), now, first);
     claimTimeZone(mutate, tablesNow());
     mutate("post.enqueue", { id: draft.id, first });
+    // What the mutator gave it: the change is in the local copy at once,
+    // and with it the zone that the workspace may just have taken.
+    const tables = tablesNow();
+    const time = tables.post.get(draft.id)?.dueAt ?? null;
     const where = first ? "Next in the queue" : "Added to the queue";
     if (time !== null) {
       queueNotice(
-        `${where}: ${whenDue(time, now, schedule.timeZone).toLowerCase()}`,
+        `${where}: ${whenDue(time, Date.now(), selectSchedule(tables).timeZone, undefined, true)}`,
       );
     } else if (schedule.paused) {
       queueNotice(where, "The queue is paused: nothing of it goes out.");
@@ -475,7 +470,7 @@ export function PublishPanel({
         open={scheduling}
         onOpenChange={setScheduling}
         title="Schedule this post"
-        timeZone={schedule.timeZone}
+        schedule={schedule}
         onSchedule={scheduleFor}
       />
     </section>

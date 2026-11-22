@@ -13,7 +13,7 @@ import {
   TriangleAlert,
   Undo2,
 } from "lucide-react";
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Avatar } from "@/components/avatar";
 import { EmptyState } from "@/components/page";
@@ -34,7 +34,9 @@ import { undoMs } from "@/lib/notices";
 import {
   bringBack,
   claimTimeZone,
-  movesOf,
+  deleteScheduled,
+  type Moves,
+  movesIn,
   type QueueItem,
   type Schedule,
   selectQueue,
@@ -71,6 +73,8 @@ function QueueList() {
   const list = useRef<HTMLUListElement>(null);
   /** The post that is given another time, while the dialog asks for it. */
   const [rescheduling, setRescheduling] = useState<QueueItem | null>(null);
+  // Where each post of the queue can move, worked out once for the list.
+  const moves = useMemo(() => movesIn(items), [items]);
 
   const rows = () => [
     ...(list.current?.querySelectorAll<HTMLElement>("[data-post]") ?? []),
@@ -121,24 +125,31 @@ function QueueList() {
   const remove = (item: QueueItem) => {
     // What the post is, read before it goes.
     const taken = takePost(tablesNow(), item.id);
-    mutate("post.delete", { id: item.id });
+    deleteScheduled(mutate, item.id);
     if (!taken) return;
     toast("Scheduled post deleted", {
       duration: undoMs,
       action: {
         label: "Undo",
         onClick: () => {
-          const { scheduled } = bringBack(
-            mutate,
-            tablesNow(),
-            taken,
-            Date.now(),
-            () => uuidv7(new Date()),
+          const back = bringBack(mutate, tablesNow(), taken, Date.now(), () =>
+            uuidv7(new Date()),
           );
-          if (!scheduled) {
+          if (back.as === "draft") {
             toast("Brought back as a draft", {
               description:
                 "Its time has passed, or its accounts are no longer connected.",
+            });
+          } else if (back.as === "there") {
+            // The server did not delete it: it was on its way by then. A
+            // copy of it would go out as well.
+            toast("Nothing to undo: the post was not deleted", {
+              description: "It had gone out before the delete reached pigy.",
+              action: {
+                label: "View",
+                onClick: () =>
+                  void navigate({ to: "/sent", search: { post: back.id } }),
+              },
             });
           }
         },
@@ -236,7 +247,7 @@ function QueueList() {
             item={item}
             schedule={schedule}
             now={now}
-            moves={movesOf(items, item.id)}
+            moves={moves.get(item.id) ?? {}}
             onEdit={() => edit(item)}
             onReschedule={() => setRescheduling(item)}
             onSendNow={() => sendNow(item)}
@@ -263,7 +274,7 @@ function QueueList() {
           if (!open) setRescheduling(null);
         }}
         title="Schedule for another time"
-        timeZone={schedule.timeZone}
+        schedule={schedule}
         initial={rescheduling?.dueAt ?? null}
         onSchedule={(dueAt) => {
           if (!rescheduling) return;
@@ -297,7 +308,7 @@ function QueueRow({
   item: QueueItem;
   schedule: Schedule;
   now: number;
-  moves: ReturnType<typeof movesOf>;
+  moves: Moves;
   onEdit: () => void;
   onReschedule: () => void;
   onSendNow: () => void;
@@ -417,9 +428,9 @@ function QueueRow({
               />
               <span>
                 It was due{" "}
-                {whenDue(item.dueAt, now, schedule.timeZone).toLowerCase()}, and
-                pigy could not send it within an hour of that. It waits for you:
-                send it now, give it another time, or take it back.
+                {whenDue(item.dueAt, now, schedule.timeZone, undefined, true)},
+                and pigy could not send it within an hour of that. It waits for
+                you: send it now, give it another time, or take it back.
               </span>
             </p>
             <div className="flex gap-2">

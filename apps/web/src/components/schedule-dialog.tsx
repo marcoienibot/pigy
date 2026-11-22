@@ -9,11 +9,20 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { suggestedTime, timeFromInput, timeToInput } from "@/lib/queue";
+import {
+  fieldZone,
+  type Schedule,
+  suggestedTime,
+  timeFromInput,
+  timeToInput,
+} from "@/lib/queue";
 
 /**
  * Asks for the time at which a post goes out: a date and a time on the
- * clocks of the time zone of the workspace, which the dialog names. The
+ * clocks of the zone that `schedule` reads times in, which the dialog
+ * names. That is the time zone of the workspace, unless this device
+ * cannot compute with it or the workspace has none: then it is UTC, and
+ * the dialog says that and why. The
  * field is the browser's own for a date and a time, which a phone shows
  * as its wheels and a keyboard can type into.
  *
@@ -24,7 +33,7 @@ export function ScheduleDialog({
   open,
   onOpenChange,
   title,
-  timeZone,
+  schedule,
   initial,
   onSchedule,
 }: {
@@ -32,7 +41,7 @@ export function ScheduleDialog({
   onOpenChange: (open: boolean) => void;
   /** What the dialog is called: "Schedule this post". */
   title: string;
-  timeZone: string;
+  schedule: Schedule;
   /** The time that the post has now, to begin with, if it has one. */
   initial?: number | null;
   onSchedule: (time: number) => void;
@@ -45,7 +54,7 @@ export function ScheduleDialog({
         {open && (
           <ScheduleForm
             title={title}
-            timeZone={timeZone}
+            schedule={schedule}
             initial={initial ?? null}
             onCancel={() => onOpenChange(false)}
             onSchedule={(time) => {
@@ -61,18 +70,19 @@ export function ScheduleDialog({
 
 function ScheduleForm({
   title,
-  timeZone,
+  schedule,
   initial,
   onCancel,
   onSchedule,
 }: {
   title: string;
-  timeZone: string;
+  schedule: Schedule;
   initial: number | null;
   onCancel: () => void;
   onSchedule: (time: number) => void;
 }) {
   const id = useId();
+  const { timeZone } = schedule;
   const [value, setValue] = useState(() => {
     const now = Date.now();
     // A time that has passed is nothing to begin with.
@@ -124,7 +134,7 @@ function ScheduleForm({
           }}
         />
         <p id={`${id}-zone`} className="text-xs text-muted-foreground">
-          In the time zone of this workspace, {timeZone.replaceAll("_", " ")}.
+          {fieldZone(schedule)}
         </p>
         <p
           id={`${id}-problem`}

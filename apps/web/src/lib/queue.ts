@@ -2,20 +2,20 @@ import {
   addDays,
   defaultSettings,
   defaultTimeZone,
+  isTimeZone,
   type LocalDate,
   localTimeAt,
   type MutatorArgs,
   type MutatorName,
   ownParts,
-  ownTextMutations,
   partsFor,
   type Row,
   settingsId,
-  slotTimes,
   type Tables,
   timeOf,
 } from "@pigy/core";
 import { type Channel, selectChannels } from "@/lib/channels";
+import { restoreOwnText } from "@/lib/drafts";
 
 /**
  * What the Queue screen, the calendar and the posting schedule show: the
@@ -32,13 +32,30 @@ export type Slot = Row<"schedule_slot">;
 /** The posting schedule of a workspace. */
 export type Schedule = {
   /**
-   * The time zone that the slots are in, and that times are shown in:
-   * the one that the workspace has set, or until it has one, the zone of
-   * this device, which is the one that it will get: `claimTimeZone`.
+   * The time zone that this device reads and shows the times of the
+   * workspace in. It is one that the device can compute with, which is
+   * not always the one that the workspace has: `zone` says which it is.
    */
   timeZone: string;
-  /** The workspace has a zone: somebody, or the app for them, has set it. */
-  zoneSet: boolean;
+  /**
+   * What `timeZone` is:
+   *
+   * - `set`: the zone that the workspace has set.
+   * - `unknown`: UTC, because this device does not know the zone that
+   *   the workspace has set, `zoneName`: another device set it, with
+   *   newer time zone data. The server computes with that zone. This
+   *   device cannot, so it says its times in UTC, and says so.
+   * - `device`: the zone of this device. The workspace has none, and
+   *   nothing that goes by one: it takes this one with its first slot
+   *   or scheduled post, `claimTimeZone`.
+   * - `none`: UTC. The workspace has no zone although it has slots or
+   *   scheduled posts: the server did not take the zone of the device
+   *   that they were made on. Until somebody sets one, the server
+   *   computes in UTC, and so does the app.
+   */
+  zone: "set" | "unknown" | "device" | "none";
+  /** The zone that the workspace has set, or null if it has none. */
+  zoneName: string | null;
   /** The queue is paused. */
   paused: boolean;
   /** The slots, Monday first, each day in the order of its times. */
@@ -62,9 +79,19 @@ export function selectSchedule(
   device = deviceTimeZone(),
 ): Schedule {
   const settings = tables.settings.get(settingsId) ?? defaultSettings;
+  const zoneName = settings.timeZone;
+  let zone: Schedule["zone"];
+  if (zoneName !== null) zone = isTimeZone(zoneName) ? "set" : "unknown";
+  else zone = goesByZone(tables) ? "none" : "device";
   return {
-    timeZone: settings.timeZone ?? device,
-    zoneSet: settings.timeZone !== null,
+    timeZone:
+      zone === "set" && zoneName !== null
+        ? zoneName
+        : zone === "device"
+          ? device
+          : defaultTimeZone,
+    zone,
+    zoneName,
     paused: settings.queuePaused,
     slots: [...tables.schedule_slot.values()].sort(
       (a, b) =>
@@ -73,6 +100,54 @@ export function selectSchedule(
         (a.id < b.id ? -1 : 1),
     ),
   };
+}
+
+/** Whether the workspace has something that goes by its time zone. */
+function goesByZone(tables: Tables): boolean {
+  if (tables.schedule_slot.size > 0) return true;
+  for (const post of tables.post.values()) {
+    if (post.status === "scheduled") return true;
+  }
+  return false;
+}
+
+const zoneLabel = (zone: string) => zone.replaceAll("_", " ");
+
+/**
+ * What a screen that shows times says about the zone that they are in,
+ * or null where there is nothing to say: they are in the zone of the
+ * workspace, and that is the zone of this device, `device`.
+ */
+export function zoneNote(
+  { timeZone, zone, zoneName }: Schedule,
+  device = deviceTimeZone(),
+): string | null {
+  switch (zone) {
+    case "unknown":
+      return `Times are in UTC: this device does not know ${zoneLabel(zoneName ?? "")}, the time zone of this workspace.`;
+    case "none":
+      return "Times are in UTC until this workspace has a time zone.";
+    case "set":
+      return timeZone === device
+        ? null
+        : `Times are in ${zoneLabel(timeZone)}, the time zone of this workspace.`;
+    case "device":
+      return null;
+  }
+}
+
+/** What the field for a date and a time says about the zone it is read in. */
+export function fieldZone({ timeZone, zone, zoneName }: Schedule): string {
+  switch (zone) {
+    case "unknown":
+      return `In UTC: this device does not know ${zoneLabel(zoneName ?? "")}, the time zone of this workspace.`;
+    case "none":
+      return "In UTC: this workspace has no time zone yet.";
+    case "set":
+      return `In the time zone of this workspace, ${zoneLabel(timeZone)}.`;
+    case "device":
+      return `In the time zone of this device, ${zoneLabel(timeZone)}, which this workspace takes as its own.`;
+  }
 }
 
 /** `mutate` of `@/sync/react`, as the functions here take it. */
@@ -88,13 +163,20 @@ type Mutate = <Name extends MutatorName>(
  * that it was first scheduled on, and what that device showed is what
  * the server computes. A workspace that has a zone keeps it, also when
  * another device gave it one in the meantime: the mutation says so.
+ *
+ * Only for a workspace that has nothing yet which goes by a zone. One
+ * that has slots or scheduled posts and no zone was claimed before, and
+ * the server refused: it does not know the zone of the device. The claim
+ * is not made again with everything that is scheduled, to be refused
+ * again with a notice each time: the screens say that the times are in
+ * UTC, and the posting schedule is where somebody chooses a zone.
  */
 export function claimTimeZone(
   mutate: Mutate,
   tables: Tables,
   device = deviceTimeZone(),
 ): void {
-  if (tables.settings.get(settingsId)?.timeZone) return;
+  if (selectSchedule(tables, device).zone !== "device") return;
   mutate("settings.setTimeZone", { timeZone: device, onlyIfUnset: true });
 }
 
@@ -129,7 +211,11 @@ export type QueueItem = {
    * waits for somebody to say what becomes of it.
    */
   held: boolean;
-  /** Its place in the queue, from 0, or null for a post that is not in it. */
+  /**
+   * Its place in the queue, counted from 0, or null for a post that is
+   * not in it. Not the number that its row has, which only says the
+   * order and can leave numbers out.
+   */
   position: number | null;
   /** The first line that has something in it. */
   title: string;
@@ -171,6 +257,18 @@ export function selectQueue(tables: Tables): QueueItem[] {
     goesTo.set(target.postId, of);
   }
 
+  // The places of the queue, counted: the rows only say the order.
+  const places = new Map(
+    [...scheduled.values()]
+      .filter((post) => post.mode === "queue")
+      .sort(
+        (a, b) =>
+          (a.queuePosition ?? 0) - (b.queuePosition ?? 0) ||
+          (a.id < b.id ? -1 : 1),
+      )
+      .map((post, place) => [post.id, place]),
+  );
+
   const items = [...scheduled.values()].map((post): QueueItem => {
     const all = parts.get(post.id) ?? [];
     let lines = linesOf(ownParts(all));
@@ -182,7 +280,7 @@ export function selectQueue(tables: Tables): QueueItem[] {
       mode: post.mode === "queue" ? "queue" : "custom",
       dueAt: post.dueAt,
       held: post.heldAt !== null,
-      position: post.mode === "queue" ? post.queuePosition : null,
+      position: post.mode === "queue" ? (places.get(post.id) ?? null) : null,
       title: lines[0] ?? "",
       snippet: lines.slice(1).join(" ").slice(0, snippetLength),
       parts: ownParts(all).length,
@@ -212,54 +310,34 @@ export function inQueueOrder(items: readonly QueueItem[]): QueueItem[] {
     .sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
 }
 
-/**
- * Where a post of the queue can be moved: what `post.move` is to name as
- * the post to go after, for each way to move it, or undefined where it
- * cannot go that way. `null` names the front.
- */
-export function movesOf(
-  items: readonly QueueItem[],
-  id: string,
-): { up?: string | null; down?: string; top?: null } {
-  const queue = inQueueOrder(items);
-  const index = queue.findIndex((item) => item.id === id);
-  if (index < 0) return {};
-  const below = queue[index + 1];
-  return {
-    ...(index > 0 && {
-      // After the post two before it, which is before the one above.
-      up: queue[index - 2]?.id ?? null,
-      top: null,
-    }),
-    ...(below && { down: below.id }),
-  };
-}
+/** Where a post of the queue can be moved: see `movesIn`. */
+export type Moves = { up?: string | null; down?: string; top?: null };
 
 /**
- * When a post that is added to the queue now would go out, or shared
- * next with `first`: the slot that it would get, as the mutator will
- * give it. Null if the queue has no time to give: it is paused, or has
- * no slots.
+ * Where each post of the queue can be moved: what `post.move` is to name
+ * as the post to go after, for each way to move it, or undefined where it
+ * cannot go that way. `null` names the front. For all posts at once: the
+ * order of the queue is worked out once for a list, not once for each of
+ * its rows.
  */
-export function nextQueueTime(
-  schedule: Schedule,
-  items: readonly QueueItem[],
-  now: number,
-  first = false,
-): number | null {
-  if (schedule.paused) return null;
-  // The posts that are before it take a slot each, unless their time has
-  // come: those are as good as gone.
-  const before = first
-    ? 0
-    : inQueueOrder(items).filter(({ dueAt }) => dueAt === null || dueAt > now)
-        .length;
-  let skipped = 0;
-  for (const time of slotTimes(schedule.timeZone, schedule.slots, now)) {
-    if (skipped === before) return time;
-    skipped += 1;
-  }
-  return null;
+export function movesIn(items: readonly QueueItem[]): Map<string, Moves> {
+  const queue = inQueueOrder(items);
+  return new Map(
+    queue.map((item, index) => {
+      const below = queue[index + 1];
+      return [
+        item.id,
+        {
+          ...(index > 0 && {
+            // After the post two before it, which is before the one above.
+            up: queue[index - 2]?.id ?? null,
+            top: null,
+          }),
+          ...(below && { down: below.id }),
+        },
+      ];
+    }),
+  );
 }
 
 // How times are said. Each takes the locale, which the app leaves to the
@@ -306,20 +384,25 @@ export function clockTime(time: number, zone: string, locale?: string): string {
 /**
  * When `time` is, on the clocks of `zone`, as somebody at `now` says it:
  * "Today, 09:00", "Tomorrow, 09:00", "Mon 12 Jan, 09:00", with the year
- * where it is not this one.
+ * where it is not this one. `inSentence` is for the middle of a
+ * sentence, where the day begins small, "today, 09:00", and everything
+ * else is written as it is: the name of a day or a month, AM and PM.
  */
 export function whenDue(
   time: number,
   now: number,
   zone: string,
   locale?: string,
+  inSentence = false,
 ): string {
   const day = localTimeAt(zone, time);
   const today = localTimeAt(zone, now);
   const clock = clockTime(time, zone, locale);
-  if (dayKey(day) === dayKey(today)) return `Today, ${clock}`;
-  if (dayKey(day) === dayKey(addDays(today, 1))) return `Tomorrow, ${clock}`;
-  if (dayKey(day) === dayKey(addDays(today, -1))) return `Yesterday, ${clock}`;
+  const near = (word: string) =>
+    `${inSentence ? word.toLowerCase() : word}, ${clock}`;
+  if (dayKey(day) === dayKey(today)) return near("Today");
+  if (dayKey(day) === dayKey(addDays(today, 1))) return near("Tomorrow");
+  if (dayKey(day) === dayKey(addDays(today, -1))) return near("Yesterday");
   const date = format(locale, zone, {
     weekday: "short",
     day: "numeric",
@@ -543,6 +626,8 @@ export function dayName(
 
 /** What a scheduled post was, for the Undo of its deletion. */
 export type TakenPost = {
+  /** The ID that it had. */
+  id: string;
   /** The texts of its parts, in order. */
   texts: string[];
   /** Where it went, each account with the text that was written for it. */
@@ -566,6 +651,7 @@ export function takePost(tables: Tables, id: string): TakenPost | undefined {
   const queue = inQueueOrder(selectQueue(tables));
   const place = queue.findIndex((item) => item.id === id);
   return {
+    id,
     texts: ownParts(parts).map(({ text }) => text),
     targets: targets.map((target) => {
       const own = partsFor(parts, target.id);
@@ -584,12 +670,43 @@ export function takePost(tables: Tables, id: string): TakenPost | undefined {
 }
 
 /**
+ * Deletes the scheduled post `id`, and only a scheduled one: a device
+ * that has not heard that the post went out must not delete it from the
+ * Sent screen of every other, and `bringBack` counts on the post being
+ * there then.
+ */
+export function deleteScheduled(mutate: Mutate, id: string): void {
+  mutate("post.delete", { id, ifScheduled: true });
+}
+
+/** What came of bringing a deleted post back. */
+export type BroughtBack =
+  /** A new post, scheduled as the deleted one was. */
+  | { as: "scheduled"; id: string }
+  /**
+   * A new post that is a draft: no account of it is left, or its time
+   * has passed.
+   */
+  | { as: "draft"; id: string }
+  /**
+   * Nothing: the post is there. The server did not delete it, because it
+   * was on its way or had gone out by then.
+   */
+  | { as: "there"; id: string };
+
+/**
  * Brings a scheduled post that was deleted back: a post that is deleted
  * is gone for every device, so this is a new one with the same text,
  * which goes to the same accounts, those that are still connected, and
- * at the same time or to the same place in the queue. Returns the ID of
- * the new post, and whether it is scheduled again: not if no account of
- * it is left, or its time has passed. It is a draft then.
+ * at the same time or to the same place in the queue.
+ *
+ * The post must not go out twice, once as itself and once as its copy.
+ * So nothing is brought back while the post is there, which it is again
+ * when the server has refused to delete it. And the copy is scheduled
+ * only if the post is gone, `ifGone` of the mutators: a device can press
+ * Undo before it has heard what the server made of the delete, and
+ * without a connection it hears nothing for hours. If the post went out
+ * meanwhile, the copy stays a draft, and the person is told.
  */
 export function bringBack(
   mutate: Mutate,
@@ -597,7 +714,8 @@ export function bringBack(
   taken: TakenPost,
   now: number,
   newId: () => string,
-): { id: string; scheduled: boolean } {
+): BroughtBack {
+  if (tables.post.has(taken.id)) return { as: "there", id: taken.id };
   const id = newId();
   const [first = "", ...more] = taken.texts;
   let last = newId();
@@ -618,18 +736,19 @@ export function bringBack(
     if (!tables.channel.has(channelId)) continue;
     chosen += 1;
     mutate("target.add", { id: newId(), postId: id, channelId });
-    if (!own) continue;
-    for (const mutation of ownTextMutations(id, channelId, own, newId)) {
-      if (mutation.name === "target.customize") {
-        mutate(mutation.name, mutation.args);
-      } else {
-        mutate(mutation.name, mutation.args);
-      }
+    if (own) {
+      restoreOwnText(
+        mutate,
+        id,
+        channelId,
+        own.map((text) => ({ text })),
+        newId,
+      );
     }
   }
-  if (chosen === 0) return { id, scheduled: false };
+  if (chosen === 0) return { as: "draft", id };
   if (taken.when.mode === "queue") {
-    mutate("post.enqueue", { id, first: false });
+    mutate("post.enqueue", { id, first: false, ifGone: taken.id });
     // Back to where it was, if the post before it is still in the queue.
     const { afterId } = taken.when;
     if (
@@ -638,10 +757,10 @@ export function bringBack(
     ) {
       mutate("post.move", { id, afterId });
     }
-    return { id, scheduled: true };
+    return { as: "scheduled", id };
   }
   const { dueAt } = taken.when;
-  if (dueAt === null || dueAt <= now) return { id, scheduled: false };
-  mutate("post.schedule", { id, dueAt });
-  return { id, scheduled: true };
+  if (dueAt === null || dueAt <= now) return { as: "draft", id };
+  mutate("post.schedule", { id, dueAt, ifGone: taken.id });
+  return { as: "scheduled", id };
 }

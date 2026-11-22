@@ -224,6 +224,41 @@ it("schedules a post in the place of one that was deleted only if that one is go
   expect(postOf(workspace, other).mode).toBe("queue");
 });
 
+it("deletes a post only while it is scheduled where the delete says so", () => {
+  const workspace = scheduled();
+  const [waits = "", went = "", other = ""] = [1, 2, 3].map((n) =>
+    draft(workspace, n),
+  );
+  workspace.mutate("post.schedule", { id: waits, dueAt: start + 1000 }, start);
+  workspace.mutate("post.schedule", { id: went, dueAt: start + 1000 }, start);
+  workspace.mutate("post.due", { id: went }, start + 1000, "server");
+  // The delivery of the second has ended: it is sent, and could be
+  // deleted from the Sent screen.
+  const [target] = workspace
+    .rows("post_target")
+    .filter(({ postId }) => postId === went);
+  if (!target) throw new Error("The post has a target");
+  workspace.put("post_target", { ...target, status: "sent" });
+  workspace.put("post", { ...postOf(workspace, went), status: "sent" });
+
+  // From the Queue screen of a device that has not heard of that, the
+  // delete is for a post that has not gone out, and for no other.
+  expect(
+    rejectionOf(() =>
+      workspace.mutate("post.delete", { id: went, ifScheduled: true }),
+    ),
+  ).toBe("not_scheduled");
+  expect(
+    rejectionOf(() =>
+      workspace.mutate("post.delete", { id: other, ifScheduled: true }),
+    ),
+  ).toBe("not_scheduled");
+  workspace.mutate("post.delete", { id: waits, ifScheduled: true });
+  expect(workspace.rows("post").map(({ id }) => id)).toEqual([went, other]);
+  // A post that is gone already is no error: two devices can delete it.
+  workspace.mutate("post.delete", { id: waits, ifScheduled: true });
+});
+
 it("schedules no more posts than a workspace can have", () => {
   const workspace = scheduled();
   const [has = "", post = ""] = [1, 2].map((n) => draft(workspace, n));
