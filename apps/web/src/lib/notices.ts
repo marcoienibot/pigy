@@ -45,3 +45,12 @@ export function dismissWorkspaceNotices(): void {
     if (!onScreen.has(id)) ofPerson.delete(id);
   }
 }
+
+/**
+ * How long a notice that offers to take something back stays, in
+ * milliseconds: a deleted draft, a removed part, an account that was left
+ * out with its text. Longer than a notice that only says something: this
+ * one has to be noticed, read and reached. Its time is its own, too: a
+ * notice that comes later does not give an earlier one more.
+ */
+export const undoMs = 10_000;

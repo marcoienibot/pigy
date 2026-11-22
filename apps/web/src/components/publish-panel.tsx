@@ -1,20 +1,22 @@
 import { uuidv7 } from "@pigy/core";
 import { Link, useNavigate, useRouteContext } from "@tanstack/react-router";
 import { Check, Info, PenLine, Send, TriangleAlert } from "lucide-react";
-import { useId } from "react";
+import { useId, useRef } from "react";
 import { toast } from "sonner";
 import { Avatar } from "@/components/avatar";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
-import type { Draft } from "@/lib/drafts";
+import { type Draft, restoreOwnText } from "@/lib/drafts";
 import {
   dialogIsOpen,
   isBusy,
   modKey,
+  takeFocus,
   useKeyDown,
   withMod,
 } from "@/lib/keyboard";
 import { connectableNetworks, networkInfo } from "@/lib/networks";
+import { undoMs } from "@/lib/notices";
 import {
   audienceOf,
   blockedReason,
@@ -62,6 +64,8 @@ export function PublishPanel({
   const id = useId();
   const noteId = (channelId: string) => `${id}-${channelId}`;
   const [network] = connectableNetworks;
+  /** The choices of this draft, to find the button of one of them in. */
+  const chips = useRef<HTMLDivElement>(null);
 
   const toggle = ({ channel, chosen }: Choice) => {
     if (!chosen) {
@@ -82,6 +86,7 @@ export function PublishPanel({
     // One press must not cost a text that somebody wrote. The notice is
     // of this workspace, and leaves with it.
     toast(`${channel.handle} left out, and its own text with it`, {
+      duration: undoMs,
       action: {
         label: "Undo",
         onClick: () => {
@@ -99,11 +104,18 @@ export function PublishPanel({
             postId: draft.id,
             channelId: channel.id,
           });
-          mutate("target.customize", {
-            postId: draft.id,
-            channelId: channel.id,
-            parts: own.map(({ text }) => ({ id: uuidv7(new Date()), text })),
-          });
+          // All of the text, also where it has grown longer than one
+          // step carries.
+          restoreOwnText(mutate, draft.id, channel.id, own);
+          // The notice leaves the page with the press, and the keyboard
+          // would be left on the page, where its keys are shortcuts: it
+          // goes back to the choice that was taken back, if the draft is
+          // still the one that is open.
+          takeFocus(
+            chips.current?.querySelector<HTMLElement>(
+              `[data-channel="${channel.id}"]`,
+            ),
+          );
         },
       },
     });
@@ -184,7 +196,7 @@ export function PublishPanel({
           <legend className="mb-1.5 text-xs text-muted-foreground">
             Publish to
           </legend>
-          <div className="flex flex-wrap items-center gap-1.5">
+          <div ref={chips} className="flex flex-wrap items-center gap-1.5">
             {choices.map((choice) => (
               <ChannelChip
                 key={choice.channel.id}
@@ -294,6 +306,7 @@ function ChannelChip({
   return (
     <button
       type="button"
+      data-channel={channel.id}
       aria-pressed={chosen}
       aria-describedby={describedBy}
       disabled={needsReconnect && !chosen}

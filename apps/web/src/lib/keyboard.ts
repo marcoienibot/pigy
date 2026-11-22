@@ -75,3 +75,16 @@ export function useKeyDown(handle: (event: KeyboardEvent) => void): void {
     return () => document.removeEventListener("keydown", onKey);
   }, []);
 }
+
+/**
+ * Gives `element` the keyboard, also from a notice. The notice library
+ * hands the keyboard back to whatever had it before a notice was reached,
+ * in the moment in which the notice loses it: so the first call can end
+ * with the keyboard there, and not where it was sent. The second takes it
+ * from there, when no notice has it any more.
+ */
+export function takeFocus(element: HTMLElement | null | undefined): void {
+  if (!element) return;
+  element.focus();
+  if (document.activeElement !== element) element.focus();
+}

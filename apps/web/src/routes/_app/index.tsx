@@ -30,7 +30,9 @@ import {
 import { type Channel, selectChannels, selectNoChannels } from "@/lib/channels";
 import {
   type Draft,
+  focusWhenOpened,
   type Part,
+  restoreOwnText,
   selectDrafts,
   takeFocusOnOpen,
   threadLabel,
@@ -39,11 +41,13 @@ import {
 import {
   isBusy,
   modKey,
+  takeFocus,
   useKeyDown,
   useShortcuts,
   withMod,
 } from "@/lib/keyboard";
 import { connectableNetworks } from "@/lib/networks";
+import { undoMs } from "@/lib/notices";
 import {
   compose,
   type Gauge,
@@ -78,40 +82,15 @@ export const Route = createFileRoute("/_app/")({
 });
 
 /**
- * How long the notice of a deleted draft offers to bring it back, in
- * milliseconds. Longer than a notice that only says something: this one has
- * to be noticed, read and reached. Its time is its own, too: a notice that
- * comes later does not give an earlier one more.
- */
-const undoMs = 10_000;
-
-/**
  * What went with a draft that was deleted: the channels that it was to go
  * to, each with the text that was written for it, if one was.
  */
 type Went = { channelId: string; own: readonly Part[] | null }[];
 
 /**
- * Gives the account `channelId` of the draft `postId` a text of its own
- * that begins as `parts`. Returns false, and does nothing, for a text
- * that is longer than one such step carries.
+ * Whether `parts` can become the text of one account in one step, which
+ * is how "Customize" begins one: `target.customize` carries no more.
  */
-function giveOwnText(
-  mutate: ReturnType<typeof useMutate>,
-  postId: string,
-  channelId: string,
-  parts: readonly { text: string }[],
-): boolean {
-  if (!fitsOwnText(parts)) return false;
-  mutate("target.customize", {
-    postId,
-    channelId,
-    parts: parts.map(({ text }) => ({ id: uuidv7(new Date()), text })),
-  });
-  return true;
-}
-
-/** Whether `parts` can become the text of one account in one step. */
 function fitsOwnText(parts: readonly { text: string }[]): boolean {
   return (
     parts.reduce((length, { text }) => length + text.length, 0) <=
@@ -178,7 +157,13 @@ function Drafts() {
     );
   };
 
-  const restore = (draft: Draft, went: Went, notice: string | number) => {
+  const restore = (
+    draft: Draft,
+    went: Went,
+    notice: string | number,
+    /** Asked for with the button of the notice, and not with the keys. */
+    fromNotice = false,
+  ) => {
     forget(notice);
     toast.dismiss(notice);
     // A post that is deleted is gone for every device, so what comes back
@@ -205,9 +190,15 @@ function Drafts() {
       // would refuse the choice, and take it back with a notice.
       if (!connected.has(channelId)) continue;
       mutate("target.add", { id: uuidv7(new Date()), postId: id, channelId });
-      // With the text that was written for it, if it had one.
-      if (own) giveOwnText(mutate, id, channelId, own);
+      // With the text that was written for it, if it had one: all of
+      // it, also where it has grown longer than one step carries.
+      if (own) restoreOwnText(mutate, id, channelId, own);
     }
+    // The notice that was pressed leaves the page, and the keyboard with
+    // it: it goes into the text of the draft, and not to the page, where
+    // the next ⌫ would delete the draft again. The keys leave the
+    // keyboard where it is.
+    if (fromNotice) focusWhenOpened(id);
     show(id);
   };
 
@@ -236,14 +227,14 @@ function Drafts() {
     );
     mutate("post.delete", { id: draft.id });
     // Nothing to bring back of a draft without text.
-    if (draft.empty && own.size === 0) return;
+    if (draft.empty) return;
     const notice: string | number = toast("Draft deleted", {
       duration: undoMs,
       // Its own draft, also when others were deleted after it and their
       // notices are on screen next to this one.
       action: {
         label: "Undo",
-        onClick: () => restore(draft, went, notice),
+        onClick: () => restore(draft, went, notice, true),
       },
       onDismiss: () => forget(notice),
       onAutoClose: () => forget(notice),
@@ -664,7 +655,7 @@ function Editor({
       return;
     }
     awaited.current = null;
-    field.focus();
+    takeFocus(field);
     const caret = at === "start" ? 0 : field.value.length;
     field.setSelectionRange(caret, caret);
   };
@@ -677,7 +668,11 @@ function Editor({
 
   // The person has asked for this draft to write in it.
   useEffect(() => {
-    if (takeFocusOnOpen(draft.id)) ref.current?.focus();
+    if (!takeFocusOnOpen(draft.id)) return;
+    // At the end of the text, to go on writing, where the draft has any.
+    const field = ref.current;
+    takeFocus(field);
+    field?.setSelectionRange(field.value.length, field.value.length);
   }, [draft.id, ref]);
 
   /** Shows the post's text, or the one of the account `channelId`. */
@@ -735,8 +730,12 @@ function Editor({
             // the end if that one is gone too.
             const text = textOf(part);
             if (!text || text.length >= maxParts) return;
+            const id = uuidv7(new Date());
+            // The notice leaves the page with the press: the keyboard
+            // goes to the part that is back.
+            focus(id, "end");
             mutate("part.add", {
-              id: uuidv7(new Date()),
+              id,
               postId: draft.id,
               channelId,
               afterId: before?.id ?? null,
@@ -792,9 +791,23 @@ function Editor({
   );
 
   const customize = (channel: Channel) => {
-    if (!giveOwnText(mutate, draft.id, channel.id, draft.parts)) return;
-    // The text is there with the next render, and shown then.
+    if (!fitsOwnText(draft.parts)) return;
+    const parts = draft.parts.map(({ text }) => ({
+      id: uuidv7(new Date()),
+      text,
+    }));
+    mutate("target.customize", {
+      postId: draft.id,
+      channelId: channel.id,
+      parts,
+    });
+    // The text is there with the next render, and shown then. The button
+    // that was pressed is gone by then, and the keyboard would be left on
+    // the page, where its keys open and delete drafts: it goes into the
+    // first part of the new text.
     setShown(channel.id);
+    const [first] = parts;
+    if (first) awaited.current = { id: first.id, at: "end" };
   };
 
   const followPost = (channel: Channel) => {
@@ -1077,6 +1090,12 @@ const PartField = memo(function PartField({
           selection.current = [selectionStart, selectionEnd];
         }}
         onKeyDown={(event) => {
+          // A key that composes a character is the input method's: ↓ and
+          // ↑ go through its candidates, ⌫ and Escape take back what it
+          // holds, Enter takes a candidate. None of them is for the
+          // thread. Safari says 229 for the key that ends a composition,
+          // after it has said that the composition is over.
+          if (event.nativeEvent.isComposing || event.keyCode === 229) return;
           const { selectionStart, selectionEnd, value } = event.currentTarget;
           const plain =
             !event.shiftKey &&
