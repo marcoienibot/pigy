@@ -11,6 +11,7 @@ import {
   invite,
   locationOf,
   me,
+  saidBy,
   setup,
   signedIn,
   signIn,
@@ -75,7 +76,7 @@ it("ignores and reports the entries of ADMIN_EMAILS that are not email addresses
     '"first@example.com; second@example.com"',
     '"Third <third@example.com>"',
   ]) {
-    expect(error).toHaveBeenCalledWith(expect.stringContaining(entry));
+    expect(saidBy(error)).toContainEqual(expect.stringContaining(entry));
   }
   // Only those entries are logged, not the variable as a whole.
   expect(JSON.stringify(error.mock.calls)).not.toContain("fourth@example.com");

@@ -27,7 +27,7 @@ import {
 import { fetchLinkCard } from "@pigy/providers/card";
 import { openCredentials, sealCredentials } from "../channels/credentials.ts";
 import type { AppDependencies, Bindings } from "../env.ts";
-import { loggable } from "../errors.ts";
+import { type LogContext, log } from "../log.ts";
 import { blueskyKeysWithoutRequest } from "../network/bluesky-client.ts";
 import type { providerOf } from "../network/providers.ts";
 import type { Reach } from "../network/reach.ts";
@@ -320,6 +320,7 @@ function failureOf(
   error: unknown,
   now: Date,
   connection: number | null,
+  where: LogContext,
 ): Failure {
   if (error instanceof Ended) return error.failure;
   if (error instanceof ProviderError) {
@@ -350,7 +351,11 @@ function failureOf(
   if (error instanceof VaultError) {
     // Its message holds no secret. The credentials were sealed with a key
     // that is gone: a new connection stores new ones.
-    console.warn(`The credentials of a channel did not open: ${error.message}`);
+    log.warn(
+      "delivery",
+      `The credentials of a channel did not open: ${error.message}`,
+      where,
+    );
     return {
       kind: "reconnect",
       message:
@@ -358,7 +363,7 @@ function failureOf(
       connection,
     };
   }
-  console.error("A step of a delivery failed", loggable(error));
+  log.error("delivery", "A step of a delivery failed", where, error);
   return { kind: "bug" };
 }
 
@@ -408,6 +413,9 @@ export async function deliver(
   step: WorkflowStep,
 ): Promise<void> {
   const run = { targetId, attempt };
+  // What a line of the log says of this run. The step is added where one
+  // is known.
+  const where: LogContext = { workspaceId: workspace.id, targetId };
   /**
    * What names a call of this run to the workspace, which carries a call
    * out once per key: a step that is run again repeats its call, and a
@@ -566,9 +574,11 @@ export async function deliver(
           // the old credentials. It goes on with what it has, which may
           // be the last that anybody gets out of this access, and the
           // log says what was lost, without anything of it.
-          console.error(
+          log.error(
+            "delivery",
             "The renewed credentials of a channel were not stored",
-            loggable(error),
+            { ...where, channelId: channel.id },
+            error,
           );
           return renewed.credentials;
         }
@@ -607,7 +617,12 @@ export async function deliver(
           return { value: await body() };
         } catch (error) {
           if (error instanceof Unasked) throw error;
-          return { failure: failureOf(error, now(), connection) };
+          return {
+            failure: failureOf(error, now(), connection, {
+              ...where,
+              step: stepName,
+            }),
+          };
         }
       };
       // What a try returns is plain JSON: a `Prepared` or the progress of
@@ -794,6 +809,7 @@ export async function deliver(
         links,
         (link) => fetchLinkCard(reach.fetch, link),
         deadline,
+        { ...where, step: "cards" },
       ),
     }));
     // What a step returned is read like everything that was stored.
@@ -917,8 +933,10 @@ export async function deliver(
     );
     // Refused if the delivery was ended otherwise in the meantime.
     if (!outcome.ok && outcome.code !== "not_current") {
-      console.error(
+      log.error(
+        "delivery",
         `The end of a delivery was not recorded: ${outcome.message}`,
+        { ...where, step: "end" },
       );
     }
     return outcome.ok;

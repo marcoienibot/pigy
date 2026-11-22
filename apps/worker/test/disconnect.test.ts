@@ -20,6 +20,7 @@ import {
   expectErrors,
   expectWarnings,
   invite,
+  saidBy,
   setup,
   signedIn,
   type TestSetup,
@@ -165,9 +166,9 @@ it("removes a channel whose access the network does not take back", async () => 
   expect(revoked).toBe(false);
   expect(await channelsOf(browser, workspaces.live)).toEqual([]);
   expect(await storedAccess(workspaces.live)).toEqual([]);
-  expect(warnings).toHaveBeenCalledExactlyOnceWith(
+  expect(saidBy(warnings)).toEqual([
     "An access was not given back to its network: mastodon.test is having trouble (HTTP 503).",
-  );
+  ]);
   // The network was asked, and still has the token.
   expect(test.network.requests).toContain(
     "POST https://mastodon.test/oauth/revoke",

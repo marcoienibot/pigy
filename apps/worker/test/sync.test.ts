@@ -1671,7 +1671,7 @@ it("counts a mutation that fails on the server as processed, and keeps the reaso
   expect(client.table("post").map(({ id }) => id)).toEqual([short.id]);
   // What went wrong is for the logs, not for the client.
   expect(client.received.join("\n")).not.toContain("secret detail");
-  expect(String(logged.mock.calls[0]?.[1])).toContain("secret detail");
+  expect(String(logged.mock.calls[0]?.[0])).toContain("secret detail");
 });
 
 it.each([

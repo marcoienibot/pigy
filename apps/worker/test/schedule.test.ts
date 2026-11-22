@@ -24,7 +24,12 @@ import {
   connectThreadsLive,
 } from "./channels.ts";
 import { clock } from "./clock.ts";
-import { type Browser, expectErrors, vapidPrivateKey } from "./helpers.ts";
+import {
+  type Browser,
+  expectErrors,
+  saidBy,
+  vapidPrivateKey,
+} from "./helpers.ts";
 import {
   connectAccount,
   follow,
@@ -845,9 +850,7 @@ it("says once that a due post could not be taken up, and leaves it to the alarm"
   );
 
   const said = () =>
-    errors.mock.calls.filter(([message]) =>
-      String(message).includes("was not taken up"),
-    );
+    saidBy(errors).filter((message) => message.includes("was not taken up"));
   expect(said()).toHaveLength(1);
   // The alarm tries again, and does not say it again.
   await alarm(workspace);
@@ -1054,9 +1057,8 @@ it("comes back for a due post that it could not take up, a minute later and not 
   await alarm(workspace);
 
   expect(taking).toHaveBeenCalledTimes(1);
-  expect(errors).toHaveBeenCalledWith(
+  expect(saidBy(errors)).toContain(
     "The scheduled posts of a workspace were not taken up",
-    expect.anything(),
   );
   expect(posts()).toEqual([]);
   // Not at once, which would be a loop for as long as it fails, and not

@@ -1,7 +1,13 @@
 import { errorResponseSchema } from "@pigy/core";
 import { expect, it, onTestFinished, vi } from "vitest";
 import { users } from "../src/db/schema.ts";
-import { locationOf, me, setup, signInThroughPages } from "./helpers.ts";
+import {
+  locationOf,
+  me,
+  saidBy,
+  setup,
+  signInThroughPages,
+} from "./helpers.ts";
 
 // Where `pnpm dev` serves the app. The simulated Google answers only when
 // the app is reached on the machine it runs on.
@@ -137,7 +143,7 @@ it("refuses to sign anybody in without Google credentials and without a simulate
   expect(simulatedPage.status).toBe(404);
   expect(browser.cookies.size).toBe(0);
   // Whoever deployed it finds the reason in the logs.
-  expect(error).toHaveBeenCalledWith(
+  expect(saidBy(error)).toContainEqual(
     expect.stringContaining("GOOGLE_CLIENT_ID"),
   );
 });

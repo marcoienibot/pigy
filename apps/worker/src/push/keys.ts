@@ -1,6 +1,7 @@
 import { fromBase64Url, toBase64Url } from "@pigy/core";
 import { isLocal } from "../auth/config.ts";
 import type { Bindings } from "../env.ts";
+import { log } from "../log.ts";
 import type { VapidKey } from "./web-push.ts";
 
 /**
@@ -104,7 +105,8 @@ export async function vapidKeyOf(
   try {
     return await parseVapidKey(configured);
   } catch (error) {
-    console.error(
+    log.error(
+      "configuration",
       `No push message can be sent: ${error instanceof Error ? error.message : "VAPID_PRIVATE_KEY is not valid"}.`,
     );
     return undefined;

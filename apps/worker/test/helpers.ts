@@ -586,13 +586,63 @@ export function expectErrors() {
   return error;
 }
 
+/** A line of the log, read back: src/log.ts writes them. */
+export type LogEntry = {
+  level: "warn" | "error";
+  kind: string;
+  message: string;
+  error?: { name: string; message: string; [field: string]: unknown };
+  [field: string]: unknown;
+};
+
+type Spied = { mock: { calls: unknown[][] } };
+
 /**
- * What a log holds of `entry`, as text. Of an error that is what a console
- * prints: its stack, which begins with its message, whatever else it
- * carries, and the same of the errors beneath it.
+ * What the app logged at the level that `spy` is on, line by line. What
+ * is no line of the app's log is left out: the runtime and the test
+ * runner write to the same console.
+ */
+export function entriesOf(spy: Spied): LogEntry[] {
+  return spy.mock.calls.flatMap(([line]) => {
+    try {
+      const entry: unknown = JSON.parse(String(line));
+      return typeof entry === "object" && entry !== null && "kind" in entry
+        ? [entry as LogEntry]
+        : [];
+    } catch {
+      return [];
+    }
+  });
+}
+
+/** The same, as what each line says in words. */
+export function saidBy(spy: Spied): string[] {
+  return entriesOf(spy).map(({ message }) => message);
+}
+
+/** Every text and number that `value`, read from a line of the log, holds. */
+function leaves(value: unknown): string[] {
+  if (typeof value !== "object" || value === null) return [String(value)];
+  return Object.values(value).flatMap(leaves);
+}
+
+/**
+ * What a log holds of `entry`, as text. Of a line of the app's log that is
+ * every text in it, as it was before JSON escaped it: the message, the
+ * fields, and of an error its message, its stack and the same of the
+ * errors beneath it. Of an error that was logged as it is, that is what a
+ * console prints: its stack, which begins with its message, whatever else
+ * it carries, and the same of the errors beneath it.
  */
 export function logged(entry: unknown): string {
   if (Array.isArray(entry)) return entry.map(logged).join("\n");
+  if (typeof entry === "string") {
+    try {
+      return leaves(JSON.parse(entry)).join("\n");
+    } catch {
+      return entry;
+    }
+  }
   if (!(entry instanceof Error)) {
     // A log prints what a plain object holds, an error among it.
     return typeof entry === "object" &&

@@ -19,7 +19,7 @@ import {
 } from "@pigy/core";
 import { drizzle } from "drizzle-orm/d1";
 import type { Bindings } from "../env.ts";
-import { loggable } from "../errors.ts";
+import { type LogKind, log } from "../log.ts";
 import {
   deliveryInstanceId,
   lostTrackMessage,
@@ -562,17 +562,20 @@ export function workspaceObject(
         // The channels whose access this alarm turned to, or undefined
         // if it did not get to say: see `#nextLookIn`.
         let renewed: ReadonlySet<string> | undefined;
-        for (const [look, failed] of [
+        for (const [look, kind, failed] of [
           [
             () => this.#publishDue(),
+            "schedule",
             "The scheduled posts of a workspace were not taken up",
           ],
           [
             () => this.#watchDeliveries(),
+            "delivery",
             "The deliveries of a workspace were not looked after",
           ],
           [
             () => this.#startDeliveries(uncreated),
+            "delivery",
             "The deliveries of a workspace were not looked after",
           ],
           [
@@ -581,6 +584,7 @@ export function workspaceObject(
               unfinished = await this.#renewAccesses(turnedTo);
               renewed = turnedTo;
             },
+            "renewal",
             "The accesses of a workspace were not renewed",
           ],
           [
@@ -592,11 +596,13 @@ export function workspaceObject(
                 await this.#startDeliveries(uncreated);
               }
             },
+            "delivery",
             "The deliveries of a workspace were not looked after",
           ],
           [
             // Before the messages are sent: what these say is queued too.
             () => this.#keepInbox(),
+            "push",
             "The inbox of a workspace was not kept",
           ],
           [
@@ -605,13 +611,18 @@ export function workspaceObject(
             async () => {
               stoodAside = await this.#sendPushes();
             },
+            "push",
             "The push messages of a workspace were not sent",
           ],
-        ] as const) {
+        ] as const satisfies readonly (readonly [
+          () => unknown,
+          LogKind,
+          string,
+        ])[]) {
           try {
             await look();
           } catch (error) {
-            console.error(failed, loggable(error));
+            log.error(kind, failed, this.#store.where, error);
           }
         }
         // Nothing is awaited between the last look above and this one, so
@@ -634,9 +645,11 @@ export function workspaceObject(
         try {
           await set;
         } catch (error) {
-          console.error(
+          log.error(
+            "alarm",
             "The next look at a workspace was not set",
-            loggable(error),
+            this.#store.where,
+            error,
           );
           // Without its secrets: this goes into the log of the runtime.
           throw new Error("The next look at a workspace was not set");
@@ -901,9 +914,11 @@ export function workspaceObject(
               break;
           }
         } catch (error) {
-          console.error(
-            `What came of renewing the access of the channel ${channelId} was not stored`,
-            loggable(error),
+          log.error(
+            "renewal",
+            "What came of renewing the access of a channel was not stored",
+            { ...this.#store.where, channelId },
+            error,
           );
           // Not left due, or the alarm would come straight back to it.
           this.#store.postponeRenewal(
@@ -943,9 +958,11 @@ export function workspaceObject(
         this.#passStopped = false;
         this.#pushing = this.#pushPass()
           .catch((error: unknown) =>
-            console.error(
+            log.error(
+              "push",
               "The push messages of a workspace were not sent",
-              loggable(error),
+              this.#store.where,
+              error,
             ),
           )
           .finally(() => {
@@ -954,9 +971,11 @@ export function workspaceObject(
             // alarm waits for sets nothing: the end of the alarm does.
             if (this.#passStopped) {
               this.#setNextAlarm().catch((error: unknown) =>
-                console.error(
+                log.error(
+                  "alarm",
                   "The next look at a workspace was not set",
-                  loggable(error),
+                  this.#store.where,
+                  error,
                 ),
               );
             }
@@ -1072,9 +1091,11 @@ export function workspaceObject(
             }
           } catch (error) {
             failed.add(id);
-            console.error(
-              `The workflow of the delivery ${id} was not created`,
-              loggable(error),
+            log.error(
+              "delivery",
+              "The workflow of a delivery was not created",
+              { ...this.#store.where, targetId: run.targetId },
+              error,
             );
             continue;
           }
@@ -1099,9 +1120,11 @@ export function workspaceObject(
           // Nothing is known of this one, which the next look makes up
           // for. The others are looked at all the same: one of them may be
           // over, and its channel waits for it.
-          console.error(
-            `The workflow of the delivery ${this.#runId(run)} could not be asked how it is`,
-            loggable(error),
+          log.error(
+            "delivery",
+            "The workflow of a delivery could not be asked how it is",
+            { ...this.#store.where, targetId: run.targetId },
+            error,
           );
           continue;
         }
@@ -1120,8 +1143,10 @@ export function workspaceObject(
         // Refused if the workflow has ended the delivery after all, in the
         // moment that it took to ask: then nothing was wrong.
         if (ended.ok) {
-          console.error(
-            `The workflow of the delivery ${this.#runId(run)} ended without a word`,
+          log.error(
+            "delivery",
+            "The workflow of a delivery ended without a word",
+            { ...this.#store.where, targetId: run.targetId },
           );
         }
         this.#publish(from);
@@ -1170,7 +1195,7 @@ export function workspaceObject(
         // A bug or a failed write. Whatever the message asked for did not
         // happen, so the client is told to start over rather than left to
         // wait for an answer.
-        console.error("A sync message failed", error);
+        log.error("sync", "A sync message failed", this.#store.where, error);
         abandon(socket);
       }
     }
@@ -1351,7 +1376,12 @@ export function workspaceObject(
         patch = this.#store.changesSince(from);
       } catch (error) {
         // Nobody can be told what changed, so everybody may be behind.
-        console.error("The changes of a workspace were not sent", error);
+        log.error(
+          "sync",
+          "The changes of a workspace were not sent",
+          this.#store.where,
+          error,
+        );
         for (const socket of sockets) abandon(socket);
         return;
       }
@@ -1374,7 +1404,12 @@ export function workspaceObject(
             isOrigin ? origin.rejected : [],
           );
         } catch (error) {
-          console.error("The changes of a workspace were not sent", error);
+          log.error(
+            "sync",
+            "The changes of a workspace were not sent",
+            this.#store.where,
+            error,
+          );
           abandon(socket);
         }
       }
@@ -1406,9 +1441,11 @@ export function workspaceObject(
       // the deliveries and the accesses wait for the next change or the
       // next alarm.
       const failed = (error: unknown) =>
-        console.error(
+        log.error(
+          "alarm",
           "The next look at a workspace was not set",
-          loggable(error),
+          this.#store.where,
+          error,
         );
       try {
         // A push message that this change has queued is sent at once:

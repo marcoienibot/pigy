@@ -17,10 +17,12 @@ import {
 import { channelsOf, disconnected, storedAccess } from "./channels.ts";
 import {
   adminEmail,
+  entriesOf,
   expectErrors,
   expectWarnings,
   logged,
   realMastodonDomain,
+  saidBy,
   setup,
   signedIn,
 } from "./helpers.ts";
@@ -677,9 +679,12 @@ it("begins the deliveries to other accounts when the workflow of one cannot be c
     status: "sending",
     attempt: 1,
   });
-  expect(errors).toHaveBeenCalledWith(
-    `The workflow of the delivery ${await runIdOf(workspace, stuck)} was not created`,
-    expect.anything(),
+  expect(entriesOf(errors)).toContainEqual(
+    expect.objectContaining({
+      message: "The workflow of a delivery was not created",
+      workspaceId: workspace,
+      targetId: stuck,
+    }),
   );
 
   // The platform is back, and the object looks after its deliveries the
@@ -781,7 +786,7 @@ it("finds the workflow of a delivery that it had created before it could take no
   expect(await noted()).toEqual([{ attempt: 1, dispatched: 1 }]);
   // Nothing was logged but the failure that the test made: the second
   // look did not fail.
-  expect(errors.mock.calls.map(([message]) => message)).toEqual([
+  expect(saidBy(errors)).toEqual([
     "The deliveries of a workspace were not looked after",
   ]);
 
@@ -831,9 +836,13 @@ it("ends a delivery whose workflow the platform no longer knows", async () => {
     status: "uncertain",
     error: lostTrackMessage,
   });
-  expect(errors).toHaveBeenCalledWith(
-    `The workflow of the delivery ${runId} ended without a word`,
-  );
+  expect(entriesOf(errors)).toContainEqual({
+    level: "error",
+    kind: "delivery",
+    message: "The workflow of a delivery ended without a word",
+    workspaceId: workspace,
+    targetId,
+  });
 });
 
 it("ends a delivery whose workflow is over when it cannot ask about another", async () => {
@@ -892,9 +901,8 @@ it("ends a delivery whose workflow is over when it cannot ask about another", as
   // the channel is free. Read from the workspace, because a client that
   // waits for the change would wait for ever where it does not come.
   expect(await statuses()).toEqual(["sending", "uncertain"]);
-  expect(errors).toHaveBeenCalledWith(
-    expect.stringMatching(/could not be asked how it is$/),
-    expect.anything(),
+  expect(saidBy(errors)).toContain(
+    "The workflow of a delivery could not be asked how it is",
   );
 
   // Nothing is known of the other one until the next look, which ends it.

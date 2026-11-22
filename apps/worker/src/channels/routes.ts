@@ -24,7 +24,8 @@ import { type Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { authenticateWithCookie, requireUser } from "../auth/guards.ts";
 import type { AppDependencies, AppEnv } from "../env.ts";
-import { InvalidField, loggable, parseJsonBody } from "../errors.ts";
+import { InvalidField, parseJsonBody } from "../errors.ts";
+import { type LogContext, log } from "../log.ts";
 import { blueskyKeysFor } from "../network/bluesky-client.ts";
 import {
   cannotConnect,
@@ -324,7 +325,8 @@ function giveBack(
   access: StoredChannelAccess,
   context: ProviderContext,
 ): Promise<boolean> {
-  return givenBack(async () => {
+  const where = { workspaceId: workspace.id, network: access.network };
+  return givenBack(where, async () => {
     if (access.credentials === null) return false;
     const connection = providerOf(access.network, workspace, context);
     await connection.provider.disconnect(
@@ -348,19 +350,26 @@ function giveBack(
  * connection that never became a channel, or one that a later connection
  * of its account has replaced.
  */
-async function givenBack(attempt: () => Promise<boolean>): Promise<boolean> {
+async function givenBack(
+  where: LogContext,
+  attempt: () => Promise<boolean>,
+): Promise<boolean> {
   try {
     return await attempt();
   } catch (error) {
     if (error instanceof ProviderError || error instanceof VaultError) {
       // Their messages hold no secret.
-      console.warn(
+      log.warn(
+        "connection",
         `An access was not given back to its network: ${error.message}`,
+        where,
       );
     } else {
-      console.error(
+      log.error(
+        "connection",
         "An access was not given back to its network",
-        loggable(error),
+        where,
+        error,
       );
     }
     return false;
@@ -372,15 +381,28 @@ async function givenBack(attempt: () => Promise<boolean>): Promise<boolean> {
  * does not say. It never throws: the account is connected by now, and a
  * channel without limits gets them when something is published to it.
  */
-async function limitsOf(provider: Provider, credentials: Json) {
+async function limitsOf(
+  provider: Provider,
+  credentials: Json,
+  where: LogContext,
+) {
   try {
     return await provider.limits(credentials);
   } catch (error) {
     if (error instanceof ProviderError) {
       // Its message holds no secret.
-      console.warn(`The limits of an account were not read: ${error.message}`);
+      log.warn(
+        "connection",
+        `The limits of an account were not read: ${error.message}`,
+        where,
+      );
     } else {
-      console.error("The limits of an account were not read", loggable(error));
+      log.error(
+        "connection",
+        "The limits of an account were not read",
+        where,
+        error,
+      );
     }
     return null;
   }
@@ -418,6 +440,13 @@ export function connectCallbackRoutes(
     const network = networkSchema.safeParse(c.req.param("network")).data;
     // The workspace that the connection is for, once that is known.
     let workspaceId: string | undefined;
+    // What a line of the log says of this callback: the path names the
+    // network, and the query, which holds the code, is left out.
+    const where = (): LogContext => ({
+      route: `GET ${c.req.path}`,
+      ...(network && { network }),
+      ...(workspaceId && { workspaceId }),
+    });
     /** Sends the browser to the app, which shows how the connection ended. */
     const back = (connect: ConnectResult, channel?: string) => {
       const outcome = {
@@ -499,7 +528,7 @@ export function connectCallbackRoutes(
         const abandon = () => {
           if (!provider.accessPerConnection) return;
           givingBack.push(
-            givenBack(async () => {
+            givenBack(where(), async () => {
               await provider.disconnect(access.credentials);
               return true;
             }),
@@ -509,7 +538,7 @@ export function connectCallbackRoutes(
           const channel = {
             network,
             ...channelOf(account, access.expiresAt, connection.reach, now()),
-            limits: await limitsOf(provider, access.credentials),
+            limits: await limitsOf(provider, access.credentials, where()),
           };
           const sealed = {
             credentials: await sealCredentials(
@@ -540,9 +569,11 @@ export function connectCallbackRoutes(
           // that is gone, and needs connecting again when it is next used:
           // that is accepted.
           const stored = await store().catch((error: unknown) => {
-            console.error(
+            log.error(
+              "connection",
               "A channel was not stored at the first try",
-              loggable(error),
+              where(),
+              error,
             );
             return store();
           });
@@ -581,7 +612,11 @@ export function connectCallbackRoutes(
 
       const stored = await connecting;
       if (!stored.ok) {
-        console.error(`A channel was not stored: ${stored.message}`);
+        log.error(
+          "connection",
+          `A channel was not stored: ${stored.message}`,
+          where(),
+        );
         return back("failed");
       }
       return back("connected", stored.channelId);
@@ -594,11 +629,20 @@ export function connectCallbackRoutes(
       }
       if (error instanceof ProviderError || error instanceof VaultError) {
         // Their messages hold no secret.
-        console.warn(`A connection could not be finished: ${error.message}`);
+        log.warn(
+          "connection",
+          `A connection could not be finished: ${error.message}`,
+          where(),
+        );
       } else {
         // Without the values of a query that failed: the `state` of this
         // callback is one of them.
-        console.error("A connection could not be finished", loggable(error));
+        log.error(
+          "connection",
+          "A connection could not be finished",
+          where(),
+          error,
+        );
       }
       return back("failed");
     }

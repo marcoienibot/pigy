@@ -1,5 +1,5 @@
 import type { LinkCard } from "@pigy/core";
-import { loggable } from "../errors.ts";
+import { type LogContext, log } from "../log.ts";
 
 /**
  * What the step `cards` of the publishing workflow does: it reads the
@@ -68,6 +68,8 @@ export async function readCards(
   links: readonly (string | null)[],
   read: (link: string) => Promise<LinkCard | null>,
   deadline: Deadline,
+  /** What a line of the log says of the delivery that the cards are for. */
+  where: LogContext = {},
 ): Promise<(LinkCard | null)[]> {
   const cards: (LinkCard | null)[] = links.map(() => null);
   // The first of them, in the order of the parts.
@@ -86,7 +88,8 @@ export async function readCards(
       try {
         cards[taken.index] = await read(taken.link);
       } catch (error) {
-        console.error("The card of a link was not read", loggable(error));
+        // Not the link: an address is somebody's text.
+        log.error("delivery", "The card of a link was not read", where, error);
       }
     }
   };

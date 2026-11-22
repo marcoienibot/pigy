@@ -1,6 +1,6 @@
 import type { Clock, Fetch, PushMessage } from "@pigy/core";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
-import { loggable } from "../errors.ts";
+import { log } from "../log.ts";
 import {
   devicesOf,
   forget,
@@ -99,19 +99,22 @@ export async function pushToDevices(
       if (outcome.outcome === "sent") sent += 1;
       else if (outcome.outcome === "gone") gone.push(device.id);
       else if (outcome.outcome === "refused") {
-        console.error(
-          `The push service at ${host} did not take a message: it answered ${outcome.status}`,
-        );
+        log.error("push", "A push service did not take a message", {
+          host,
+          status: outcome.status,
+        });
       } else {
-        console.error(`The push service at ${host} did not answer`);
+        log.error("push", "A push service did not answer", { host });
       }
     } catch (error) {
       // A failure of pigy's own, or of whatever stands behind `fetch`.
       // Its message is logged and nothing else of it, and that without
       // what it may repeat of the subscription: an error can name the
       // address that a request was for.
-      console.error(
-        `A push message to ${host} failed: ${withoutSubscription(error, device)}`,
+      log.error(
+        "push",
+        `A push message failed: ${withoutSubscription(error, device)}`,
+        { host },
       );
     }
   };
@@ -130,9 +133,11 @@ export async function pushToDevices(
   try {
     await forget(db, gone);
   } catch (error) {
-    console.error(
+    log.error(
+      "push",
       "The push subscriptions that are gone were not deleted",
-      loggable(error),
+      {},
+      error,
     );
   }
   return sent;

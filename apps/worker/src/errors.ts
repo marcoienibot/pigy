@@ -1,9 +1,9 @@
 import type { ErrorName, ErrorResponse } from "@pigy/core";
-import { DrizzleQueryError } from "drizzle-orm";
 import type { Context, ErrorHandler, NotFoundHandler } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { z } from "zod";
+import { log } from "./log.ts";
 
 function errorName(status: number): ErrorName {
   if (status === 401 || status === 403) return "UnauthorizedError";
@@ -43,94 +43,23 @@ export const handleNotFound: NotFoundHandler = (c) =>
   );
 
 /**
- * `error` as it may be logged. A query that failed says so with the values
- * it was run with, as Drizzle reports it: in its message, in its stack and
- * as a property. Those are not for a log. Some are secrets, sealed or
- * hashed: a registration that was to be stored, the session that was looked
- * up, the `state` of a callback. What is logged in place of such an error
- * has the statement and the reason, without the values.
- *
- * The same goes for an error that has such a one beneath it: as its cause
- * or further down, among the errors that an `AggregateError` gathers, or
- * in a plain object or a list that is a cause. A log prints all of those.
- * It is logged as a copy that has the cleaned one in that place.
- *
- * What it cannot find is a message that somebody has made from the message
- * of such an error. Nothing in the app does that: an error is passed on as
- * a cause, never quoted.
- *
- * Every error that a route lets through is logged this way, below. Code
- * that catches an error which the database may have thrown, and logs it
- * itself, calls this.
- */
-export function loggable(error: unknown): unknown {
-  return cleaned(error, new WeakSet());
-}
-
-// What stands in a log where an error leads back to one that is being
-// cleaned already. Causes can go in a circle, and this runs where errors
-// are handled: it must come to an end, and it must not throw.
-const circular = "[circular]";
-
-function cleaned(value: unknown, onTheWay: WeakSet<object>): unknown {
-  if (typeof value !== "object" || value === null) return value;
-  if (onTheWay.has(value)) return circular;
-  onTheWay.add(value);
-  try {
-    if (Array.isArray(value)) return cleanedList(value, onTheWay);
-    if (value instanceof Error) return cleanedError(value, onTheWay);
-    // Anything else that is not a plain object is left as it is: what it
-    // holds is its own business, and a log does not look into it.
-    if (Object.getPrototypeOf(value) !== Object.prototype) return value;
-    const entries = Object.entries(value);
-    const clean = entries.map(([, held]) => cleaned(held, onTheWay));
-    return clean.every((held, index) => held === entries[index]?.[1])
-      ? value
-      : Object.fromEntries(entries.map(([key], index) => [key, clean[index]]));
-  } finally {
-    // Only what leads back to itself is a circle. The same error in two
-    // places is cleaned in both.
-    onTheWay.delete(value);
-  }
-}
-
-function cleanedList(list: unknown[], onTheWay: WeakSet<object>): unknown[] {
-  const clean = list.map((held) => cleaned(held, onTheWay));
-  return clean.every((held, index) => held === list[index]) ? list : clean;
-}
-
-function cleanedError(error: Error, onTheWay: WeakSet<object>): unknown {
-  const cause = cleaned(error.cause, onTheWay);
-  if (error instanceof DrizzleQueryError) {
-    return new Error(`Failed query: ${error.query}`, { cause });
-  }
-  const gathered =
-    error instanceof AggregateError
-      ? cleanedList(error.errors, onTheWay)
-      : undefined;
-  const same =
-    cause === error.cause &&
-    (!(error instanceof AggregateError) || gathered === error.errors);
-  if (same) return error;
-  const copy = gathered
-    ? new AggregateError(gathered, error.message, { cause })
-    : new Error(error.message, { cause });
-  copy.name = error.name;
-  // The stack of the copy says where the copy was made. What a log needs
-  // is where the error was thrown.
-  if (error.stack) copy.stack = error.stack;
-  return copy;
-}
-
-/**
  * Turns what a route throws into an error response. An `HTTPException` is a
  * route saying what went wrong, so its status and message go to the client.
  * Anything else is a bug: it goes to the logs, never to the client. What
- * goes to the logs goes through `loggable`.
+ * goes to the logs goes through `loggable`, which `log` sees to, and names
+ * the route by its method and its path: the query of an address can hold
+ * the code of a callback.
  */
 export const handleError: ErrorHandler = (error, c) => {
+  const failed = () =>
+    log.error(
+      "request",
+      "A request failed",
+      { route: `${c.req.method} ${c.req.path}` },
+      error,
+    );
   if (error instanceof HTTPException) {
-    if (error.status >= 500) console.error(loggable(error));
+    if (error.status >= 500) failed();
     const name = errorName(error.status);
     return c.json<ErrorResponse>(
       {
@@ -141,7 +70,7 @@ export const handleError: ErrorHandler = (error, c) => {
       error.status,
     );
   }
-  console.error(loggable(error));
+  failed();
   return c.json<ErrorResponse>(
     { error: "UnexpectedError", message: defaultMessages.UnexpectedError },
     500,

@@ -20,6 +20,7 @@ import {
 } from "./channels.ts";
 import {
   adminEmail,
+  entriesOf,
   expectErrors,
   invite,
   realMastodonDomain,
@@ -336,9 +337,12 @@ describe("what goes wrong inside a simulated world", () => {
     // A failure of pigy, to be heard of, and not a server to try again
     // later.
     expect(response.status).toBe(500);
-    expect(errors).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ message: "A simulator has a bug" }),
-    );
+    expect(entriesOf(errors)).toEqual([
+      expect.objectContaining({
+        kind: "request",
+        error: expect.objectContaining({ message: "A simulator has a bug" }),
+      }),
+    ]);
   });
 
   it("is not taken for a server that is out of reach when the world is somebody else's", async () => {
@@ -369,11 +373,14 @@ describe("what goes wrong inside a simulated world", () => {
       error: "UnexpectedError",
       message: "Something went wrong",
     });
-    expect(errors).toHaveBeenCalledExactlyOnceWith(
+    expect(entriesOf(errors)).toEqual([
       expect.objectContaining({
-        message: `The simulated world of workspace ${ofAdmin.sandbox} is another workspace's`,
+        kind: "request",
+        error: expect.objectContaining({
+          message: `The simulated world of workspace ${ofAdmin.sandbox} is another workspace's`,
+        }),
       }),
-    );
+    ]);
   });
 
   it("tells a host that the world does not have from an answer that got lost", async () => {

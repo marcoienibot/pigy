@@ -24,11 +24,13 @@ import {
   adminEmail,
   type Browser,
   breakDatabase,
+  entriesOf,
   expectErrors,
   expectWarnings,
   invite,
   logged,
   realMastodonDomain,
+  saidBy,
   setup,
   signedIn,
   urlOf,
@@ -114,7 +116,7 @@ it("connects an account whose limits cannot be read, without them", async () => 
   expect(await channelsOf(browser, workspaces.live)).toMatchObject([
     { status: "connected", limits: null, limitsCheckedAt: null },
   ]);
-  expect(warnings).toHaveBeenCalledWith(
+  expect(saidBy(warnings)).toContain(
     `The limits of an account were not read: ${realMastodonDomain} is having trouble (HTTP 503).`,
   );
 });
@@ -662,9 +664,19 @@ describe("the answer of a network", () => {
     });
     expect(await channelsOf(browser, workspaces.live)).toEqual([]);
     // Why, the address does not say: the log does.
-    expect(warnings).toHaveBeenCalledExactlyOnceWith(
-      "A connection could not be finished: mastodon.test is having trouble (HTTP 503). Connect the account again.",
-    );
+    expect(entriesOf(warnings)).toEqual([
+      {
+        level: "warn",
+        kind: "connection",
+        message:
+          "A connection could not be finished: mastodon.test is having trouble (HTTP 503). Connect the account again.",
+        // Where it happened, to search by. The path and not the address:
+        // the query of a callback holds its code.
+        route: "GET /connect/mastodon/callback",
+        network: "mastodon",
+        workspaceId: workspaces.live,
+      },
+    ]);
     // The code is spent, so the same answer cannot be tried again.
     expect(outcomeOf(await browser.fetch(callback)).connect).toBe("expired");
   });

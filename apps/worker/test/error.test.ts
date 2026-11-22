@@ -4,8 +4,9 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { expect, it, onTestFinished, vi } from "vitest";
-import { handleError, loggable } from "../src/errors.ts";
+import { handleError } from "../src/errors.ts";
 import app from "../src/index.ts";
+import { loggable } from "../src/log.ts";
 import { logged } from "./helpers.ts";
 
 /** Keeps an expected exception out of the test output. */
@@ -39,8 +40,22 @@ it("answers an exception with a JSON 500 that does not leak it", async () => {
   // Checked on the raw body, because parsing drops fields that are not in
   // the schema, such as a stack trace.
   expect(text).not.toContain("secret detail");
-  // The exception must still reach the logs, or nobody could debug a 500.
-  expect(log).toHaveBeenCalledWith(exception);
+  // The exception must still reach the logs, or nobody could debug a 500:
+  // as one line of JSON, with what failed and where it was thrown.
+  expect(log).toHaveBeenCalledOnce();
+  const line = String(log.mock.calls[0]?.[0]);
+  expect(line).not.toContain("\n");
+  expect(JSON.parse(line)).toEqual({
+    level: "error",
+    kind: "request",
+    message: "A request failed",
+    route: "GET /api/health",
+    error: {
+      name: "Error",
+      message: "secret detail",
+      stack: exception.stack,
+    },
+  });
 });
 
 // A query that failed, as Drizzle reports it: with the values that it was

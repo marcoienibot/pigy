@@ -1,5 +1,6 @@
 import { emailSchema, type Fetch } from "@pigy/core";
 import type { Bindings } from "../env.ts";
+import { log } from "../log.ts";
 
 /** How this deployment reaches Google. */
 export type GoogleConnection = {
@@ -54,7 +55,8 @@ function parseAdminEmails(value: string): Set<string> {
     if (email.success) {
       emails.add(email.data);
     } else {
-      console.error(
+      log.error(
+        "configuration",
         `ADMIN_EMAILS has an entry that is not an email address and is ignored: ${JSON.stringify(entry.trim())}`,
       );
     }

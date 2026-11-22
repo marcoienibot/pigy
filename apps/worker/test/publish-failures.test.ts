@@ -15,10 +15,12 @@ import { deployment } from "./clock.ts";
 import {
   credentialKey,
   credentialKeys,
+  entriesOf,
   expectErrors,
   expectWarnings,
   logged,
   realMastodonDomain,
+  saidBy,
 } from "./helpers.ts";
 import {
   connectAccount,
@@ -31,7 +33,6 @@ import {
   publishedOf,
   publishTo,
   retry,
-  runIdOf,
   runOf,
   started,
   targetOf,
@@ -428,9 +429,16 @@ it("takes a step that fails in a way of pigy's own for one whose outcome nobody 
   expect(context.texted()).toEqual(["Half done"]);
   expect(publishedOf(context.client, target.id, context.draft)).toEqual([]);
   // It is in the log, as the error that it was.
-  expect(errors).toHaveBeenCalledWith(
-    "A step of a delivery failed",
-    expect.objectContaining({ message: "A bug behind fetch" }),
+  expect(entriesOf(errors)).toContainEqual(
+    expect.objectContaining({
+      kind: "delivery",
+      message: "A step of a delivery failed",
+      // Which delivery, and where in it: the step that posts.
+      workspaceId: context.workspace,
+      targetId: target.id,
+      step: "publish-2",
+      error: expect.objectContaining({ message: "A bug behind fetch" }),
+    }),
   );
 
   // Tried again, the step looks before it posts, and finds the part.
@@ -606,8 +614,8 @@ it("goes on with renewed credentials that it could not store", async () => {
   expect(context.texted()).toEqual(["Not lost"]);
   // It gave up after as many tries as it has, and said so once.
   expect(
-    errors.mock.calls.filter(
-      ([message]) =>
+    saidBy(errors).filter(
+      (message) =>
         message === "The renewed credentials of a channel were not stored",
     ),
   ).toHaveLength(1);
@@ -701,9 +709,8 @@ it("runs a step again when the workspace cannot be asked what it holds in place 
   // The step did not go on with credentials that the channel does not
   // hold, and nothing was reported as lost: the step failed, and was run
   // again from its beginning.
-  expect(errors).not.toHaveBeenCalledWith(
+  expect(saidBy(errors)).not.toContain(
     "The renewed credentials of a channel were not stored",
-    expect.anything(),
   );
 });
 
@@ -817,7 +824,7 @@ it("fails a target, and asks for a new connection, when the credentials of its c
   });
   expect(context.client.table("channel")[0]?.status).toBe("needs_reconnect");
   // The log says why, without anything of the credentials.
-  expect(warnings).toHaveBeenCalledWith(
+  expect(saidBy(warnings)).toContain(
     "The credentials of a channel did not open: There is no key of version 1",
   );
   expect(context.texted()).toEqual([]);
@@ -914,9 +921,13 @@ it("ends a delivery whose workflow stopped without a word, so that the next one 
     error: lostTrackMessage,
   });
   expect(publishedOf(client, targetId, context.draft)).toHaveLength(1);
-  expect(errors).toHaveBeenCalledWith(
-    `The workflow of the delivery ${await runIdOf(workspace, targetId)} ended without a word`,
-  );
+  expect(entriesOf(errors)).toContainEqual({
+    level: "error",
+    kind: "delivery",
+    message: "The workflow of a delivery ended without a word",
+    workspaceId: workspace,
+    targetId,
+  });
   // The account is free again: the second post is on its way.
   await follow(client, () => targetOf(client, nextTarget).status === "sending");
 });

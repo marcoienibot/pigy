@@ -1,7 +1,7 @@
 import { ProviderError } from "@pigy/providers";
 import { openCredentials, sealCredentials } from "../channels/credentials.ts";
 import type { AppDependencies, Bindings } from "../env.ts";
-import { loggable } from "../errors.ts";
+import { log } from "../log.ts";
 import { blueskyKeysWithoutRequest } from "../network/bluesky-client.ts";
 import { cannotRenew, type providerOf } from "../network/providers.ts";
 import { VaultError, vaultWithoutRequest } from "../vault.ts";
@@ -93,7 +93,11 @@ export async function renewAccess(
     kind: "later",
     at: now().getTime() + milliseconds,
   });
-  const of = `the ${channel.network} channel ${channel.channelId}`;
+  const where = {
+    workspaceId: workspace.id,
+    channelId: channel.channelId,
+    network: channel.network,
+  };
   try {
     const vault = vaultWithoutRequest(env, developmentCredentialKeys);
     // Nothing opens without the keys, which only whoever runs this pigy
@@ -119,7 +123,11 @@ export async function renewAccess(
     // the secret is back.
     const missing = cannotRenew(channel.network, { blueskyClientKeys });
     if (missing) {
-      console.warn(`The access of ${of} was not renewed: ${missing}`);
+      log.warn(
+        "renewal",
+        `The access of a channel was not renewed: ${missing}`,
+        where,
+      );
       return later(renewalBrokenMs);
     }
 
@@ -132,11 +140,19 @@ export async function renewAccess(
       if (error instanceof VaultError) {
         // Sealed with a key that is gone: a new connection stores new
         // ones. Its message holds no secret.
-        console.warn(`The access of ${of} did not open: ${error.message}`);
+        log.warn(
+          "renewal",
+          `The access of a channel did not open: ${error.message}`,
+          where,
+        );
         return { kind: "lapsed" };
       }
       if (!(error instanceof ProviderError)) throw error;
-      console.warn(`The access of ${of} was not renewed: ${error.message}`);
+      log.warn(
+        "renewal",
+        `The access of a channel was not renewed: ${error.message}`,
+        where,
+      );
       switch (error.kind) {
         case "reconnect":
           return { kind: "lapsed" };
@@ -175,17 +191,34 @@ export async function renewAccess(
         try {
           await provider.disconnect(renewed.credentials);
         } catch (error) {
-          console.warn(
-            `A renewed access of ${of} that nothing holds was not given back`,
-            error instanceof ProviderError ? error.message : loggable(error),
-          );
+          // The message of a `ProviderError` holds no secret, and is all
+          // that is logged of one.
+          if (error instanceof ProviderError) {
+            log.warn(
+              "renewal",
+              `A renewed access that nothing holds was not given back: ${error.message}`,
+              where,
+            );
+          } else {
+            log.warn(
+              "renewal",
+              "A renewed access that nothing holds was not given back",
+              where,
+              error,
+            );
+          }
         }
       },
     };
   } catch (error) {
     // A failure of pigy's own. On a network whose refresh ends what it
     // started from, the access may be lost with it.
-    console.error(`The access of ${of} was not renewed`, loggable(error));
+    log.error(
+      "renewal",
+      "The access of a channel was not renewed",
+      where,
+      error,
+    );
     return later(renewalBrokenMs);
   }
 }

@@ -7,7 +7,7 @@ import {
   maxCardsPerDelivery,
   readCards,
 } from "../src/publish/cards.ts";
-import { expectErrors } from "./helpers.ts";
+import { entriesOf, expectErrors } from "./helpers.ts";
 
 /**
  * The reading of the pages of a post's links, which the step `cards` of
@@ -118,10 +118,16 @@ describe("readCards", () => {
       deadline,
     );
     expect(cards).toEqual([null, cardOf("https://fine.example/")]);
-    expect(errors).toHaveBeenCalledWith(
-      "The card of a link was not read",
-      expect.anything(),
-    );
+    expect(entriesOf(errors)).toEqual([
+      expect.objectContaining({
+        kind: "delivery",
+        message: "The card of a link was not read",
+        error: expect.objectContaining({
+          name: "RangeError",
+          message: "A bug",
+        }),
+      }),
+    ]);
     expect(cleared()).toBe(true);
   });
 

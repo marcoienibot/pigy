@@ -1,5 +1,6 @@
 import { isLocal } from "./auth/config.ts";
 import type { Bindings } from "./env.ts";
+import { log } from "./log.ts";
 
 /**
  * Seals what pigy keeps of other people's secrets before it is stored: the
@@ -190,14 +191,16 @@ export function vaultWithoutRequest(
 
 function vaultWith(configured: string | undefined): Vault | undefined {
   if (configured === undefined) {
-    console.error(
+    log.error(
+      "configuration",
       "Nothing can be sealed or opened, so no account can be connected or posted to: CREDENTIAL_KEYS is not set.",
     );
     return undefined;
   }
   const vault = createVault(configured);
   if (typeof vault === "string") {
-    console.error(
+    log.error(
+      "configuration",
       `Nothing can be sealed or opened, so no account can be connected or posted to: CREDENTIAL_KEYS is not valid. ${vault}.`,
     );
     return undefined;

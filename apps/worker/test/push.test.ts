@@ -14,10 +14,12 @@ import {
 import {
   adminEmail,
   breakDatabase,
+  entriesOf,
   expectErrors,
   expectWarnings,
   invite,
   logged,
+  saidBy,
   signedIn,
   signInThroughPages,
   vapidPrivateKey,
@@ -622,9 +624,14 @@ describe("the devices that are told", () => {
     // That message is lost, and said so in the log: the inbox has what it
     // told of. The next one arrives.
     expect(messagesOf(test, phone)).toEqual([]);
-    expect(errors).toHaveBeenCalledWith(
-      "The push service at fcm.googleapis.com did not take a message: it answered 500",
-    );
+    expect(entriesOf(errors)).toContainEqual({
+      level: "error",
+      kind: "push",
+      message: "A push service did not take a message",
+      // The host of the push service, and nothing else of the address.
+      host: "fcm.googleapis.com",
+      status: 500,
+    });
     expect(await keptEndpoints(test)).toEqual([phone.endpoint]);
     await published(context, tooLong);
     expect(await received(test, phone, 1)).toHaveLength(1);
@@ -814,9 +821,8 @@ describe("the devices that are told", () => {
     await attend(workspace);
 
     expect(messagesOf(test, there)).toHaveLength(1);
-    expect(errors).toHaveBeenCalledWith(
+    expect(saidBy(errors)).toContain(
       "The push subscriptions that are gone were not deleted",
-      expect.anything(),
     );
     // The device that is gone is found gone again with the next message.
     mend();
@@ -1145,8 +1151,9 @@ describe("the secrets of a subscription", () => {
 
     const log = logged(errors.mock.calls);
     // Both failures are there, by the host of the push service alone.
-    expect(log).toContain("fcm.googleapis.com did not take a message");
-    expect(log).toContain("A push message to fcm.googleapis.com failed");
+    expect(log).toContain("A push service did not take a message");
+    expect(log).toContain("A push message failed: Cannot send");
+    expect(log).toContain("fcm.googleapis.com");
     expect(log).not.toContain(new URL(phone.endpoint).pathname);
     expect(log).not.toContain(phone.keys.auth);
     expect(log).not.toContain(phone.keys.p256dh);
@@ -1191,7 +1198,7 @@ describe("a pigy without a key to send with", () => {
     const errors = expectErrors();
 
     expect((await browser.fetch("/api/push")).status).toBe(503);
-    expect(errors).toHaveBeenCalledWith(
+    expect(saidBy(errors)).toContain(
       "No push message can be sent: VAPID_PRIVATE_KEY is not a key of P-256 in PKCS #8 and base64.",
     );
   });

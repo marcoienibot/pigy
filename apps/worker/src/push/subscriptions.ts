@@ -3,7 +3,7 @@ import { publicUrl } from "@pigy/providers";
 import { and, desc, eq, gt, inArray, ne } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { pushSubscriptions, sessions } from "../db/schema.ts";
-import { loggable } from "../errors.ts";
+import { log } from "../log.ts";
 import type { PushTarget } from "./web-push.ts";
 
 /**
@@ -240,9 +240,11 @@ export async function devicesOf(
     db,
     stale.map(({ id }) => id),
   ).catch((error: unknown) =>
-    console.error(
+    log.error(
+      "push",
       "The push subscriptions of another key were not deleted",
-      loggable(error),
+      {},
+      error,
     ),
   );
   return rows

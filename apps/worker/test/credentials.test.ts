@@ -27,6 +27,7 @@ import {
   invite,
   logged,
   realMastodonDomain,
+  saidBy,
   setup,
   signedIn,
   signIn,
@@ -200,9 +201,9 @@ describe("a connection that has begun", () => {
     // not open. So it names no workspace: nothing in the row is believed.
     expect(outcome.connect).toBe("failed");
     expect(outcome.workspace).toBeUndefined();
-    expect(warnings).toHaveBeenCalledExactlyOnceWith(
+    expect(saidBy(warnings)).toEqual([
       "A connection could not be finished: The value was not sealed with this key and for this place",
-    );
+    ]);
     // No adapter was handed what was kept, so no server was asked, and
     // nobody has a channel.
     expect(test.network.requests).toHaveLength(asked);

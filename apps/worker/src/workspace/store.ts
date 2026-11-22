@@ -45,6 +45,7 @@ import {
 } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import { z } from "zod";
+import { type LogContext, log } from "../log.ts";
 import {
   type ApiAnswer,
   type ApiBench,
@@ -791,7 +792,11 @@ export class WorkspaceStore {
       for (const refusal of refusals) {
         // The mutator refuses no post that was put aside: a bug.
         if (refusal) {
-          console.error("A post that was put aside was not deleted", refusal);
+          log.error(
+            "schedule",
+            `A post that was put aside was not deleted: ${refusal.message}`,
+            this.where,
+          );
         }
       }
     });
@@ -808,6 +813,19 @@ export class WorkspaceStore {
       .where(and(eq(posts.status, "scheduled"), isNotNull(posts.trashedAt)))
       .get();
     return next?.at == null ? null : next.at + trashMs;
+  }
+
+  /**
+   * What a line of the log says of this workspace: its ID. A database
+   * that no workspace was tied to yet says nothing, and so does one that
+   * fails: this is asked where an error is handled.
+   */
+  get where(): LogContext {
+    try {
+      return { workspaceId: this.identity.id };
+    } catch {
+      return {};
+    }
   }
 
   /** The workspace that the object holds. */
@@ -1540,7 +1558,11 @@ export class WorkspaceStore {
         // The alarm comes back to the post in its own time, and the
         // mutations before then leave it alone: it is said once.
         if (!this.notTakenUp.has(id)) {
-          console.error(`The due post ${id} was not taken up`, refusal.message);
+          log.error(
+            "schedule",
+            `A due post was not taken up: ${refusal.message}`,
+            { ...this.where, postId: id },
+          );
         }
         this.notTakenUp.add(id);
       }
@@ -1564,7 +1586,7 @@ export class WorkspaceStore {
             // mutator. The database failing under it is not, and neither is
             // a failure of the transaction around it.
             if (error instanceof StorageFailure) throw error;
-            throw new Refused(refusalOf(error));
+            throw new Refused(refusalOf(error, this.where));
           }
         });
       } catch (error) {
@@ -1884,7 +1906,7 @@ function put<Table extends TableName>(table: Table, row: Row<Table>): Change {
 }
 
 /** Why a mutator did not complete, from what it threw. */
-function refusalOf(error: unknown): Refusal {
+function refusalOf(error: unknown, where: LogContext): Refusal {
   if (error instanceof MutationRejected) {
     return {
       code: error.code,
@@ -1895,7 +1917,7 @@ function refusalOf(error: unknown): Refusal {
   // take. The mutation counts as processed all the same: a client that sent
   // it again would get the same failure, and nothing after it would ever get
   // through.
-  console.error("A mutation failed", error);
+  log.error("sync", "A mutation failed", where, error);
   return { code: "internal_error", message: "Something went wrong" };
 }
 

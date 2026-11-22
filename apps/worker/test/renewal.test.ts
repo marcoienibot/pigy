@@ -12,6 +12,7 @@ import {
   adminEmail,
   blueskyClientKeys,
   credentialKeys,
+  entriesOf,
   expectErrors,
   expectWarnings,
   signedIn,
@@ -194,10 +195,14 @@ describe("the access of a Threads channel", () => {
         renewalRetryMs - slack,
       );
       expect((await context.channel()).status).toBe("connected");
-      expect(warnings).toHaveBeenCalledWith(
-        expect.stringMatching(
-          /^The access of the threads channel .* was not renewed: /,
-        ),
+      expect(entriesOf(warnings)).toContainEqual(
+        expect.objectContaining({
+          kind: "renewal",
+          network: "threads",
+          message: expect.stringMatching(
+            /^The access of a channel was not renewed: /,
+          ),
+        }),
       );
 
       test.advance(renewalRetryMs);
@@ -380,10 +385,14 @@ describe("the access of a Bluesky channel", () => {
       refresh_at: test.clock.time.getTime() + renewalBrokenMs,
     });
     expect((await context.channel()).status).toBe("connected");
-    expect(warnings).toHaveBeenCalledWith(
-      expect.stringMatching(
-        /^The access of the bluesky channel .* was not renewed: /,
-      ),
+    expect(entriesOf(warnings)).toContainEqual(
+      expect.objectContaining({
+        kind: "renewal",
+        network: "bluesky",
+        message: expect.stringMatching(
+          /^The access of a channel was not renewed: /,
+        ),
+      }),
     );
 
     test.redeploy({ BLUESKY_CLIENT_KEYS: blueskyClientKeys });

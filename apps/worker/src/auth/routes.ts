@@ -10,6 +10,7 @@ import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { z } from "zod";
 import { users } from "../db/schema.ts";
 import type { AppDependencies, AppEnv } from "../env.ts";
+import { log } from "../log.ts";
 import { roleOf } from "./access.ts";
 import { accessConfig } from "./config.ts";
 import { beginSignIn, completeSignIn, signInFlowSchema } from "./google.ts";
@@ -90,7 +91,8 @@ export function authRoutes(dependencies: AppDependencies): Hono<AppEnv> {
   app.get("/auth/google/start", async (c) => {
     const { google, redirectUri } = configFor(c);
     if (!google) {
-      console.error(
+      log.error(
+        "configuration",
         "Sign-in is refused: GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are not set.",
       );
       return signInFailed(c, "not_configured");
@@ -100,7 +102,7 @@ export function authRoutes(dependencies: AppDependencies): Hono<AppEnv> {
     const begun = await beginSignIn(google, redirectUri).catch(
       (error: unknown) => {
         // Google could not be reached, or did not answer as expected.
-        console.error("Sign-in could not start", error);
+        log.error("sign-in", "Sign-in could not start", {}, error);
       },
     );
     if (!begun) return signInFailed(c, "failed");
@@ -125,7 +127,7 @@ export function authRoutes(dependencies: AppDependencies): Hono<AppEnv> {
     ).catch((error: unknown) => {
       // Somebody cancelled at Google, took too long, or sent a callback that
       // does not belong to their sign-in. The reason goes to the logs only.
-      console.warn("Sign-in did not complete", error);
+      log.warn("sign-in", "Sign-in did not complete", {}, error);
     });
     if (!identity) return signInFailed(c, "failed");
 

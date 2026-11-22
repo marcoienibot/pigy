@@ -27,9 +27,11 @@ import {
 } from "./channels.ts";
 import {
   type Browser,
+  entriesOf,
   expectErrors,
   invite,
   realBlueskyHandle,
+  saidBy,
   signedIn,
   type TestSetup,
   urlOf,
@@ -322,9 +324,12 @@ describe("a page that cannot be read for its card", () => {
       status: "sent",
     });
     expect((await keptOn("bluesky", "live", context))[0]?.card).toBeNull();
-    expect(errors).toHaveBeenCalledWith(
-      "The card of a link was not read",
-      expect.anything(),
+    expect(entriesOf(errors)).toContainEqual(
+      expect.objectContaining({
+        message: "The card of a link was not read",
+        workspaceId: workspace,
+        step: "cards",
+      }),
     );
   });
 });
@@ -507,10 +512,7 @@ describe("a run that is paused while the pages are read", () => {
       expect(await ended(client, draft.postId)).toMatchObject({
         status: "sent",
       });
-      expect(errors).not.toHaveBeenCalledWith(
-        "The card of a link was not read",
-        expect.anything(),
-      );
+      expect(saidBy(errors)).not.toContain("The card of a link was not read");
       // Once, and with the card that the step had read.
       expect(await keptOn(network, "live", context)).toMatchObject([
         { card: "The example page" },

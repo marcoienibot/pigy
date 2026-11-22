@@ -8,6 +8,7 @@ import {
   expectWarnings,
   invite,
   locationOf,
+  logged,
   me,
   setup,
   signedIn,
@@ -382,7 +383,7 @@ it("refuses an ID token that was issued for another nonce", async () => {
   expect(await me(browser)).toBeNull();
   // The state was right and Google issued the token, so it was the nonce
   // check that refused it.
-  expect(String(warn.mock.calls[0]?.[1])).toContain("nonce");
+  expect(logged(warn.mock.calls[0])).toContain("nonce");
 });
 
 it("fails when the PKCE verifier does not fit the challenge", async () => {
@@ -401,7 +402,7 @@ it("fails when the PKCE verifier does not fit the challenge", async () => {
   expect(locationOf(response)).toBe("/sign-in?error=failed");
   expect(await me(browser)).toBeNull();
   // Google refused the code, which is what PKCE is for.
-  expect(JSON.stringify(warn.mock.calls[0]?.[1])).toContain("invalid_grant");
+  expect(logged(warn.mock.calls[0])).toContain("invalid_grant");
 });
 
 it("accepts a callback only once", async () => {
@@ -543,7 +544,7 @@ it.each([
   expect(await me(browser)).toBeNull();
   expect(await test.db.select().from(sessions)).toEqual([]);
   // The reason that was logged names the claim.
-  expect(String(warn.mock.calls[0]?.[1])).toContain(claim);
+  expect(logged(warn.mock.calls[0])).toContain(claim);
 
   // Signed again with nothing changed, the token is accepted. So it was the
   // one claim that was refused above, not a token that went through
