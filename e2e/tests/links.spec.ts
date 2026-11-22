@@ -552,6 +552,95 @@ test("a handle is looked up once for the parts that are opened together, and one
   await expect(markNotes(partField(page, 3))).toHaveCount(0);
 });
 
+test("a scheduled post with a link, a mention and a tag reads as its text on the Queue screen and in the calendar, and has its marks and its preview again when it is taken back to be edited", async ({
+  ownPage: page,
+}) => {
+  // An account is connected first, and a page is asked for twice.
+  test.slow();
+  await openScreen(page, "Channels");
+  await connectSimulatedBluesky(page, graceOnBluesky);
+  await openScreen(page, "Drafts");
+  await page.getByRole("button", { name: "New draft" }).click();
+  await choose(page, graceOnBluesky);
+  const text = `Thanks @ada.bsky.test for ${link} #pigyQueue`;
+  await editor(page).fill(text);
+  const marks = [
+    "mention @ada.bsky.test",
+    `link ${link}`,
+    "hashtag #pigyQueue",
+  ];
+  await expect.poll(() => marksIn(editor(page))).toEqual(marks);
+  await expect(linkPreview(editor(page))).toContainText("The example page");
+
+  // The fifteenth of next month: a day that the calendar has one press of
+  // "Next month" away, whatever today is. The server keeps real time.
+  const now = new Date();
+  const date = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 15, 12),
+  )
+    .toISOString()
+    .slice(0, 10);
+  await publishPanel(page).getByRole("button", { name: "Schedule…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Schedule this post" });
+  await dialog.getByLabel("Date and time").fill(`${date}T09:30`);
+  await dialog.getByRole("button", { name: "Schedule" }).click();
+  await expect(editor(page)).toHaveCount(0);
+
+  // The Queue screen has the text as it was written, and makes nothing of
+  // what is in it: no link to press, no tint, no card.
+  await openScreen(page, "Queue");
+  const row = page
+    .getByRole("list", { name: "Scheduled posts" })
+    .getByRole("article");
+  await expect(row).toHaveCount(1);
+  await expect(row).toContainText(text);
+  const made = "[data-mark], a[href^='http'], [aria-label='Link preview']";
+  await expect(row.locator(made)).toHaveCount(0);
+  expect(await overflowOf(page)).toBeLessThanOrEqual(0);
+
+  // So has the calendar, on the day of the post.
+  await page
+    .getByRole("navigation", { name: "Queue" })
+    .getByRole("link", { name: "Calendar" })
+    .click();
+  const calendar = page.getByRole("region", { name: "Calendar" });
+  await calendar.getByRole("button", { name: "Next month" }).click();
+  const entry = calendar.getByRole("link", { name: /Thanks @ada/ });
+  await expect(entry).toContainText(text);
+  // The one link of the entry is the entry itself, which leads to the
+  // queue and not to the page that the text names.
+  await expect(entry).toHaveAttribute("href", "/queue");
+  await expect(calendar.locator(made)).toHaveCount(0);
+  expect(await overflowOf(page)).toBeLessThanOrEqual(0);
+
+  // "Edit" takes the post back to the drafts, where it is marked and
+  // previewed as before it was scheduled, for the account that it kept.
+  await entry.click();
+  await row.getByRole("button", { name: /^Actions for/ }).click();
+  await page.getByRole("menuitem", { name: "Edit" }).click();
+  await expect(editor(page)).toHaveValue(text);
+  await expect(channelChoice(page, graceOnBluesky)).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect.poll(() => marksIn(editor(page))).toEqual(marks);
+  await expect(linkPreview(editor(page))).toContainText("The example page");
+  await expect(linkPreview(editor(page))).toContainText(
+    "Bluesky shows this with the post.",
+  );
+  // The layer follows what is typed there, as in a draft that was never
+  // scheduled.
+  await editor(page).press("End");
+  await editor(page).pressSequentially(" #again");
+  await expect
+    .poll(() => marksIn(editor(page)))
+    .toEqual([...marks, "hashtag #again"]);
+  // The server took the way there and back: nothing was refused.
+  await expectSync(page, "Synced");
+  await expect(editor(page)).toHaveValue(`${text} #again`);
+  expect(await overflowOf(page)).toBeLessThanOrEqual(0);
+});
+
 test("each network is said to show the card of the link that it leads with, and LinkedIn one card for a whole thread", async ({
   ownPage: page,
 }) => {
