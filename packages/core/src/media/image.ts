@@ -157,8 +157,18 @@ class Walk {
     if (this.emit && bytes.length > 0) await this.emit(bytes);
   }
 
+  /**
+   * Throws if `length` more bytes would take the walk past what pigy
+   * takes: before anything is made room for or read for them. A length
+   * is what a file says of itself, up to 4 GiB in a few bytes.
+   */
+  private within(length: number): void {
+    if (this.read + length > maxImageBytes) throw tooLarge();
+  }
+
   /** The next `length` bytes, as an array of their own. */
   async take(length: number): Promise<Uint8Array> {
+    this.within(length);
     const taken = new Uint8Array(length);
     let filled = 0;
     while (filled < length) {
@@ -172,12 +182,12 @@ class Walk {
       this.offset += piece.length;
     }
     this.read += length;
-    if (this.read > maxImageBytes) throw tooLarge();
     return taken;
   }
 
   /** Passes over the next `length` bytes: into the copy if `keep`. */
   async pass(length: number, keep: boolean): Promise<void> {
+    this.within(length);
     let left = length;
     while (left > 0) {
       if (!(await this.more())) throw damaged("it ends early");
@@ -185,7 +195,6 @@ class Walk {
       this.offset += piece.length;
       left -= piece.length;
       this.read += piece.length;
-      if (this.read > maxImageBytes) throw tooLarge();
       if (keep) await this.write(piece);
     }
   }
@@ -573,7 +582,9 @@ async function walkWebp(
   copySize: number | undefined,
 ): Promise<Found> {
   // "RIFF", the size of what follows, "WEBP".
-  let left = u32le(head, 4) - 4;
+  const declared = u32le(head, 4);
+  if (declared > maxImageBytes - 8) throw tooLarge();
+  let left = declared - 4;
   const riff = head.slice(0, 12);
   if (copySize !== undefined) {
     new DataView(riff.buffer).setUint32(4, copySize - 8, true);
@@ -592,8 +603,10 @@ async function walkWebp(
     if (first) {
       first = false;
       if (type === "VP8X") {
-        if (length < 10) throw damaged("its header is cut short");
-        const data = await walk.take(padded);
+        // Ten bytes, as libwebp has them too: whatever came after them
+        // would be copied as part of the header.
+        if (length !== 10) throw damaged("its header is not as long as one");
+        const data = await walk.take(10);
         const width = u24le(data, 4) + 1;
         const height = u24le(data, 7) + 1;
         checkedSize(width, height);

@@ -284,6 +284,31 @@ describe("attaching files", () => {
     });
   });
 
+  it("goes on with the other files when one cannot be read", async () => {
+    // A file that the browser fails to read, as one that was changed on
+    // the disk since it was chosen: the files after it are still taken.
+    const unreadable = new File([], "moved.png");
+    Object.defineProperty(unreadable, "stream", {
+      value: () =>
+        new ReadableStream({
+          pull(controller) {
+            controller.error(new DOMException("Gone", "NotReadableError"));
+          },
+        }),
+    });
+    const made: MutatorName[] = [];
+    const refusals = await attachFiles(
+      [unreadable, file(await pngFile(4, 4), "icon.png")],
+      "part",
+      0,
+      "workspace",
+      (name) => made.push(name),
+      uploads(),
+    );
+    expect(refusals).toEqual(["moved.png could not be read."]);
+    expect(made).toEqual(["media.create", "media.attach"]);
+  });
+
   it("takes no more files than the part has room for", async () => {
     const made: MutatorName[] = [];
     const png = await pngFile(4, 4);

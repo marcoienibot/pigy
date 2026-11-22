@@ -222,7 +222,11 @@ export async function readFile(
   try {
     return { facts: await scanImage(chunksOf(file.stream())) };
   } catch (error) {
-    if (!(error instanceof ImageRefused)) throw error;
+    // The browser could not read it: the file was moved or changed on
+    // the disk since it was chosen. The other files are read all the
+    // same.
+    if (!(error instanceof ImageRefused))
+      return { refused: "could not be read" };
     switch (error.code) {
       case "not_an_image":
         return { refused: "is not a JPEG, PNG, WebP or GIF image" };

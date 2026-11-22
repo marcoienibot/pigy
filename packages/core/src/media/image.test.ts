@@ -252,6 +252,85 @@ test("a file that is longer than pigy takes is refused while it is read", async 
   });
 });
 
+/** The bytes of `values`, each of them a byte or text. */
+const bytes = (...values: (number[] | string)[]) =>
+  joined(
+    ...values.map((value) => (typeof value === "string" ? text(value) : value)),
+  );
+
+/**
+ * A stream of `file` that fails the test if it is read beyond it: the walk
+ * stops at what the file says of itself, and not at its end.
+ */
+async function* readTo(file: Uint8Array): AsyncGenerator<Uint8Array> {
+  yield file;
+  throw new Error("The walk read past what the file says");
+}
+
+test.each([
+  // RIFF that says it goes on for 4 GiB, and a VP8X chunk that says the
+  // same: the twenty bytes and nothing behind them.
+  [
+    "a WebP of 20 bytes",
+    bytes(
+      "RIFF",
+      [0xff, 0xff, 0xff, 0xff],
+      "WEBP",
+      "VP8X",
+      [0xf0, 0xff, 0xff, 0xff],
+    ),
+  ],
+  // The same with the twenty bytes of a header after it.
+  [
+    "a WebP of 40 bytes",
+    bytes(
+      "RIFF",
+      [0xff, 0xff, 0xff, 0xff],
+      "WEBP",
+      "VP8X",
+      [0xf0, 0xff, 0xff, 0xff],
+      new Array(20).fill(0),
+    ),
+  ],
+  // A chunk of a PNG whose length is beyond what pigy takes.
+  [
+    "a PNG chunk of 2 GiB",
+    joined(
+      pngSignature,
+      pngHeader(1, 1),
+      [0x7f, 0xff, 0xff, 0xff],
+      text("tEXt"),
+    ),
+  ],
+])(
+  "%s that says it is longer than pigy takes is refused before anything is read for it",
+  async (_, file) => {
+    // Before, the walk made room for what the chunk said before it read it:
+    // 4 GiB, which ends the isolate of a Worker and stops a tab.
+    await expect(scanImage(readTo(file))).rejects.toMatchObject({
+      code: "too_large",
+    });
+  },
+);
+
+test("a WebP whose header chunk is longer than its fields is refused", async () => {
+  // VP8X has ten bytes. Whatever follows them in the chunk would be
+  // copied as part of the header.
+  const file = bytes(
+    "RIFF",
+    [38, 0, 0, 0],
+    "WEBPVP8X",
+    [20, 0, 0, 0],
+    new Array(10).fill(0),
+    "GPS:51.5N!",
+    "VP8L",
+    [5, 0, 0, 0],
+    [0x2f, 0, 0, 0, 0],
+    [0],
+  );
+  expect(await refusal(file)).toBe("damaged");
+});
+
 test("a copy is refused for a file that is not the one that was scanned", async () => {
   const facts = await scanImage(inPieces(jpegFile(40, 30)));
   await expect(
