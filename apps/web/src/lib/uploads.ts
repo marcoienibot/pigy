@@ -38,10 +38,12 @@ export type UploadProgress = {
   sent: number;
   total: number;
   /**
-   * Why nothing moves, if nothing does: no answer came, and the upload
-   * tries again by itself.
+   * Why nothing moves, if nothing does, or null. `connection`: no answer
+   * came. `server`: the server does not take the upload yet, because the
+   * row of the image has not reached it, or it is asked too often. Either
+   * way the upload tries again by itself.
    */
-  waiting: boolean;
+  waiting: "connection" | "server" | null;
   /** Why the upload has ended without the image, for the person. */
   error: string | null;
 };
@@ -55,6 +57,12 @@ export type UploadApi = (
 
 /** How long an upload waits before it asks again, in milliseconds, by the try. */
 export const retryWaitsMs = [1000, 2000, 5000, 15_000, 30_000];
+
+/**
+ * The same for a server that does not have the row of the image yet: the
+ * mutation that makes the row is on its way, a moment behind the file.
+ */
+export const rowWaitsMs = [200, 500, 1000, 2000, 5000, 15_000, 30_000];
 
 type Running = {
   workspaceId: string;
@@ -178,7 +186,7 @@ export class Uploads {
     const upload: Running = {
       workspaceId,
       file,
-      progress: { sent: 0, total: file.size, waiting: false, error: null },
+      progress: { sent: 0, total: file.size, waiting: null, error: null },
       wake: null,
       stopped: false,
     };
@@ -205,7 +213,7 @@ export class Uploads {
     for (let tries = 0; !upload.stopped; tries++) {
       try {
         let { received } = uploadStateSchema.parse(await api(path, "POST"));
-        this.set(upload, { sent: sentOf(received), waiting: false });
+        this.set(upload, { sent: sentOf(received), waiting: null });
         for (let number = 1; number <= uploadChunks(file.size); number++) {
           if (received.includes(number) || upload.stopped) continue;
           const { start, end } = uploadChunkRange(file.size, number);
@@ -222,19 +230,20 @@ export class Uploads {
         this.set(upload, { sent: file.size });
         return;
       } catch (error) {
+        const lost = unanswered(error);
+        // The row has not reached the server yet.
+        const early = error instanceof ApiError && error.status === 404;
         const again =
-          unanswered(error) ||
+          lost ||
+          early ||
+          // The server is asked too often, or has trouble of its own.
           (error instanceof ApiError &&
-            // The row has not reached the server yet, the server is
-            // asked too often, or it has trouble of its own.
-            (error.status === 404 ||
-              error.status === 429 ||
-              error.status >= 500));
+            (error.status === 429 || error.status >= 500));
         if (!again) {
           // Refused: the row says why, when the server has made it say
           // so, and this until then.
           this.set(upload, {
-            waiting: false,
+            waiting: null,
             error:
               error instanceof ApiError
                 ? error.message
@@ -242,11 +251,12 @@ export class Uploads {
           });
           return;
         }
-        this.set(upload, { waiting: true });
+        this.set(upload, { waiting: lost ? "connection" : "server" });
+        const waits = early ? rowWaitsMs : retryWaitsMs;
         await new Promise<void>((resolve) => {
           const cancel = this.deps.schedule(
             resolve,
-            retryWaitsMs[Math.min(tries, retryWaitsMs.length - 1)] ?? 30_000,
+            waits[Math.min(tries, waits.length - 1)] ?? 30_000,
           );
           upload.wake = () => {
             cancel();

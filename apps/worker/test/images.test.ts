@@ -1,5 +1,10 @@
 import { env } from "cloudflare:workers";
-import { sandboxFeedSchema, sandboxImagePath } from "@pigy/core";
+import {
+  mediaFilePath,
+  originalLifetimeMs,
+  sandboxFeedSchema,
+  sandboxImagePath,
+} from "@pigy/core";
 import { feed } from "@pigy/simulators/world";
 import { expect, it } from "vitest";
 import { connectBlueskyInSandbox, connectInSandbox } from "./channels.ts";
@@ -7,10 +12,12 @@ import { type Browser, invite, signedIn } from "./helpers.ts";
 import {
   attach,
   createMedia,
+  endedWithImages,
   factsOf,
   gpsText,
   holds,
   kept,
+  look,
   photo,
   upload,
 } from "./media.ts";
@@ -213,7 +220,9 @@ it("makes a smaller image for Bluesky of one that is over its limit, once, and p
   await attach(client, draft.partIds[0] ?? "", large.id, "The harbour");
   await attach(client, draft.partIds[0] ?? "", small.id, "A detail");
   await publishTo(client, draft.postId, channel);
-  expect(await ended(client, draft.postId)).toMatchObject({ status: "sent" });
+  expect(await endedWithImages(client, draft.postId)).toMatchObject({
+    status: "sent",
+  });
 
   const [post] = await sandboxPosts(browser);
   expect(post).toMatchObject({
@@ -255,9 +264,98 @@ it("makes a smaller image for Bluesky of one that is over its limit, once, and p
   const second = await writeDraft(client, workspaceId, "Once more");
   await attach(client, second.partIds[0] ?? "", large.id);
   await publishTo(client, second.postId, channel);
-  expect(await ended(client, second.postId)).toMatchObject({ status: "sent" });
+  expect(await endedWithImages(client, second.postId)).toMatchObject({
+    status: "sent",
+  });
   const after = await env.MEDIA.head(`${workspaceId}/${variant}`);
   expect(after?.uploaded).toEqual(made?.uploaded);
   expect(after?.etag).toBe(made?.etag);
   expect(await sandboxPosts(browser)).toHaveLength(2);
+});
+
+it("lets go of the image of a post 30 days after it was sent everywhere, and keeps its small picture", async () => {
+  const { test, browser, workspaces } = await started();
+  const workspaceId = workspaces.sandbox;
+  const { channel = "" } = await connectBlueskyInSandbox(browser, workspaceId);
+  const client = new SyncClient();
+  await client.connect(browser, workspaceId);
+  const sent = await upload(
+    browser,
+    client,
+    workspaceId,
+    await photo(1600, 1200),
+  );
+  const kept_ = await upload(browser, client, workspaceId, await photo(64, 48));
+  const post = await writeDraft(client, workspaceId, "Sent");
+  await attach(client, post.partIds[0] ?? "", sent.id);
+  // The other image is in a draft that stays a draft.
+  const draft = await writeDraft(client, workspaceId, "Still a draft");
+  await attach(client, draft.partIds[0] ?? "", kept_.id);
+  await publishTo(client, post.postId, channel);
+  expect(await endedWithImages(client, post.postId)).toMatchObject({
+    status: "sent",
+  });
+  // The original, the small picture, and what was made for Bluesky.
+  expect(await kept(workspaceId)).toContain(`${sent.id}/original`);
+  expect(await kept(workspaceId)).toContain(
+    `${sent.id}/variants/jpeg-1000000-0`,
+  );
+
+  // A day before the 30 are over, everything is there. The person goes
+  // on using pigy meanwhile: a session lasts 30 days from its last use.
+  const day = 24 * 60 * 60 * 1000;
+  test.advance(originalLifetimeMs / 2);
+  expect((await browser.fetch("/api/workspaces")).status).toBe(200);
+  test.advance(originalLifetimeMs / 2 - day);
+  expect((await browser.fetch("/api/workspaces")).status).toBe(200);
+  await look(workspaceId);
+  expect(await kept(workspaceId)).toContain(`${sent.id}/original`);
+
+  test.advance(day + 1000);
+  await look(workspaceId);
+  expect(await kept(workspaceId)).toEqual(
+    [
+      `${sent.id}/thumbnail`,
+      `${kept_.id}/original`,
+      `${kept_.id}/thumbnail`,
+    ].sort(),
+  );
+  const later = new SyncClient();
+  await later.connect(browser, workspaceId);
+  const row = (id: string) =>
+    later.table("media").find((media) => media.id === id);
+  expect(row(sent.id)?.originalGoneAt).toEqual(expect.any(Number));
+  expect(row(kept_.id)?.originalGoneAt).toBeNull();
+  // The small picture is still served, the image itself no longer.
+  expect(
+    (await browser.fetch(mediaFilePath(workspaceId, sent.id, "thumbnail")))
+      .status,
+  ).toBe(200);
+  expect(
+    (await browser.fetch(mediaFilePath(workspaceId, sent.id, "original")))
+      .status,
+  ).toBe(404);
+});
+
+it("keeps the image of a post that did not arrive everywhere, for another try", async () => {
+  const { test, browser, workspaces } = await started();
+  const workspaceId = workspaces.live;
+  const channel = await connectAccount(test, browser, workspaceId);
+  const client = new SyncClient();
+  await client.connect(browser, workspaceId);
+  const image = await upload(browser, client, workspaceId, await photo());
+  const draft = await writeDraft(client, workspaceId, "Refused");
+  await attach(client, draft.partIds[0] ?? "", image.id);
+  // The network takes the access back as the post goes out.
+  test.network.mastodon.arm({ kind: "token-revoked", operation: "publish" });
+  await publishTo(client, draft.postId, channel);
+  expect(await ended(client, draft.postId)).toMatchObject({ status: "error" });
+
+  test.advance(originalLifetimeMs * 2);
+  await look(workspaceId);
+  // Nothing of it went: the post can still be tried again, with its image.
+  expect(await kept(workspaceId)).toEqual([
+    `${image.id}/original`,
+    `${image.id}/thumbnail`,
+  ]);
 });

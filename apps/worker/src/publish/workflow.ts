@@ -155,9 +155,9 @@ const cardStep = {
 
 /**
  * The address that the links to the images of a sandbox are made with.
- * No host answers at it: the simulated world of the sandbox is what
- * fetches such a link, and it reads the bucket itself, with the check
- * that the app makes of a link: `linkedImage` of src/sim/object.ts.
+ * No host answers at it, and nothing asks it yet: no simulated network
+ * fetches an image so far. The simulated Threads will, from the world of
+ * its sandbox and never from the internet: PLAN.md section 10.
  */
 export const sandboxMediaOrigin = "https://pigy.invalid";
 

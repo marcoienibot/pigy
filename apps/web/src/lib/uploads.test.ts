@@ -78,7 +78,7 @@ test("a file goes up in chunks, each the bytes of its place, and is completed", 
   expect(uploads.progress("one")).toMatchObject({
     sent: file.size,
     total: file.size,
-    waiting: false,
+    waiting: null,
     error: null,
   });
 });
@@ -96,7 +96,7 @@ test("an upload that got no answer waits, says so, and goes on with the chunks t
   });
   const { uploads, pass } = uploadsOf(api);
   await uploads.add(workspaceId, "one", fileOf(uploadChunkBytes * 2 + 10));
-  await until(() => uploads.progress("one")?.waiting === true);
+  await until(() => uploads.progress("one")?.waiting === "connection");
   expect(uploads.progress("one")?.sent).toBe(uploadChunkBytes);
   expect(completed).toEqual([]);
 
@@ -123,7 +123,8 @@ test("an upload whose row the server does not have yet asks again, and one that 
   const { uploads, pass, waiting } = uploadsOf(api);
   await uploads.add(workspaceId, "late", fileOf(10));
   await uploads.add(workspaceId, "full", fileOf(10));
-  await until(() => uploads.progress("late")?.waiting === true);
+  // Not for a connection: the server answered, and has no such image yet.
+  await until(() => uploads.progress("late")?.waiting === "server");
   await until(() => uploads.progress("full")?.error !== null);
   expect(uploads.progress("full")?.error).toBe(
     "The workspace holds as many images as it can.",

@@ -12,9 +12,9 @@ import {
   uploadStateSchema,
 } from "@pigy/core";
 import { joined, pngFile } from "@pigy/core/test-images";
-import { expect } from "vitest";
+import { expect, vi } from "vitest";
 import type { Browser } from "./helpers.ts";
-import { follow } from "./publishing.ts";
+import { follow, patience, postOf } from "./publishing.ts";
 import { newId, objectOf, type SyncClient } from "./sync-client.ts";
 
 /**
@@ -195,4 +195,21 @@ export async function kept(workspaceId: string): Promise<string[]> {
 /** Runs the alarm of a workspace now. */
 export async function look(workspaceId: string): Promise<void> {
   await runDurableObjectAlarm(objectOf(workspaceId));
+}
+
+/**
+ * Follows `client` until the post has left `sending`, and returns it,
+ * like `ended` of publishing.ts, for a delivery that makes a smaller
+ * image on its way: that takes seconds on a machine under load, in which
+ * the server has nothing to say, and a client gives a message two.
+ */
+export async function endedWithImages(
+  client: SyncClient,
+  postId: string,
+): Promise<Row<"post">> {
+  while (postOf(client, postId).status === "sending") {
+    await vi.waitFor(() => expect(client.unread).toBeGreaterThan(0), patience);
+    await client.patch();
+  }
+  return postOf(client, postId);
 }

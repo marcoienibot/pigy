@@ -118,7 +118,8 @@ function useStatus(image: PartImage, uploads: Uploads): string | null {
   if (media.originalGoneAt !== null) return "No longer kept";
   if (media.status === "ready") return null;
   if (progress?.error) return progress.error;
-  if (progress?.waiting) return "Waiting for a connection";
+  if (progress?.waiting === "connection") return "Waiting for a connection";
+  if (progress?.waiting === "server") return "Waiting to upload";
   if (progress) {
     return progress.sent >= progress.total
       ? "Checking"
