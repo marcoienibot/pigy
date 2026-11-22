@@ -158,7 +158,7 @@ Nothing alerts anybody: no alerting service is set up. Look at the logs after a 
 - `level`: `error` is for you to look at, a bug or something that is not set up. `warn` is how something ended that pigy has dealt with, such as a network that refused an access: the person was told on a screen.
 - `kind`: `request` (a route answered with a 500), `configuration` (a secret is missing or not valid), `sign-in`, `connection`, `renewal`, `delivery`, `schedule`, `push`, `sync`, `alarm`.
 - `message`, in words, and where it applies `route`, `step`, `workspaceId`, `channelId`, `targetId`, `postId`, `network`, `host`, `status`.
-- `error`: the error with its stack and what caused it.
+- `error`: the error with its stack and the errors that caused it. Of anything else that an error carries, a line says only what kind of thing it is, such as `[object URLSearchParams]`: a library puts there what it compared, which can be the code of a callback or a token.
 
 A line never holds a secret, the text of a post, or the address of a person. To check, in the dashboard: that the fields of a line can be filtered by. If they cannot, the lines are still searched as text.
 

@@ -5,6 +5,7 @@ import { sessions, users } from "../src/db/schema.ts";
 import {
   adminEmail,
   consent,
+  entriesOf,
   expectWarnings,
   invite,
   locationOf,
@@ -312,13 +313,15 @@ it("drops a return address that is too long for the cookie", async () => {
 });
 
 it("refuses a callback whose state was changed", async () => {
-  expectWarnings();
+  const warn = expectWarnings();
   const test = setup();
   const browser = test.browser();
   const start = await browser.fetch("/api/auth/google/start");
   const callback = new URL(
     await consent(test, locationOf(start), { email: adminEmail }),
   );
+  const state = callback.searchParams.get("state");
+  const code = callback.searchParams.get("code");
 
   // Everything else about this callback is right: the code, and with the
   // cookie the nonce and the PKCE verifier. Only the state check can refuse.
@@ -327,6 +330,22 @@ it("refuses a callback whose state was changed", async () => {
 
   expect(locationOf(response)).toBe("/sign-in?error=failed");
   expect(await me(browser)).toBeNull();
+  // The log says that the state was refused, and holds nothing of the
+  // sign-in: oauth4webapi puts the state that it expected, and the
+  // parameters of the callback with the code among them, into its error.
+  const log = logged(warn.mock.calls);
+  for (const secret of [state, code, "another-state"]) {
+    expect(secret).toBeTruthy();
+    expect(log).not.toContain(secret);
+  }
+  // What the error says of itself, in the library's words, and nothing
+  // that it carries.
+  expect(entriesOf(warn)[0]?.error).toEqual({
+    name: "OperationProcessingError",
+    message: 'unexpected "state" response parameter value',
+    code: oauth.INVALID_RESPONSE,
+    stack: expect.any(String),
+  });
 });
 
 it("refuses a callback that belongs to somebody else's sign-in", async () => {
@@ -375,6 +394,7 @@ it("refuses an ID token that was issued for another nonce", async () => {
   // Google is asked for a token with a nonce that is not the one in the
   // cookie, as if a token from another sign-in were injected.
   const tampered = new URL(locationOf(start));
+  const nonce = tampered.searchParams.get("nonce");
   tampered.searchParams.set("nonce", "another-nonce");
   const callback = await consent(test, tampered.href, { email: adminEmail });
   const response = await browser.fetch(callback);
@@ -383,7 +403,22 @@ it("refuses an ID token that was issued for another nonce", async () => {
   expect(await me(browser)).toBeNull();
   // The state was right and Google issued the token, so it was the nonce
   // check that refused it.
-  expect(logged(warn.mock.calls[0])).toContain("nonce");
+  const log = logged(warn.mock.calls);
+  expect(log).toContain("nonce");
+  // And nothing else of the sign-in: oauth4webapi puts the nonce that it
+  // expected and the claims of the token into its error, the nonce of the
+  // token and the address of the person among them.
+  const { searchParams } = new URL(callback);
+  for (const secret of [
+    nonce,
+    "another-nonce",
+    searchParams.get("state"),
+    searchParams.get("code"),
+    adminEmail,
+  ]) {
+    expect(secret).toBeTruthy();
+    expect(log).not.toContain(secret);
+  }
 });
 
 it("fails when the PKCE verifier does not fit the challenge", async () => {

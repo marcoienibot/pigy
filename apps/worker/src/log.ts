@@ -61,25 +61,43 @@ type Level = "warn" | "error";
 // circle, and this ends everything else that is deeper than any real error.
 const deepest = 8;
 
-/** `value` as JSON has it: an error with its stack and what is beneath it. */
+/**
+ * What an error says of itself besides its name and its message, by the
+ * names of the properties that say it: the kind and the status of a
+ * `ProviderError`, the code of an error of a library, what the runtime
+ * says of a failed call into a Durable Object. A property by another
+ * name is not logged, whatever it holds: libraries put the answer of a
+ * server there, or what was sent to it.
+ */
+const toldOf = new Set([
+  "kind",
+  "status",
+  "declined",
+  "code",
+  "retryable",
+  "overloaded",
+]);
+
+/**
+ * `value` as JSON has it: an error with its stack and the errors beneath
+ * it, and nothing else. A value that is no error is somebody's data, and
+ * a line says what kind of thing it is and nothing of what it holds: a
+ * library makes the cause of its error of what it compared, which can be
+ * the parameters of a callback, the claims of a token, the headers of a
+ * request or an answer. Only a list or a plain object is looked into, for
+ * the errors that it holds, which `loggable` has cleaned.
+ */
 function described(value: unknown, depth = 0): unknown {
-  if (typeof value === "bigint") return String(value);
-  if (typeof value !== "object" || value === null) return value;
+  if (value === circular) return circular;
   if (depth > deepest) return "[too deep]";
-  if (Array.isArray(value)) {
-    return value.map((held) => described(held, depth + 1));
-  }
   if (value instanceof Error) {
     return {
       name: value.name,
       message: value.message,
-      // What an error says of itself besides, such as the kind of a
-      // `ProviderError`. Not what it holds: an object or a list is
-      // somebody's data.
       ...Object.fromEntries(
         Object.entries(value).filter(
           ([name, held]) =>
-            name !== "cause" &&
+            toldOf.has(name) &&
             ["string", "number", "boolean"].includes(typeof held),
         ),
       ),
@@ -92,13 +110,25 @@ function described(value: unknown, depth = 0): unknown {
       }),
     };
   }
-  if (Object.getPrototypeOf(value) !== Object.prototype) return String(value);
-  return Object.fromEntries(
-    Object.entries(value).map(([name, held]) => [
-      name,
-      described(held, depth + 1),
-    ]),
-  );
+  if (Array.isArray(value)) {
+    return value.map((held) => described(held, depth + 1));
+  }
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    Object.getPrototypeOf(value) === Object.prototype
+  ) {
+    return Object.fromEntries(
+      Object.entries(value).map(([name, held]) => [
+        name,
+        described(held, depth + 1),
+      ]),
+    );
+  }
+  // "[object String]", "[object URLSearchParams]", "[object Response]":
+  // never `String(value)`, which is the query of a URL and the whole of a
+  // string.
+  return Object.prototype.toString.call(value);
 }
 
 function write(

@@ -85,9 +85,11 @@ it("says of an error what it says of itself, and not what it holds", () => {
   const error = Object.assign(new Error("The network refused"), {
     kind: "reconnect",
     status: 401,
-    // What an error carries along is somebody's data: a body, a request.
+    // What an error carries along is somebody's data: a body, a request,
+    // and what a library takes from an answer, by a name of its own.
     body: { access_token: "a-token" },
     sent: ["a-token"],
+    error_description: "The code a-code is not good",
   });
 
   log.error("delivery", "A step of a delivery failed", {}, error);
@@ -100,6 +102,51 @@ it("says of an error what it says of itself, and not what it holds", () => {
     status: 401,
     stack: error.stack,
   });
+  expect(JSON.stringify(entry)).not.toMatch(/a-token|a-code/);
+});
+
+it("says of a cause that is no error what kind of thing it is, and nothing of what it holds", () => {
+  const errors = expectErrors();
+  // What oauth4webapi makes the cause of its error of, when the state of a
+  // callback is not the one that it expected, and what others put there.
+  const error = new Error('unexpected "state" response parameter value', {
+    cause: {
+      expected: "a-state",
+      parameters: new URLSearchParams({ code: "a-code", state: "a-guess" }),
+      callback: new URL(
+        "https://pigy.test/api/auth/google/callback?code=a-code",
+      ),
+      request: new Request("https://pigy.test/?code=a-code", {
+        headers: { Authorization: "Bearer a-token" },
+      }),
+      headers: new Headers({ Authorization: "Bearer a-token" }),
+      answer: Response.json({ access_token: "a-token" }),
+      // An error among them is still told of.
+      error: new TypeError("The network is gone"),
+    },
+  });
+  const plain = new Error("Not now", { cause: "a-token" });
+
+  log.error("sign-in", "Sign-in did not complete", {}, error);
+  log.error("sign-in", "Sign-in did not complete", {}, plain);
+
+  const [first, second] = entriesOf(errors);
+  expect(first?.error?.cause).toEqual({
+    expected: "[object String]",
+    parameters: "[object URLSearchParams]",
+    callback: "[object URL]",
+    request: "[object Request]",
+    headers: "[object Headers]",
+    answer: "[object Response]",
+    error: expect.objectContaining({
+      name: "TypeError",
+      message: "The network is gone",
+    }),
+  });
+  expect(second?.error?.cause).toBe("[object String]");
+  expect(JSON.stringify(errors.mock.calls)).not.toMatch(
+    /a-state|a-code|a-guess|a-token/,
+  );
 });
 
 it("does not throw for what JSON cannot hold", () => {
@@ -115,6 +162,6 @@ it("does not throw for what JSON cannot hold", () => {
   const [entry] = entriesOf(errors);
   expect(entry).toMatchObject({
     message: "A mutation failed",
-    error: { count: "3", self: "[circular]" },
+    error: { count: "[object BigInt]", self: "[circular]" },
   });
 });

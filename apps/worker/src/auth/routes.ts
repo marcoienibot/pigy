@@ -13,7 +13,12 @@ import type { AppDependencies, AppEnv } from "../env.ts";
 import { log } from "../log.ts";
 import { roleOf } from "./access.ts";
 import { accessConfig } from "./config.ts";
-import { beginSignIn, completeSignIn, signInFlowSchema } from "./google.ts";
+import {
+  beginSignIn,
+  completeSignIn,
+  signInFailure,
+  signInFlowSchema,
+} from "./google.ts";
 import { requireSameOrigin, requireUser } from "./guards.ts";
 import {
   clearSessionCookie,
@@ -102,7 +107,12 @@ export function authRoutes(dependencies: AppDependencies): Hono<AppEnv> {
     const begun = await beginSignIn(google, redirectUri).catch(
       (error: unknown) => {
         // Google could not be reached, or did not answer as expected.
-        log.error("sign-in", "Sign-in could not start", {}, error);
+        log.error(
+          "sign-in",
+          "Sign-in could not start",
+          {},
+          signInFailure(error),
+        );
       },
     );
     if (!begun) return signInFailed(c, "failed");
@@ -126,8 +136,9 @@ export function authRoutes(dependencies: AppDependencies): Hono<AppEnv> {
       now,
     ).catch((error: unknown) => {
       // Somebody cancelled at Google, took too long, or sent a callback that
-      // does not belong to their sign-in. The reason goes to the logs only.
-      log.warn("sign-in", "Sign-in did not complete", {}, error);
+      // does not belong to their sign-in. The reason goes to the logs only,
+      // and only the reason: `signInFailure`.
+      log.warn("sign-in", "Sign-in did not complete", {}, signInFailure(error));
     });
     if (!identity) return signInFailed(c, "failed");
 

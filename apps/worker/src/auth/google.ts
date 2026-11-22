@@ -95,6 +95,44 @@ export async function beginSignIn(
   return { url, flow };
 }
 
+// The grammar of the code of an OAuth error, narrowed to the codes that
+// are registered: what Google answers a request for a token with.
+const oauthErrorCode = /^[a-z_]{1,64}$/;
+
+/**
+ * What the log says of a sign-in that failed, in place of `error`: its
+ * name, its code and its message, and nothing that it carries.
+ *
+ * An error of oauth4webapi makes its cause of what it compared: the state
+ * or the nonce that it expected, the parameters of the callback with its
+ * code, the claims of an ID token with the address of the person, the
+ * answer of Google's. Its message is the library's own words. Where Google
+ * refused the request for a token, the code of the OAuth error that it
+ * answered with is added, such as "invalid_client" for a secret that is
+ * wrong: never its description, and nothing that the browser sent.
+ */
+export function signInFailure(error: unknown): Error {
+  if (!(error instanceof Error)) {
+    return new Error("Sign-in failed with a value that is no error");
+  }
+  const refused =
+    error instanceof oauth.ResponseBodyError && oauthErrorCode.test(error.error)
+      ? `: ${error.error}`
+      : "";
+  const failure = new Error(`${error.message}${refused}`);
+  failure.name = error.name;
+  if ("code" in error && typeof error.code === "string") {
+    Object.assign(failure, { code: error.code });
+  }
+  if (error instanceof oauth.ResponseBodyError) {
+    Object.assign(failure, { status: error.status });
+  }
+  // Where it was thrown, which is what a log needs of a bug. Its first
+  // line is the name and the message.
+  failure.stack = error.stack;
+  return failure;
+}
+
 /**
  * Finishes the sign-in that `flow` started with the parameters Google sent
  * to `callbackUrl`. Throws unless everything checks out: the state, the code
