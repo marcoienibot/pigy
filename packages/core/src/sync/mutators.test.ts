@@ -396,7 +396,7 @@ it("marks a channel whose access was not renewed, and only the connection that w
     "server",
   );
   expect(workspace.rows("channel")).toEqual([
-    channel(1000, { status: "needs_reconnect" }),
+    { ...channel(1000), status: "needs_reconnect" },
   ]);
   // A channel that is gone is nothing to mark, and nothing to refuse.
   workspace.mutate(
