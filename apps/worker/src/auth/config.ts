@@ -48,18 +48,28 @@ type AccessConfig = {
  */
 function parseAdminEmails(value: string): Set<string> {
   const emails = new Set<string>();
-  for (const entry of value.split(",")) {
-    // The variable is typed by hand. A stray comma is not worth a report.
-    if (!entry.trim()) continue;
+  // The variable is typed by hand. A stray comma is not worth a report.
+  const entries = value.split(",").filter((entry) => entry.trim());
+  // Where the entries that are wrong are, counted from 1. The log names
+  // them by their places and never as they are written: a wrong entry is
+  // still the address of a person, with a typo in it.
+  const wrong: number[] = [];
+  for (const [index, entry] of entries.entries()) {
     const email = emailSchema.safeParse(entry);
     if (email.success) {
       emails.add(email.data);
     } else {
-      log.error(
-        "configuration",
-        `ADMIN_EMAILS has an entry that is not an email address and is ignored: ${JSON.stringify(entry.trim())}`,
-      );
+      wrong.push(index + 1);
     }
+  }
+  if (wrong.length > 0) {
+    const last = wrong.pop();
+    const places = wrong.length > 0 ? `${wrong.join(", ")} and ${last}` : last;
+    const count = wrong.length + 1;
+    log.error(
+      "configuration",
+      `ADMIN_EMAILS has ${count} ${count === 1 ? "entry that is not an email address, which is ignored: the entry" : "entries that are not email addresses, which are ignored: the entries"} ${places} of ${entries.length}. Entries are separated by commas.`,
+    );
   }
   return emails;
 }

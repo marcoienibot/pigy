@@ -70,16 +70,18 @@ it("ignores and reports the entries of ADMIN_EMAILS that are not email addresses
     const response = await signIn(test, test.browser(), { email });
     expect(locationOf(response)).toBe("/invite-only");
   }
-  // Whoever set the variable finds the entries in the logs. Before, they
-  // found nothing, and with these as the only entries nobody could sign in.
-  for (const entry of [
-    '"first@example.com; second@example.com"',
-    '"Third <third@example.com>"',
-  ]) {
-    expect(saidBy(error)).toContainEqual(expect.stringContaining(entry));
+  // Whoever set the variable finds in the logs which entries are wrong.
+  // Before, they found nothing, and with these as the only entries nobody
+  // could sign in.
+  expect(saidBy(error)).toContainEqual(
+    "ADMIN_EMAILS has 2 entries that are not email addresses, which are ignored: the entries 1 and 2 of 3. Entries are separated by commas.",
+  );
+  // By their places and not as they are written: an entry is the address
+  // of a person, mistyped or not, and a log holds no address.
+  const log = JSON.stringify(error.mock.calls);
+  for (const name of ["first", "second", "third", "fourth"]) {
+    expect(log).not.toContain(`${name}@example.com`);
   }
-  // Only those entries are logged, not the variable as a whole.
-  expect(JSON.stringify(error.mock.calls)).not.toContain("fourth@example.com");
 });
 
 it("lets nobody in when there are no admins and no invitations", async () => {
