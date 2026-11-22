@@ -20,6 +20,7 @@ export * from "./sync/client/storage.ts";
 export * from "./sync/client/store.ts";
 export * from "./sync/client/view.ts";
 export * from "./sync/mutators.ts";
+export * from "./sync/own-text.ts";
 export * from "./sync/protocol.ts";
 export * from "./sync/tables.ts";
 export * from "./sync/transaction.ts";

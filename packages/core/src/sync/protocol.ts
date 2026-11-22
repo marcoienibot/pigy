@@ -17,7 +17,17 @@ export const syncSchemaVersion = 6;
 
 /** Lengths are in UTF-16 code units, which is what `String.length` counts. */
 export const syncLimits = {
-  /** The longest message a client may send. */
+  /**
+   * The longest message a client may send. A client sends one mutation
+   * alone if it has to, so no mutation may be longer than this by itself:
+   * one that is would never leave the outbox, and nothing behind it would.
+   * What guards that is the schema of the arguments of each mutator, which
+   * bounds every text: `maxPartTextLength` for one part and
+   * `maxOwnTextLength` for the parts of `target.customize` together, each
+   * small enough also when JSON writes every character as six. A client
+   * makes no mutation that its mutator would not take. `own-text.test.ts`
+   * holds the schemas to it.
+   */
   clientMessageLength: 256 * 1024,
   /** The most mutations in one message. */
   mutationsPerMessage: 100,
