@@ -124,6 +124,13 @@ export const metricsPauseMs = 60 * 1000;
 export const renewalPauseMs = 60 * 1000;
 
 /**
+ * How many names of the bucket one look of the alarm lists when it looks
+ * for bytes that no row names: a list of the bucket takes a thousand at
+ * most, and each image that is found takes a request or two besides.
+ */
+export const mediaSweepList = 200;
+
+/**
  * What the object keeps about a socket. It survives hibernation, and a
  * deploy: a socket can stay open while new code replaces the old. A field
  * that is added here later is therefore missing on the sockets that were
@@ -637,20 +644,21 @@ export function workspaceObject(
      * turn has come, each as a run of the publishing workflow. Then it
      * renews the access of every channel whose time for that has come,
      * and begins the deliveries that waited for one of those. Then it
-     * keeps the inbox and looks after the images, `#keepMedia`. Last it
-     * sends the push messages that wait, `#sendPushes`, and reads the
+     * keeps the inbox, looks after the images, `#keepMedia`, and looks
+     * through the bucket for bytes that no row names, `#sweepMedia`. Last
+     * it sends the push messages that wait, `#sendPushes`, and reads the
      * stats of the deliveries whose time for that has come,
      * `#metricsPass`: both beside itself, so that neither keeps a delivery
-     * or a scheduled post waiting, `#waitAside`. A renewal and an image
-     * that come due while it waits for them wait with it: see
-     * `#untilNextPost`.
+     * or a scheduled post waiting, `#waitAside`. A renewal, an image and a
+     * look through the bucket that come due while it waits for them wait
+     * with it: see `#untilNextPost`.
      *
      * It runs at the moment that `#nextLookIn` names: when the next
      * scheduled post is due, soon after anything changes that can make a
      * delivery begin or that queues a push message, every
      * `deliveryWatchMs` while a delivery is under way or a push message
-     * waits, and when the next access, the inbox, an image or the stats
-     * of a delivery are due.
+     * waits, and when the next access, the inbox, an image, a look
+     * through the bucket or the stats of a delivery are due.
      *
      * What goes wrong in looking after them does not fail the alarm: it
      * is logged, and tried again the next time. The one thing that does
@@ -737,6 +745,14 @@ export function workspaceObject(
             () => this.#keepMedia(),
             "media",
             "The images of a workspace were not looked after",
+          ],
+          [
+            // After the images, whose deletions ask for it, and bounded:
+            // one list of the bucket in a look. Before the stats are
+            // begun, as the images are.
+            () => this.#sweepMedia(),
+            "media",
+            "The bucket of a workspace was not looked through",
           ],
           [
             // Begun before the push messages are, and read beside them.
@@ -934,6 +950,9 @@ export function workspaceObject(
         this.#store.uploadDropped(id);
         return true;
       };
+      // Every deletion from the bucket asks for a look through it a day
+      // later, for what a deletion that failed may have left.
+      const sweep = () => this.#store.askForSweep(now().getTime());
       await each(due.abandoned, async (image, keys) => {
         const claimed = this.#store.claimMedia(
           "abandoned",
@@ -941,6 +960,7 @@ export function workspaceObject(
           now().getTime(),
         );
         if (claimed?.done !== "given up") return;
+        sweep();
         await drop(image.id, claimed.uploadId, keys.upload);
         // A file that the parts made, by a completion that did not get
         // to say how it ended.
@@ -955,6 +975,7 @@ export function workspaceObject(
           now().getTime(),
         );
         if (claimed?.done === "deleted") {
+          sweep();
           await deleteUnder(bucket, keys.prefix);
         }
       });
@@ -973,6 +994,7 @@ export function workspaceObject(
           );
         }
         if (claimed?.done === "deleted") {
+          sweep();
           await deleteUnder(bucket, keys.prefix);
         }
       });
@@ -983,12 +1005,67 @@ export function workspaceObject(
           now().getTime(),
         );
         if (claimed?.done !== "expired") return;
+        sweep();
         // And the file as the device sent it, with what the camera wrote
         // next to the picture: the completion deletes it, and leaves it
         // where the bucket failed it.
         await bucket.delete([keys.original, keys.upload]);
         await deleteUnder(bucket, keys.variants);
       });
+    }
+
+    /**
+     * Looks through what the bucket has of the workspace for bytes that
+     * no row names, when that is asked for, `mediaSweep` of the store,
+     * and deletes them: of an image that has no row any more, or whose
+     * upload failed, everything, and of one whose row says that its bytes
+     * are gone, those bytes. The alarm claims a row first and deletes from
+     * the bucket after, so a bucket that fails in between leaves such
+     * bytes: every deletion asks for a look, a day later, `askForSweep`.
+     *
+     * One list of the bucket in a look, `mediaSweepList` names at most,
+     * and the next look goes on after the last of them: the bucket of a
+     * workspace is gone through in as many looks as it takes. An image
+     * has no bytes without its row, which an upload asks the object for
+     * before it sends any, so nothing is deleted that a row is about to
+     * name.
+     */
+    async #sweepMedia(): Promise<void> {
+      const { at, after } = this.#store.mediaSweep;
+      if (at === null || at > now().getTime()) return;
+      const { id: workspaceId } = this.#store.identity;
+      const bucket = this.env.MEDIA;
+      const prefix = `${workspaceId}/`;
+      const listed = await bucket.list({
+        prefix,
+        limit: mediaSweepList,
+        ...(after !== null && { startAfter: after }),
+      });
+      const ids = [
+        ...new Set(
+          listed.objects.map(
+            ({ key }) => key.slice(prefix.length).split("/")[0] ?? "",
+          ),
+        ),
+      ].filter((id) => id !== "");
+      for (const [mediaId, what] of this.#store.unnamedMedia(ids)) {
+        const keys = mediaKeys(workspaceId, mediaId);
+        log.warn(
+          "media",
+          "The bucket had bytes of an image that no row names: they are deleted now",
+          { ...this.#store.where, mediaId },
+        );
+        if (what === "all") {
+          await deleteUnder(bucket, keys.prefix);
+        } else {
+          // What `outlived` of `#keepMedia` deletes.
+          await bucket.delete([keys.original, keys.upload]);
+          await deleteUnder(bucket, keys.variants);
+        }
+      }
+      this.#store.sweptTo(
+        listed.truncated ? (listed.objects.at(-1)?.key ?? null) : null,
+      );
     }
 
     /**
@@ -1064,6 +1141,9 @@ export function workspaceObject(
      *   earliest, which is when the rest is taken where a look has done
      *   as many as it does, and when it is tried again if it did not
      *   work.
+     * - The bucket is to be looked through for bytes that no row names,
+     *   `mediaSweep` of the store: at that time, and in
+     *   `deliveryWatchMs` at the earliest, for the same reasons.
      * - The stats of a delivery are to be read: at their time, which is
      *   at once for a delivery that has just been sent. While a pass over
      *   the stats is under way, or the last one stopped short of what was
@@ -1136,6 +1216,10 @@ export function workspaceObject(
       const images = this.#store.nextMediaAt;
       if (images !== null) {
         waits.push(Math.max(deliveryWatchMs, images - time));
+      }
+      const sweep = this.#store.mediaSweep.at;
+      if (sweep !== null) {
+        waits.push(Math.max(deliveryWatchMs, sweep - time));
       }
       const metricsAt = this.#store.nextMetricsAt;
       if (metricsAt !== null) {
@@ -1391,10 +1475,12 @@ export function workspaceObject(
      * stats, and a time that passed in the first is one that the second
      * would have to know that it did not look for, as it knows of a post
      * by `dueLookedAt`: for a renewal, nothing to win. Nor what an image is
-     * due for, for the same reasons: it comes due hours or days after
-     * what it waits for, and the alarm keeps `deliveryWatchMs` between two
-     * looks at the images. The alarm looks after the images before it
-     * begins the stats, so those never wait for a pass that it begins.
+     * due for, or a look through the bucket, for the same reasons: each
+     * comes due hours or days after what it waits for, and the alarm
+     * keeps `deliveryWatchMs` between two looks at the images, and at the
+     * bucket. The alarm looks after the images, and through the bucket,
+     * before it begins the stats, so those never wait for a pass that it
+     * begins.
      */
     #untilNextPost(): number | null {
       const dueAt = this.#store.nextDueAt;

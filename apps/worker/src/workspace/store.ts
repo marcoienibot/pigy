@@ -415,6 +415,23 @@ export const dropUploadForMs = 8 * 24 * 60 * 60 * 1000;
 /** The most images that one look of the alarm deals with, of each kind. */
 export const mediaPerPass = 50;
 
+/**
+ * How long after the alarm last let go of bytes in the bucket it looks
+ * the bucket through for bytes that no row names: a day, in which a
+ * bucket that failed is up again.
+ */
+export const mediaSweepAfterMs = 24 * 60 * 60 * 1000;
+
+/** What the bucket has of an image that its row does not name. */
+export type Unnamed =
+  /** Everything: there is no row of the image, or its upload failed. */
+  | "all"
+  /**
+   * The bytes and the file as the device sent it: its row says that they
+   * are gone, and keeps the small picture.
+   */
+  | "bytes";
+
 /** The credentials of a channel after a refresh, sealed, with their times. */
 export type RenewedChannelAccess = ChannelAccess & {
   /** When the access ends now, in milliseconds since the epoch, or null. */
@@ -1512,6 +1529,82 @@ export class WorkspaceStore {
       where part_media.media_id = media.id
         and (post.status != 'sent' or post.updated_at > ${now - originalLifetimeMs})
     )`;
+  }
+
+  /**
+   * When the bucket is to be looked through for bytes that no row names,
+   * and where a look that stopped at its limit goes on: `mediaSweepAt`
+   * and `mediaSweepAfter` of the schema.
+   */
+  get mediaSweep(): { at: number | null; after: string | null } {
+    const record = this.db
+      .select({
+        at: workspaceRecord.mediaSweepAt,
+        after: workspaceRecord.mediaSweepAfter,
+      })
+      .from(workspaceRecord)
+      .get();
+    return { at: record?.at ?? null, after: record?.after ?? null };
+  }
+
+  /**
+   * Asks for the bucket to be looked through `mediaSweepAfterMs` after
+   * `now`, the time at which the alarm lets go of bytes: unless a look is
+   * asked for already, which is not put off.
+   */
+  askForSweep(now: number): void {
+    if (this.mediaSweep.at !== null) return;
+    this.db
+      .update(workspaceRecord)
+      .set({ mediaSweepAt: now + mediaSweepAfterMs, mediaSweepAfter: null })
+      .run();
+  }
+
+  /**
+   * Notes how far a look through the bucket has come: the name after
+   * which the next goes on, or null when it got to the end, which asks
+   * for no look until bytes are let go of again.
+   */
+  sweptTo(after: string | null): void {
+    this.db
+      .update(workspaceRecord)
+      .set(
+        after === null
+          ? { mediaSweepAt: null, mediaSweepAfter: null }
+          : { mediaSweepAfter: after },
+      )
+      .run();
+  }
+
+  /**
+   * Of the images `ids`, which the bucket has bytes of, those whose bytes
+   * no row names, and which of them: all of them where there is no row
+   * or the row says that the upload failed, which is for good, and the
+   * bytes where the row says that they are gone.
+   */
+  unnamedMedia(ids: readonly string[]): Map<string, Unnamed> {
+    const rows = new Map<string, { status: string; goneAt: number | null }>();
+    // A statement of a Durable Object binds 100 values at most.
+    for (let from = 0; from < ids.length; from += 90) {
+      for (const { id, ...row } of this.db
+        .select({
+          id: media.id,
+          status: media.status,
+          goneAt: media.originalGoneAt,
+        })
+        .from(media)
+        .where(inArray(media.id, ids.slice(from, from + 90)))
+        .all()) {
+        rows.set(id, row);
+      }
+    }
+    const unnamed = new Map<string, Unnamed>();
+    for (const id of ids) {
+      const row = rows.get(id);
+      if (!row || row.status === "failed") unnamed.set(id, "all");
+      else if (row.goneAt !== null) unnamed.set(id, "bytes");
+    }
+    return unnamed;
   }
 
   /**

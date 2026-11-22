@@ -5,10 +5,12 @@ import {
   originalLifetimeMs,
   sandboxFeedSchema,
   sandboxImagePath,
+  unattachedMs,
 } from "@pigy/core";
 import { feed } from "@pigy/simulators/world";
 import { expect, it, onTestFinished, vi } from "vitest";
 import { imagePolicy } from "../src/security-headers.ts";
+import { mediaSweepList } from "../src/workspace/object.ts";
 import { WorkspaceStore } from "../src/workspace/store.ts";
 import { apiClient, makeKey, startedApi } from "./api.ts";
 import { connectBlueskyInSandbox, connectInSandbox } from "./channels.ts";
@@ -21,6 +23,7 @@ import {
 } from "./helpers.ts";
 import {
   attach,
+  beginUpload,
   createMedia,
   endedWithImages,
   factsOf,
@@ -28,6 +31,7 @@ import {
   holds,
   kept,
   look,
+  mediaOf,
   photo,
   upload,
 } from "./media.ts";
@@ -504,6 +508,108 @@ it("ends a delivery as failed, and as nothing that a person has to look into, wh
   );
 });
 
+it("looks the bucket through a day after it let go of bytes, and deletes what no row names, and nothing that a row does", async () => {
+  const { test, browser, workspaces } = await started();
+  const workspaceId = workspaces.sandbox;
+  const { channel = "" } = await connectInSandbox(browser, workspaceId);
+  const client = new SyncClient();
+  await client.connect(browser, workspaceId);
+  const sent = await upload(browser, client, workspaceId, await photo());
+  const stays = await upload(browser, client, workspaceId, await photo(64, 48));
+  const post = await writeDraft(client, workspaceId, "Sent");
+  await attach(client, post.partIds[0] ?? "", sent.id);
+  const draft = await writeDraft(client, workspaceId, "Still a draft");
+  await attach(client, draft.partIds[0] ?? "", stays.id);
+  // An image in the draft whose upload is begun and never finished.
+  const given = await createMedia(client, await photo(16, 16));
+  await attach(client, draft.partIds[0] ?? "", given);
+  await beginUpload(browser, workspaceId, given);
+  await publishTo(client, post.postId, channel);
+  expect(await endedWithImages(client, post.postId)).toMatchObject({
+    status: "sent",
+  });
+  // Bytes of an image that has no row: what a bucket that failed after
+  // the row of an image was deleted leaves.
+  const orphan = newId();
+  for (const file of ["original", "thumbnail", "variants/jpeg-1-0"]) {
+    await env.MEDIA.put(`${workspaceId}/${orphan}/${file}`, "bytes");
+  }
+  const everything = [
+    `${orphan}/original`,
+    `${orphan}/thumbnail`,
+    `${orphan}/variants/jpeg-1-0`,
+    `${sent.id}/original`,
+    `${sent.id}/thumbnail`,
+    `${stays.id}/original`,
+    `${stays.id}/thumbnail`,
+  ].sort();
+  expect(await kept(workspaceId)).toEqual(everything);
+
+  // Nothing asks for a look while nothing was let go of.
+  const day = 24 * 60 * 60 * 1000;
+  test.advance(originalLifetimeMs / 2);
+  expect((await browser.fetch("/api/workspaces")).status).toBe(200);
+  test.advance(originalLifetimeMs / 2 + 1000);
+  expect((await browser.fetch("/api/workspaces")).status).toBe(200);
+  await look(workspaceId);
+  // The bytes of the sent image go, by its row. Its original comes back
+  // into the bucket, as if the deletion had failed after the row said
+  // that it was gone.
+  expect(await kept(workspaceId)).not.toContain(`${sent.id}/original`);
+  await env.MEDIA.put(`${workspaceId}/${sent.id}/original`, "bytes");
+  // The upload of the other was given up, for good, and the row stays in
+  // its draft. A file of the upload comes back, as one that a completion
+  // made, which did not get to say how it ended, would be left by a
+  // deletion that failed.
+  const later = new SyncClient();
+  await later.connect(browser, workspaceId);
+  expect(mediaOf(later, given)).toMatchObject({ status: "failed" });
+  await env.MEDIA.put(`${workspaceId}/${given}/upload`, "bytes");
+
+  // The look through the bucket comes a day later.
+  test.advance(day - 1000);
+  await look(workspaceId);
+  expect(await kept(workspaceId)).toEqual(
+    [...everything, `${given}/upload`].sort(),
+  );
+  test.advance(1000);
+  await look(workspaceId);
+  expect(await kept(workspaceId)).toEqual(
+    [
+      `${sent.id}/thumbnail`,
+      `${stays.id}/original`,
+      `${stays.id}/thumbnail`,
+    ].sort(),
+  );
+  // And none after it until bytes are let go of again.
+  expect(await sweepAt(workspaceId)).toBeNull();
+});
+
+it("goes through the bucket in as many looks as it takes, after where the look before stopped", async () => {
+  const { test, browser, workspaces } = await started();
+  const workspaceId = workspaces.sandbox;
+  const client = new SyncClient();
+  await client.connect(browser, workspaceId);
+  // An image in no part, whose deletion asks for the look.
+  await upload(browser, client, workspaceId, await photo(8, 8));
+  // More names than one look lists, of images that have no row.
+  const orphans = Array.from({ length: mediaSweepList + 10 }, () => newId());
+  for (const id of orphans) {
+    await env.MEDIA.put(`${workspaceId}/${id}/original`, "bytes");
+  }
+  test.advance(unattachedMs + 1000);
+  await look(workspaceId);
+  test.advance(24 * 60 * 60 * 1000);
+  await look(workspaceId);
+  // One list of names: what is left is after it.
+  expect(await kept(workspaceId)).toHaveLength(10);
+  expect(await sweepAt(workspaceId)).not.toBeNull();
+  test.advance(60 * 1000);
+  await look(workspaceId);
+  expect(await kept(workspaceId)).toEqual([]);
+  expect(await sweepAt(workspaceId)).toBeNull();
+});
+
 it("keeps the image of a post that did not arrive everywhere, for another try", async () => {
   const { test, browser, workspaces } = await started();
   const workspaceId = workspaces.live;
@@ -576,3 +682,16 @@ it("holds a draft with images that the public API shares to what the editor hold
     },
   ]);
 });
+
+/** When the bucket of a workspace is to be looked through, or null. */
+function sweepAt(workspaceId: string): Promise<number | null> {
+  return runInDurableObject(
+    objectOf(workspaceId),
+    (_, state) =>
+      state.storage.sql
+        .exec<{ at: number | null }>(
+          "select media_sweep_at as at from workspace",
+        )
+        .one().at,
+  );
+}
