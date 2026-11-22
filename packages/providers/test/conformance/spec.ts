@@ -1340,10 +1340,14 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
           },
         });
         expect(progress.done).toBe(true);
-        expect(harness.simulation.shown()).toMatchObject([
-          { text, images: [] },
-          { text, images: shownOf(images) },
-        ]);
+        // Two posts with the same words: the person's, without an image,
+        // and the delivery's, with its own. In whichever order the
+        // network lists two posts of one moment.
+        const shown = harness.simulation.shown();
+        expect(shown.map((post) => post.text)).toEqual([text, text]);
+        expect(
+          shown.map((post) => post.images).sort((a, b) => a.length - b.length),
+        ).toEqual([[], shownOf(images)]);
       });
     });
 

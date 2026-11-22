@@ -120,6 +120,27 @@ export type PostRecord = SimPost & {
   record: Record<string, unknown>;
 };
 
+/**
+ * A blob that an account has uploaded to its PDS: bytes under the hash of
+ * themselves. `record` is the post that refers to it, or null while none
+ * does.
+ */
+export type StoredBlob = {
+  cid: string;
+  accountId: string;
+  /** The name of the bytes in the blobs of the world. */
+  blob: string;
+  /** As the upload named it. */
+  mimeType: string;
+  size: number;
+  /** What the bytes are, as the PDS reads them. */
+  width: number;
+  height: number;
+  /** In milliseconds since the epoch. */
+  createdAt: number;
+  record: string | null;
+};
+
 /** What a rate limit has counted since `start`. */
 export type Counter = { start: number; points: number };
 
@@ -129,6 +150,8 @@ export type State = {
   servers: Table<Pds>;
   accounts: Table<BlueskyAccount>;
   posts: Table<PostRecord>;
+  /** The blobs of the accounts, each under the DID and the hash. */
+  blobs: Table<StoredBlob>;
   requests: Table<PushedRequest>;
   codes: Table<Code>;
   sessions: Table<Session>;
@@ -193,6 +216,7 @@ export function createState(world: SimWorld): State {
     servers: world.table("bluesky", "pds"),
     accounts: world.accounts("bluesky"),
     posts: world.posts("bluesky"),
+    blobs: world.table("bluesky", "blob"),
     requests: world.table("bluesky", "request"),
     codes: world.table("bluesky", "code"),
     sessions: world.table("bluesky", "session"),

@@ -1,5 +1,10 @@
-import type { SimCard, SimEntity } from "../world/index.ts";
-import { accountByHandle, type PostRecord, type State } from "./state.ts";
+import type { SimCard, SimEntity, SimImage } from "../world/index.ts";
+import {
+  accountByHandle,
+  type PostRecord,
+  type State,
+  type StoredBlob,
+} from "./state.ts";
 
 /**
  * What the simulated PDS checks of a post before it keeps it, and the
@@ -30,9 +35,11 @@ import { accountByHandle, type PostRecord, type State } from "./state.ts";
  * - two facets must not overlap, which the lexicon asks of a client,
  * - a mention has to name an account of this world.
  *
- * Of the embeds, the card of a link is simulated, `app.bsky.embed.external`,
- * without a picture: blobs are not simulated. Not simulated, and refused:
- * every other embed, labels, extra tags and the deprecated entities.
+ * Of the embeds, two are simulated: the card of a link,
+ * `app.bsky.embed.external`, without a picture, and images,
+ * `app.bsky.embed.images`, whose blobs the account has to have uploaded:
+ * `imagesProblem`. Not simulated, and refused: every other embed, labels,
+ * extra tags and the deprecated entities.
  */
 
 export const postCollection = "app.bsky.feed.post";
@@ -119,6 +126,26 @@ export async function cidOf(value: unknown): Promise<string> {
 }
 
 /**
+ * The hash that a blob is named by, of its bytes: a CID of version 1
+ * with the codec "raw", in base32.
+ */
+export async function blobCid(bytes: Uint8Array): Promise<string> {
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", bytes as Uint8Array<ArrayBuffer>),
+  );
+  // Version 1, raw, SHA-256, 32 bytes.
+  const all = new Uint8Array([0x01, 0x55, 0x12, 0x20, ...digest]);
+  let bits = "";
+  for (const byte of all) bits += byte.toString(2).padStart(8, "0");
+  let text = "b";
+  for (let index = 0; index < bits.length; index += 5) {
+    text +=
+      base32[Number.parseInt(bits.slice(index, index + 5).padEnd(5, "0"), 2)];
+  }
+  return text;
+}
+
+/**
  * A new timestamp identifier, as the "TID" specification has it: the time
  * in microseconds and ten bits that tell apart what is made in the same
  * microsecond. The world's counter stands for both the microseconds that
@@ -180,7 +207,12 @@ function referenced(
  * PDS takes it. The messages are in the manner of a PDS. GUESS: their
  * exact words are not documented.
  */
-export function postProblem(state: State, record: unknown): string | undefined {
+export function postProblem(
+  state: State,
+  record: unknown,
+  /** The DID of the account that writes the record. */
+  account: string,
+): string | undefined {
   if (!isObject(record)) return "record must be an object";
   if (record.$type !== postCollection) {
     return `record/$type must be ${postCollection}`;
@@ -235,7 +267,10 @@ export function postProblem(state: State, record: unknown): string | undefined {
   }
   const facetProblem = facetsProblem(state, text, record.facets);
   if (facetProblem) return facetProblem;
-  const embedProblem = externalProblem(record.embed);
+  const embedProblem =
+    isObject(record.embed) && record.embed.$type === imagesEmbed
+      ? imagesProblem(state, account, record.embed)
+      : externalProblem(record.embed);
   if (embedProblem) return embedProblem;
   if (reply !== undefined) {
     if (!isObject(reply)) return "record/reply must be an object";
@@ -419,12 +454,124 @@ function facetsProblem(state: State, text: string, facets: unknown) {
   return typeof read === "string" ? read : undefined;
 }
 
+const imagesEmbed = "app.bsky.embed.images";
+
+/** The lexicon `app.bsky.embed.images`: four images of a million bytes. */
+export const maxImages = 4;
+export const maxImageBytes = 1_000_000;
+
+/** How long a PDS keeps a blob that no record refers to: GUESS, an hour. */
+export const unreferencedBlobMs = 60 * 60 * 1000;
+
+/** The blob of `account` with the hash `cid`, if the PDS still has it. */
+export function blobOf(
+  state: State,
+  account: string,
+  cid: string,
+): StoredBlob | undefined {
+  const blob = state.blobs.get(`${account}/${cid}`);
+  if (
+    blob &&
+    blob.record === null &&
+    state.world.now().getTime() - blob.createdAt >= unreferencedBlobMs
+  ) {
+    return undefined;
+  }
+  return blob;
+}
+
+/** The blobs that an embed of images refers to, in order. */
+export function blobsOf(
+  state: State,
+  account: string,
+  record: Record<string, unknown>,
+): { blob: StoredBlob; alt: string }[] {
+  const { embed } = record;
+  if (!isObject(embed) || embed.$type !== imagesEmbed) return [];
+  return (embed.images as { image: { ref: { $link: string } }; alt: string }[])
+    .map(({ image, alt }) => ({
+      blob: blobOf(state, account, image.ref.$link),
+      alt,
+    }))
+    .filter((entry): entry is { blob: StoredBlob; alt: string } =>
+      Boolean(entry.blob),
+    );
+}
+
+/**
+ * What is wrong with an embed of images, or undefined if the simulated
+ * PDS takes it: the lexicon, and that every blob is one that the account
+ * has uploaded and that the PDS still has, of the type and the size that
+ * the record says.
+ *
+ * GUESS: a reference PDS refuses a record whose blob it does not have
+ * with the error "BlobNotFound" and the words "Could not find blob",
+ * from its code. The message below begins with them.
+ */
+function imagesProblem(
+  state: State,
+  account: string,
+  embed: Record<string, unknown>,
+): string | undefined {
+  const { images } = embed;
+  if (Object.keys(embed).length !== 2 || !Array.isArray(images)) {
+    return `record/embed must have "images" and nothing else`;
+  }
+  if (images.length < 1 || images.length > maxImages) {
+    return `record/embed/images must not have more than ${maxImages} elements`;
+  }
+  for (const [index, entry] of images.entries()) {
+    const where = `record/embed/images/${index}`;
+    if (!isObject(entry)) return `${where} must be an object`;
+    for (const key of Object.keys(entry)) {
+      if (!["image", "alt", "aspectRatio"].includes(key)) {
+        return `${where}/${key} is not a field of an image`;
+      }
+    }
+    if (typeof entry.alt !== "string") return `${where}/alt must be a string`;
+    const { image, aspectRatio } = entry;
+    if (aspectRatio !== undefined) {
+      if (
+        !isObject(aspectRatio) ||
+        !Number.isInteger(aspectRatio.width) ||
+        !Number.isInteger(aspectRatio.height) ||
+        (aspectRatio.width as number) < 1 ||
+        (aspectRatio.height as number) < 1
+      ) {
+        return `${where}/aspectRatio must have a width and a height of 1 or more`;
+      }
+    }
+    if (
+      !isObject(image) ||
+      image.$type !== "blob" ||
+      !isObject(image.ref) ||
+      typeof image.ref.$link !== "string" ||
+      typeof image.mimeType !== "string" ||
+      typeof image.size !== "number"
+    ) {
+      return `${where}/image should be a blob ref`;
+    }
+    if (!image.mimeType.startsWith("image/")) {
+      return `${where}/image: Wrong type of file. It is ${image.mimeType} but it must match image/*`;
+    }
+    if (image.size > maxImageBytes) {
+      return `${where}/image: This file is too large. It is ${image.size} but the maximum size is ${maxImageBytes}`;
+    }
+    const stored = blobOf(state, account, image.ref.$link);
+    if (!stored) return `Could not find blob: ${image.ref.$link}`;
+    if (stored.mimeType !== image.mimeType || stored.size !== image.size) {
+      return `${where}/image is not the blob that was uploaded`;
+    }
+  }
+  return undefined;
+}
+
 /** What is wrong with `embed`, or undefined if the simulated PDS takes it. */
 function externalProblem(embed: unknown): string | undefined {
   if (embed === undefined) return undefined;
   if (!isObject(embed)) return "record/embed must be an object";
   if (embed.$type !== externalEmbed) {
-    return `record/embed: the simulated PDS takes ${externalEmbed} and no other embed`;
+    return `record/embed: the simulated PDS takes ${externalEmbed}, ${imagesEmbed} and no other embed`;
   }
   const { external } = embed;
   if (Object.keys(embed).length !== 2 || !isObject(external)) {
@@ -457,7 +604,20 @@ function externalProblem(embed: unknown): string | undefined {
 export function shownOf(
   state: State,
   record: Record<string, unknown>,
-): { entities: SimEntity[]; card: SimCard | null } {
+  /** The DID of the account whose record it is. */
+  account: string,
+): { entities: SimEntity[]; card: SimCard | null; images?: SimImage[] } {
+  const images = blobsOf(state, account, record).map(
+    ({ blob, alt }): SimImage => ({
+      blob: blob.blob,
+      // Read from the bytes when they were uploaded.
+      type: blob.mimeType as SimImage["type"],
+      width: blob.width,
+      height: blob.height,
+      size: blob.size,
+      alt,
+    }),
+  );
   const text = record.text as string;
   const facets = readFacets(state, text, record.facets);
   const bytes = encoder.encode(text);
@@ -482,5 +642,6 @@ export function shownOf(
           description: external.description as string,
         }
       : null,
+    ...(images.length > 0 && { images }),
   };
 }

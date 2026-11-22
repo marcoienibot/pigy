@@ -43,9 +43,11 @@ import {
   publicJwk,
 } from "./jwt.ts";
 import {
-  type External,
+  type Blob,
+  blobSchema,
+  type Embed,
   embedOf,
-  externalSchema,
+  embedSchema,
   type Facet,
   facetSchema,
   facetsOf,
@@ -283,7 +285,7 @@ const writtenPostSchema = z.strictObject({
   /** Compared with what the step writes: `sameFacets`. */
   facets: z.array(z.unknown()).optional(),
   /** Compared with what the step writes: `sameEmbed`. */
-  embed: externalSchema.optional(),
+  embed: embedSchema.optional(),
 });
 
 /** `value` as JSON whose keys are in order, so that equal values read equal. */
@@ -307,11 +309,12 @@ const sameFacets = (found: unknown[] | undefined, written: Facet[]) =>
     ? found === undefined
     : canonical(found) === canonical(written);
 
-/** Whether a record has the card that a step writes, or none like it. */
-const sameEmbed = (
-  found: External | undefined,
-  written: External | undefined,
-) =>
+/**
+ * Whether a record has the card or the images that a step writes, or
+ * none like it. Images are the same if they are the same bytes, which
+ * the hash in a blob says, with the same descriptions, in the same order.
+ */
+const sameEmbed = (found: Embed | undefined, written: Embed | undefined) =>
   found === undefined || written === undefined
     ? found === written
     : canonical(found) === canonical(written);
@@ -332,7 +335,13 @@ const sameReference = (a: Reference, b: Reference) =>
 const postSchema = z.object({
   text: z.string(),
   reply: z.object({ parent: z.object({ uri: z.string() }) }).optional(),
+  embed: z
+    .object({ images: z.array(z.object({ alt: z.string() })).optional() })
+    .optional(),
 });
+
+/** What com.atproto.repo.uploadBlob answers with. */
+const uploadedSchema = z.object({ blob: blobSchema });
 
 const profileSchema = z.object({
   displayName: z.string().optional(),
@@ -372,7 +381,15 @@ const notesSchema = z.strictObject({
    * have written it so, and so does this one.
    */
   facets: z.array(facetSchema).max(maxFacets).optional(),
-  embed: externalSchema.optional(),
+  embed: embedSchema.optional(),
+  /**
+   * The images of the next part that are uploaded so far, in the order
+   * of the part, each as the PDS named it: recorded image by image,
+   * before the key of the record is chosen. Once all are there, the step
+   * that chooses the key makes the embed of them. Left out by a part
+   * without images, and by notes from before pigy published any.
+   */
+  blobs: z.array(blobSchema).max(4).optional(),
 });
 
 type Notes = z.infer<typeof notesSchema>;
@@ -441,6 +458,8 @@ type Call = {
   method?: "GET" | "POST";
   /** A body, as JSON. */
   json?: unknown;
+  /** A body of bytes, with their type: a blob. */
+  bytes?: { body: Uint8Array; type: string };
   /** A body, as a form. OAuth takes its parameters this way. */
   form?: Record<string, string>;
   /** What the request carries that must not show up in a message. */
@@ -486,7 +505,7 @@ export function createBlueskyProvider({
   /** Sends a request and returns the answer as it is. */
   async function request(
     url: string,
-    { method = "GET", json, form, secrets = [] }: Call,
+    { method = "GET", json, form, bytes, secrets = [] }: Call,
     headers: Record<string, string> = {},
   ): Promise<Answer> {
     const { host } = new URL(url);
@@ -500,10 +519,12 @@ export function createBlueskyProvider({
           Accept: "application/json",
           ...(json !== undefined && { "Content-Type": "application/json" }),
           ...(form && { "Content-Type": "application/x-www-form-urlencoded" }),
+          ...(bytes && { "Content-Type": bytes.type }),
           ...headers,
         },
         ...(json !== undefined && { body: JSON.stringify(json) }),
         ...(form && { body: new URLSearchParams(form).toString() }),
+        ...(bytes && { body: bytes.body as Uint8Array<ArrayBuffer> }),
       },
       { timeoutMs, maxBytes },
     );
@@ -962,9 +983,13 @@ export function createBlueskyProvider({
     nonces: Nonces,
     method: string,
     body: unknown,
+    /** In place of `body`: bytes, for a method that takes a blob. */
+    bytes?: Call["bytes"],
   ): Promise<unknown> {
     const { pds, accessToken, dpopKey } = credentials;
-    const options: Call = { method: "POST", json: body };
+    const options: Call = bytes
+      ? { method: "POST", bytes }
+      : { method: "POST", json: body };
     const answer = await withProof(`${pds}/xrpc/${method}`, dpopKey, nonces, {
       ...options,
       accessToken,
@@ -1346,7 +1371,7 @@ export function createBlueskyProvider({
       };
     },
 
-    async publishStep({ credentials, content, progress }) {
+    async publishStep({ credentials, content, progress, media }) {
       const access = parseCredentials(credentials);
       const recorded =
         progress === null ? null : publishProgressSchema.safeParse(progress);
@@ -1382,6 +1407,7 @@ export function createBlueskyProvider({
           refs: next.refs,
           ...(next.facets && { facets: next.facets }),
           ...(next.embed && { embed: next.embed }),
+          ...(next.blobs && { blobs: next.blobs }),
         },
       });
       const index = parts.length;
@@ -1401,10 +1427,58 @@ export function createBlueskyProvider({
       // that the part mentions, which only reads, and the card. Recorded,
       // they are the same for every run of the step that writes: see
       // `notesSchema`.
+      //
+      // A part with images takes steps before those two: one for each
+      // image, which uploads it and notes the blob that the PDS made of
+      // it. A blob is named by the hash of its bytes, so the same bytes
+      // uploaded twice are one blob, and one that no record refers to is
+      // dropped by the PDS after a while: a step that uploads may be run
+      // again. The images go into the embed of the record, which has one
+      // embed: a part with images has no card.
+      const images = part.media ?? [];
+      if (notes.rkey === null && (notes.blobs?.length ?? 0) < images.length) {
+        const uploaded = notes.blobs ?? [];
+        const next = images[uploaded.length];
+        if (!media || !next) {
+          throw new ProviderError(
+            "fail",
+            "pigy cannot read the images of this post.",
+          );
+        }
+        const { blob } = understood(
+          uploadedSchema,
+          await xrpc(
+            access,
+            new Map(),
+            "com.atproto.repo.uploadBlob",
+            undefined,
+            { body: await media.read(next.id), type: next.type },
+          ),
+          "Bluesky",
+        );
+        return stepped(parts, {
+          did: notes.did,
+          refs: notes.refs,
+          rkey: null,
+          blobs: [...uploaded, blob],
+        });
+      }
       if (notes.rkey === null) {
         const before = notes.refs.at(-1);
         const mentions = await mentionsOf(part.text);
-        const embed = embedOf(part.text, part.card);
+        const blobs = notes.blobs ?? [];
+        const embed: Embed | undefined =
+          images.length > 0
+            ? {
+                $type: "app.bsky.embed.images",
+                images: images.map(({ alt, width, height }, at) => ({
+                  // One for each image, as the check above saw to.
+                  image: blobs[at] as Blob,
+                  alt,
+                  aspectRatio: { width, height },
+                })),
+              }
+            : embedOf(part.text, part.card);
         return stepped(parts, {
           did: notes.did,
           refs: notes.refs,
@@ -1466,26 +1540,51 @@ export function createBlueskyProvider({
         reference = { uri, cid: found.cid };
       } else {
         const nonces: Nonces = new Map();
-        const written = understood(
-          writtenSchema,
-          await xrpc(access, nonces, "com.atproto.repo.createRecord", {
-            repo: access.did,
-            collection: postCollection,
-            rkey,
-            record: {
-              $type: postCollection,
-              text: part.text,
-              // When it is written. A step that is run again does not
-              // write the same record a second time, it finds the first,
-              // so this need not be recorded before.
-              createdAt: now().toISOString(),
-              ...(reply && { reply }),
-              ...(facets.length > 0 && { facets }),
-              ...(embed && { embed }),
+        let answered: unknown;
+        try {
+          answered = await xrpc(
+            access,
+            nonces,
+            "com.atproto.repo.createRecord",
+            {
+              repo: access.did,
+              collection: postCollection,
+              rkey,
+              record: {
+                $type: postCollection,
+                text: part.text,
+                // When it is written. A step that is run again does not
+                // write the same record a second time, it finds the
+                // first, so this need not be recorded before.
+                createdAt: now().toISOString(),
+                ...(reply && { reply }),
+                ...(facets.length > 0 && { facets }),
+                ...(embed && { embed }),
+              },
             },
-          }),
-          "Bluesky",
-        );
+          );
+        } catch (error) {
+          // The PDS no longer has a blob that the embed names: it drops
+          // one that no record refers to, and this delivery is taken up
+          // long after its images were uploaded. The record was not
+          // written, so the part begins anew: its images are uploaded
+          // again, and it gets another key. GUESS: how a PDS says so,
+          // from the code of Bluesky's, PLAN.md section 19.
+          if (
+            embed?.$type === "app.bsky.embed.images" &&
+            error instanceof ProviderError &&
+            error.status === 400 &&
+            /blob/i.test(error.message)
+          ) {
+            return stepped(parts, {
+              did: notes.did,
+              refs: notes.refs,
+              rkey: null,
+            });
+          }
+          throw error;
+        }
+        const written = understood(writtenSchema, answered, "Bluesky");
         if (written.uri !== uri) {
           throw new ProviderError(
             "fail",
@@ -1523,7 +1622,7 @@ export function createBlueskyProvider({
         url: postUrl(did, record.rkey),
         text: post.text,
         replyToId: post.reply?.parent.uri ?? null,
-        images: [],
+        images: (post.embed?.images ?? []).map(({ alt }) => ({ alt })),
       };
     },
 

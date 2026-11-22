@@ -152,8 +152,6 @@ describeProvider("Bluesky, simulated", async () => {
     redirectUri,
     identifier: handle,
     thread: "chain",
-    // Until the adapter publishes images.
-    noImages: true,
     credentials,
     refusedCredentials: {
       ...credentials,

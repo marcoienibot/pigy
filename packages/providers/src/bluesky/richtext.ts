@@ -119,6 +119,45 @@ export const externalSchema = z.strictObject({
 export type External = z.infer<typeof externalSchema>;
 
 /**
+ * A blob, as the PDS names one that was uploaded to it and as a record
+ * refers to it: by the hash of its bytes, with its type and its size.
+ * Public, like everything in a record.
+ */
+export const blobSchema = z.strictObject({
+  $type: z.literal("blob"),
+  ref: z.strictObject({ $link: z.string().min(1) }),
+  mimeType: z.string().min(1),
+  size: z.number().int().positive(),
+});
+
+export type Blob = z.infer<typeof blobSchema>;
+
+/** The images of a post, as a record embeds them: `app.bsky.embed.images`. */
+export const imagesSchema = z.strictObject({
+  $type: z.literal("app.bsky.embed.images"),
+  images: z
+    .array(
+      z.strictObject({
+        image: blobSchema,
+        alt: z.string(),
+        aspectRatio: z.strictObject({
+          width: z.number().int().positive(),
+          height: z.number().int().positive(),
+        }),
+      }),
+    )
+    .min(1)
+    .max(4),
+});
+
+export type Images = z.infer<typeof imagesSchema>;
+
+/** What a post embeds: the card of a link, or images. One of the two. */
+export const embedSchema = z.union([externalSchema, imagesSchema]);
+
+export type Embed = z.infer<typeof embedSchema>;
+
+/**
  * The embed that a part with `text` is published with, or undefined: the
  * card that came with the part, if it is that of the first link of the
  * text. A card of anything else is not this part's, and is left out.

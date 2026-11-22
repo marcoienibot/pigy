@@ -1,4 +1,5 @@
-import type { Fetch } from "@pigy/core";
+import type { ContentImage, Fetch } from "@pigy/core";
+import { jpegFile, pngFile } from "@pigy/core/test-images";
 import {
   type BlueskySimulator,
   createBlueskySimulator,
@@ -1583,5 +1584,193 @@ describe("reading and deleting", () => {
       (await failure(() => test.provider.deletePost(access.credentials, other)))
         .kind,
     ).toBe("fail");
+  });
+});
+
+describe("publishing images", () => {
+  /** Runs the steps of a post with images to the end, each once. */
+  async function publishImages(
+    test: Setup,
+    credentials: Json,
+    parts: { text: string; media?: ContentImage[]; card?: unknown }[],
+    files: Map<string, Uint8Array>,
+    from: PublishProgress | null = null,
+  ): Promise<PublishProgress[]> {
+    const steps: PublishProgress[] = [];
+    let progress = from;
+    while (!progress?.done) {
+      progress = await test.provider.publishStep({
+        credentials,
+        content: { parts } as never,
+        key: "target",
+        progress,
+        media: {
+          read: async (id) => {
+            const file = files.get(id);
+            if (!file) throw new Error(`The test has no image ${id}`);
+            return file;
+          },
+          link: async () => {
+            throw new Error("Bluesky takes bytes");
+          },
+        },
+      });
+      steps.push(progress);
+      if (steps.length > 20) throw new Error("The post does not end");
+    }
+    return steps;
+  }
+
+  const image = (id: string, alt = ""): ContentImage => ({
+    id,
+    type: "image/png",
+    size: 100,
+    width: 40,
+    height: 30,
+    alt,
+  });
+
+  it("uploads each image as a blob in a step of its own, and embeds them with their descriptions and their shapes", async () => {
+    const test = await setup();
+    const { credentials } = (await connected(test)).access;
+    const files = new Map([
+      ["one", await pngFile(40, 30)],
+      ["two", await pngFile(40, 30, { color: [1, 2, 3] })],
+    ]);
+    const steps = await publishImages(
+      test,
+      credentials,
+      [{ text: "Two images", media: [image("one", "First"), image("two")] }],
+      files,
+    );
+    // A blob, a blob, the key with the embed that has both, the record.
+    expect(
+      steps.map(({ state }) => {
+        const noted = state as {
+          blobs?: unknown[];
+          embed?: { images: unknown[] };
+        };
+        return [noted.blobs?.length ?? 0, noted.embed?.images.length ?? 0];
+      }),
+    ).toEqual([
+      [1, 0],
+      [2, 0],
+      [0, 2],
+      [0, 0],
+    ]);
+    const [{ post } = { post: undefined }] = feed(test.world);
+    expect(post?.images).toMatchObject([
+      { alt: "First", width: 40, height: 30, type: "image/png" },
+      { alt: "" },
+    ]);
+    const { embed } = (post as unknown as { record: { embed: unknown } })
+      .record;
+    expect(embed).toMatchObject({
+      $type: "app.bsky.embed.images",
+      images: [
+        { alt: "First", aspectRatio: { width: 40, height: 30 } },
+        { alt: "", aspectRatio: { width: 40, height: 30 } },
+      ],
+    });
+  });
+
+  it("publishes a part with images and a link without the card of the link: a post has one or the other", async () => {
+    const test = await setup();
+    const { credentials } = (await connected(test)).access;
+    await publishImages(
+      test,
+      credentials,
+      [
+        {
+          text: "See https://example.test/ for more",
+          media: [image("one")],
+          card: {
+            url: "https://example.test/",
+            title: "Example",
+            description: "",
+          },
+        },
+      ],
+      new Map([["one", await pngFile(40, 30)]]),
+    );
+    const [{ post } = { post: undefined }] = feed(test.world);
+    expect(post?.card).toBeNull();
+    expect(post?.images).toHaveLength(1);
+    // The link is still a link.
+    expect(entitiesOf(post as never)).toEqual([
+      ["link", "https://example.test/", "https://example.test/"],
+    ]);
+  });
+
+  it("uploads the images again when the server has dropped them before the post was written", async () => {
+    const test = await setup();
+    const { credentials } = (await connected(test)).access;
+    const files = new Map([["one", await pngFile(40, 30)]]);
+    const parts = [{ text: "Late", media: [image("one", "Kept")] }];
+    // The blob and the key are recorded, and the delivery stops there.
+    let progress: PublishProgress | null = null;
+    for (let step = 0; step < 2; step++) {
+      progress = await test.provider.publishStep({
+        credentials,
+        content: { parts },
+        key: "target",
+        progress,
+        media: {
+          read: async () => files.get("one") as Uint8Array,
+          link: async () => "",
+        },
+      });
+    }
+    const noted = progress?.state as { rkey: string } | undefined;
+    expect(noted).toMatchObject({ rkey: expect.any(String) });
+    const firstKey = noted?.rkey ?? "";
+
+    // Hours on, the server no longer has a blob that no record names.
+    test.world.advance(2 * 60 * 60 * 1000);
+    // The access token has ended in that time too.
+    const renewed = await test.provider.refresh?.(credentials);
+    const steps = await publishImages(
+      test,
+      renewed?.credentials ?? null,
+      parts,
+      files,
+      progress,
+    );
+    // The step that writes found the blob gone and began the part anew.
+    expect(steps[0]?.state).toMatchObject({ rkey: null });
+    expect(steps[0]?.state).not.toHaveProperty("blobs");
+    expect(steps.at(-1)?.parts).toHaveLength(1);
+    expect(steps.at(-1)?.parts[0]?.id).not.toContain(firstKey);
+    expect(feed(test.world).map(({ post }) => post.images)).toMatchObject([
+      [{ alt: "Kept" }],
+    ]);
+  });
+
+  it("is refused a blob whose bytes are not what it says, and an embed of a blob that is over a million bytes", async () => {
+    const test = await setup();
+    const { credentials } = (await connected(test)).access;
+    // A JPEG sent as a PNG: the simulated server reads the bytes.
+    const mislabelled = await failure(() =>
+      publishImages(
+        test,
+        credentials,
+        [{ text: "x", media: [image("one")] }],
+        new Map([["one", jpegFile(40, 30)]]),
+      ),
+    );
+    expect(mislabelled.kind).toBe("fail");
+    // Noise does not compress: more than a million bytes.
+    const large = await pngFile(700, 600, { noise: true });
+    expect(large.length).toBeGreaterThan(1_000_000);
+    const tooLarge = await failure(() =>
+      publishImages(
+        test,
+        credentials,
+        [{ text: "x", media: [image("big")] }],
+        new Map([["big", large]]),
+      ),
+    );
+    expect(tooLarge.message).toContain("too large");
+    expect(feed(test.world)).toEqual([]);
   });
 });

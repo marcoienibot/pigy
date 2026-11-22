@@ -1,3 +1,4 @@
+import { imageInfo } from "../world/index.ts";
 import {
   gatewayError,
   json,
@@ -10,6 +11,9 @@ import { allowsRepo, authenticate, type Caller } from "./oauth.ts";
 import { currentNonce } from "./proofs.ts";
 import {
   accountOf,
+  blobCid,
+  blobOf,
+  blobsOf,
   cidOf,
   isNsid,
   isRecordKey,
@@ -229,9 +233,14 @@ function createRecord(state: State, pds: Pds, request: Request) {
       if (rkey !== undefined && !isTid(rkey)) {
         return invalid(`Invalid record key for ${collection}: must be a tid`);
       }
-      const problem = postProblem(state, record);
-      if (problem) return invalid(`Invalid ${collection} record: ${problem}`);
-    } else if (postProblem(state, record)) {
+      const problem = postProblem(state, record, account.id);
+      if (problem) {
+        // A blob that is not there has an error of its own.
+        return problem.startsWith("Could not find blob")
+          ? invalid(problem, "BlobNotFound")
+          : invalid(`Invalid ${collection} record: ${problem}`);
+      }
+    } else if (postProblem(state, record, account.id)) {
       return invalid("The simulated PDS keeps valid posts only");
     }
 
@@ -258,7 +267,7 @@ function createRecord(state: State, pds: Pds, request: Request) {
       rkey: key,
       cid,
       record: value,
-      ...shownOf(state, value),
+      ...shownOf(state, value, account.id),
     };
     // Nothing is awaited between the look above and here, so of two
     // requests with one key only one gets this far.
@@ -266,12 +275,93 @@ function createRecord(state: State, pds: Pds, request: Request) {
       return xrpcError(500, "InternalServerError", "Internal Server Error");
     }
     state.posts.put(uri, post);
+    // The blobs of the record are the record's from here on.
+    for (const { blob } of blobsOf(state, account.id, value)) {
+      state.blobs.put(`${account.id}/${blob.cid}`, { ...blob, record: uri });
+    }
     const rev = nextTid(state);
     return json(200, {
       uri,
       cid,
       commit: { cid: await cidOf({ uri, cid, rev }), rev },
       validationStatus: "valid",
+    });
+  });
+}
+
+/**
+ * `POST /xrpc/com.atproto.repo.uploadBlob`: takes the bytes of the body as
+ * a blob of the account, and answers with the reference that a record
+ * names it by: the hash of the bytes, their type and their size. The same
+ * bytes are the same blob however often they are uploaded. A blob that no
+ * record refers to is dropped after a while.
+ *
+ * From the lexicon and the specification "Blobs", with these on top:
+ *
+ * - The type is the one that the request names, and the scopes of the
+ *   session have to allow it: `blob:image/*` allows an image.
+ * - GUESS: the PDS takes any bytes under any type, as a reference PDS
+ *   does, and the limit of a million bytes is the lexicon's of an embed,
+ *   checked when a record refers to the blob. The simulated PDS is
+ *   stricter on one point: it reads what the bytes are, and refuses what
+ *   is no image under a type of image, so that a mistake of a client
+ *   fails where it is made.
+ */
+function uploadBlob(state: State, pds: Pds, request: Request) {
+  return forAccount(state, pds, request, "publish", 1, async (caller) => {
+    const type = (request.headers.get("Content-Type") ?? "").split(";")[0];
+    if (!type) return invalid("Request encoding (Content-Type) required");
+    const allowed = caller.session.scopes.some((scope) => {
+      if (scope === "transition:generic") return true;
+      const [, accept] = /^blob:(.+)$/.exec(scope) ?? [];
+      if (!accept) return false;
+      const [kind, sub] = accept.split("/");
+      const [typeKind, typeSub] = type.split("/");
+      return (
+        (kind === "*" || kind === typeKind) && (sub === "*" || sub === typeSub)
+      );
+    });
+    if (!allowed) {
+      return xrpcError(
+        403,
+        "ScopeMissingError",
+        `Missing required scope "blob:${type}"`,
+      );
+    }
+    const bytes = new Uint8Array(await request.arrayBuffer());
+    if (bytes.length === 0) return invalid("The blob is empty");
+    const info = imageInfo(bytes);
+    if (!type.startsWith("image/") || !info) {
+      return invalid("The simulated PDS takes images and nothing else");
+    }
+    if (info.type !== type) {
+      return invalid(
+        `The bytes are ${info.type}, and the request says ${type}`,
+      );
+    }
+    const cid = await blobCid(bytes);
+    const key = `${caller.account.id}/${cid}`;
+    const known = state.blobs.get(key);
+    if (!known || !blobOf(state, caller.account.id, cid)) {
+      state.blobs.put(key, {
+        cid,
+        accountId: caller.account.id,
+        blob: state.world.blobs.put(bytes),
+        mimeType: type,
+        size: bytes.length,
+        width: info.width,
+        height: info.height,
+        createdAt: state.world.now().getTime(),
+        record: null,
+      });
+    }
+    return json(200, {
+      blob: {
+        $type: "blob",
+        ref: { $link: cid },
+        mimeType: type,
+        size: bytes.length,
+      },
     });
   });
 }
@@ -315,6 +405,10 @@ function deleteRecord(state: State, pds: Pds, request: Request) {
     // "Delete a repository record, or ensure it doesn't exist."
     if (!state.posts.get(uri)) return json(200, {});
     state.posts.delete(uri);
+    // A blob that no record refers to any more goes with the record.
+    for (const [key, blob] of state.blobs.entries()) {
+      if (blob.record === uri) state.blobs.delete(key);
+    }
     const rev = nextTid(state);
     return json(200, { commit: { cid: await cidOf({ uri, rev }), rev } });
   });
@@ -384,6 +478,9 @@ export function xrpc(
   const { method: verb } = request;
   if (method === "com.atproto.repo.createRecord" && verb === "POST") {
     return createRecord(state, pds, request);
+  }
+  if (method === "com.atproto.repo.uploadBlob" && verb === "POST") {
+    return uploadBlob(state, pds, request);
   }
   if (method === "com.atproto.repo.deleteRecord" && verb === "POST") {
     return deleteRecord(state, pds, request);
