@@ -7,7 +7,7 @@ import {
 } from "../../src/mastodon/index.ts";
 import { memoryAppStore } from "../mastodon-apps.ts";
 import { mastodonLiveHarness } from "./mastodon-live.ts";
-import { describeProvider } from "./spec.ts";
+import { describeProvider, shownIn } from "./spec.ts";
 
 const domain = "mastodon.example";
 const redirectUri = "https://pigy.example/connect/mastodon/callback";
@@ -99,6 +99,8 @@ describeProvider("Mastodon, simulated", async () => {
         });
       },
       published: () => feed(world, ["mastodon"]).map(({ post }) => post.text),
+      shown: () => shownIn(world, "mastodon"),
+      mention: "@ada",
       publishRequests,
       now: world.now,
       advance: world.advance,

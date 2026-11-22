@@ -5,7 +5,7 @@ import {
   createThreadsProvider,
   type ThreadsCredentials,
 } from "../../src/threads/index.ts";
-import { describeProvider } from "./spec.ts";
+import { describeProvider, shownIn } from "./spec.ts";
 import { threadsLiveHarness } from "./threads-live.ts";
 
 const redirectUri = "https://pigy.example/connect/threads/callback";
@@ -103,6 +103,8 @@ describeProvider("Threads, simulated", async () => {
         });
       },
       published: () => feed(world, ["threads"]).map(({ post }) => post.text),
+      shown: () => shownIn(world, "threads"),
+      mention: "@ada",
       publishRequests,
       now: world.now,
       advance: world.advance,

@@ -10,7 +10,12 @@ import {
 } from "../../src/bluesky/index.ts";
 import { newClientKey } from "../bluesky-keys.ts";
 import { blueskyLiveRun } from "./bluesky-live.ts";
-import { accessOf, describeProvider, type Simulation } from "./spec.ts";
+import {
+  accessOf,
+  describeProvider,
+  type Simulation,
+  shownIn,
+} from "./spec.ts";
 
 const origin = "https://pigy.example";
 const redirectUri = `${origin}/connect/bluesky/callback`;
@@ -171,6 +176,8 @@ describeProvider("Bluesky, simulated", async () => {
           ? armDuringConnect(kind)
           : simulator.arm({ kind, operation: "publish" }),
       published: () => feed(world, ["bluesky"]).map(({ post }) => post.text),
+      shown: () => shownIn(world, "bluesky"),
+      mention: `@${handle}`,
       publishRequests,
       now: world.now,
       advance: world.advance,

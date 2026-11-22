@@ -1,10 +1,15 @@
 import {
+  cardMaker,
   countCharacters,
+  detectEntities,
   type Limits,
+  type LinkCard,
   limitsSchema,
+  type Network,
   type PostContent,
   validateContent,
 } from "@pigy/core";
+import { entitiesOf, feed, type SimWorld } from "@pigy/simulators/world";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   type CredentialSource,
@@ -53,6 +58,17 @@ export type Simulation = {
   /** The texts of the posts in the world, oldest first. */
   published(): string[];
   /**
+   * The posts in the world, oldest first, with what the network shows in
+   * each as more than text and the card that it shows with it.
+   */
+  shown(): Shown[];
+  /**
+   * A mention of an account that the network has, as a person writes one
+   * in a post there: "@ada". On a network where pigy writes no mentions,
+   * what a person would write all the same.
+   */
+  mention: string;
+  /**
    * How many requests have asked the network to publish so far, whether or
    * not it did. Looking for a post is not among them.
    */
@@ -61,6 +77,24 @@ export type Simulation = {
   /** Moves the world's clock forward. */
   advance(milliseconds: number): void;
 };
+
+/** A post as a network shows it. */
+export type Shown = {
+  text: string;
+  /** Each link, mention and hashtag: its kind, and how it is written. */
+  entities: [kind: string, written: string][];
+  /** The address and the title of the card, or null without one. */
+  card: { url: string; title: string } | null;
+};
+
+/** What `network` of the simulated `world` shows, for `Simulation.shown`. */
+export function shownIn(world: SimWorld, network: Network): Shown[] {
+  return feed(world, [network]).map(({ post }) => ({
+    text: post.text,
+    entities: entitiesOf(post).map(([kind, written]) => [kind, written]),
+    card: post.card ? { url: post.card.url, title: post.card.title } : null,
+  }));
+}
 
 /** A provider and a test account to run it with. */
 export type Harness = {
@@ -223,6 +257,8 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
         runner?: PublishRunner;
         from?: PublishProgress | null;
         key?: string;
+        /** The card that comes with each part, by its place. */
+        cards?: (LinkCard | undefined)[];
       } = {},
     ) {
       const { provider } = harness;
@@ -248,7 +284,12 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
             return progress;
           }),
       };
-      const content: PostContent = { parts: texts.map((text) => ({ text })) };
+      const content: PostContent = {
+        parts: texts.map((text, index) => {
+          const card = options.cards?.[index];
+          return { text, ...(card && { card }) };
+        }),
+      };
       const key = options.key ?? `${harness.tag}-${++keys}`;
       const progress = await publish(
         provider,
@@ -478,6 +519,199 @@ export function describeProvider(name: string, setup: () => Promise<Harness>) {
           );
           expect(post).toMatchObject({ id: part.id, text, replyToId: null });
         }
+      });
+
+      /**
+       * A text with a link, a mention and two hashtags, and with what
+       * only looks like one of them. The page of the link is one of the
+       * simulated web, which the simulated networks read their cards
+       * from.
+       */
+      const markedText = (harness: Harness, mention: string) =>
+        `${harness.tag} ${mention} wrote https://example.test/?a=b, see #pigyConformance and #second (#1, a#b and mail@example.test are none)`;
+
+      it("publishes a text with a link, a mention and hashtags as it was written, and the network shows in it what pigy takes for them", async () => {
+        const harness = await setup();
+        const { simulation, provider } = harness;
+        // A live run mentions nobody: its posts are for nobody to see.
+        const text = markedText(harness, simulation?.mention ?? "@pigy");
+        const { progress } = await publishParts(harness, [text]);
+        expect(progress.done).toBe(true);
+        const [part] = progress.parts;
+        const { readPost } = provider;
+        if (part && readPost) {
+          const post = await withAccess(harness, (credentials) =>
+            readPost(credentials, part.id),
+          );
+          // What the network shows of a mention or a long address may be
+          // shorter than what was sent. A tag reads as it was written,
+          // and so does what is no markup at all.
+          expect(post?.text).toContain("#pigyConformance");
+          expect(post?.text).toContain("mail@example.test are none)");
+        }
+        if (!simulation) return;
+        const [shown] = simulation.shown();
+        // Nothing of the markup that a network takes is left in the text.
+        expect(shown?.text).toBe(text);
+        // What the network shows as a link, a mention and a tag is what
+        // `detectEntities` finds for it: the editor marks these while the
+        // person types, and the simulator of each network finds them in
+        // code of its own, or is told by the adapter. The mention is of
+        // an account that is there, so every network that has mentions
+        // shows it.
+        const expected = detectEntities(provider.network, text).map(
+          ({ kind, start, end }) => [kind, text.slice(start, end)],
+        );
+        expect(shown?.entities).toEqual(expected);
+        // And the detection found something to compare: a link and a
+        // tag on every network.
+        expect(expected.map(([kind]) => kind)).toEqual(
+          expect.arrayContaining(["link", "hashtag"]),
+        );
+      });
+
+      it("shows the card of the first link of a part: the one that came with the part where pigy makes it, the network's own elsewhere", async ({
+        skip,
+      }) => {
+        const harness = await setup();
+        const { simulation, provider } = harness;
+        if (!simulation) return skip("This takes a look into the network");
+        const url = "https://example.test/";
+        const text = `${harness.tag} ${url} with a card`;
+        // Not what the page says of itself, so that it shows who made
+        // the card that the network has.
+        const card = { url, title: "As pigy read the page", description: "" };
+        await publishParts(harness, [text], { cards: [card] });
+        expect(simulation.shown()[0]?.card).toEqual({
+          url,
+          title:
+            cardMaker[provider.network] === "pigy"
+              ? "As pigy read the page"
+              : // What the page of the simulated web says of itself.
+                "The example page",
+        });
+      });
+
+      it("publishes a part without a card as text with a link", async ({
+        skip,
+      }) => {
+        const harness = await setup();
+        const { simulation, provider } = harness;
+        if (!simulation) return skip("This takes a look into the network");
+        const url = "https://example.test/";
+        const text = `${harness.tag} ${url} without a card`;
+        const { progress } = await publishParts(harness, [text]);
+        expect(progress.done).toBe(true);
+        const [shown] = simulation.shown();
+        expect(shown?.entities).toEqual([["link", url]]);
+        // Where pigy makes the card, none was made.
+        if (cardMaker[provider.network] === "pigy") {
+          expect(shown?.card).toBeNull();
+        }
+      });
+
+      it("publishes a text with a link, a mention and hashtags once when every step is run twice, with its card and without", async ({
+        skip,
+      }) => {
+        const harness = await setup();
+        const { simulation, provider } = harness;
+        if (!provider.repeatsSafely) {
+          return skip("The steps of this provider are never run twice");
+        }
+        const text = markedText(harness, simulation?.mention ?? "@pigy");
+        const card = {
+          url: "https://example.test/?a=b",
+          title: "A card",
+          description: "",
+        };
+        const { progress } = await publishParts(harness, [text], {
+          cards: [card],
+          runner: {
+            sleep: (_name, seconds) => harness.sleep(seconds),
+            run: async (_name, step) => {
+              const first = await step();
+              // The second run finds what the first published, marked
+              // up as it was.
+              const second = await step();
+              expect(second.parts).toEqual(first.parts);
+              return second;
+            },
+          },
+        });
+        expect(progress.parts).toHaveLength(1);
+        if (simulation) expect(simulation.published()).toEqual([text]);
+      });
+
+      it("takes a part for published that a run before it published with a card, when it is run again without one", async ({
+        skip,
+      }) => {
+        const harness = await setup();
+        const { simulation, provider } = harness;
+        if (!provider.repeatsSafely) {
+          return skip("The steps of this provider are never run twice");
+        }
+        if (!simulation)
+          return skip("This takes a network that loses an answer");
+        const url = "https://example.test/";
+        const text = `${harness.tag} ${url} #once`;
+        const card = { url, title: "As the page was", description: "" };
+        const content = (withCard: boolean): PostContent => ({
+          parts: [{ text, ...(withCard && { card }) }],
+        });
+        const key = `${harness.tag}-card`;
+        // Step by step, by hand: the card is another from one run of a
+        // step to the next, which `publish` does not do.
+        const attempt = (
+          before: PublishProgress | null,
+          withCard: boolean,
+        ): Promise<PublishProgress> =>
+          withAccess(harness, (credentials) =>
+            provider.publishStep({
+              credentials,
+              content: content(withCard),
+              key,
+              progress: before,
+            }),
+          );
+        let progress: PublishProgress | null = null;
+        // Strikes the first request that publishes, whichever step makes
+        // it: the network publishes, and its answer is lost.
+        simulation.arm("lost-response");
+        let lost = false;
+        for (let steps = 0; !progress?.done; steps++) {
+          if (steps > 20) throw new Error("The post does not get done");
+          const before: PublishProgress | null = progress;
+          let next: PublishProgress;
+          try {
+            next = await attempt(before, true);
+          } catch (error) {
+            if (!(error instanceof ProviderError) || error.kind !== "retry") {
+              throw error;
+            }
+            // The answer to the request that publishes was lost. The page
+            // cannot be read any more either: the step is run again, hours
+            // later, with the same text and no card.
+            lost = true;
+            simulation.advance(2 * 60 * 60 * 1000);
+            next = await attempt(before, false);
+          }
+          progress = recorded(next);
+          if (next.waitSeconds > 0) await harness.sleep(next.waitSeconds);
+        }
+        const published: PublishProgress = progress;
+        for (const { id, url: link } of published.parts) {
+          cleanup.push({
+            id,
+            url: link,
+            remove: () =>
+              withAccess(harness, (credentials) =>
+                provider.deletePost(credentials, id),
+              ),
+          });
+        }
+        // An answer was lost, or the test has shown nothing.
+        expect(lost).toBe(true);
+        expect(simulation.published()).toEqual([text]);
       });
 
       it("publishes a thread in order, part by part", async () => {

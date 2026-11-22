@@ -6,7 +6,7 @@ import {
   type LinkedInCredentials,
 } from "../../src/linkedin/index.ts";
 import { linkedInLiveHarness } from "./linkedin-live.ts";
-import { describeProvider } from "./spec.ts";
+import { describeProvider, shownIn } from "./spec.ts";
 
 const redirectUri = "https://pigy.example/connect/linkedin/callback";
 
@@ -106,6 +106,8 @@ describeProvider("LinkedIn, simulated", async () => {
         });
       },
       published: () => feed(world, ["linkedin"]).map(({ post }) => post.text),
+      shown: () => shownIn(world, "linkedin"),
+      mention: "@ada",
       publishRequests,
       now: world.now,
       advance: world.advance,
