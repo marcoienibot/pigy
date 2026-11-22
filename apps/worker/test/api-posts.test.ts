@@ -2,6 +2,8 @@ import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import {
   type Environment,
+  maxSlots,
+  requeues,
   type SandboxPost,
   sandboxFeedSchema,
   sandboxMastodonDomain,
@@ -949,12 +951,36 @@ it("sets the posting schedule: the times, the zone and the pause, and refuses wh
     }),
   ).toMatchObject({ field: "schedule" });
   await refuse({});
-  // A refusal changed nothing: not the zone either, which came first.
-  expect(await scheduleOf(api)).toEqual({
+  // None of those gets as far as the workspace. This one does: its zone
+  // is one, and each of its days has as many times as a day may have.
+  // Together they are more than a queue has, so the workspace pauses the
+  // queue, sets the zone, replaces times, and is refused by the mutator
+  // that adds the one too many.
+  const before = await scheduleOf(api);
+  const minutes = Array.from(
+    { length: maxSlots / 2 + 1 },
+    (_, minute) =>
+      `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`,
+  );
+  expect(
+    await refuse({
+      timeZone: "America/New_York",
+      schedule: [
+        { day: "mon", times: minutes },
+        { day: "tue", times: minutes },
+      ],
+    }),
+  ).toMatchObject({ message: expect.stringContaining(`${maxSlots}`) });
+  // A refusal changed nothing: not the zone, which was set first, not
+  // the pause, which the workspace made for the change, not a time, and
+  // not the time of the post in the queue.
+  expect(await scheduleOf(api)).toEqual(before);
+  expect(before).toEqual({
     timeZone: "Europe/Rome",
     paused: false,
     schedule: expect.arrayContaining([{ day: "wed", times: ["10:00"] }]),
   });
+  expect((await api.post(post.id)).dueAt).toBe("2026-11-18T09:00:00.000Z");
   // A posting schedule with no times at all is one too.
   expect(
     apiPostingScheduleSchema
@@ -962,6 +988,51 @@ it("sets the posting schedule: the times, the zone and the pause, and refuses wh
       .schedule.every(({ times }) => times.length === 0),
   ).toBe(true);
   expect((await api.post(post.id)).dueAt).toBeNull();
+});
+
+it("gives the posts of the queue their times once when the posting times are replaced", async () => {
+  const { api, channel } = await ready();
+  const day = (times: string[]) => [{ day: "mon", times }];
+  const hours = (from: number) =>
+    Array.from(
+      { length: 10 },
+      (_, index) => `${String(from + index).padStart(2, "0")}:00`,
+    );
+  await setTimes(api, day(hours(0)));
+  const posts = [];
+  for (let index = 0; index < 12; index += 1) {
+    posts.push(
+      await api.create({
+        text: `Queued ${index}`,
+        channelIds: [channel],
+        mode: "addToQueue",
+      }),
+    );
+  }
+
+  // Ten times go and ten others come, and the zone changes: 21 changes,
+  // each of which gives every post of the queue its time anew when it is
+  // made by itself. That reads the clocks of the zone for every post,
+  // the one costly thing that a mutator does. The request pauses the
+  // queue for its changes, so it is done once, at the end.
+  const before = requeues.timed;
+  await api.ok("/posting-schedule", {
+    method: "PUT",
+    json: { timeZone: "Europe/Rome", schedule: day(hours(10)) },
+  });
+  expect(requeues.timed - before).toBe(1);
+
+  // The posts have the times that follow from the new ones, in their
+  // order: Monday from 10 in Rome, which is 9 in UTC in winter.
+  const queued = await Promise.all(posts.map(({ id }) => api.post(id)));
+  expect(queued.slice(0, 11).map(({ dueAt }) => dueAt)).toEqual([
+    ...Array.from(
+      { length: 10 },
+      (_, index) =>
+        `2026-11-16T${String(9 + index).padStart(2, "0")}:00:00.000Z`,
+    ),
+    "2026-11-23T09:00:00.000Z",
+  ]);
 });
 
 it("deletes a post, and neither deletes nor changes one that is being sent", async () => {

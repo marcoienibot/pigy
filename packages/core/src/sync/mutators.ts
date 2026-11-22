@@ -388,6 +388,7 @@ function requeue(
 ): void {
   requeues.count += 1;
   const { timeZone, queuePaused } = settingsOf(tx);
+  if (!queuePaused) requeues.timed += 1;
   const times = queuePaused
     ? undefined
     : slotTimes(timeZone ?? defaultTimeZone, slotsOf(tx), tx.now);
@@ -410,7 +411,14 @@ function requeue(
  * How often the posts of a queue were given their times, for a test that
  * says that a mutator does it once.
  */
-export const requeues = { count: 0 };
+export const requeues = {
+  count: 0,
+  /**
+   * How often of those the clocks of the time zone were read, which is
+   * what costs: not while the queue is paused, where no post has a time.
+   */
+  timed: 0,
+};
 
 /**
  * Makes a draft of a post that was scheduled: nothing says when it goes
